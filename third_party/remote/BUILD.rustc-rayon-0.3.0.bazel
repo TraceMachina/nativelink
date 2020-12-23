@@ -1,0 +1,80 @@
+"""
+@generated
+cargo-raze crate build file.
+
+DO NOT EDIT! Replaced on runs of cargo-raze
+"""
+
+# buildifier: disable=load
+load(
+    "@io_bazel_rules_rust//rust:rust.bzl",
+    "rust_binary",
+    "rust_library",
+    "rust_test",
+)
+
+# buildifier: disable=load
+load("@bazel_skylib//lib:selects.bzl", "selects")
+
+package(default_visibility = [
+    # Public for visibility by "@raze__crate__version//" targets.
+    #
+    # Prefer access through "//third_party", which limits external
+    # visibility to explicit Cargo.toml dependencies.
+    "//visibility:public",
+])
+
+licenses([
+    "notice",  # Apache-2.0 from expression "Apache-2.0 OR MIT"
+])
+
+# Generated Targets
+
+# Unsupported target "cpu_monitor" with type "example" omitted
+
+rust_library(
+    name = "rustc_rayon",
+    srcs = glob(["**/*.rs"]),
+    crate_features = [
+    ],
+    crate_root = "src/lib.rs",
+    crate_type = "lib",
+    data = [],
+    edition = "2015",
+    rustc_flags = [
+        "--cap-lints=allow",
+    ],
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+    version = "0.3.0",
+    # buildifier: leave-alone
+    deps = [
+        "@raze__crossbeam_deque__0_7_3//:crossbeam_deque",
+        "@raze__either__1_6_1//:either",
+        "@raze__rustc_rayon_core__0_3_0//:rustc_rayon_core",
+    ],
+)
+
+# Unsupported target "clones" with type "test" omitted
+
+# Unsupported target "debug" with type "test" omitted
+
+# Unsupported target "intersperse" with type "test" omitted
+
+# Unsupported target "issue671" with type "test" omitted
+
+# Unsupported target "issue671-unzip" with type "test" omitted
+
+# Unsupported target "iter_panic" with type "test" omitted
+
+# Unsupported target "named-threads" with type "test" omitted
+
+# Unsupported target "octillion" with type "test" omitted
+
+# Unsupported target "producer_split_at" with type "test" omitted
+
+# Unsupported target "sort-panic-safe" with type "test" omitted
+
+# Unsupported target "str" with type "test" omitted

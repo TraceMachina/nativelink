@@ -1,0 +1,87 @@
+"""
+@generated
+cargo-raze generated Bazel file.
+
+DO NOT EDIT! Replaced on runs of cargo-raze
+"""
+
+package(default_visibility = ["//visibility:public"])
+
+licenses([
+    "notice",  # See individual crates for specific licenses
+])
+
+# Aliased targets
+alias(
+    name = "clap",
+    actual = "@raze__clap__2_33_3//:clap",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "prost",
+    actual = "@raze__prost__0_6_1//:prost",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "prost_build",
+    actual = "@raze__prost_build__0_6_1//:prost_build",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "rustfmt_nightly",
+    actual = "@raze__rustfmt_nightly__1_4_21//:rustfmt_nightly",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    # Extra aliased target, from raze configuration
+    # N.B.: The exact form of this is subject to change.
+    name = "cargo_bin_rustfmt",
+    actual = "@raze__rustfmt_nightly__1_4_21//:cargo_bin_rustfmt",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "tokio",
+    actual = "@raze__tokio__0_2_24//:tokio",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "tonic",
+    actual = "@raze__tonic__0_3_1//:tonic",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "tonic_build",
+    actual = "@raze__tonic_build__0_3_1//:tonic_build",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)

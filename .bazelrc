@@ -1,0 +1,4 @@
+# Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+
+build -c dbg
+build --test_output=errors

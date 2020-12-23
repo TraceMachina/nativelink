@@ -1,0 +1,79 @@
+"""
+@generated
+cargo-raze crate build file.
+
+DO NOT EDIT! Replaced on runs of cargo-raze
+"""
+
+# buildifier: disable=load
+load(
+    "@io_bazel_rules_rust//rust:rust.bzl",
+    "rust_binary",
+    "rust_library",
+    "rust_test",
+)
+
+# buildifier: disable=load
+load("@bazel_skylib//lib:selects.bzl", "selects")
+
+package(default_visibility = [
+    # Public for visibility by "@raze__crate__version//" targets.
+    #
+    # Prefer access through "//third_party", which limits external
+    # visibility to explicit Cargo.toml dependencies.
+    "//visibility:public",
+])
+
+licenses([
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
+])
+
+# Generated Targets
+
+rust_library(
+    name = "rustc_ap_rustc_session",
+    srcs = glob(["**/*.rs"]),
+    aliases = {
+        "@raze__rustc_ap_rustc_ast__677_0_0//:rustc_ap_rustc_ast": "rustc_ast",
+        "@raze__rustc_ap_rustc_data_structures__677_0_0//:rustc_ap_rustc_data_structures": "rustc_data_structures",
+        "@raze__rustc_ap_rustc_errors__677_0_0//:rustc_ap_rustc_errors": "rustc_errors",
+        "@raze__rustc_ap_rustc_feature__677_0_0//:rustc_ap_rustc_feature": "rustc_feature",
+        "@raze__rustc_ap_rustc_fs_util__677_0_0//:rustc_ap_rustc_fs_util": "rustc_fs_util",
+        "@raze__rustc_ap_rustc_macros__677_0_0//:rustc_ap_rustc_macros": "rustc_macros",
+        "@raze__rustc_ap_rustc_serialize__677_0_0//:rustc_ap_rustc_serialize": "rustc_serialize",
+        "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span": "rustc_span",
+        "@raze__rustc_ap_rustc_target__677_0_0//:rustc_ap_rustc_target": "rustc_target",
+    },
+    crate_features = [
+    ],
+    crate_root = "src/lib.rs",
+    crate_type = "lib",
+    data = [],
+    edition = "2018",
+    proc_macro_deps = [
+        "@raze__rustc_ap_rustc_macros__677_0_0//:rustc_ap_rustc_macros",
+    ],
+    rustc_flags = [
+        "--cap-lints=allow",
+    ],
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+    version = "677.0.0",
+    # buildifier: leave-alone
+    deps = [
+        "@raze__bitflags__1_2_1//:bitflags",
+        "@raze__getopts__0_2_21//:getopts",
+        "@raze__num_cpus__1_13_0//:num_cpus",
+        "@raze__rustc_ap_rustc_ast__677_0_0//:rustc_ap_rustc_ast",
+        "@raze__rustc_ap_rustc_data_structures__677_0_0//:rustc_ap_rustc_data_structures",
+        "@raze__rustc_ap_rustc_errors__677_0_0//:rustc_ap_rustc_errors",
+        "@raze__rustc_ap_rustc_feature__677_0_0//:rustc_ap_rustc_feature",
+        "@raze__rustc_ap_rustc_fs_util__677_0_0//:rustc_ap_rustc_fs_util",
+        "@raze__rustc_ap_rustc_serialize__677_0_0//:rustc_ap_rustc_serialize",
+        "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span",
+        "@raze__rustc_ap_rustc_target__677_0_0//:rustc_ap_rustc_target",
+        "@raze__tracing__0_1_22//:tracing",
+    ],
+)

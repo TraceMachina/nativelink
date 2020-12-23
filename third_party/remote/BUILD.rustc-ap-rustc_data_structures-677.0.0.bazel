@@ -1,0 +1,86 @@
+"""
+@generated
+cargo-raze crate build file.
+
+DO NOT EDIT! Replaced on runs of cargo-raze
+"""
+
+# buildifier: disable=load
+load(
+    "@io_bazel_rules_rust//rust:rust.bzl",
+    "rust_binary",
+    "rust_library",
+    "rust_test",
+)
+
+# buildifier: disable=load
+load("@bazel_skylib//lib:selects.bzl", "selects")
+
+package(default_visibility = [
+    # Public for visibility by "@raze__crate__version//" targets.
+    #
+    # Prefer access through "//third_party", which limits external
+    # visibility to explicit Cargo.toml dependencies.
+    "//visibility:public",
+])
+
+licenses([
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
+])
+
+# Generated Targets
+
+rust_library(
+    name = "rustc_ap_rustc_data_structures",
+    srcs = glob(["**/*.rs"]),
+    aliases = {
+        "@raze__jobserver__0_1_21//:jobserver": "jobserver_crate",
+        "@raze__rustc_ap_rustc_graphviz__677_0_0//:rustc_ap_rustc_graphviz": "rustc_graphviz",
+        "@raze__rustc_ap_rustc_index__677_0_0//:rustc_ap_rustc_index": "rustc_index",
+        "@raze__rustc_ap_rustc_macros__677_0_0//:rustc_ap_rustc_macros": "rustc_macros",
+        "@raze__rustc_ap_rustc_serialize__677_0_0//:rustc_ap_rustc_serialize": "rustc_serialize",
+        "@raze__rustc_rayon__0_3_0//:rustc_rayon": "rayon",
+        "@raze__rustc_rayon_core__0_3_0//:rustc_rayon_core": "rayon_core",
+    },
+    crate_features = [
+    ],
+    crate_root = "src/lib.rs",
+    crate_type = "lib",
+    data = [],
+    edition = "2018",
+    proc_macro_deps = [
+        "@raze__rustc_ap_rustc_macros__677_0_0//:rustc_ap_rustc_macros",
+    ],
+    rustc_flags = [
+        "--cap-lints=allow",
+    ],
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+    version = "677.0.0",
+    # buildifier: leave-alone
+    deps = [
+        "@raze__bitflags__1_2_1//:bitflags",
+        "@raze__cfg_if__0_1_10//:cfg_if",
+        "@raze__crossbeam_utils__0_7_2//:crossbeam_utils",
+        "@raze__ena__0_14_0//:ena",
+        "@raze__indexmap__1_6_1//:indexmap",
+        "@raze__jobserver__0_1_21//:jobserver",
+        "@raze__lazy_static__1_4_0//:lazy_static",
+        "@raze__libc__0_2_81//:libc",
+        "@raze__measureme__0_7_1//:measureme",
+        "@raze__parking_lot__0_10_2//:parking_lot",
+        "@raze__rustc_ap_rustc_graphviz__677_0_0//:rustc_ap_rustc_graphviz",
+        "@raze__rustc_ap_rustc_index__677_0_0//:rustc_ap_rustc_index",
+        "@raze__rustc_ap_rustc_serialize__677_0_0//:rustc_ap_rustc_serialize",
+        "@raze__rustc_hash__1_1_0//:rustc_hash",
+        "@raze__rustc_rayon__0_3_0//:rustc_rayon",
+        "@raze__rustc_rayon_core__0_3_0//:rustc_rayon_core",
+        "@raze__smallvec__1_5_1//:smallvec",
+        "@raze__stable_deref_trait__1_2_0//:stable_deref_trait",
+        "@raze__stacker__0_1_12//:stacker",
+        "@raze__tempfile__3_1_0//:tempfile",
+        "@raze__tracing__0_1_22//:tracing",
+    ],
+)
