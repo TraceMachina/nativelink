@@ -6,8 +6,7 @@ use proto::build::bazel::remote::execution::v2::{
     capabilities_server::Capabilities, capabilities_server::CapabilitiesServer as Server,
     digest_function::Value as DigestFunction,
     symlink_absolute_path_strategy::Value as SymlinkAbsolutePathStrategy,
-    ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities,
-    GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
+    ActionCacheUpdateCapabilities, CacheCapabilities, GetCapabilitiesRequest, ServerCapabilities,
 };
 
 use proto::build::bazel::semver::SemVer;
@@ -33,22 +32,12 @@ impl Capabilities for CapabilitiesServer {
                 action_cache_update_capabilities: Some(ActionCacheUpdateCapabilities {
                     update_enabled: true,
                 }),
-                cache_priority_capabilities: Some(PriorityCapabilities { priorities: vec![] }),
+                cache_priority_capabilities: None,
                 max_batch_total_size_bytes: 0,
                 symlink_absolute_path_strategy: SymlinkAbsolutePathStrategy::Disallowed.into(),
             }),
-            execution_capabilities: Some(ExecutionCapabilities {
-                digest_function: DigestFunction::Sha256.into(),
-                exec_enabled: false,
-                execution_priority_capabilities: Some(PriorityCapabilities { priorities: vec![] }),
-                supported_node_properties: vec![],
-            }),
-            deprecated_api_version: Some(SemVer {
-                major: 0,
-                minor: 0,
-                patch: 0,
-                prerelease: "".to_string(),
-            }),
+            execution_capabilities: None,
+            deprecated_api_version: None,
             low_api_version: Some(SemVer {
                 major: 2,
                 minor: 0,
