@@ -9,6 +9,6 @@ RUST_FMT="./bazel-bin/external/raze__rustfmt_nightly__1_4_21/cargo_bin_rustfmt"
 if [ "${1:-}" != "" ]; then
   FILES="$@"
 else
-  FILES="$(find . -name '*.rs')"
+  FILES="$(find . -name '*.rs' ! -name '*.pb.rs')"
 fi
-echo "$FILES" | xargs $RUST_FMT --emit files --edition 2018
+echo "$FILES" | parallel -I% --max-args 1 $RUST_FMT --emit files --edition 2018 %
