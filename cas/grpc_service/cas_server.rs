@@ -3,19 +3,24 @@
 use std::pin::Pin;
 
 use futures_core::Stream;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{Request, Response, Status};
 
-use proto::build::bazel::remote::execution::v2 as bre_v2;
-
-use bre_v2::{
+use proto::build::bazel::remote::execution::v2::{
     content_addressable_storage_server::ContentAddressableStorage,
-    content_addressable_storage_server::ContentAddressableStorageServer, BatchReadBlobsRequest,
+    content_addressable_storage_server::ContentAddressableStorageServer,
+    BatchReadBlobsRequest,
     BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
     FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
 };
 
 #[derive(Debug, Default)]
 pub struct CasServer {}
+
+impl CasServer {
+    pub fn into_service(self) -> ContentAddressableStorageServer<CasServer> {
+        ContentAddressableStorageServer::new(self)
+    }
+}
 
 #[tonic::async_trait]
 impl ContentAddressableStorage for CasServer {
@@ -48,17 +53,4 @@ impl ContentAddressableStorage for CasServer {
     ) -> Result<Response<Self::GetTreeStream>, Status> {
         Err(Status::unimplemented("Not yet implemented"))
     }
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "0.0.0.0:50051".parse()?;
-    let cas = CasServer::default();
-
-    Server::builder()
-        .add_service(ContentAddressableStorageServer::new(cas))
-        .serve(addr)
-        .await?;
-
-    Ok(())
 }
