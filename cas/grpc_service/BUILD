@@ -7,6 +7,7 @@ rust_library(
         "//proto",
         "//third_party:tonic",
         "//third_party:futures_core",
+        "//third_party:stdext",
     ],
     visibility = ["//cas:__pkg__"]
 )
@@ -16,6 +17,7 @@ rust_library(
     srcs = ["ac_server.rs"],
     deps = [
         "//proto",
+        "//third_party:stdext",
         "//third_party:tonic",
     ],
     visibility = ["//cas:__pkg__"]
@@ -37,6 +39,7 @@ rust_library(
     deps = [
         "//proto",
         "//third_party:tonic",
+        "//third_party:stdext",
         "//third_party:futures_core",
     ],
     visibility = ["//cas:__pkg__"]

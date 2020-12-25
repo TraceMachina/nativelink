@@ -29,7 +29,10 @@ impl Execution for ExecutionServer {
         &self,
         _request: Request<ExecuteRequest>,
     ) -> Result<Response<Self::ExecuteStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        use stdext::function_name;
+        let output = format!("{} not yet implemented", function_name!());
+        println!("{}", output);
+        Err(Status::unimplemented(output))
     }
 
     type WaitExecutionStream =
@@ -38,6 +41,9 @@ impl Execution for ExecutionServer {
         &self,
         _request: Request<WaitExecutionRequest>,
     ) -> Result<Response<Self::WaitExecutionStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        use stdext::function_name;
+        let output = format!("{} not yet implemented", function_name!());
+        println!("{}", output);
+        Err(Status::unimplemented(output))
     }
 }

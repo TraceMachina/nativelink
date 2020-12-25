@@ -15,6 +15,7 @@ tonic = "0.3.1"
 
 [dev-dependencies]
 clap = "2.33.3"
+stdext = "0.2.1"
 prost-build = "0.6.1"
 tonic-build = "0.3.1"
 rustfmt-nightly = "1.4.21"

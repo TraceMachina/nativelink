@@ -28,21 +28,30 @@ impl ContentAddressableStorage for CasServer {
         &self,
         _request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        use stdext::function_name;
+        let output = format!("{} not yet implemented", function_name!());
+        println!("{}", output);
+        Err(Status::unimplemented(output))
     }
 
     async fn batch_update_blobs(
         &self,
         _request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        use stdext::function_name;
+        let output = format!("{} not yet implemented", function_name!());
+        println!("{}", output);
+        Err(Status::unimplemented(output))
     }
 
     async fn batch_read_blobs(
         &self,
         _request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        use stdext::function_name;
+        let output = format!("{} not yet implemented", function_name!());
+        println!("{}", output);
+        Err(Status::unimplemented(output))
     }
 
     type GetTreeStream =
@@ -51,6 +60,9 @@ impl ContentAddressableStorage for CasServer {
         &self,
         _request: Request<GetTreeRequest>,
     ) -> Result<Response<Self::GetTreeStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        use stdext::function_name;
+        let output = format!("{} not yet implemented", function_name!());
+        println!("{}", output);
+        Err(Status::unimplemented(output))
     }
 }

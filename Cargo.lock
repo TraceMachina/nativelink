@@ -367,6 +367,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "rustfmt-nightly",
+ "stdext",
  "tokio",
  "tonic",
  "tonic-build",
@@ -1713,6 +1714,12 @@ dependencies = [
  "psm",
  "winapi 0.3.9",
 ]
+
+[[package]]
+name = "stdext"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a61b4ae487cb43d0479907e74d36f8813e9940bd3b1adcbecc69fe8a0cee3ec"
 
 [[package]]
 name = "strsim"

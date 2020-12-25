@@ -22,13 +22,19 @@ impl ActionCache for AcServer {
         &self,
         _request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        use stdext::function_name;
+        let output = format!("{} not yet implemented", function_name!());
+        println!("{}", output);
+        Err(Status::unimplemented(output))
     }
 
     async fn update_action_result(
         &self,
         _request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        use stdext::function_name;
+        let output = format!("{} not yet implemented", function_name!());
+        println!("{}", output);
+        Err(Status::unimplemented(output))
     }
 }

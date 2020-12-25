@@ -78,6 +78,15 @@ alias(
 )
 
 alias(
+    name = "stdext",
+    actual = "@raze__stdext__0_2_1//:stdext",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "tokio",
     actual = "@raze__tokio__0_2_24//:tokio",
     tags = [

@@ -1693,6 +1693,16 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
+        name = "raze__stdext__0_2_1",
+        url = "https://crates.io/api/v1/crates/stdext/0.2.1/download",
+        type = "tar.gz",
+        sha256 = "4a61b4ae487cb43d0479907e74d36f8813e9940bd3b1adcbecc69fe8a0cee3ec",
+        strip_prefix = "stdext-0.2.1",
+        build_file = Label("//third_party/remote:BUILD.stdext-0.2.1.bazel"),
+    )
+
+    maybe(
+        http_archive,
         name = "raze__strsim__0_8_0",
         url = "https://crates.io/api/v1/crates/strsim/0.8.0/download",
         type = "tar.gz",
