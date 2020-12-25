@@ -7,18 +7,18 @@ use tonic::{Request, Response, Status};
 
 use proto::build::bazel::remote::execution::v2::{
     content_addressable_storage_server::ContentAddressableStorage,
-    content_addressable_storage_server::ContentAddressableStorageServer,
-    BatchReadBlobsRequest,
-    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
-    FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
+    content_addressable_storage_server::ContentAddressableStorageServer as Server,
+    BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest,
+    GetTreeResponse,
 };
 
 #[derive(Debug, Default)]
 pub struct CasServer {}
 
 impl CasServer {
-    pub fn into_service(self) -> ContentAddressableStorageServer<CasServer> {
-        ContentAddressableStorageServer::new(self)
+    pub fn into_service(self) -> Server<CasServer> {
+        Server::new(self)
     }
 }
 
