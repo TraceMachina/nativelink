@@ -1,4 +1,4 @@
-load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library")
+load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "cas_server",
@@ -8,6 +8,7 @@ rust_library(
         "//third_party:tonic",
         "//third_party:futures_core",
         "//third_party:stdext",
+        "//cas/store",
     ],
     visibility = ["//cas:__pkg__"]
 )
@@ -43,4 +44,16 @@ rust_library(
         "//third_party:futures_core",
     ],
     visibility = ["//cas:__pkg__"]
+)
+
+rust_test(
+    name = "cas_server_test",
+    srcs = ["tests/cas_server_test.rs"],
+    deps = [
+        ":cas_server",
+        "//cas/store",
+        "//proto",
+        "//third_party:tonic",
+        "//third_party:tokio",
+    ],
 )

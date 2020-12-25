@@ -12,11 +12,18 @@ use proto::build::bazel::remote::execution::v2::{
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest,
     GetTreeResponse,
 };
+use store;
 
-#[derive(Debug, Default)]
-pub struct CasServer {}
+#[derive(Debug)]
+pub struct CasServer {
+    pub store: Box<dyn store::Store>,
+}
 
 impl CasServer {
+    pub fn new(in_store: Box<dyn store::Store>) -> Self {
+        CasServer { store: in_store }
+    }
+
     pub fn into_service(self) -> Server<CasServer> {
         Server::new(self)
     }
@@ -26,12 +33,18 @@ impl CasServer {
 impl ContentAddressableStorage for CasServer {
     async fn find_missing_blobs(
         &self,
-        _request: Request<FindMissingBlobsRequest>,
+        request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        use stdext::function_name;
-        let output = format!("{} not yet implemented", function_name!());
-        println!("{}", output);
-        Err(Status::unimplemented(output))
+        let request_data = request.into_inner();
+        let mut response = FindMissingBlobsResponse {
+            missing_blob_digests: vec![],
+        };
+        for digest in request_data.blob_digests.into_iter() {
+            if !self.store.has(&digest.hash) {
+                response.missing_blob_digests.push(digest);
+            }
+        }
+        Ok(Response::new(response))
     }
 
     async fn batch_update_blobs(
