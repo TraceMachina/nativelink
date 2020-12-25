@@ -1,36 +1,62 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::pin::Pin;
+
+use futures_core::Stream;
 use tonic::{transport::Server, Request, Response, Status};
 
-use proto::helloworld::{HelloReply, HelloRequest};
-use proto::helloworld::greeter_server::{Greeter, GreeterServer};
+use proto::build::bazel::remote::execution::v2 as bre_v2;
+
+use bre_v2::{
+    content_addressable_storage_server::ContentAddressableStorage,
+    content_addressable_storage_server::ContentAddressableStorageServer, BatchReadBlobsRequest,
+    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
+    FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
+};
 
 #[derive(Debug, Default)]
-pub struct MyGreeter {}
+pub struct CasServer {}
 
 #[tonic::async_trait]
-impl Greeter for MyGreeter {
-    async fn say_hello(
+impl ContentAddressableStorage for CasServer {
+    async fn find_missing_blobs(
         &self,
-        request: Request<HelloRequest>,
-    ) -> Result<Response<HelloReply>, Status> {
-        println!("Got a request: {:?}", request);
+        _request: Request<FindMissingBlobsRequest>,
+    ) -> Result<Response<FindMissingBlobsResponse>, Status> {
+        Err(Status::unimplemented("Not yet implemented"))
+    }
 
-        let reply = HelloReply {
-            message: format!("Hello {}!", request.into_inner().name).into(),
-        };
+    async fn batch_update_blobs(
+        &self,
+        _request: Request<BatchUpdateBlobsRequest>,
+    ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
+        Err(Status::unimplemented("Not yet implemented"))
+    }
 
-        Ok(Response::new(reply))
+    async fn batch_read_blobs(
+        &self,
+        _request: Request<BatchReadBlobsRequest>,
+    ) -> Result<Response<BatchReadBlobsResponse>, Status> {
+        Err(Status::unimplemented("Not yet implemented"))
+    }
+
+    type GetTreeStream =
+        Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + Sync + 'static>>;
+    async fn get_tree(
+        &self,
+        _request: Request<GetTreeRequest>,
+    ) -> Result<Response<Self::GetTreeStream>, Status> {
+        Err(Status::unimplemented("Not yet implemented"))
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::1]:50051".parse()?;
-    let greeter = MyGreeter::default();
+    let addr = "0.0.0.0:50051".parse()?;
+    let cas = CasServer::default();
 
     Server::builder()
-        .add_service(GreeterServer::new(greeter))
+        .add_service(ContentAddressableStorageServer::new(cas))
         .serve(addr)
         .await?;
 

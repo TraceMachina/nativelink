@@ -9,5 +9,6 @@ rust_binary(
         "//proto",
         "//third_party:tonic",
         "//third_party:tokio",
+        "//third_party:futures_core",
     ],
 )

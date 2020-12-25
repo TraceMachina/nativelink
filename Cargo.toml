@@ -18,6 +18,7 @@ clap = "2.33.3"
 prost-build = "0.6.1"
 tonic-build = "0.3.1"
 rustfmt-nightly = "1.4.21"
+futures-core = "0.3.8"
 
 [package.metadata.raze.crates.prost-build.'*']
 gen_buildrs = true
