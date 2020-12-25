@@ -364,6 +364,7 @@ dependencies = [
  "clap",
  "prost",
  "prost-build",
+ "prost-types",
  "rustfmt-nightly",
  "tokio",
  "tonic",

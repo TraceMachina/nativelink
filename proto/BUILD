@@ -11,9 +11,9 @@ load("@io_bazel_rules_rust//rust:rust.bzl", "rust_binary", "rust_library")
 #    code.
 
 _proto_files = glob(["**/*.proto"])
-_proto_base_files = [file[:-len(".proto")] for file in _proto_files]
-
+_proto_base_files = depset(['.'.join(file[:-len(".proto")].split('/')[:-1]) for file in _proto_files]).to_list()
 _genproto_files = ["%s.pb.rs" % pkg for pkg in _proto_base_files]
+
 _checked_in_proto_files = ["genproto/%s" % file for file in _genproto_files]
 
 rust_binary(
@@ -26,10 +26,8 @@ rust_binary(
     ]
 )
 genrule(
-    name = "gen_helloworld_proto",
-    srcs = [
-        ":helloworld.proto",
-    ],
+    name = "gen_rs_protos",
+    srcs = _proto_files,
     outs = _genproto_files,
     cmd = "\n".join([
         # By default `rustfmt` will be named `cargo_bin_rustfmt`, but in
@@ -61,9 +59,9 @@ py_binary(
 
 genrule(
     name = "gen_lib_rs",
-    srcs = _proto_files,
+    srcs = _genproto_files,
     outs = ["lib.rs"],
-    cmd = "$(execpath :gen_lib_rs_tool) --rootdir ./proto $(SRCS) > $@",
+    cmd = "$(execpath :gen_lib_rs_tool) --rootdir $(RULEDIR) $(SRCS) > $@",
     tools = [":gen_lib_rs_tool"],
 )
 
@@ -74,6 +72,7 @@ rust_library(
     ] + _genproto_files,
     deps = [
         "//third_party:prost",
+        "//third_party:prost_types",
         "//third_party:tonic",
     ],
     visibility = ["//visibility:public"],

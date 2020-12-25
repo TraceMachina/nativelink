@@ -28,7 +28,7 @@ fn main() -> std::io::Result<()> {
         .format(true) // don't run `rustfmt`; shouldn't be needed to build
         .compile(
             &paths,
-            &["."],
+            &["proto"],
         )?;
     Ok(())
 }

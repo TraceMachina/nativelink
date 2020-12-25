@@ -40,6 +40,15 @@ alias(
 )
 
 alias(
+    name = "prost_types",
+    actual = "@raze__prost_types__0_6_1//:prost_types",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "rustfmt_nightly",
     actual = "@raze__rustfmt_nightly__1_4_21//:rustfmt_nightly",
     tags = [

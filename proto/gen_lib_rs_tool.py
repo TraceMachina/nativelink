@@ -5,18 +5,23 @@ import argparse
 import os
 from pathlib import Path
 
-_HEADER = "// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved."
+_HEADER = """\
+// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// *** DO NOT MODIFY ***
+// This file is auto-generated to provide the libs for the proto files.
+"""
 
 
-def print_package_part_to_mod(package_parts, path_and_name, indents = 0):
+def print_package_part_to_mod(tree, indents = 0):
   tabs = "  " * indents
-  if len(package_parts) <= 0:
-      print('%sinclude!("%s.pb.rs");' % (tabs, path_and_name))
-      return
-  assert package_parts[0] not in ['.', '..'], "'%s.proto' is not in proper root directory" % (path_and_name, )
-  print("%spub mod %s {" % (tabs, package_parts[0]))
-  print_package_part_to_mod(package_parts[1:], path_and_name, indents + 1)
-  print("%s}" % (tabs, ))
+  if tree["filename"] is not None:
+      print('%sinclude!("%s");' % (tabs, tree["filename"]))
+
+  for mod_name, value in tree["children"].items():
+      print("%spub mod %s {" % (tabs, mod_name))
+      print_package_part_to_mod(value, indents + 1)
+      print("%s}" % (tabs, ))
+
 
 
 def main():
@@ -28,23 +33,23 @@ def main():
     args = parser.parse_args()
     print(_HEADER)
     print("")
+    tree_root = { "children": {}, "filename": None }
     for filepath in args.files:
-        filepath = os.path.normpath(filepath)
-        package_name = ""
-        with open(filepath, mode="r") as f:
-            for line in f.readlines():
-              line = line.strip("\n\r\t ")
-              if line.startswith("package "):
-                  assert line.endswith(";"), "'package' line must end with a semicolon"
-                  package_name = line[len("package "):-1]
-        assert package_name, "Could not find 'package' line in proto file: %s" % filepath
-        filepath = os.path.relpath(filepath, args.rootdir)
-        dirname = os.path.dirname(filepath)
-        file_parts = list(Path(dirname).parts)
-        package_parts = file_parts + package_name.split('.')
-        path_and_name = os.path.join(dirname, os.path.basename(filepath).split('.')[0])
-        print_package_part_to_mod(package_parts, path_and_name)
-        print("")
+        filepath = os.path.relpath(os.path.normpath(filepath), args.rootdir)
+        assert filepath.endswith('.pb.rs'), "Expected " + filepath + " to end in '.pb.rs'"
+        package_parts = filepath.split('.')[:-2]  # Remove `.pb.rs'.
+        assert '.' not in package_parts and '..' not in package_parts, \
+            "'%s' is not in proper root directory" % (filepath, )
+        cur_node = tree_root
+        for part in package_parts:
+            if part not in cur_node["children"]:
+                cur_node["children"][part] = { "children": {}, "filename": None }
+            cur_node = cur_node["children"][part]
+        assert not cur_node["filename"], "Duplicate package '%s'" % ('.'.join(package_parts), )
+        cur_node["filename"] = '.'.join(package_parts) + '.pb.rs'
+
+    print_package_part_to_mod(tree_root)
+    print("")
 
 
 if __name__ == "__main__":

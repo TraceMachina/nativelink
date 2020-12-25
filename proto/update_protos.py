@@ -16,6 +16,7 @@
 
 import os
 import sys
+import shutil
 
 # Paths to "proto" directory in (a) the Bazel runfiles tree,
 # whence we can read data dependencies, and (b) the Git repository,
@@ -74,6 +75,8 @@ def check(proto_packages):
 def main():
     (mode, *proto_packages) = sys.argv[1:]
     if mode == "--update":
+        shutil.rmtree(_REPO_DIR, ignore_errors=True)
+        os.mkdir(_REPO_DIR)
         return update(proto_packages)
     if mode == "--check":
         return check(proto_packages)
