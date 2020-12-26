@@ -361,6 +361,7 @@ dependencies = [
 name = "dummy_name_to_make_cargo_tooling_happy"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "clap",
  "futures-core",
  "prost",
