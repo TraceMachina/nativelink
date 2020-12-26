@@ -13,6 +13,15 @@ licenses([
 
 # Aliased targets
 alias(
+    name = "async_mutex",
+    actual = "@raze__async_mutex__1_4_0//:async_mutex",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "async_trait",
     actual = "@raze__async_trait__0_1_42//:async_trait",
     tags = [

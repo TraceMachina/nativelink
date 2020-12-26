@@ -83,6 +83,16 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
+        name = "raze__async_mutex__1_4_0",
+        url = "https://crates.io/api/v1/crates/async-mutex/1.4.0/download",
+        type = "tar.gz",
+        sha256 = "479db852db25d9dbf6204e6cb6253698f175c15726470f78af0d918e99d6156e",
+        strip_prefix = "async-mutex-1.4.0",
+        build_file = Label("//third_party/remote:BUILD.async-mutex-1.4.0.bazel"),
+    )
+
+    maybe(
+        http_archive,
         name = "raze__async_stream__0_2_1",
         url = "https://crates.io/api/v1/crates/async-stream/0.2.1/download",
         type = "tar.gz",
@@ -479,6 +489,16 @@ def raze_fetch_remote_crates():
         sha256 = "aafcde04e90a5226a6443b7aabdb016ba2f8307c847d524724bd9b346dd1a2d3",
         strip_prefix = "env_logger-0.6.2",
         build_file = Label("//third_party/remote:BUILD.env_logger-0.6.2.bazel"),
+    )
+
+    maybe(
+        http_archive,
+        name = "raze__event_listener__2_5_1",
+        url = "https://crates.io/api/v1/crates/event-listener/2.5.1/download",
+        type = "tar.gz",
+        sha256 = "f7531096570974c3a9dcf9e4b8e1cede1ec26cf5046219fb3b9d897503b9be59",
+        strip_prefix = "event-listener-2.5.1",
+        build_file = Label("//third_party/remote:BUILD.event-listener-2.5.1.bazel"),
     )
 
     maybe(
@@ -1773,12 +1793,12 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__syn__1_0_55",
-        url = "https://crates.io/api/v1/crates/syn/1.0.55/download",
+        name = "raze__syn__1_0_56",
+        url = "https://crates.io/api/v1/crates/syn/1.0.56/download",
         type = "tar.gz",
-        sha256 = "a571a711dddd09019ccc628e1b17fe87c59b09d513c06c026877aa708334f37a",
-        strip_prefix = "syn-1.0.55",
-        build_file = Label("//third_party/remote:BUILD.syn-1.0.55.bazel"),
+        sha256 = "a9802ddde94170d186eeee5005b798d9c159fa970403f1be19976d0cfb939b72",
+        strip_prefix = "syn-1.0.56",
+        build_file = Label("//third_party/remote:BUILD.syn-1.0.56.bazel"),
     )
 
     maybe(

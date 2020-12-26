@@ -1,18 +1,67 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
+#![feature(try_blocks)]
+
+use std::convert::TryFrom;
+use std::io::Cursor;
 use std::pin::Pin;
 
 use futures_core::Stream;
-use tonic::{Request, Response, Status};
+use tokio::io::Error;
+use tonic::{Code, Request, Response, Status};
 
+use macros::{error_if, make_err};
 use proto::build::bazel::remote::execution::v2::{
-    content_addressable_storage_server::ContentAddressableStorage,
+    batch_update_blobs_response, content_addressable_storage_server::ContentAddressableStorage,
     content_addressable_storage_server::ContentAddressableStorageServer as Server,
     BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest,
     GetTreeResponse,
 };
 use store::Store;
+
+// use tokio::io::Error;
+// use tonic::Code;
+use proto::google::rpc::Status as GrpcStatus;
+use std::result::Result;
+fn result_to_status(result: Result<(), Error>) -> GrpcStatus {
+    use tokio::io::ErrorKind;
+    fn kind_to_code(kind: &ErrorKind) -> Code {
+        match kind {
+            ErrorKind::NotFound => Code::NotFound,
+            ErrorKind::PermissionDenied => Code::PermissionDenied,
+            ErrorKind::ConnectionRefused => Code::Unavailable,
+            ErrorKind::ConnectionReset => Code::Unavailable,
+            ErrorKind::ConnectionAborted => Code::Unavailable,
+            ErrorKind::NotConnected => Code::Internal,
+            ErrorKind::AddrInUse => Code::Internal,
+            ErrorKind::AddrNotAvailable => Code::Internal,
+            ErrorKind::BrokenPipe => Code::Internal,
+            ErrorKind::AlreadyExists => Code::AlreadyExists,
+            ErrorKind::WouldBlock => Code::Internal,
+            ErrorKind::InvalidInput => Code::InvalidArgument,
+            ErrorKind::InvalidData => Code::InvalidArgument,
+            ErrorKind::TimedOut => Code::DeadlineExceeded,
+            ErrorKind::WriteZero => Code::Internal,
+            ErrorKind::Interrupted => Code::Aborted,
+            ErrorKind::Other => Code::Internal,
+            ErrorKind::UnexpectedEof => Code::Internal,
+            _ => Code::Internal,
+        }
+    }
+    match result {
+        Ok(()) => GrpcStatus {
+            code: Code::Ok as i32,
+            message: "".to_string(),
+            details: vec![],
+        },
+        Err(error) => GrpcStatus {
+            code: kind_to_code(&error.kind()) as i32,
+            message: format!("Error: {:?}", error),
+            details: vec![],
+        },
+    }
+}
 
 #[derive(Debug)]
 pub struct CasServer {
@@ -40,6 +89,7 @@ impl ContentAddressableStorage for CasServer {
             missing_blob_digests: vec![],
         };
         for digest in request_data.blob_digests.into_iter() {
+            // BUG!!!!
             if !self.store.has(&digest.hash, digest.hash.len()).await? {
                 response.missing_blob_digests.push(digest);
             }
@@ -49,12 +99,42 @@ impl ContentAddressableStorage for CasServer {
 
     async fn batch_update_blobs(
         &self,
-        _request: Request<BatchUpdateBlobsRequest>,
+        grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        use stdext::function_name;
-        let output = format!("{} not yet implemented", function_name!());
-        println!("{}", output);
-        Err(Status::unimplemented(output))
+        let batch_request = grpc_request.into_inner();
+        let mut batch_response = BatchUpdateBlobsResponse {
+            responses: Vec::with_capacity(batch_request.requests.len()),
+        };
+        for request in batch_request.requests {
+            let orig_digest = request.digest.clone();
+            let result_status: Result<(), Error> = try {
+                let digest = request
+                    .digest
+                    .ok_or_else(|| make_err!("Digest not found in request"))?;
+                let size_bytes = usize::try_from(digest.size_bytes).or_else(|_| {
+                    Err(make_err!("Digest size_bytes was not convertable to usize"))
+                })?;
+                error_if!(
+                    size_bytes != request.data.len(),
+                    "Digest for upload had mismatching sizes, digest said {} data  said {}",
+                    size_bytes,
+                    request.data.len()
+                );
+                self.store
+                    .update(
+                        &digest.hash,
+                        size_bytes,
+                        Box::new(Cursor::new(request.data)),
+                    )
+                    .await?;
+            };
+            let response = batch_update_blobs_response::Response {
+                digest: orig_digest,
+                status: Some(result_to_status(result_status)),
+            };
+            batch_response.responses.push(response);
+        }
+        Ok(Response::new(batch_response))
     }
 
     async fn batch_read_blobs(

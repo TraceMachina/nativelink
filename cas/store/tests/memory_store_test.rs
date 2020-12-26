@@ -13,7 +13,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn insert_one_item_then_update() -> Result<(), Error> {
-        let mut store = MemoryStore::new();
+        let store = MemoryStore::new();
 
         {
             // Insert dummy value into store.

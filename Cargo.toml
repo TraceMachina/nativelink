@@ -11,6 +11,7 @@ path = "needed_only_to_make_cargo_tooling_happy.rs"
 prost = "0.6.1"
 prost-types = "0.6.1"
 hex = "0.4.2"
+async-mutex = "1.4.0"
 async-trait = "0.1.42"
 tokio = { version = "0.2.2", features = ["macros"] }
 tonic = "0.3.1"

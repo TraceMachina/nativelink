@@ -5,7 +5,9 @@ rust_library(
     srcs = ["cas_server.rs"],
     deps = [
         "//proto",
+        "//util:macros",
         "//third_party:tonic",
+        "//third_party:tokio",
         "//third_party:futures_core",
         "//third_party:stdext",
         "//cas/store",

@@ -29,6 +29,7 @@ rust_library(
     srcs = ["memory_store.rs"],
     deps = [
         ":traits",
+        "//third_party:async_mutex",
         "//third_party:tokio",
         "//third_party:hex",
         "//util:macros",

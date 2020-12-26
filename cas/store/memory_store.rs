@@ -5,21 +5,22 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use hex::FromHex;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Error, ErrorKind};
-
-use traits::StoreTrait;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Error};
 
 use macros::{error_if, make_err};
+use traits::StoreTrait;
+
+use async_mutex::Mutex;
 
 #[derive(Debug)]
 pub struct MemoryStore {
-    map: HashMap<[u8; 32], Arc<Vec<u8>>>,
+    map: Mutex<HashMap<[u8; 32], Arc<Vec<u8>>>>,
 }
 
 impl MemoryStore {
     pub fn new() -> Self {
         MemoryStore {
-            map: HashMap::new(),
+            map: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -29,11 +30,12 @@ impl StoreTrait for MemoryStore {
     async fn has(&self, hash: &str, _expected_size: usize) -> Result<bool, Error> {
         let raw_key = <[u8; 32]>::from_hex(&hash)
             .or_else(|_| Err(make_err!("Hex length is not 64 hex characters")))?;
-        Ok(self.map.contains_key(&raw_key))
+        let map = self.map.lock().await;
+        Ok(map.contains_key(&raw_key))
     }
 
     async fn update<'a, 'b>(
-        &'a mut self,
+        &'a self,
         hash: &'a str,
         expected_size: usize,
         mut reader: Box<dyn AsyncRead + Send + Unpin + 'b>,
@@ -49,7 +51,8 @@ impl StoreTrait for MemoryStore {
             read_size,
             hash
         );
-        self.map.insert(raw_key, Arc::new(buffer));
+        let mut map = self.map.lock().await;
+        map.insert(raw_key, Arc::new(buffer));
         Ok(())
     }
 
@@ -61,8 +64,8 @@ impl StoreTrait for MemoryStore {
     ) -> Result<(), Error> {
         let raw_key = <[u8; 32]>::from_hex(&hash)
             .or_else(|_| Err(make_err!("Hex length is not 64 hex characters")))?;
-        let value = self
-            .map
+        let map = self.map.lock().await;
+        let value = map
             .get(&raw_key)
             .ok_or_else(|| make_err!("Trying to get object but could not find hash: {}", hash))?;
         writer.write_all(value).await?;
