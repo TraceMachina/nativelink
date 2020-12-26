@@ -48,7 +48,7 @@ mod find_missing_blobs {
 
         cas_server
             .store
-            .update(&HASH1, 1, Box::new(Cursor::new(VALUE)))
+            .update(&HASH1, VALUE.len(), Box::new(Cursor::new(VALUE)))
             .await?;
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {

@@ -1,6 +1,6 @@
 # Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
-load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library")
+load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "store",
@@ -34,4 +34,14 @@ rust_library(
     ],
     proc_macro_deps = ["//third_party:async_trait"],
     visibility = ["//cas:__pkg__"]
+)
+
+rust_test(
+    name = "store_tests",
+    srcs = ["tests/memory_store_test.rs"],
+    deps = [
+        ":memory_store",
+        ":traits",
+        "//third_party:tokio",
+    ],
 )
