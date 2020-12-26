@@ -12,16 +12,16 @@ use proto::build::bazel::remote::execution::v2::{
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest,
     GetTreeResponse,
 };
-use store;
+use store::Store;
 
 #[derive(Debug)]
 pub struct CasServer {
-    pub store: Box<dyn store::Store>,
+    pub store: Box<dyn Store>,
 }
 
 impl CasServer {
-    pub fn new(in_store: Box<dyn store::Store>) -> Self {
-        CasServer { store: in_store }
+    pub fn new(store: Box<dyn Store>) -> Self {
+        CasServer { store: store }
     }
 
     pub fn into_service(self) -> Server<CasServer> {
