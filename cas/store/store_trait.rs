@@ -8,11 +8,11 @@ use tokio::io::{AsyncRead, Error};
 
 #[async_trait]
 pub trait StoreTrait: Sync + Send + Debug {
-    fn has(&self, hash: &str) -> bool;
+    async fn has(&self, hash: &str) -> Result<bool, Error>;
     async fn update<'a>(
-        &'a self,
+        &'a mut self,
         _hash: &'a str,
-        _size: i64,
-        _reader: Box<dyn AsyncRead + Send>,
+        _size: usize,
+        mut _reader: Box<dyn AsyncRead + Send + Unpin>,
     ) -> Result<(), Error>;
 }

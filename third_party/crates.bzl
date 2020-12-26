@@ -633,6 +633,16 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
+        name = "raze__hex__0_4_2",
+        url = "https://crates.io/api/v1/crates/hex/0.4.2/download",
+        type = "tar.gz",
+        sha256 = "644f9158b2f133fd50f5fb3242878846d9eb792e445c893805ff0e3824006e35",
+        strip_prefix = "hex-0.4.2",
+        build_file = Label("//third_party/remote:BUILD.hex-0.4.2.bazel"),
+    )
+
+    maybe(
+        http_archive,
         name = "raze__http__0_2_2",
         url = "https://crates.io/api/v1/crates/http/0.2.2/download",
         type = "tar.gz",

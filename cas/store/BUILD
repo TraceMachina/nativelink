@@ -30,6 +30,7 @@ rust_library(
     deps = [
         ":traits",
         "//third_party:tokio",
+        "//third_party:hex",
     ],
     proc_macro_deps = ["//third_party:async_trait"],
     visibility = ["//cas:__pkg__"]

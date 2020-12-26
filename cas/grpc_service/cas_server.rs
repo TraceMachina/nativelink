@@ -40,7 +40,7 @@ impl ContentAddressableStorage for CasServer {
             missing_blob_digests: vec![],
         };
         for digest in request_data.blob_digests.into_iter() {
-            if !self.store.has(&digest.hash) {
+            if !self.store.has(&digest.hash).await? {
                 response.missing_blob_digests.push(digest);
             }
         }
