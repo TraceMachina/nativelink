@@ -43,5 +43,6 @@ rust_test(
         ":memory_store",
         ":traits",
         "//third_party:tokio",
+        "//third_party:tokio_test",
     ],
 )

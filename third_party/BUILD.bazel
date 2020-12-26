@@ -114,6 +114,15 @@ alias(
 )
 
 alias(
+    name = "tokio_test",
+    actual = "@raze__tokio_test__0_4_0//:tokio_test",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "tonic",
     actual = "@raze__tonic__0_3_1//:tonic",
     tags = [
