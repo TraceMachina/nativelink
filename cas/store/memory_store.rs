@@ -9,6 +9,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Error, Error
 
 use traits::StoreTrait;
 
+use macros::{error_if, make_err};
+
 #[derive(Debug)]
 pub struct MemoryStore {
     map: HashMap<[u8; 32], Arc<Vec<u8>>>,
@@ -20,16 +22,6 @@ impl MemoryStore {
             map: HashMap::new(),
         }
     }
-}
-
-macro_rules! make_err {
-    ($($arg:tt)+) => {{
-        Error::new(
-            ErrorKind::InvalidInput,
-            format!("{}", format_args!($($arg)+)
-            ),
-        )
-    }};
 }
 
 #[async_trait]
@@ -50,14 +42,13 @@ impl StoreTrait for MemoryStore {
             .or_else(|_| Err(make_err!("Hex length is not 64 hex characters")))?;
         let mut buffer = Vec::new();
         let read_size = reader.read_to_end(&mut buffer).await?;
-        if read_size != expected_size {
-            return Err(make_err!(
-                "Expected size {} but got size {} for hash {} CAS insert",
-                expected_size,
-                read_size,
-                hash
-            ));
-        }
+        error_if!(
+            read_size != expected_size,
+            "Expected size {} but got size {} for hash {} CAS insert",
+            expected_size,
+            read_size,
+            hash
+        );
         self.map.insert(raw_key, Arc::new(buffer));
         Ok(())
     }
