@@ -7,8 +7,8 @@ use tokio::io::{Error, ErrorKind};
 use proto::google::rpc::Status as GrpcStatus;
 use tonic::Code;
 
-pub fn result_to_status(result: Result<(), Error>) -> GrpcStatus {
-    fn kind_to_code(kind: &ErrorKind) -> Code {
+pub fn result_to_grpc_status(result: Result<(), Error>) -> GrpcStatus {
+    fn kind_to_grpc_code(kind: &ErrorKind) -> Code {
         match kind {
             ErrorKind::NotFound => Code::NotFound,
             ErrorKind::PermissionDenied => Code::PermissionDenied,
@@ -38,7 +38,7 @@ pub fn result_to_status(result: Result<(), Error>) -> GrpcStatus {
             details: vec![],
         },
         Err(error) => GrpcStatus {
-            code: kind_to_code(&error.kind()) as i32,
+            code: kind_to_grpc_code(&error.kind()) as i32,
             message: format!("Error: {:?}", error),
             details: vec![],
         },

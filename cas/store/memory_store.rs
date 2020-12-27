@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use hex::FromHex;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Error};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Error, ErrorKind};
 
-use macros::{error_if, make_err};
+use macros::{error_if, make_err, make_err_with_code};
 use traits::StoreTrait;
 
 use async_mutex::Mutex;
@@ -63,11 +63,13 @@ impl StoreTrait for MemoryStore {
         writer: &mut (dyn AsyncWrite + Send + Unpin),
     ) -> Result<(), Error> {
         let raw_key = <[u8; 32]>::from_hex(&hash)
-            .or_else(|_| Err(make_err!("Hex length is not 64 hex characters")))?;
+            .or(Err(make_err!("Hex length is not 64 hex characters")))?;
         let map = self.map.lock().await;
-        let value = map
-            .get(&raw_key)
-            .ok_or_else(|| make_err!("Trying to get object but could not find hash: {}", hash))?;
+        let value = map.get(&raw_key).ok_or(make_err_with_code!(
+            ErrorKind::NotFound,
+            "Trying to get object but could not find hash: {}",
+            hash
+        ))?;
         writer.write_all(value).await?;
         Ok(())
     }

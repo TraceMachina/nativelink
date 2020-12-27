@@ -145,7 +145,6 @@ mod batch_read_blobs {
     use tonic::Code;
 
     #[tokio::test]
-    #[ignore] // Not yet implemented.
     async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Error> {
         let cas_server = CasServer::new(create_store(&StoreType::Memory));
 
@@ -209,11 +208,11 @@ mod batch_read_blobs {
                             }),
                         },
                         batch_read_blobs_response::Response {
-                            digest: Some(digest3),
+                            digest: Some(digest3.clone()),
                             data: vec![],
                             status: Some(GrpcStatus {
                                 code: Code::NotFound as i32,
-                                message: "".to_string(),
+                                message: format!("Error: Custom {{ kind: NotFound, error: \"Trying to get object but could not find hash: {}\" }}", digest3.hash),
                                 details: vec![],
                             }),
                         }

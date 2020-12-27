@@ -13,7 +13,8 @@ use tonic::{Request, Response, Status};
 use common;
 use macros::{error_if, make_err};
 use proto::build::bazel::remote::execution::v2::{
-    batch_update_blobs_response, content_addressable_storage_server::ContentAddressableStorage,
+    batch_read_blobs_response, batch_update_blobs_response,
+    content_addressable_storage_server::ContentAddressableStorage,
     content_addressable_storage_server::ContentAddressableStorageServer as Server,
     BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest,
@@ -88,7 +89,7 @@ impl ContentAddressableStorage for CasServer {
             };
             let response = batch_update_blobs_response::Response {
                 digest: orig_digest,
-                status: Some(common::result_to_status(result_status)),
+                status: Some(common::result_to_grpc_status(result_status)),
             };
             batch_response.responses.push(response);
         }
@@ -97,12 +98,31 @@ impl ContentAddressableStorage for CasServer {
 
     async fn batch_read_blobs(
         &self,
-        _request: Request<BatchReadBlobsRequest>,
+        grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        use stdext::function_name;
-        let output = format!("{} not yet implemented", function_name!());
-        println!("{}", output);
-        Err(Status::unimplemented(output))
+        let batch_read_request = grpc_request.into_inner();
+        let mut batch_response = BatchReadBlobsResponse {
+            responses: Vec::with_capacity(batch_read_request.digests.len()),
+        };
+        for digest in batch_read_request.digests {
+            let size_bytes = usize::try_from(digest.size_bytes).or(Err(make_err!(
+                "Digest size_bytes was not convertable to usize"
+            )))?;
+            // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
+            let mut store_data = Vec::with_capacity(size_bytes);
+            let result_status: Result<(), Error> = try {
+                self.store
+                    .get(&digest.hash, size_bytes, &mut Cursor::new(&mut store_data))
+                    .await?;
+            };
+            let response = batch_read_blobs_response::Response {
+                digest: Some(digest.clone()),
+                data: store_data,
+                status: Some(common::result_to_grpc_status(result_status)),
+            };
+            batch_response.responses.push(response);
+        }
+        Ok(Response::new(batch_response))
     }
 
     type GetTreeStream =
