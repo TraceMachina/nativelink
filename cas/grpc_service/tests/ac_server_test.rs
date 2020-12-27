@@ -136,7 +136,6 @@ mod update_action_result {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn one_item_update_test() -> Result<(), Error> {
         let ac_store = create_store(&StoreType::Memory);
         let ac_server = AcServer::new(ac_store.clone(), create_store(&StoreType::Memory));

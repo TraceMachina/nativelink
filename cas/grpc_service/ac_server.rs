@@ -73,11 +73,46 @@ impl ActionCache for AcServer {
 
     async fn update_action_result(
         &self,
-        _grpc_request: Request<UpdateActionResultRequest>,
+        grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        use stdext::function_name;
-        let output = format!("{} not yet implemented", function_name!());
-        println!("{}", output);
-        Err(Status::unimplemented(output))
+        let update_action_request = grpc_request.into_inner();
+
+        // TODO(blaise.bruer) This needs to be fixed. It is using wrong macro.
+        // We also should write a test for these errors.
+        let digest = update_action_request
+            .action_digest
+            .ok_or(Status::invalid_argument(
+                "Action digest was not set in message",
+            ))?;
+
+        let size_bytes = usize::try_from(digest.size_bytes).or(Err(Status::invalid_argument(
+            "Digest size_bytes was not convertable to usize",
+        )))?;
+
+        let action_result = update_action_request
+            .action_result
+            .ok_or(Status::invalid_argument(
+                "Action result was not set in message",
+            ))?;
+
+        // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
+        let mut store_data = Vec::with_capacity(size_bytes);
+        action_result
+            .encode(&mut store_data)
+            .or(Err(Status::invalid_argument(
+                "Provided ActionResult could not be serialized",
+            )))?;
+        error_if!(
+            store_data.len() != size_bytes,
+            Status::invalid_argument("Provided digest size does not match serialized size")
+        );
+        self.ac_store
+            .update(
+                &digest.hash,
+                store_data.len(),
+                Box::new(Cursor::new(store_data)),
+            )
+            .await?;
+        Ok(Response::new(action_result))
     }
 }
