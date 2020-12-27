@@ -61,3 +61,16 @@ rust_test(
         "//third_party:tokio",
     ],
 )
+
+rust_test(
+    name = "ac_server_test",
+    srcs = ["tests/ac_server_test.rs"],
+    deps = [
+        ":ac_server",
+        "//cas/store",
+        "//util:macros",
+        "//proto",
+        "//third_party:tonic",
+        "//third_party:tokio",
+    ],
+)
