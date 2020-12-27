@@ -21,6 +21,7 @@ rust_library(
     srcs = ["ac_server.rs"],
     deps = [
         "//proto",
+        "//cas/store",
         "//third_party:stdext",
         "//third_party:tonic",
     ],

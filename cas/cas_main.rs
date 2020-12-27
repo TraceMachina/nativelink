@@ -12,11 +12,12 @@ use store;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:50051".parse()?;
 
-    let store = store::create_store(&store::StoreType::Memory);
+    let ac_store = store::create_store(&store::StoreType::Memory);
+    let cas_store = store::create_store(&store::StoreType::Memory);
 
     Server::builder()
-        .add_service(CasServer::new(store).into_service())
-        .add_service(AcServer::default().into_service())
+        .add_service(AcServer::new(ac_store, cas_store.clone()).into_service())
+        .add_service(CasServer::new(cas_store).into_service())
         .add_service(CapabilitiesServer::default().into_service())
         .add_service(ExecutionServer::default().into_service())
         .serve(addr)

@@ -80,26 +80,31 @@ mod find_missing_blobs {
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
                 instance_name: INSTANCE_NAME.to_string(),
-                blob_digests: vec![Digest {
-                    hash: HASH1.to_string(),
-                    size_bytes: VALUE.len() as i64,
-                }, Digest {
-                    hash: BAD_HASH.to_string(),
-                    size_bytes: VALUE.len() as i64,
-                }, Digest {
-                    hash: HASH1.to_string(),
-                    size_bytes: VALUE.len() as i64,
-                }],
+                blob_digests: vec![
+                    Digest {
+                        hash: HASH1.to_string(),
+                        size_bytes: VALUE.len() as i64,
+                    },
+                    Digest {
+                        hash: BAD_HASH.to_string(),
+                        size_bytes: VALUE.len() as i64,
+                    },
+                    Digest {
+                        hash: HASH1.to_string(),
+                        size_bytes: VALUE.len() as i64,
+                    },
+                ],
             }))
             .await;
         assert!(raw_response.is_ok());
         let response = raw_response.unwrap().into_inner();
-        assert_eq!(response.missing_blob_digests, vec![
-            Digest {
+        assert_eq!(
+            response.missing_blob_digests,
+            vec![Digest {
                 hash: BAD_HASH.to_string(),
                 size_bytes: VALUE.len() as i64,
-            }
-        ]); // All items should have been found.
+            }]
+        ); // All items should have been found.
         Ok(())
     }
 }

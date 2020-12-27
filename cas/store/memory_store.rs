@@ -28,8 +28,10 @@ impl MemoryStore {
 #[async_trait]
 impl StoreTrait for MemoryStore {
     async fn has(&self, hash: &str, _expected_size: usize) -> Result<bool, Error> {
-        let raw_key = <[u8; 32]>::from_hex(&hash)
-            .or_else(|_| Err(make_err!("Hex length is not 64 hex characters")))?;
+        let raw_key = <[u8; 32]>::from_hex(&hash).or_else(|_| {
+            println!("Foobar");
+            Err(make_err!("Hex length is not 64 hex characters"))
+        })?;
         let map = self.map.lock().await;
         Ok(map.contains_key(&raw_key))
     }
@@ -41,7 +43,7 @@ impl StoreTrait for MemoryStore {
         mut reader: Box<dyn AsyncRead + Send + Unpin + 'b>,
     ) -> Result<(), Error> {
         let raw_key = <[u8; 32]>::from_hex(&hash)
-            .or_else(|_| Err(make_err!("Hex length is not 64 hex characters")))?;
+            .or(Err(make_err!("Hex length is not 64 hex characters")))?;
         let mut buffer = Vec::new();
         let read_size = reader.read_to_end(&mut buffer).await?;
         error_if!(

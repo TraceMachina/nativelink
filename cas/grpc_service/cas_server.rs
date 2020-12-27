@@ -5,6 +5,7 @@
 use std::convert::TryFrom;
 use std::io::Cursor;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use futures_core::Stream;
 use tokio::io::Error;
@@ -24,11 +25,11 @@ use store::Store;
 
 #[derive(Debug)]
 pub struct CasServer {
-    pub store: Box<dyn Store>,
+    pub store: Arc<dyn Store>,
 }
 
 impl CasServer {
-    pub fn new(store: Box<dyn Store>) -> Self {
+    pub fn new(store: Arc<dyn Store>) -> Self {
         CasServer { store: store }
     }
 
@@ -49,7 +50,7 @@ impl ContentAddressableStorage for CasServer {
         };
         for digest in request_data.blob_digests.into_iter() {
             let result_status = self.store.has(&digest.hash, digest.hash.len()).await;
-            if !result_status.unwrap_or(false)  {
+            if !result_status.unwrap_or(false) {
                 // TODO(allada) We should log somewhere in the event result_status.is_err() (like bad hash).
                 response.missing_blob_digests.push(digest.clone());
             }
