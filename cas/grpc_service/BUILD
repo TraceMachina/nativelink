@@ -63,6 +63,7 @@ rust_test(
         "//proto",
         "//third_party:tonic",
         "//third_party:tokio",
+        "//third_party:pretty_assertions",
     ],
 )
 
@@ -77,5 +78,6 @@ rust_test(
         "//third_party:tonic",
         "//third_party:tokio",
         "//third_party:prost",
+        "//third_party:pretty_assertions",
     ],
 )

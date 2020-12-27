@@ -46,5 +46,6 @@ rust_test(
         ":traits",
         "//third_party:tokio",
         "//third_party:tokio_test",
+        "//third_party:pretty_assertions",
     ],
 )

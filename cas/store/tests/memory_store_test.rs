@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod memory_store_tests {
+    use pretty_assertions::assert_eq; // Must be declared in every module.
+
     use std::io::Cursor;
     use tokio::io::Error;
     use tokio_test::assert_err;

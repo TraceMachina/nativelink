@@ -25,28 +25,22 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT OR Apache-2.0"
+    "notice",  # MIT from expression "MIT"
 ])
 
 # Generated Targets
-# buildifier: disable=load-on-top
-load(
-    "@io_bazel_rules_rust//cargo:cargo_build_script.bzl",
-    "cargo_build_script",
-)
 
-cargo_build_script(
-    name = "serde_json_build_script",
+rust_binary(
+    # Prefix bin name to disambiguate from (probable) collision with lib name
+    # N.B.: The exact form of this is subject to change.
+    name = "cargo_bin_difference",
     srcs = glob(["**/*.rs"]),
-    build_script_env = {
-    },
     crate_features = [
         "default",
-        "std",
     ],
-    crate_root = "build.rs",
-    data = glob(["**"]),
-    edition = "2018",
+    crate_root = "src/main.rs",
+    data = [],
+    edition = "2015",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -54,23 +48,30 @@ cargo_build_script(
         "cargo-raze",
         "manual",
     ],
-    version = "1.0.60",
-    visibility = ["//visibility:private"],
+    version = "2.0.0",
+    # buildifier: leave-alone
     deps = [
+        # Binaries get an implicit dependency on their crate's lib
+        ":difference",
     ],
 )
 
+# Unsupported target "github-style" with type "example" omitted
+
+# Unsupported target "line-by-line" with type "example" omitted
+
+# Unsupported target "underline-words" with type "example" omitted
+
 rust_library(
-    name = "serde_json",
+    name = "difference",
     srcs = glob(["**/*.rs"]),
     crate_features = [
         "default",
-        "std",
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
     data = [],
-    edition = "2018",
+    edition = "2015",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -78,12 +79,10 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "1.0.60",
+    version = "2.0.0",
     # buildifier: leave-alone
     deps = [
-        ":serde_json_build_script",
-        "@raze__itoa__0_4_7//:itoa",
-        "@raze__ryu__1_0_5//:ryu",
-        "@raze__serde__1_0_118//:serde",
     ],
 )
+
+# Unsupported target "quickcheck" with type "test" omitted

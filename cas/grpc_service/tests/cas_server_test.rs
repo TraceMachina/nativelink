@@ -19,6 +19,7 @@ const BAD_HASH: &str = "BAD_HASH";
 #[cfg(test)]
 mod find_missing_blobs {
     use super::*;
+    use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use std::io::Cursor;
 
@@ -113,6 +114,7 @@ mod find_missing_blobs {
 #[cfg(test)]
 mod batch_update_blobs {
     use super::*;
+    use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use std::io::Cursor;
 
@@ -178,6 +180,7 @@ mod batch_update_blobs {
 #[cfg(test)]
 mod batch_read_blobs {
     use super::*;
+    use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use std::io::Cursor;
 
@@ -268,6 +271,7 @@ mod batch_read_blobs {
 #[cfg(test)]
 mod end_to_end {
     use super::*;
+    use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use proto::build::bazel::remote::execution::v2::{
         batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest,
