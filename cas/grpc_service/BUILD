@@ -11,6 +11,7 @@ rust_library(
         "//third_party:futures_core",
         "//third_party:stdext",
         "//cas/store",
+        "//util:common",
     ],
     visibility = ["//cas:__pkg__"]
 )

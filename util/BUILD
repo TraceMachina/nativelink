@@ -10,3 +10,14 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
 )
+
+rust_library(
+    name = "common",
+    srcs = ["common.rs"],
+    deps = [
+        "//third_party:tokio",
+        "//third_party:tonic",
+        "//proto",
+    ],
+    visibility = ["//visibility:public"],
+)
