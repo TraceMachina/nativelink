@@ -48,9 +48,10 @@ impl ContentAddressableStorage for CasServer {
             missing_blob_digests: vec![],
         };
         for digest in request_data.blob_digests.into_iter() {
-            // BUG!!!!
-            if !self.store.has(&digest.hash, digest.hash.len()).await? {
-                response.missing_blob_digests.push(digest);
+            let result_status = self.store.has(&digest.hash, digest.hash.len()).await;
+            if !result_status.unwrap_or(false)  {
+                // TODO(allada) We should log somewhere in the event result_status.is_err() (like bad hash).
+                response.missing_blob_digests.push(digest.clone());
             }
         }
         Ok(Response::new(response))

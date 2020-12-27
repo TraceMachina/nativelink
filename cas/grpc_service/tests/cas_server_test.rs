@@ -14,6 +14,7 @@ const INSTANCE_NAME: &str = "foo";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
 const HASH2: &str = "9993456789abcdef000000000000000000000000000000000123456789abc999";
 const HASH3: &str = "7773456789abcdef000000000000000000000000000000000123456789abc777";
+const BAD_HASH: &str = "BAD_HASH";
 
 #[cfg(test)]
 mod find_missing_blobs {
@@ -63,6 +64,42 @@ mod find_missing_blobs {
         assert!(raw_response.is_ok());
         let response = raw_response.unwrap().into_inner();
         assert_eq!(response.missing_blob_digests.len(), 0); // All items should have been found.
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn has_three_requests_one_bad_hash() -> Result<(), Error> {
+        let cas_server = CasServer::new(create_store(&StoreType::Memory));
+
+        const VALUE: &str = "1";
+
+        cas_server
+            .store
+            .update(&HASH1, VALUE.len(), Box::new(Cursor::new(VALUE)))
+            .await?;
+        let raw_response = cas_server
+            .find_missing_blobs(Request::new(FindMissingBlobsRequest {
+                instance_name: INSTANCE_NAME.to_string(),
+                blob_digests: vec![Digest {
+                    hash: HASH1.to_string(),
+                    size_bytes: VALUE.len() as i64,
+                }, Digest {
+                    hash: BAD_HASH.to_string(),
+                    size_bytes: VALUE.len() as i64,
+                }, Digest {
+                    hash: HASH1.to_string(),
+                    size_bytes: VALUE.len() as i64,
+                }],
+            }))
+            .await;
+        assert!(raw_response.is_ok());
+        let response = raw_response.unwrap().into_inner();
+        assert_eq!(response.missing_blob_digests, vec![
+            Digest {
+                hash: BAD_HASH.to_string(),
+                size_bytes: VALUE.len() as i64,
+            }
+        ]); // All items should have been found.
         Ok(())
     }
 }
