@@ -11,8 +11,8 @@ use store::Store;
 
 #[derive(Debug)]
 pub struct AcServer {
-    pub ac_store: Arc<dyn Store>,
-    pub cas_store: Arc<dyn Store>,
+    ac_store: Arc<dyn Store>,
+    cas_store: Arc<dyn Store>,
 }
 
 impl AcServer {

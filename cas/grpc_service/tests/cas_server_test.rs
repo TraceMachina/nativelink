@@ -26,7 +26,8 @@ mod find_missing_blobs {
 
     #[tokio::test]
     async fn empty_store() {
-        let cas_server = CasServer::new(create_store(&StoreType::Memory));
+        let store = create_store(&StoreType::Memory);
+        let cas_server = CasServer::new(store.clone());
 
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -44,12 +45,12 @@ mod find_missing_blobs {
 
     #[tokio::test]
     async fn store_one_item_existence() -> Result<(), Error> {
-        let cas_server = CasServer::new(create_store(&StoreType::Memory));
+        let store = create_store(&StoreType::Memory);
+        let cas_server = CasServer::new(store.clone());
 
         const VALUE: &str = "1";
 
-        cas_server
-            .store
+        store
             .update(&HASH1, VALUE.len(), Box::new(Cursor::new(VALUE)))
             .await?;
         let raw_response = cas_server
@@ -69,12 +70,12 @@ mod find_missing_blobs {
 
     #[tokio::test]
     async fn has_three_requests_one_bad_hash() -> Result<(), Error> {
-        let cas_server = CasServer::new(create_store(&StoreType::Memory));
+        let store = create_store(&StoreType::Memory);
+        let cas_server = CasServer::new(store.clone());
 
         const VALUE: &str = "1";
 
-        cas_server
-            .store
+        store
             .update(&HASH1, VALUE.len(), Box::new(Cursor::new(VALUE)))
             .await?;
         let raw_response = cas_server
@@ -122,7 +123,8 @@ mod batch_update_blobs {
 
     #[tokio::test]
     async fn update_existing_item() {
-        let cas_server = CasServer::new(create_store(&StoreType::Memory));
+        let store = create_store(&StoreType::Memory);
+        let cas_server = CasServer::new(store.clone());
 
         const VALUE1: &str = "1";
         const VALUE2: &str = "23";
@@ -132,8 +134,7 @@ mod batch_update_blobs {
             size_bytes: VALUE2.len() as i64,
         };
 
-        cas_server
-            .store
+        store
             .update(&HASH1, VALUE1.len(), Box::new(Cursor::new(VALUE1)))
             .await
             .expect("Update should have succeeded");
@@ -162,8 +163,7 @@ mod batch_update_blobs {
             }
         );
         let mut new_data = Vec::new();
-        cas_server
-            .store
+        store
             .get(&HASH1, HASH1.len(), &mut Cursor::new(&mut new_data))
             .await
             .expect("Get should have succeeded");
@@ -188,7 +188,8 @@ mod batch_read_blobs {
 
     #[tokio::test]
     async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Error> {
-        let cas_server = CasServer::new(create_store(&StoreType::Memory));
+        let store = create_store(&StoreType::Memory);
+        let cas_server = CasServer::new(store.clone());
 
         const VALUE1: &str = "1";
         const VALUE2: &str = "23";
@@ -203,13 +204,11 @@ mod batch_read_blobs {
         };
         {
             // Insert dummy data.
-            cas_server
-                .store
+            store
                 .update(&HASH1, VALUE1.len(), Box::new(Cursor::new(VALUE1)))
                 .await
                 .expect("Update should have succeeded");
-            cas_server
-                .store
+            store
                 .update(&HASH2, VALUE2.len(), Box::new(Cursor::new(VALUE2)))
                 .await
                 .expect("Update should have succeeded");
@@ -277,7 +276,8 @@ mod end_to_end {
 
     #[tokio::test]
     async fn batch_update_blobs_two_items_existence_with_third_missing() -> Result<(), Error> {
-        let cas_server = CasServer::new(create_store(&StoreType::Memory));
+        let store = create_store(&StoreType::Memory);
+        let cas_server = CasServer::new(store.clone());
 
         const VALUE1: &str = "1";
         const VALUE2: &str = "23";

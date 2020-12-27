@@ -25,7 +25,7 @@ use store::Store;
 
 #[derive(Debug)]
 pub struct CasServer {
-    pub store: Arc<dyn Store>,
+    store: Arc<dyn Store>,
 }
 
 impl CasServer {
