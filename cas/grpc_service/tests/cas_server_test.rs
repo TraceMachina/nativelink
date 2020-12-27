@@ -7,6 +7,7 @@ use proto::build::bazel::remote::execution::v2::Digest;
 use proto::google::rpc::Status as GrpcStatus;
 
 use cas_server::CasServer;
+use proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
 use store::{create_store, StoreType};
 
 const INSTANCE_NAME: &str = "foo";
@@ -20,9 +21,7 @@ mod find_missing_blobs {
 
     use std::io::Cursor;
 
-    use proto::build::bazel::remote::execution::v2::{
-        content_addressable_storage_server::ContentAddressableStorage, FindMissingBlobsRequest,
-    };
+    use proto::build::bazel::remote::execution::v2::FindMissingBlobsRequest;
 
     #[tokio::test]
     async fn empty_store() {
@@ -75,8 +74,7 @@ mod batch_update_blobs {
     use std::io::Cursor;
 
     use proto::build::bazel::remote::execution::v2::{
-        batch_update_blobs_request, batch_update_blobs_response,
-        content_addressable_storage_server::ContentAddressableStorage, BatchUpdateBlobsRequest,
+        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest,
         BatchUpdateBlobsResponse,
     };
 
@@ -136,12 +134,103 @@ mod batch_update_blobs {
 }
 
 #[cfg(test)]
+mod batch_read_blobs {
+    use super::*;
+
+    use std::io::Cursor;
+
+    use proto::build::bazel::remote::execution::v2::{
+        batch_read_blobs_response, BatchReadBlobsRequest, BatchReadBlobsResponse,
+    };
+    use tonic::Code;
+
+    #[tokio::test]
+    #[ignore] // Not yet implemented.
+    async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Error> {
+        let cas_server = CasServer::new(create_store(&StoreType::Memory));
+
+        const VALUE1: &str = "1";
+        const VALUE2: &str = "23";
+
+        let digest1 = Digest {
+            hash: HASH1.to_string(),
+            size_bytes: VALUE2.len() as i64,
+        };
+        let digest2 = Digest {
+            hash: HASH2.to_string(),
+            size_bytes: VALUE2.len() as i64,
+        };
+        {
+            // Insert dummy data.
+            cas_server
+                .store
+                .update(&HASH1, VALUE1.len(), Box::new(Cursor::new(VALUE1)))
+                .await
+                .expect("Update should have succeeded");
+            cas_server
+                .store
+                .update(&HASH2, VALUE2.len(), Box::new(Cursor::new(VALUE2)))
+                .await
+                .expect("Update should have succeeded");
+        }
+        {
+            // Read two blobs and additional blob should come back not found.
+            let digest3 = Digest {
+                hash: HASH3.to_string(),
+                size_bytes: 3,
+            };
+            let raw_response = cas_server
+                .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+                    instance_name: INSTANCE_NAME.to_string(),
+                    digests: vec![digest1.clone(), digest2.clone(), digest3.clone()],
+                }))
+                .await;
+            assert!(raw_response.is_ok());
+            assert_eq!(
+                raw_response.unwrap().into_inner(),
+                BatchReadBlobsResponse {
+                    responses: vec![
+                        batch_read_blobs_response::Response {
+                            digest: Some(digest1),
+                            data: VALUE1.as_bytes().to_vec(),
+                            status: Some(GrpcStatus {
+                                code: 0, // Status Ok.
+                                message: "".to_string(),
+                                details: vec![],
+                            }),
+                        },
+                        batch_read_blobs_response::Response {
+                            digest: Some(digest2),
+                            data: VALUE2.as_bytes().to_vec(),
+                            status: Some(GrpcStatus {
+                                code: 0, // Status Ok.
+                                message: "".to_string(),
+                                details: vec![],
+                            }),
+                        },
+                        batch_read_blobs_response::Response {
+                            digest: Some(digest3),
+                            data: vec![],
+                            status: Some(GrpcStatus {
+                                code: Code::NotFound as i32,
+                                message: "".to_string(),
+                                details: vec![],
+                            }),
+                        }
+                    ],
+                }
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod end_to_end {
     use super::*;
 
     use proto::build::bazel::remote::execution::v2::{
-        batch_update_blobs_request, batch_update_blobs_response,
-        content_addressable_storage_server::ContentAddressableStorage, BatchUpdateBlobsRequest,
+        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest,
         BatchUpdateBlobsResponse, FindMissingBlobsRequest,
     };
 
