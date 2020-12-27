@@ -22,8 +22,12 @@ rust_library(
     deps = [
         "//proto",
         "//cas/store",
+        "//util:common",
+        "//util:macros",
         "//third_party:stdext",
+        "//third_party:prost",
         "//third_party:tonic",
+        "//third_party:tokio",
     ],
     visibility = ["//cas:__pkg__"]
 )
@@ -72,5 +76,6 @@ rust_test(
         "//proto",
         "//third_party:tonic",
         "//third_party:tokio",
+        "//third_party:prost",
     ],
 )

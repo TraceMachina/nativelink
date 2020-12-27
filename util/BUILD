@@ -7,6 +7,7 @@ rust_library(
     srcs = ["macros.rs"],
     deps = [
         "//third_party:tokio",
+        "//third_party:tonic",
     ],
     visibility = ["//visibility:public"],
 )

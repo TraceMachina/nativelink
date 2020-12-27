@@ -12,7 +12,7 @@ use tokio::io::Error;
 use tonic::{Request, Response, Status};
 
 use common;
-use macros::{error_if, make_err};
+use macros::{error_if, make_input_err};
 use proto::build::bazel::remote::execution::v2::{
     batch_read_blobs_response, batch_update_blobs_response,
     content_addressable_storage_server::ContentAddressableStorage,
@@ -71,15 +71,17 @@ impl ContentAddressableStorage for CasServer {
             let result_status: Result<(), Error> = try {
                 let digest = request
                     .digest
-                    .ok_or(make_err!("Digest not found in request"))?;
-                let size_bytes = usize::try_from(digest.size_bytes).or(Err(make_err!(
+                    .ok_or(make_input_err!("Digest not found in request"))?;
+                let size_bytes = usize::try_from(digest.size_bytes).or(Err(make_input_err!(
                     "Digest size_bytes was not convertable to usize"
                 )))?;
                 error_if!(
                     size_bytes != request.data.len(),
-                    "Digest for upload had mismatching sizes, digest said {} data  said {}",
-                    size_bytes,
-                    request.data.len()
+                    make_input_err!(
+                        "Digest for upload had mismatching sizes, digest said {} data  said {}",
+                        size_bytes,
+                        request.data.len()
+                    )
                 );
                 self.store
                     .update(
@@ -107,7 +109,7 @@ impl ContentAddressableStorage for CasServer {
             responses: Vec::with_capacity(batch_read_request.digests.len()),
         };
         for digest in batch_read_request.digests {
-            let size_bytes = usize::try_from(digest.size_bytes).or(Err(make_err!(
+            let size_bytes = usize::try_from(digest.size_bytes).or(Err(make_input_err!(
                 "Digest size_bytes was not convertable to usize"
             )))?;
             // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
