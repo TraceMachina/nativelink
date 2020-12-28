@@ -35,9 +35,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.36"
+version = "1.0.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68803225a7b13e47191bab76f2687382b60d259e8cf37f6e1893658b84bb9479"
+checksum = "ee67c11feeac938fae061b232e38e0b6d94f97a9df10e6271319325ac4c56a86"
 
 [[package]]
 name = "arrayref"
@@ -348,9 +348,9 @@ dependencies = [
 
 [[package]]
 name = "ctor"
-version = "0.1.16"
+version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fbaabec2c953050352311293be5c6aba8e141ba19d6811862b232d6fd020484"
+checksum = "373c88d9506e2e9230f6107701b7d8425f4cb3f6df108ec3042a26e936666da5"
 dependencies = [
  "quote",
  "syn",
@@ -415,6 +415,7 @@ version = "0.0.0"
 dependencies = [
  "async-mutex",
  "async-trait",
+ "bytes 0.5.6",
  "clap",
  "futures-core",
  "hex",
@@ -1733,9 +1734,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.60"
+version = "1.0.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1500e84d27fe482ed1dc791a56eddc2f230046a040fa908c08bda1d9fb615779"
+checksum = "4fceb2595057b6891a4ee808f70054bd2d12f0e97f1cbb78689b59f676df325a"
 dependencies = [
  "itoa",
  "ryu",

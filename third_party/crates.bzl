@@ -53,12 +53,12 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__anyhow__1_0_36",
-        url = "https://crates.io/api/v1/crates/anyhow/1.0.36/download",
+        name = "raze__anyhow__1_0_37",
+        url = "https://crates.io/api/v1/crates/anyhow/1.0.37/download",
         type = "tar.gz",
-        sha256 = "68803225a7b13e47191bab76f2687382b60d259e8cf37f6e1893658b84bb9479",
-        strip_prefix = "anyhow-1.0.36",
-        build_file = Label("//third_party/remote:BUILD.anyhow-1.0.36.bazel"),
+        sha256 = "ee67c11feeac938fae061b232e38e0b6d94f97a9df10e6271319325ac4c56a86",
+        strip_prefix = "anyhow-1.0.37",
+        build_file = Label("//third_party/remote:BUILD.anyhow-1.0.37.bazel"),
     )
 
     maybe(
@@ -413,12 +413,12 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__ctor__0_1_16",
-        url = "https://crates.io/api/v1/crates/ctor/0.1.16/download",
+        name = "raze__ctor__0_1_17",
+        url = "https://crates.io/api/v1/crates/ctor/0.1.17/download",
         type = "tar.gz",
-        sha256 = "7fbaabec2c953050352311293be5c6aba8e141ba19d6811862b232d6fd020484",
-        strip_prefix = "ctor-0.1.16",
-        build_file = Label("//third_party/remote:BUILD.ctor-0.1.16.bazel"),
+        sha256 = "373c88d9506e2e9230f6107701b7d8425f4cb3f6df108ec3042a26e936666da5",
+        strip_prefix = "ctor-0.1.17",
+        build_file = Label("//third_party/remote:BUILD.ctor-0.1.17.bazel"),
     )
 
     maybe(
@@ -1713,12 +1713,12 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__serde_json__1_0_60",
-        url = "https://crates.io/api/v1/crates/serde_json/1.0.60/download",
+        name = "raze__serde_json__1_0_61",
+        url = "https://crates.io/api/v1/crates/serde_json/1.0.61/download",
         type = "tar.gz",
-        sha256 = "1500e84d27fe482ed1dc791a56eddc2f230046a040fa908c08bda1d9fb615779",
-        strip_prefix = "serde_json-1.0.60",
-        build_file = Label("//third_party/remote:BUILD.serde_json-1.0.60.bazel"),
+        sha256 = "4fceb2595057b6891a4ee808f70054bd2d12f0e97f1cbb78689b59f676df325a",
+        strip_prefix = "serde_json-1.0.61",
+        build_file = Label("//third_party/remote:BUILD.serde_json-1.0.61.bazel"),
     )
 
     maybe(

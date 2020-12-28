@@ -18,10 +18,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .add_service(AcServer::new(ac_store, cas_store.clone()).into_service())
-        .add_service(CasServer::new(cas_store).into_service())
+        .add_service(CasServer::new(cas_store.clone()).into_service())
         .add_service(CapabilitiesServer::default().into_service())
         .add_service(ExecutionServer::default().into_service())
-        .add_service(ByteStreamServer::default().into_service())
+        .add_service(ByteStreamServer::new(cas_store).into_service())
         .serve(addr)
         .await?;
 

@@ -1,4 +1,4 @@
-load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library", "rust_test")
+load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library", "rust_test", "rust_binary")
 
 rust_library(
     name = "cas_server",
@@ -49,6 +49,7 @@ rust_library(
         "//proto",
         "//third_party:futures_core",
         "//third_party:tonic",
+        "//cas/store",
     ],
     visibility = ["//cas:__pkg__"]
 )
@@ -88,6 +89,22 @@ rust_test(
         "//proto",
         "//third_party:tonic",
         "//third_party:tokio",
+        "//third_party:prost",
+        "//third_party:pretty_assertions",
+    ],
+)
+
+rust_test(
+    name = "bytestream_server_test",
+    srcs = ["tests/bytestream_server_test.rs"],
+    deps = [
+        ":bytestream_server",
+        "//cas/store",
+        "//proto",
+        "//third_party:tonic",
+        "//third_party:bytes",
+        "//third_party:tokio",
+        "//third_party:futures_core",
         "//third_party:prost",
         "//third_party:pretty_assertions",
     ],

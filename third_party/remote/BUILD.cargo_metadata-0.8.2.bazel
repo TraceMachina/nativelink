@@ -55,7 +55,7 @@ rust_library(
     deps = [
         "@raze__semver__0_9_0//:semver",
         "@raze__serde__1_0_118//:serde",
-        "@raze__serde_json__1_0_60//:serde_json",
+        "@raze__serde_json__1_0_61//:serde_json",
     ],
 )
 
