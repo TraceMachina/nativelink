@@ -8,6 +8,7 @@ rust_binary(
         "//cas/grpc_service:ac_server",
         "//cas/grpc_service:capabilities_server",
         "//cas/grpc_service:execution_server",
+        "//cas/grpc_service:bytestream_server",
         "//cas/store",
         "//third_party:tokio",
         "//third_party:tonic",

@@ -3,6 +3,7 @@
 use tonic::transport::Server;
 
 use ac_server::AcServer;
+use bytestream_server::ByteStreamServer;
 use capabilities_server::CapabilitiesServer;
 use cas_server::CasServer;
 use execution_server::ExecutionServer;
@@ -20,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_service(CasServer::new(cas_store).into_service())
         .add_service(CapabilitiesServer::default().into_service())
         .add_service(ExecutionServer::default().into_service())
+        .add_service(ByteStreamServer::default().into_service())
         .serve(addr)
         .await?;
 

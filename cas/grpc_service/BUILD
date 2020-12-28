@@ -43,6 +43,17 @@ rust_library(
 )
 
 rust_library(
+    name = "bytestream_server",
+    srcs = ["bytestream_server.rs"],
+    deps = [
+        "//proto",
+        "//third_party:futures_core",
+        "//third_party:tonic",
+    ],
+    visibility = ["//cas:__pkg__"]
+)
+
+rust_library(
     name = "execution_server",
     srcs = ["execution_server.rs"],
     deps = [
