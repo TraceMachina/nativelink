@@ -32,11 +32,8 @@ impl AcServer {
     pub fn into_service(self) -> Server<AcServer> {
         Server::new(self)
     }
-}
 
-#[tonic::async_trait]
-impl ActionCache for AcServer {
-    async fn get_action_result(
+    async fn inner_get_action_result(
         &self,
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
@@ -71,7 +68,7 @@ impl ActionCache for AcServer {
         Ok(Response::new(action_result))
     }
 
-    async fn update_action_result(
+    async fn inner_update_action_result(
         &self,
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
@@ -114,5 +111,28 @@ impl ActionCache for AcServer {
             )
             .await?;
         Ok(Response::new(action_result))
+    }
+}
+
+#[tonic::async_trait]
+impl ActionCache for AcServer {
+    async fn get_action_result(
+        &self,
+        grpc_request: Request<GetActionResultRequest>,
+    ) -> Result<Response<ActionResult>, Status> {
+        println!("get_action_result Req: {:?}", grpc_request);
+        let resp = self.inner_get_action_result(grpc_request).await;
+        println!("get_action_result Resp: {:?}", resp);
+        return resp;
+    }
+
+    async fn update_action_result(
+        &self,
+        grpc_request: Request<UpdateActionResultRequest>,
+    ) -> Result<Response<ActionResult>, Status> {
+        println!("update_action_result Req: {:?}", grpc_request);
+        let resp = self.inner_update_action_result(grpc_request).await;
+        println!("update_action_result Resp: {:?}", resp);
+        return resp;
     }
 }
