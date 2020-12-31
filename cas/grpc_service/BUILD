@@ -49,7 +49,10 @@ rust_library(
         "//proto",
         "//third_party:futures_core",
         "//third_party:tonic",
+        "//util:async_fixed_buffer",
         "//cas/store",
+        "//third_party:tokio",
+        "//util:macros",
     ],
     visibility = ["//cas:__pkg__"]
 )

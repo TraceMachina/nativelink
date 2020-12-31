@@ -215,12 +215,6 @@ checksum = "0e4cec68f03f32e44924783795810fa50a7035d8c8ebe78580ad7e6c703fba38"
 
 [[package]]
 name = "bytes"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0dcbc35f504eb6fc275a6d20e4ebcda18cf50d40ba6fabff8c711fa16cb3b16"
-
-[[package]]
-name = "bytes"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad1f8e949d755f9d79112b5bb46938e0ef9d3804a0b16dfab13aafcaa5f0fa72"
@@ -423,6 +417,7 @@ dependencies = [
  "async-trait",
  "bytes 0.5.6",
  "clap",
+ "fixed-buffer",
  "futures-core",
  "hex",
  "pretty_assertions",
@@ -431,7 +426,7 @@ dependencies = [
  "prost-types",
  "rustfmt-nightly",
  "stdext",
- "tokio 0.3.6",
+ "tokio 0.2.24",
  "tokio-test",
  "tonic",
  "tonic-build",
@@ -476,6 +471,12 @@ name = "fake-simd"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e88a8acf291dafb59c2d96e8f59828f3838bb1a70398823ade51a84de6a6deed"
+
+[[package]]
+name = "fixed-buffer"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4244e6bc495db6e875b4b3c9982b4bd3d69268cfa619273ae047d76d761a755c"
 
 [[package]]
 name = "fixedbitset"
@@ -1982,20 +1983,6 @@ dependencies = [
  "mio",
  "pin-project-lite 0.1.11",
  "slab",
-]
-
-[[package]]
-name = "tokio"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "720ba21c25078711bf456d607987d95bce90f7c3bea5abe1db587862e7a1e87c"
-dependencies = [
- "autocfg",
- "bytes 0.6.0",
- "memchr",
- "num_cpus",
- "pin-project-lite 0.2.0",
- "slab",
  "tokio-macros",
 ]
 
@@ -2011,9 +1998,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-macros"
-version = "0.3.2"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46dfffa59fc3c8aad216ed61bdc2c263d2b9d87a9c8ac9de0c11a813e51b6db7"
+checksum = "e44da00bfc73a25f814cd8d7e57a68a5c31b74b3152a0a1d1f590c97ed06265a"
 dependencies = [
  "proc-macro2",
  "quote",

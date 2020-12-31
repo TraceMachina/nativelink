@@ -13,7 +13,9 @@ prost-types = "0.6.1"
 hex = "0.4.2"
 async-mutex = "1.4.0"
 async-trait = "0.1.42"
-tokio = { version = "0.3.6", features = ["macros", "io-util", "rt-multi-thread"] }
+fixed-buffer = "0.2.2"
+# We must use tokio 0.2.x because tonic runtime uses it.
+tokio = { version = "0.2", features = ["macros"] }
 tonic = "0.3.1"
 tokio-test = "0.4.0"
 

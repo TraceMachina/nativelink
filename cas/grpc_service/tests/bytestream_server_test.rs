@@ -58,7 +58,6 @@ pub mod write_tests {
     }
 
     #[tokio::test]
-    #[ignore]
     pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
         let store = create_store(&StoreType::Memory);
         let bs_server = ByteStreamServer::new(store.clone());
@@ -78,10 +77,10 @@ pub mod write_tests {
         };
         // Send data.
         let raw_data = {
-            let raw_data = "1234".as_bytes();
+            let raw_data = "12456789abcdefghijk".as_bytes();
             // Chunk our data into two chunks to simulate something a client
             // might do.
-            const BYTE_SPLIT_OFFSET: usize = 2;
+            const BYTE_SPLIT_OFFSET: usize = 8;
 
             let resource_name = format!(
                 "{}/uploads/{}/blobs/{}/{}",
@@ -108,10 +107,10 @@ pub mod write_tests {
 
             // Write final bit of data.
             write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
-            write_request.data = raw_data[..BYTE_SPLIT_OFFSET].to_vec();
+            write_request.data = raw_data[BYTE_SPLIT_OFFSET..].to_vec();
+            write_request.finish_write = true;
             tx.send_data(encode(&write_request)?).await?;
 
-            let _ = tx; // Emulate sender-side stream hangup.
             raw_data
         };
         // Check results of server.
@@ -129,7 +128,8 @@ pub mod write_tests {
                 .get(HASH1, raw_data.len(), &mut Cursor::new(&mut store_data))
                 .await?;
             assert_eq!(
-                store_data, raw_data,
+                std::str::from_utf8(&store_data),
+                std::str::from_utf8(&raw_data),
                 "Expected store to have been updated to new value"
             );
         }

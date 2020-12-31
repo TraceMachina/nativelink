@@ -44,6 +44,7 @@ rust_library(
         "io-util",
         "iovec",
         "lazy_static",
+        "macros",
         "memchr",
         "mio",
         "rt-core",
@@ -52,11 +53,15 @@ rust_library(
         "sync",
         "tcp",
         "time",
+        "tokio-macros",
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
     data = [],
     edition = "2018",
+    proc_macro_deps = [
+        "@raze__tokio_macros__0_2_6//:tokio_macros",
+    ],
     rustc_flags = [
         "--cap-lints=allow",
     ],

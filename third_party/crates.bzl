@@ -273,16 +273,6 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__bytes__0_6_0",
-        url = "https://crates.io/api/v1/crates/bytes/0.6.0/download",
-        type = "tar.gz",
-        sha256 = "e0dcbc35f504eb6fc275a6d20e4ebcda18cf50d40ba6fabff8c711fa16cb3b16",
-        strip_prefix = "bytes-0.6.0",
-        build_file = Label("//third_party/remote:BUILD.bytes-0.6.0.bazel"),
-    )
-
-    maybe(
-        http_archive,
         name = "raze__bytes__1_0_0",
         url = "https://crates.io/api/v1/crates/bytes/1.0.0/download",
         type = "tar.gz",
@@ -539,6 +529,16 @@ def raze_fetch_remote_crates():
         sha256 = "e88a8acf291dafb59c2d96e8f59828f3838bb1a70398823ade51a84de6a6deed",
         strip_prefix = "fake-simd-0.1.2",
         build_file = Label("//third_party/remote:BUILD.fake-simd-0.1.2.bazel"),
+    )
+
+    maybe(
+        http_archive,
+        name = "raze__fixed_buffer__0_2_2",
+        url = "https://crates.io/api/v1/crates/fixed-buffer/0.2.2/download",
+        type = "tar.gz",
+        sha256 = "4244e6bc495db6e875b4b3c9982b4bd3d69268cfa619273ae047d76d761a755c",
+        strip_prefix = "fixed-buffer-0.2.2",
+        build_file = Label("//third_party/remote:BUILD.fixed-buffer-0.2.2.bazel"),
     )
 
     maybe(
@@ -1973,16 +1973,6 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__tokio__0_3_6",
-        url = "https://crates.io/api/v1/crates/tokio/0.3.6/download",
-        type = "tar.gz",
-        sha256 = "720ba21c25078711bf456d607987d95bce90f7c3bea5abe1db587862e7a1e87c",
-        strip_prefix = "tokio-0.3.6",
-        build_file = Label("//third_party/remote:BUILD.tokio-0.3.6.bazel"),
-    )
-
-    maybe(
-        http_archive,
         name = "raze__tokio__1_0_1",
         url = "https://crates.io/api/v1/crates/tokio/1.0.1/download",
         type = "tar.gz",
@@ -1993,12 +1983,12 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__tokio_macros__0_3_2",
-        url = "https://crates.io/api/v1/crates/tokio-macros/0.3.2/download",
+        name = "raze__tokio_macros__0_2_6",
+        url = "https://crates.io/api/v1/crates/tokio-macros/0.2.6/download",
         type = "tar.gz",
-        sha256 = "46dfffa59fc3c8aad216ed61bdc2c263d2b9d87a9c8ac9de0c11a813e51b6db7",
-        strip_prefix = "tokio-macros-0.3.2",
-        build_file = Label("//third_party/remote:BUILD.tokio-macros-0.3.2.bazel"),
+        sha256 = "e44da00bfc73a25f814cd8d7e57a68a5c31b74b3152a0a1d1f590c97ed06265a",
+        strip_prefix = "tokio-macros-0.2.6",
+        build_file = Label("//third_party/remote:BUILD.tokio-macros-0.2.6.bazel"),
     )
 
     maybe(

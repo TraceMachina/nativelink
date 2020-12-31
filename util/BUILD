@@ -22,3 +22,13 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
 )
+
+rust_library(
+    name = "async_fixed_buffer",
+    srcs = ["async_fixed_buffer.rs"],
+    deps = [
+        "//third_party:tokio",
+        "//third_party:fixed_buffer",
+    ],
+    visibility = ["//visibility:public"],
+)

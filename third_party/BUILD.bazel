@@ -49,6 +49,15 @@ alias(
 )
 
 alias(
+    name = "fixed_buffer",
+    actual = "@raze__fixed_buffer__0_2_2//:fixed_buffer",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "futures_core",
     actual = "@raze__futures_core__0_3_8//:futures_core",
     tags = [
@@ -133,7 +142,7 @@ alias(
 
 alias(
     name = "tokio",
-    actual = "@raze__tokio__0_3_6//:tokio",
+    actual = "@raze__tokio__0_2_24//:tokio",
     tags = [
         "cargo-raze",
         "manual",
