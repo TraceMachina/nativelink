@@ -14,6 +14,7 @@ hex = "0.4.2"
 async-mutex = "1.4.0"
 async-trait = "0.1.42"
 fixed-buffer = "0.2.2"
+futures = "0.3.8"
 # We must use tokio 0.2.x because tonic runtime uses it.
 tokio = { version = "0.2", features = ["macros"] }
 tonic = "0.3.1"

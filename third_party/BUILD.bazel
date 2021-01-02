@@ -58,6 +58,15 @@ alias(
 )
 
 alias(
+    name = "futures",
+    actual = "@raze__futures__0_3_8//:futures",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "futures_core",
     actual = "@raze__futures_core__0_3_8//:futures_core",
     tags = [

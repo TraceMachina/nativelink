@@ -1,11 +1,11 @@
 // Copyright 2020 Leonhard LLC
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use these files except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,7 +15,7 @@
 // This library is a heavily modified version of:
 // https://docs.rs/fixed-buffer-tokio/0.1.1/fixed_buffer_tokio/
 
-#![forbid(unsafe_code)] 
+#![forbid(unsafe_code)]
 
 use std::sync::Mutex;
 

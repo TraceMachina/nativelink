@@ -38,6 +38,8 @@ rust_library(
     crate_features = [
         "alloc",
         "default",
+        "futures-sink",
+        "sink",
         "std",
     ],
     crate_root = "src/lib.rs",
@@ -55,6 +57,7 @@ rust_library(
     # buildifier: leave-alone
     deps = [
         "@raze__futures_core__0_3_8//:futures_core",
+        "@raze__futures_sink__0_3_8//:futures_sink",
     ],
 )
 

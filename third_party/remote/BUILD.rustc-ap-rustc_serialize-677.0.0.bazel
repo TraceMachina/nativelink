@@ -50,7 +50,7 @@ rust_library(
     # buildifier: leave-alone
     deps = [
         "@raze__indexmap__1_6_1//:indexmap",
-        "@raze__smallvec__1_5_1//:smallvec",
+        "@raze__smallvec__1_6_0//:smallvec",
     ],
 )
 

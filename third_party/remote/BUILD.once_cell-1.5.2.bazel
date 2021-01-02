@@ -30,13 +30,29 @@ licenses([
 
 # Generated Targets
 
+# Unsupported target "bench" with type "example" omitted
+
+# Unsupported target "bench_acquire" with type "example" omitted
+
+# Unsupported target "bench_vs_lazy_static" with type "example" omitted
+
+# Unsupported target "lazy_static" with type "example" omitted
+
+# Unsupported target "reentrant_init_deadlocks" with type "example" omitted
+
+# Unsupported target "regex" with type "example" omitted
+
+# Unsupported target "test_synchronization" with type "example" omitted
+
 rust_library(
-    name = "rustc_ap_rustc_macros",
+    name = "once_cell",
     srcs = glob(["**/*.rs"]),
     crate_features = [
+        "alloc",
+        "std",
     ],
     crate_root = "src/lib.rs",
-    crate_type = "proc-macro",
+    crate_type = "lib",
     data = [],
     edition = "2018",
     rustc_flags = [
@@ -46,12 +62,10 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "677.0.0",
+    version = "1.5.2",
     # buildifier: leave-alone
     deps = [
-        "@raze__proc_macro2__1_0_24//:proc_macro2",
-        "@raze__quote__1_0_8//:quote",
-        "@raze__syn__1_0_57//:syn",
-        "@raze__synstructure__0_12_4//:synstructure",
     ],
 )
+
+# Unsupported target "it" with type "test" omitted
