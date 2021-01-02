@@ -419,7 +419,6 @@ dependencies = [
  "clap",
  "fixed-buffer",
  "futures",
- "futures-core",
  "hex",
  "pretty_assertions",
  "prost",

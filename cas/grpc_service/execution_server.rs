@@ -2,8 +2,7 @@
 
 use std::pin::Pin;
 
-use futures_core::Stream;
-
+use futures::Stream;
 use tonic::{Request, Response, Status};
 
 use proto::build::bazel::remote::execution::v2::{

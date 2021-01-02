@@ -67,15 +67,6 @@ alias(
 )
 
 alias(
-    name = "futures_core",
-    actual = "@raze__futures_core__0_3_8//:futures_core",
-    tags = [
-        "cargo-raze",
-        "manual",
-    ],
-)
-
-alias(
     name = "hex",
     actual = "@raze__hex__0_4_2//:hex",
     tags = [

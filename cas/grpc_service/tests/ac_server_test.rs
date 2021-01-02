@@ -2,14 +2,14 @@
 
 use std::io::Cursor;
 
-use tokio::io::Error;
 use tonic::{Code, Request, Response, Status};
 
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::Digest;
+use proto::build::bazel::remote::execution::v2::{
+    action_cache_server::ActionCache, ActionResult, Digest,
+};
 
 use ac_server::AcServer;
-use proto::build::bazel::remote::execution::v2::{action_cache_server::ActionCache, ActionResult};
 use store::{create_store, Store, StoreType};
 
 const INSTANCE_NAME: &str = "foo";
@@ -19,7 +19,7 @@ async fn insert_into_store<T: Message>(
     store: &dyn Store,
     hash: &str,
     action_result: &T,
-) -> Result<i64, Error> {
+) -> Result<i64, Box<dyn std::error::Error>> {
     let mut store_data = Vec::new();
     action_result.encode(&mut store_data)?;
     let digest_size = store_data.len() as i64;
@@ -56,7 +56,7 @@ mod get_action_results {
     }
 
     #[tokio::test]
-    async fn empty_store() -> Result<(), Error> {
+    async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
         let ac_store = create_store(&StoreType::Memory);
         let ac_server = AcServer::new(ac_store.clone(), create_store(&StoreType::Memory));
 
@@ -64,12 +64,15 @@ mod get_action_results {
 
         let err = raw_response.unwrap_err();
         assert_eq!(err.code(), Code::NotFound);
-        assert_eq!(err.message(), "");
+        assert_eq!(
+            err.message(),
+            "Hash 0123456789abcdef000000000000000000000000000000000123456789abcdef not found"
+        );
         Ok(())
     }
 
     #[tokio::test]
-    async fn has_single_item() -> Result<(), Error> {
+    async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
         let ac_store = create_store(&StoreType::Memory);
         let ac_server = AcServer::new(ac_store.clone(), create_store(&StoreType::Memory));
 
@@ -89,7 +92,7 @@ mod get_action_results {
     }
 
     #[tokio::test]
-    async fn single_item_wrong_digest_size() -> Result<(), Error> {
+    async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
         let ac_store = create_store(&StoreType::Memory);
         let ac_server = AcServer::new(ac_store.clone(), create_store(&StoreType::Memory));
 
@@ -114,7 +117,7 @@ mod update_action_result {
 
     use proto::build::bazel::remote::execution::v2::UpdateActionResultRequest;
 
-    fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Error> {
+    fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Box<dyn std::error::Error>> {
         let mut store_data = Vec::new();
         proto.encode(&mut store_data)?;
         Ok(store_data.len())
@@ -136,7 +139,7 @@ mod update_action_result {
     }
 
     #[tokio::test]
-    async fn one_item_update_test() -> Result<(), Error> {
+    async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
         let ac_store = create_store(&StoreType::Memory);
         let ac_server = AcServer::new(ac_store.clone(), create_store(&StoreType::Memory));
 

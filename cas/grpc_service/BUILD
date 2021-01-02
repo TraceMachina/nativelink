@@ -5,13 +5,12 @@ rust_library(
     srcs = ["cas_server.rs"],
     deps = [
         "//proto",
-        "//util:macros",
         "//third_party:tonic",
         "//third_party:tokio",
-        "//third_party:futures_core",
+        "//third_party:futures",
         "//third_party:stdext",
         "//cas/store",
-        "//util:common",
+        "//util:error",
     ],
     visibility = ["//cas:__pkg__"]
 )
@@ -22,8 +21,7 @@ rust_library(
     deps = [
         "//proto",
         "//cas/store",
-        "//util:common",
-        "//util:macros",
+        "//util:error",
         "//third_party:stdext",
         "//third_party:prost",
         "//third_party:tonic",
@@ -47,12 +45,12 @@ rust_library(
     srcs = ["bytestream_server.rs"],
     deps = [
         "//proto",
-        "//third_party:futures_core",
         "//third_party:tonic",
         "//util:async_fixed_buffer",
         "//cas/store",
         "//third_party:tokio",
-        "//util:macros",
+        "//third_party:futures",
+        "//util:error",
     ],
     visibility = ["//cas:__pkg__"]
 )
@@ -64,7 +62,7 @@ rust_library(
         "//proto",
         "//third_party:tonic",
         "//third_party:stdext",
-        "//third_party:futures_core",
+        "//third_party:futures",
     ],
     visibility = ["//cas:__pkg__"]
 )
@@ -75,6 +73,7 @@ rust_test(
     deps = [
         ":cas_server",
         "//cas/store",
+        "//util:error",
         "//proto",
         "//third_party:tonic",
         "//third_party:tokio",
@@ -88,7 +87,6 @@ rust_test(
     deps = [
         ":ac_server",
         "//cas/store",
-        "//util:macros",
         "//proto",
         "//third_party:tonic",
         "//third_party:tokio",
@@ -104,10 +102,10 @@ rust_test(
         ":bytestream_server",
         "//cas/store",
         "//proto",
+        "//util:error",
         "//third_party:tonic",
         "//third_party:bytes",
         "//third_party:tokio",
-        "//third_party:futures_core",
         "//third_party:prost",
         "//third_party:pretty_assertions",
     ],

@@ -1,18 +1,15 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
-#![feature(try_blocks)]
-
 use std::convert::TryFrom;
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures_core::Stream;
-use tokio::io::Error;
+use futures::{stream::Stream, FutureExt, StreamExt};
 use tonic::{Request, Response, Status};
 
-use common;
-use macros::{error_if, make_input_err};
+use error::{error_if, Error, ResultExt};
+
 use proto::build::bazel::remote::execution::v2::{
     batch_read_blobs_response, batch_update_blobs_response,
     content_addressable_storage_server::ContentAddressableStorage,
@@ -21,9 +18,9 @@ use proto::build::bazel::remote::execution::v2::{
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest,
     GetTreeResponse,
 };
+use proto::google::rpc::Status as GrpcStatus;
 use store::Store;
 
-#[derive(Debug)]
 pub struct CasServer {
     store: Arc<dyn Store>,
 }
@@ -36,97 +33,155 @@ impl CasServer {
     pub fn into_service(self) -> Server<CasServer> {
         Server::new(self)
     }
+
+    async fn inner_find_missing_blobs(
+        &self,
+        request: Request<FindMissingBlobsRequest>,
+    ) -> Result<Response<FindMissingBlobsResponse>, Error> {
+        let mut futures = futures::stream::FuturesOrdered::new();
+        for digest in request.into_inner().blob_digests.into_iter() {
+            let store = self.store.clone();
+            futures.push(tokio::spawn(async move {
+                store
+                    .has(&digest.hash, digest.hash.len())
+                    .await
+                    .map_or_else(
+                        |_| None,
+                        |success| if success { None } else { Some(digest) },
+                    )
+            }));
+        }
+        let mut responses = Vec::with_capacity(futures.len());
+        while let Some(result) = futures.next().await {
+            let val = result.err_tip(|| "Internal error joining future")?;
+            if let Some(digest) = val {
+                responses.push(digest);
+            }
+        }
+        Ok(Response::new(FindMissingBlobsResponse {
+            missing_blob_digests: responses,
+        }))
+    }
+
+    async fn inner_batch_update_blobs(
+        &self,
+        grpc_request: Request<BatchUpdateBlobsRequest>,
+    ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
+        let mut futures = futures::stream::FuturesOrdered::new();
+        for request in grpc_request.into_inner().requests {
+            let digest = request.digest.err_tip(|| "Digest not found in request")?;
+            let digest_copy = digest.clone();
+            let store = self.store.clone();
+            let request_data = request.data;
+            futures.push(tokio::spawn(
+                async move {
+                    let size_bytes = usize::try_from(digest_copy.size_bytes)
+                        .err_tip(|| "Digest size_bytes was not convertable to usize")?;
+                    error_if!(
+                        size_bytes != request_data.len(),
+                        "Digest for upload had mismatching sizes, digest said {} data  said {}",
+                        size_bytes,
+                        request_data.len()
+                    );
+                    let cursor = Box::new(Cursor::new(request_data));
+                    store
+                        .update(&digest_copy.hash, size_bytes, cursor)
+                        .await
+                        .err_tip(|| "Error writing to store")
+                }
+                .map(|result| batch_update_blobs_response::Response {
+                    digest: Some(digest),
+                    status: Some(result.map_or_else(|e| e.into(), |_| GrpcStatus::default())),
+                }),
+            ));
+        }
+        let mut responses = Vec::with_capacity(futures.len());
+        while let Some(result) = futures.next().await {
+            responses.push(result.err_tip(|| "Internal error joining future")?);
+        }
+        Ok(Response::new(BatchUpdateBlobsResponse {
+            responses: responses,
+        }))
+    }
+
+    async fn inner_batch_read_blobs(
+        &self,
+        grpc_request: Request<BatchReadBlobsRequest>,
+    ) -> Result<Response<BatchReadBlobsResponse>, Error> {
+        let mut futures = futures::stream::FuturesOrdered::new();
+
+        for digest in grpc_request.into_inner().digests {
+            let digest_copy = digest.clone();
+            let store = self.store.clone();
+
+            futures.push(tokio::spawn(
+                async move {
+                    let size_bytes = usize::try_from(digest_copy.size_bytes)
+                        .err_tip(|| "Digest size_bytes was not convertable to usize")?;
+                    // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
+                    let mut store_data = Vec::with_capacity(size_bytes);
+                    store
+                        .get(
+                            &digest_copy.hash,
+                            size_bytes,
+                            &mut Cursor::new(&mut store_data),
+                        )
+                        .await
+                        .err_tip(|| "Error reading from store")?;
+                    Ok(store_data)
+                }
+                .map(|result: Result<Vec<u8>, Error>| {
+                    let (status, data) =
+                        result.map_or_else(|e| (e.into(), vec![]), |v| (GrpcStatus::default(), v));
+                    batch_read_blobs_response::Response {
+                        status: Some(status),
+                        digest: Some(digest),
+                        data: data,
+                    }
+                }),
+            ));
+        }
+
+        let mut responses = Vec::with_capacity(futures.len());
+        while let Some(result) = futures.next().await {
+            responses.push(result.err_tip(|| "Internal error joining future")?);
+        }
+        Ok(Response::new(BatchReadBlobsResponse {
+            responses: responses,
+        }))
+    }
 }
 
 #[tonic::async_trait]
 impl ContentAddressableStorage for CasServer {
     async fn find_missing_blobs(
         &self,
-        request: Request<FindMissingBlobsRequest>,
+        grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        let request_data = request.into_inner();
-        let mut response = FindMissingBlobsResponse {
-            missing_blob_digests: vec![],
-        };
-        for digest in request_data.blob_digests.into_iter() {
-            let result_status = self.store.has(&digest.hash, digest.hash.len()).await;
-            if !result_status.unwrap_or(false) {
-                // TODO(allada) We should log somewhere in the event result_status.is_err() (like bad hash).
-                response.missing_blob_digests.push(digest.clone());
-            }
-        }
-        Ok(Response::new(response))
+        self.inner_find_missing_blobs(grpc_request)
+            .await
+            .err_tip(|| format!("Failed on find_missing_blobs() command"))
+            .map_err(|e| e.into())
     }
 
     async fn batch_update_blobs(
         &self,
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        let batch_request = grpc_request.into_inner();
-        let mut batch_response = BatchUpdateBlobsResponse {
-            responses: Vec::with_capacity(batch_request.requests.len()),
-        };
-        for request in batch_request.requests {
-            let orig_digest = request.digest.clone();
-            let result_status: Result<(), Error> = try {
-                let digest = request
-                    .digest
-                    .ok_or(make_input_err!("Digest not found in request"))?;
-                let size_bytes = usize::try_from(digest.size_bytes).or(Err(make_input_err!(
-                    "Digest size_bytes was not convertable to usize"
-                )))?;
-                error_if!(
-                    size_bytes != request.data.len(),
-                    make_input_err!(
-                        "Digest for upload had mismatching sizes, digest said {} data  said {}",
-                        size_bytes,
-                        request.data.len()
-                    )
-                );
-                self.store
-                    .update(
-                        &digest.hash,
-                        size_bytes,
-                        Box::new(Cursor::new(request.data)),
-                    )
-                    .await?;
-            };
-            let response = batch_update_blobs_response::Response {
-                digest: orig_digest,
-                status: Some(common::result_to_grpc_status(result_status)),
-            };
-            batch_response.responses.push(response);
-        }
-        Ok(Response::new(batch_response))
+        self.inner_batch_update_blobs(grpc_request)
+            .await
+            .err_tip(|| format!("Failed on batch_update_blobs() command"))
+            .map_err(|e| e.into())
     }
 
     async fn batch_read_blobs(
         &self,
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        let batch_read_request = grpc_request.into_inner();
-        let mut batch_response = BatchReadBlobsResponse {
-            responses: Vec::with_capacity(batch_read_request.digests.len()),
-        };
-        for digest in batch_read_request.digests {
-            let size_bytes = usize::try_from(digest.size_bytes).or(Err(make_input_err!(
-                "Digest size_bytes was not convertable to usize"
-            )))?;
-            // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
-            let mut store_data = Vec::with_capacity(size_bytes);
-            let result_status: Result<(), Error> = try {
-                self.store
-                    .get(&digest.hash, size_bytes, &mut Cursor::new(&mut store_data))
-                    .await?;
-            };
-            let response = batch_read_blobs_response::Response {
-                digest: Some(digest.clone()),
-                data: store_data,
-                status: Some(common::result_to_grpc_status(result_status)),
-            };
-            batch_response.responses.push(response);
-        }
-        Ok(Response::new(batch_response))
+        self.inner_batch_read_blobs(grpc_request)
+            .await
+            .err_tip(|| format!("Failed on batch_read_blobs() command"))
+            .map_err(|e| e.into())
     }
 
     type GetTreeStream =

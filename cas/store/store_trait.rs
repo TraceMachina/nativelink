@@ -1,12 +1,12 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
-use std::fmt::Debug;
-
 use async_trait::async_trait;
-use tokio::io::{AsyncRead, AsyncWrite, Error};
+use tokio::io::{AsyncRead, AsyncWrite};
+
+use error::Error;
 
 #[async_trait]
-pub trait StoreTrait: Sync + Send + Debug {
+pub trait StoreTrait: Sync + Send {
     async fn has(&self, hash: &str, expected_size: usize) -> Result<bool, Error>;
 
     async fn update<'a, 'b>(

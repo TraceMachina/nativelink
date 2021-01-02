@@ -3,7 +3,8 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures_core::Stream;
+use async_fixed_buffer::AsyncFixedBuf;
+use futures::Stream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::{Request, Response, Status, Streaming};
 
@@ -13,11 +14,9 @@ use proto::google::bytestream::{
     WriteResponse,
 };
 
-use async_fixed_buffer::AsyncFixedBuf;
-use macros::{error_if, make_input_err};
+use error::{error_if, Error, ResultExt};
 use store::Store;
 
-#[derive(Debug)]
 pub struct ByteStreamServer {
     store: Arc<dyn Store>,
     max_stream_buffer_size: usize,
@@ -40,8 +39,10 @@ impl ByteStreamServer {
     async fn inner_write(
         &self,
         grpc_request: Request<Streaming<WriteRequest>>,
-    ) -> Result<Response<WriteResponse>, Status> {
-        let mut stream = WriteRequestStreamWrapper::from(grpc_request.into_inner()).await?;
+    ) -> Result<Response<WriteResponse>, Error> {
+        let mut stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
+            .await
+            .err_tip(|| "Could not unwrap first stream message")?;
 
         let raw_buffer = vec![0u8; self.max_stream_buffer_size].into_boxed_slice();
         let (rx, mut tx) = tokio::io::split(AsyncFixedBuf::new(Box::leak(raw_buffer)));
@@ -56,15 +57,15 @@ impl ByteStreamServer {
             })
         };
 
-        while let Some(write_request) = stream.next().await? {
+        while let Some(write_request) = stream.next().await.err_tip(|| "Stream closed early")? {
             tx.write_all(&write_request.data)
                 .await
-                .or_else(|e| Err(Status::internal(format!("Error writing to store: {:?}", e))))?;
+                .err_tip(|| "Error writing to store stream")?;
         }
         join_handle
             .await
-            .or_else(|e| Err(Status::internal(format!("Error joining promise {:?}", e))))?
-            .or_else(|e| Err(Status::internal(format!("Error joining promise {:?}", e))))?;
+            .err_tip(|| "Error joining promise")?
+            .err_tip(|| "Error updating inner store")?;
         Ok(Response::new(WriteResponse {
             committed_size: stream.bytes_received as i64,
         }))
@@ -82,40 +83,34 @@ struct ResourceInfo<'a> {
 }
 
 impl<'a> ResourceInfo<'a> {
-    fn new(resource_name: &'a str) -> Result<ResourceInfo<'a>, Status> {
+    fn new(resource_name: &'a str) -> Result<ResourceInfo<'a>, Error> {
         let mut parts = resource_name.splitn(6, '/');
-        fn make_count_err() -> Status {
-            Status::invalid_argument(format!(
-                "Expected resource_name to be of pattern {}",
-                "'{{instance_name}}/uploads/{{uuid}}/blobs/{{hash}}/{{size}}'"
-            ))
-        }
-        let instance_name = &parts.next().ok_or_else(make_count_err)?;
-        let uploads = &parts.next().ok_or_else(make_count_err)?;
+        const ERROR_MSG: &str = concat!(
+            "Expected resource_name to be of pattern ",
+            "'{instance_name}/uploads/{uuid}/blobs/{hash}/{size}'"
+        );
+        let instance_name = &parts.next().err_tip(|| ERROR_MSG)?;
+        let uploads = &parts.next().err_tip(|| ERROR_MSG)?;
         error_if!(
             uploads != &"uploads",
-            Status::invalid_argument(format!(
-                "Element 2 of resource_name should have been 'uploads'. Got: {:?}",
-                uploads
-            ))
+            "Element 2 of resource_name should have been 'uploads'. Got: {}",
+            uploads
         );
-        let uuid = &parts.next().ok_or_else(make_count_err)?;
-        let blobs = &parts.next().ok_or_else(make_count_err)?;
+        let uuid = &parts.next().err_tip(|| ERROR_MSG)?;
+        let blobs = &parts.next().err_tip(|| ERROR_MSG)?;
         error_if!(
             blobs != &"blobs",
-            Status::invalid_argument(format!(
-                "Element 4 of resource_name should have been 'blobs'. Got: {:?}",
-                blobs
-            ))
+            "Element 4 of resource_name should have been 'blobs'. Got: {}",
+            blobs
         );
-        let hash = &parts.next().ok_or_else(make_count_err)?;
-        let raw_digest_size = parts.next().ok_or_else(make_count_err)?;
-        let expected_size = raw_digest_size
-            .parse::<usize>()
-            .or(Err(Status::invalid_argument(format!(
-                "Digest size_bytes was not convertable to usize. Got: {:?}",
+        let hash = &parts.next().err_tip(|| ERROR_MSG)?;
+        let raw_digest_size = parts.next().err_tip(|| ERROR_MSG)?;
+        let expected_size = raw_digest_size.parse::<usize>().err_tip(|| {
+            format!(
+                "Digest size_bytes was not convertable to usize. Got: {}",
                 raw_digest_size
-            ))))?;
+            )
+        })?;
         Ok(ResourceInfo {
             _instance_name: instance_name,
             _uuid: uuid,
@@ -136,16 +131,16 @@ struct WriteRequestStreamWrapper {
 }
 
 impl WriteRequestStreamWrapper {
-    async fn from(
-        mut stream: Streaming<WriteRequest>,
-    ) -> Result<WriteRequestStreamWrapper, Status> {
+    async fn from(mut stream: Streaming<WriteRequest>) -> Result<WriteRequestStreamWrapper, Error> {
         let current_msg = stream
             .message()
-            .await?
-            .ok_or(make_input_err!("Expected WriteRequest struct in stream"))?;
+            .await
+            .err_tip(|| "Error receiving first message in stream")?
+            .err_tip(|| "Expected WriteRequest struct in stream")?;
 
         let original_resource_name = current_msg.resource_name.clone();
-        let resource_info = ResourceInfo::new(&original_resource_name)?;
+        let resource_info = ResourceInfo::new(&original_resource_name)
+            .err_tip(|| "Could not extract resource info from first message of stream")?;
         let hash = resource_info.hash.to_string();
         let expected_size = resource_info.expected_size;
         Ok(WriteRequestStreamWrapper {
@@ -159,7 +154,7 @@ impl WriteRequestStreamWrapper {
         })
     }
 
-    async fn next<'a>(&'a mut self) -> Result<Option<&'a WriteRequest>, Status> {
+    async fn next<'a>(&'a mut self) -> Result<Option<&'a WriteRequest>, Error> {
         if self.is_first {
             self.is_first = false;
             self.bytes_received += self.current_msg.data.len();
@@ -168,33 +163,31 @@ impl WriteRequestStreamWrapper {
         if self.current_msg.finish_write {
             error_if!(
                 self.bytes_received != self.expected_size,
-                Status::invalid_argument(format!(
-                    "Did not send enough data. Expected {}, but so far received {}",
-                    self.expected_size, self.bytes_received
-                ))
+                "Did not send enough data. Expected {}, but so far received {}",
+                self.expected_size,
+                self.bytes_received
             );
             return Ok(None); // Previous message said it was the last msg.
         }
         error_if!(
             self.bytes_received > self.expected_size,
-            Status::invalid_argument(format!(
-                "Sent too much data. Expected {}, but so far received {}",
-                self.expected_size, self.bytes_received
-            ))
+            "Sent too much data. Expected {}, but so far received {}",
+            self.expected_size,
+            self.bytes_received
         );
         self.current_msg = self
             .stream
             .message()
-            .await?
-            .ok_or(make_input_err!("Expected WriteRequest struct in stream"))?;
+            .await
+            .err_tip(|| format!("Stream error at byte {}", self.bytes_received))?
+            .err_tip(|| "Expected WriteRequest struct in stream")?;
         self.bytes_received += self.current_msg.data.len();
 
         error_if!(
             self.original_resource_name != self.current_msg.resource_name,
-            Status::invalid_argument(format!(
-                "Resource name missmatch, expected {:?} got {:?}",
-                self.original_resource_name, self.current_msg.resource_name
-            ))
+            "Resource name missmatch, expected {} got {}",
+            self.original_resource_name,
+            self.current_msg.resource_name
         );
 
         Ok(Some(&self.current_msg))
@@ -217,9 +210,12 @@ impl ByteStream for ByteStreamServer {
         &self,
         grpc_request: Request<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
-        // TODO(allada) We should do better logging here.
         println!("Write Req: {:?}", grpc_request);
-        let resp = self.inner_write(grpc_request).await;
+        let resp = self
+            .inner_write(grpc_request)
+            .await
+            .err_tip(|| format!("Failed on write() command"))
+            .map_err(|e| e.into());
         println!("Write Resp: {:?}", resp);
         resp
     }

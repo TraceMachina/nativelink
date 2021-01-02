@@ -3,19 +3,11 @@
 load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library")
 
 rust_library(
-    name = "macros",
-    srcs = ["macros.rs"],
+    name = "error",
+    srcs = ["error.rs"],
     deps = [
-        "//third_party:tokio",
-        "//third_party:tonic",
-    ],
-    visibility = ["//visibility:public"],
-)
-
-rust_library(
-    name = "common",
-    srcs = ["common.rs"],
-    deps = [
+        "//third_party:hex",
+        "//third_party:prost",
         "//third_party:tokio",
         "//third_party:tonic",
         "//proto",

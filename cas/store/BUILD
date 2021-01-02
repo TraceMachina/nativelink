@@ -14,11 +14,10 @@ rust_library(
 
 rust_library(
     name = "traits",
-    srcs = [
-        "store_trait.rs",
-    ],
+    srcs = ["store_trait.rs"],
     deps = [
         "//third_party:tokio",
+        "//util:error",
     ],
     proc_macro_deps = ["//third_party:async_trait"],
     visibility = ["//cas:__pkg__"]
@@ -29,10 +28,10 @@ rust_library(
     srcs = ["memory_store.rs"],
     deps = [
         ":traits",
+        "//util:error",
         "//third_party:async_mutex",
         "//third_party:tokio",
         "//third_party:hex",
-        "//util:macros",
     ],
     proc_macro_deps = ["//third_party:async_trait"],
     visibility = ["//cas:__pkg__"]
@@ -44,6 +43,7 @@ rust_test(
     deps = [
         ":memory_store",
         ":traits",
+        "//util:error",
         "//third_party:tokio",
         "//third_party:tokio_test",
         "//third_party:pretty_assertions",

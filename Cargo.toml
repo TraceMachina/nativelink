@@ -28,7 +28,6 @@ bytes = "0.5.6"
 tonic-build = "0.3.1"
 pretty_assertions = "0.6.1"
 rustfmt-nightly = "1.4.21"
-futures-core = "0.3.8"
 
 [package.metadata.raze.crates.prost-build.'*']
 gen_buildrs = true
