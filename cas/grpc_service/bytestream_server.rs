@@ -14,6 +14,7 @@ use proto::google::bytestream::{
     WriteResponse,
 };
 
+use common::DigestInfo;
 use error::{error_if, Error, ResultExt};
 use store::Store;
 
@@ -53,7 +54,9 @@ impl ByteStreamServer {
             let expected_size = stream.expected_size;
             tokio::spawn(async move {
                 let rx = Box::new(rx.take(expected_size as u64));
-                store.update(&hash, expected_size, rx).await
+                store
+                    .update(&DigestInfo::try_new(&hash, expected_size)?, rx)
+                    .await
             })
         };
 

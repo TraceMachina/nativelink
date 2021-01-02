@@ -6,8 +6,8 @@ mod memory_store_tests {
 
     use error::Error;
     use std::io::Cursor;
-    use tokio_test::assert_err;
 
+    use common::DigestInfo;
     use memory_store::MemoryStore;
     use traits::StoreTrait;
 
@@ -21,10 +21,15 @@ mod memory_store_tests {
             // Insert dummy value into store.
             const VALUE1: &str = "1";
             store
-                .update(&VALID_HASH1, VALUE1.len(), Box::new(Cursor::new(VALUE1)))
+                .update(
+                    &DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?,
+                    Box::new(Cursor::new(VALUE1)),
+                )
                 .await?;
             assert!(
-                store.has(&VALID_HASH1, VALID_HASH1.len()).await?,
+                store
+                    .has(&DigestInfo::try_new(&VALID_HASH1, VALID_HASH1.len())?)
+                    .await?,
                 "Expected memory store to have hash: {}",
                 VALID_HASH1
             );
@@ -35,12 +40,14 @@ mod memory_store_tests {
         {
             // Now change value we just inserted.
             store
-                .update(&VALID_HASH1, VALUE2.len(), Box::new(Cursor::new(VALUE2)))
+                .update(
+                    &DigestInfo::try_new(&VALID_HASH1, VALUE2.len())?,
+                    Box::new(Cursor::new(VALUE2)),
+                )
                 .await?;
             store
                 .get(
-                    &VALID_HASH1,
-                    VALID_HASH1.len(),
+                    &DigestInfo::try_new(&VALID_HASH1, VALID_HASH1.len())?,
                     &mut Cursor::new(&mut store_data),
                 )
                 .await?;
@@ -69,8 +76,9 @@ mod memory_store_tests {
         {
             // .has() tests.
             async fn has_should_fail(store: &MemoryStore, hash: &str, expected_size: usize) {
-                assert_err!(
-                    store.has(&hash, expected_size).await,
+                let digest = DigestInfo::try_new(&hash, expected_size);
+                assert!(
+                    digest.is_err() || store.has(&digest.unwrap()).await.is_err(),
                     ".has() should have failed: {} {}",
                     hash,
                     expected_size
@@ -88,10 +96,13 @@ mod memory_store_tests {
                 expected_size: usize,
                 value: &'b str,
             ) {
-                assert_err!(
-                    store
-                        .update(&hash, expected_size, Box::new(Cursor::new(&value)))
-                        .await,
+                let digest = DigestInfo::try_new(&hash, expected_size);
+                assert!(
+                    digest.is_err()
+                        || store
+                            .update(&digest.unwrap(), Box::new(Cursor::new(&value)))
+                            .await
+                            .is_err(),
                     ".has() should have failed: {} {} {}",
                     hash,
                     expected_size,
@@ -112,10 +123,13 @@ mod memory_store_tests {
                 expected_size: usize,
                 out_data: &'a mut Vec<u8>,
             ) {
-                assert_err!(
-                    store
-                        .get(&hash, expected_size, &mut Cursor::new(out_data))
-                        .await,
+                let digest = DigestInfo::try_new(&hash, expected_size);
+                assert!(
+                    digest.is_err()
+                        || store
+                            .get(&digest.unwrap(), &mut Cursor::new(out_data))
+                            .await
+                            .is_err(),
                     ".get() should have failed: {} {}",
                     hash,
                     expected_size

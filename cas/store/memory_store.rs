@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use async_mutex::Mutex;
 use async_trait::async_trait;
-use hex::FromHex;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use common::DigestInfo;
 use error::{error_if, Code, Error, ResultExt};
 use traits::StoreTrait;
 
@@ -26,47 +26,39 @@ impl MemoryStore {
 
 #[async_trait]
 impl StoreTrait for MemoryStore {
-    async fn has(&self, hash: &str, _expected_size: usize) -> Result<bool, Error> {
-        let raw_key =
-            <[u8; 32]>::from_hex(&hash).err_tip(|| "Hex length is not 64 hex characters")?;
+    async fn has(&self, digest: &DigestInfo) -> Result<bool, Error> {
         let map = self.map.lock().await;
-        Ok(map.contains_key(&raw_key))
+        Ok(map.contains_key(&digest.packed_hash))
     }
 
     async fn update<'a, 'b>(
         &'a self,
-        hash: &'a str,
-        expected_size: usize,
+        digest: &'a DigestInfo,
         mut reader: Box<dyn AsyncRead + Send + Unpin + 'b>,
     ) -> Result<(), Error> {
-        let raw_key =
-            <[u8; 32]>::from_hex(&hash).err_tip(|| "Hex length is not 64 hex characters")?;
         let mut buffer = Vec::new();
-        let read_size = reader.read_to_end(&mut buffer).await?;
+        let read_size = reader.read_to_end(&mut buffer).await? as i64;
         error_if!(
-            read_size != expected_size,
+            read_size != digest.size_bytes,
             "Expected size {} but got size {} for hash {} CAS insert",
-            expected_size,
+            digest.size_bytes,
             read_size,
-            hash
+            digest.str()
         );
         let mut map = self.map.lock().await;
-        map.insert(raw_key, Arc::new(buffer));
+        map.insert(digest.packed_hash, Arc::new(buffer));
         Ok(())
     }
 
     async fn get(
         &self,
-        hash: &str,
-        _expected_size: usize,
+        digest: &DigestInfo,
         writer: &mut (dyn AsyncWrite + Send + Unpin),
     ) -> Result<(), Error> {
-        let raw_key =
-            <[u8; 32]>::from_hex(&hash).err_tip(|| "Hex length is not 64 hex characters")?;
         let map = self.map.lock().await;
         let value = map
-            .get(&raw_key)
-            .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", hash)))?;
+            .get(&digest.packed_hash)
+            .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.str())))?;
         writer.write_all(value).await?;
         Ok(())
     }

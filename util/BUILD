@@ -16,6 +16,18 @@ rust_library(
 )
 
 rust_library(
+    name = "common",
+    srcs = ["common.rs"],
+    deps = [
+        ":error",
+        "//proto",
+        "//third_party:hex",
+        "//third_party:lazy_init",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
     name = "async_fixed_buffer",
     srcs = ["async_fixed_buffer.rs"],
     deps = [

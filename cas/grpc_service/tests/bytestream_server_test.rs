@@ -6,6 +6,7 @@ use std::io::Cursor;
 use bytestream_server::ByteStreamServer;
 use tonic::Request;
 
+use common::DigestInfo;
 use store::{create_store, StoreType};
 
 const INSTANCE_NAME: &str = "foo";
@@ -122,10 +123,15 @@ pub mod write_tests {
             assert_eq!(committed_size as usize, raw_data.len());
 
             // Now lets check our store to ensure it was written with proper data.
-            store.has(HASH1, raw_data.len()).await?;
+            store
+                .has(&DigestInfo::try_new(&HASH1, raw_data.len())?)
+                .await?;
             let mut store_data = Vec::new();
             store
-                .get(HASH1, raw_data.len(), &mut Cursor::new(&mut store_data))
+                .get(
+                    &DigestInfo::try_new(&HASH1, raw_data.len())?,
+                    &mut Cursor::new(&mut store_data),
+                )
                 .await?;
             assert_eq!(
                 std::str::from_utf8(&store_data),

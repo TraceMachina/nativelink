@@ -2,11 +2,13 @@
 
 use tonic::Request;
 
-use proto::build::bazel::remote::execution::v2::Digest;
+use proto::build::bazel::remote::execution::v2::{
+    content_addressable_storage_server::ContentAddressableStorage, Digest,
+};
 use proto::google::rpc::Status as GrpcStatus;
 
 use cas_server::CasServer;
-use proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
+use common::DigestInfo;
 use store::{create_store, StoreType};
 
 const INSTANCE_NAME: &str = "foo";
@@ -51,7 +53,10 @@ mod find_missing_blobs {
         const VALUE: &str = "1";
 
         store
-            .update(&HASH1, VALUE.len(), Box::new(Cursor::new(VALUE)))
+            .update(
+                &DigestInfo::try_new(HASH1, VALUE.len())?,
+                Box::new(Cursor::new(VALUE)),
+            )
             .await?;
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -69,7 +74,6 @@ mod find_missing_blobs {
     }
 
     #[tokio::test]
-    #[ignore] // TODO(allada) Disabled until we finish moving to a Hash struct.
     async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Error>> {
         let store = create_store(&StoreType::Memory);
         let cas_server = CasServer::new(store.clone());
@@ -77,7 +81,10 @@ mod find_missing_blobs {
         const VALUE: &str = "1";
 
         store
-            .update(&HASH1, VALUE.len(), Box::new(Cursor::new(VALUE)))
+            .update(
+                &DigestInfo::try_new(HASH1, VALUE.len())?,
+                Box::new(Cursor::new(VALUE)),
+            )
             .await?;
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -100,10 +107,8 @@ mod find_missing_blobs {
             .await;
         let error = raw_response.unwrap_err();
         assert!(
-            error
-                .to_string()
-                .contains("Hex length is not 64 hex characters"),
-            "'Hex length is not 64 hex characters' not found in: {:?}",
+            error.to_string().contains("Invalid sha256 hash: BAD_HASH"),
+            "'Invalid sha256 hash: BAD_HASH' not found in: {:?}",
             error
         );
         Ok(())
@@ -123,7 +128,7 @@ mod batch_update_blobs {
     };
 
     #[tokio::test]
-    async fn update_existing_item() {
+    async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
         let store = create_store(&StoreType::Memory);
         let cas_server = CasServer::new(store.clone());
 
@@ -136,7 +141,10 @@ mod batch_update_blobs {
         };
 
         store
-            .update(&HASH1, VALUE1.len(), Box::new(Cursor::new(VALUE1)))
+            .update(
+                &DigestInfo::try_new(&HASH1, VALUE1.len())?,
+                Box::new(Cursor::new(VALUE1)),
+            )
             .await
             .expect("Update should have succeeded");
 
@@ -165,7 +173,10 @@ mod batch_update_blobs {
         );
         let mut new_data = Vec::new();
         store
-            .get(&HASH1, HASH1.len(), &mut Cursor::new(&mut new_data))
+            .get(
+                &DigestInfo::try_new(&HASH1, HASH1.len())?,
+                &mut Cursor::new(&mut new_data),
+            )
             .await
             .expect("Get should have succeeded");
         assert_eq!(
@@ -173,6 +184,7 @@ mod batch_update_blobs {
             VALUE2.as_bytes(),
             "Expected store to have been updated to new value"
         );
+        Ok(())
     }
 }
 
@@ -208,11 +220,17 @@ mod batch_read_blobs {
         {
             // Insert dummy data.
             store
-                .update(&HASH1, VALUE1.len(), Box::new(Cursor::new(VALUE1)))
+                .update(
+                    &DigestInfo::try_new(&HASH1, VALUE1.len())?,
+                    Box::new(Cursor::new(VALUE1)),
+                )
                 .await
                 .expect("Update should have succeeded");
             store
-                .update(&HASH2, VALUE2.len(), Box::new(Cursor::new(VALUE2)))
+                .update(
+                    &DigestInfo::try_new(&HASH2, VALUE2.len())?,
+                    Box::new(Cursor::new(VALUE2)),
+                )
                 .await
                 .expect("Update should have succeeded");
         }

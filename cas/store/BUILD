@@ -18,6 +18,7 @@ rust_library(
     deps = [
         "//third_party:tokio",
         "//util:error",
+        "//util:common",
     ],
     proc_macro_deps = ["//third_party:async_trait"],
     visibility = ["//cas:__pkg__"]
@@ -31,7 +32,7 @@ rust_library(
         "//util:error",
         "//third_party:async_mutex",
         "//third_party:tokio",
-        "//third_party:hex",
+        "//util:common",
     ],
     proc_macro_deps = ["//third_party:async_trait"],
     visibility = ["//cas:__pkg__"]
@@ -44,8 +45,8 @@ rust_test(
         ":memory_store",
         ":traits",
         "//util:error",
+        "//util:common",
         "//third_party:tokio",
-        "//third_party:tokio_test",
         "//third_party:pretty_assertions",
     ],
 )

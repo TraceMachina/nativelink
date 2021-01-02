@@ -1,14 +1,13 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::convert::TryFrom;
+use std::convert::TryInto;
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::{stream::Stream, FutureExt, StreamExt};
 use tonic::{Request, Response, Status};
-
-use error::{error_if, Error, ResultExt};
 
 use proto::build::bazel::remote::execution::v2::{
     batch_read_blobs_response, batch_update_blobs_response,
@@ -19,6 +18,9 @@ use proto::build::bazel::remote::execution::v2::{
     GetTreeResponse,
 };
 use proto::google::rpc::Status as GrpcStatus;
+
+use common::DigestInfo;
+use error::{error_if, Error, ResultExt};
 use store::Store;
 
 pub struct CasServer {
@@ -41,21 +43,19 @@ impl CasServer {
         let mut futures = futures::stream::FuturesOrdered::new();
         for digest in request.into_inner().blob_digests.into_iter() {
             let store = self.store.clone();
+            let digest: DigestInfo = digest.try_into()?;
             futures.push(tokio::spawn(async move {
-                store
-                    .has(&digest.hash, digest.hash.len())
-                    .await
-                    .map_or_else(
-                        |_| None,
-                        |success| if success { None } else { Some(digest) },
-                    )
+                store.has(&digest).await.map_or_else(
+                    |_| None,
+                    |success| if success { None } else { Some(digest) },
+                )
             }));
         }
         let mut responses = Vec::with_capacity(futures.len());
         while let Some(result) = futures.next().await {
             let val = result.err_tip(|| "Internal error joining future")?;
             if let Some(digest) = val {
-                responses.push(digest);
+                responses.push(digest.into());
             }
         }
         Ok(Response::new(FindMissingBlobsResponse {
@@ -69,7 +69,10 @@ impl CasServer {
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
         let mut futures = futures::stream::FuturesOrdered::new();
         for request in grpc_request.into_inner().requests {
-            let digest = request.digest.err_tip(|| "Digest not found in request")?;
+            let digest: DigestInfo = request
+                .digest
+                .err_tip(|| "Digest not found in request")?
+                .try_into()?;
             let digest_copy = digest.clone();
             let store = self.store.clone();
             let request_data = request.data;
@@ -85,12 +88,12 @@ impl CasServer {
                     );
                     let cursor = Box::new(Cursor::new(request_data));
                     store
-                        .update(&digest_copy.hash, size_bytes, cursor)
+                        .update(&digest_copy, cursor)
                         .await
                         .err_tip(|| "Error writing to store")
                 }
                 .map(|result| batch_update_blobs_response::Response {
-                    digest: Some(digest),
+                    digest: Some(digest.into()),
                     status: Some(result.map_or_else(|e| e.into(), |_| GrpcStatus::default())),
                 }),
             ));
@@ -111,6 +114,7 @@ impl CasServer {
         let mut futures = futures::stream::FuturesOrdered::new();
 
         for digest in grpc_request.into_inner().digests {
+            let digest: DigestInfo = digest.try_into()?;
             let digest_copy = digest.clone();
             let store = self.store.clone();
 
@@ -121,11 +125,7 @@ impl CasServer {
                     // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
                     let mut store_data = Vec::with_capacity(size_bytes);
                     store
-                        .get(
-                            &digest_copy.hash,
-                            size_bytes,
-                            &mut Cursor::new(&mut store_data),
-                        )
+                        .get(&digest_copy, &mut Cursor::new(&mut store_data))
                         .await
                         .err_tip(|| "Error reading from store")?;
                     Ok(store_data)
@@ -135,7 +135,7 @@ impl CasServer {
                         result.map_or_else(|e| (e.into(), vec![]), |v| (GrpcStatus::default(), v));
                     batch_read_blobs_response::Response {
                         status: Some(status),
-                        digest: Some(digest),
+                        digest: Some(digest.into()),
                         data: data,
                     }
                 }),

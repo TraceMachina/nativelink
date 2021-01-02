@@ -3,23 +3,22 @@
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use common::DigestInfo;
 use error::Error;
 
 #[async_trait]
 pub trait StoreTrait: Sync + Send {
-    async fn has(&self, hash: &str, expected_size: usize) -> Result<bool, Error>;
+    async fn has(&self, digest: &DigestInfo) -> Result<bool, Error>;
 
     async fn update<'a, 'b>(
         &'a self,
-        hash: &'a str,
-        expected_size: usize,
+        digest: &'a DigestInfo,
         mut reader: Box<dyn AsyncRead + Send + Unpin + 'b>,
     ) -> Result<(), Error>;
 
     async fn get(
         &self,
-        hash: &str,
-        expected_size: usize,
+        digest: &DigestInfo,
         writer: &mut (dyn AsyncWrite + Send + Unpin),
     ) -> Result<(), Error>;
 }

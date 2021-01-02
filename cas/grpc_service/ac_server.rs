@@ -1,6 +1,7 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::convert::TryFrom;
+use std::convert::TryInto;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use proto::build::bazel::remote::execution::v2::{
     ActionResult, GetActionResultRequest, UpdateActionResultRequest,
 };
 
+use common::DigestInfo;
 use error::{error_if, make_err, Code, Error, ResultExt};
 use store::Store;
 
@@ -40,18 +42,15 @@ impl AcServer {
 
         // TODO(blaise.bruer) This needs to be fixed. It is using wrong macro.
         // We also should write a test for these errors.
-        let digest = get_action_request
+        let digest: DigestInfo = get_action_request
             .action_digest
-            .err_tip(|| "Action digest was not set in message")?;
-        let size_bytes = usize::try_from(digest.size_bytes)
-            .err_tip(|| "Digest size_bytes was not convertable to usize")?;
+            .err_tip(|| "Action digest was not set in message")?
+            .try_into()?;
 
         // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
-        let mut store_data = Vec::with_capacity(size_bytes);
+        let mut store_data = Vec::with_capacity(digest.size_bytes as usize);
         let mut cursor = Cursor::new(&mut store_data);
-        self.ac_store
-            .get(&digest.hash, size_bytes, &mut cursor)
-            .await?;
+        self.ac_store.get(&digest, &mut cursor).await?;
 
         let action_result =
             ActionResult::decode(Cursor::new(&store_data)).err_tip_with_code(|e| {
@@ -61,7 +60,7 @@ impl AcServer {
                 )
             })?;
 
-        if store_data.len() != size_bytes {
+        if store_data.len() != digest.size_bytes as usize {
             return Err(make_err!(
                 Code::NotFound,
                 "Found item, but size does not match"
@@ -78,9 +77,10 @@ impl AcServer {
 
         // TODO(blaise.bruer) This needs to be fixed. It is using wrong macro.
         // We also should write a test for these errors.
-        let digest = update_action_request
+        let digest: DigestInfo = update_action_request
             .action_digest
-            .err_tip(|| "Action digest was not set in message")?;
+            .err_tip(|| "Action digest was not set in message")?
+            .try_into()?;
 
         let size_bytes = usize::try_from(digest.size_bytes)
             .err_tip(|| "Digest size_bytes was not convertable to usize")?;
@@ -101,11 +101,7 @@ impl AcServer {
             size_bytes
         );
         self.ac_store
-            .update(
-                &digest.hash,
-                store_data.len(),
-                Box::new(Cursor::new(store_data)),
-            )
+            .update(&digest, Box::new(Cursor::new(store_data)))
             .await?;
         Ok(Response::new(action_result))
     }

@@ -76,6 +76,15 @@ alias(
 )
 
 alias(
+    name = "lazy_init",
+    actual = "@raze__lazy_init__0_4_0//:lazy_init",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "pretty_assertions",
     actual = "@raze__pretty_assertions__0_6_1//:pretty_assertions",
     tags = [
@@ -143,15 +152,6 @@ alias(
 alias(
     name = "tokio",
     actual = "@raze__tokio__0_2_24//:tokio",
-    tags = [
-        "cargo-raze",
-        "manual",
-    ],
-)
-
-alias(
-    name = "tokio_test",
-    actual = "@raze__tokio_test__0_4_0//:tokio_test",
     tags = [
         "cargo-raze",
         "manual",

@@ -10,6 +10,7 @@ use proto::build::bazel::remote::execution::v2::{
 };
 
 use ac_server::AcServer;
+use common::DigestInfo;
 use store::{create_store, Store, StoreType};
 
 const INSTANCE_NAME: &str = "foo";
@@ -22,11 +23,11 @@ async fn insert_into_store<T: Message>(
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let mut store_data = Vec::new();
     action_result.encode(&mut store_data)?;
-    let digest_size = store_data.len() as i64;
+    let digest = DigestInfo::try_new(&hash, store_data.len() as i64)?;
     store
-        .update(&hash, store_data.len(), Box::new(Cursor::new(store_data)))
+        .update(&digest, Box::new(Cursor::new(store_data)))
         .await?;
-    Ok(digest_size)
+    Ok(digest.size_bytes as i64)
 }
 
 #[cfg(test)]
@@ -146,13 +147,13 @@ mod update_action_result {
         let mut action_result = ActionResult::default();
         action_result.exit_code = 45;
 
-        let size_bytes = get_encoded_proto_size(&action_result)?;
+        let size_bytes = get_encoded_proto_size(&action_result)? as i64;
 
         let raw_response = update_action_result(
             &ac_server,
             Digest {
                 hash: HASH1.to_string(),
-                size_bytes: size_bytes as i64,
+                size_bytes: size_bytes,
             },
             action_result.clone(),
         )
@@ -166,8 +167,9 @@ mod update_action_result {
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
 
         let mut raw_data = Vec::new();
+        let digest = DigestInfo::try_new(&HASH1, size_bytes)?;
         ac_store
-            .get(&HASH1, size_bytes, &mut Cursor::new(&mut raw_data))
+            .get(&digest, &mut Cursor::new(&mut raw_data))
             .await?;
 
         let decoded_action_result = ActionResult::decode(Cursor::new(&raw_data))?;
