@@ -91,6 +91,31 @@ mod memory_store_tests {
     }
 
     #[tokio::test]
+    async fn read_partial() -> Result<(), Error> {
+        let store = MemoryStore::new(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: true,
+        });
+        const VALUE1: &str = "1234";
+        let digest = DigestInfo::try_new(&VALID_HASH1, 4).unwrap();
+        store.update(&digest, Box::new(Cursor::new(VALUE1))).await?;
+
+        let mut store_data = Vec::new();
+        store
+            .get_part(&digest, &mut Cursor::new(&mut store_data), 1, Some(3))
+            .await?;
+
+        assert_eq!(
+            VALUE1[1..3].as_bytes(),
+            store_data,
+            "Expected partial data to match, expected '{:#x?}' got: {:#x?}'",
+            VALUE1[1..3].as_bytes(),
+            store_data,
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn errors_with_invalid_inputs() -> Result<(), Error> {
         let mut store = MemoryStore::new(&StoreConfig {
             store_type: StoreType::Memory,

@@ -52,16 +52,21 @@ impl StoreTrait for MemoryStore {
         Ok(())
     }
 
-    async fn get(
+    async fn get_part(
         &self,
         digest: &DigestInfo,
         writer: &mut (dyn AsyncWrite + Send + Unpin),
+        offset: usize,
+        length: Option<usize>,
     ) -> Result<(), Error> {
         let map = self.map.lock().await;
         let value = map
             .get(&digest.packed_hash)
-            .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.str())))?;
-        writer.write_all(value).await?;
+            .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.str())))?
+            .as_ref();
+        let default_len = value.len() - offset;
+        let length = length.unwrap_or(default_len).min(default_len);
+        writer.write_all(&value[offset..length]).await?;
         Ok(())
     }
 }

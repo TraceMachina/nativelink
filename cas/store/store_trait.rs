@@ -27,9 +27,19 @@ pub trait StoreTrait: Sync + Send {
         mut reader: Box<dyn AsyncRead + Send + Unpin + 'b>,
     ) -> Result<(), Error>;
 
+    async fn get_part(
+        &self,
+        digest: &DigestInfo,
+        writer: &mut (dyn AsyncWrite + Send + Unpin),
+        offset: usize,
+        length: Option<usize>,
+    ) -> Result<(), Error>;
+
     async fn get(
         &self,
         digest: &DigestInfo,
         writer: &mut (dyn AsyncWrite + Send + Unpin),
-    ) -> Result<(), Error>;
+    ) -> Result<(), Error> {
+        self.get_part(digest, writer, 0, None).await
+    }
 }
