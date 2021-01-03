@@ -22,6 +22,7 @@ rust_library(
         ":error",
         "//proto",
         "//third_party:hex",
+        "//third_party:log",
         "//third_party:lazy_init",
     ],
     visibility = ["//visibility:public"],

@@ -10,7 +10,9 @@ rust_binary(
         "//cas/grpc_service:execution_server",
         "//cas/grpc_service:bytestream_server",
         "//cas/store",
+        "//util:common",
         "//third_party:tokio",
         "//third_party:tonic",
+        "//third_party:env_logger",
     ],
 )

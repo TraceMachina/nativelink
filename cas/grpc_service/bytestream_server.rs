@@ -2,6 +2,7 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_fixed_buffer::AsyncFixedBuf;
 use futures::Stream;
@@ -14,7 +15,7 @@ use proto::google::bytestream::{
     WriteResponse,
 };
 
-use common::DigestInfo;
+use common::{log, DigestInfo};
 use error::{error_if, Error, ResultExt};
 use store::Store;
 
@@ -195,7 +196,7 @@ impl ByteStream for ByteStreamServer {
         &self,
         _grpc_request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
-        println!("\x1b[0;31mread\x1b[0m {:?}", _grpc_request.get_ref());
+        log::info!("\x1b[0;31mread\x1b[0m {:?}", _grpc_request.get_ref());
         Err(Status::unimplemented(""))
     }
 
@@ -203,13 +204,15 @@ impl ByteStream for ByteStreamServer {
         &self,
         grpc_request: Request<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
-        println!("\x1b[0;31mWrite Req\x1b[0m: {:?}", grpc_request.get_ref());
+        log::info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", grpc_request.get_ref());
+        let now = Instant::now();
         let resp = self
             .inner_write(grpc_request)
             .await
             .err_tip(|| format!("Failed on write() command"))
             .map_err(|e| e.into());
-        println!("\x1b[0;31mWrite Resp\x1b[0m: {:?}", resp);
+        let d = now.elapsed().as_secs_f32();
+        log::info!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?}", d, resp);
         resp
     }
 
@@ -217,7 +220,7 @@ impl ByteStream for ByteStreamServer {
         &self,
         _grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Status> {
-        println!("query_write_status {:?}", _grpc_request.get_ref());
+        log::info!("query_write_status {:?}", _grpc_request.get_ref());
         Err(Status::unimplemented(""))
     }
 }

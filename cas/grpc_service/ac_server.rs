@@ -3,6 +3,7 @@
 use std::convert::TryInto;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Instant;
 
 use prost::Message;
 use tonic::{Request, Response, Status};
@@ -12,7 +13,7 @@ use proto::build::bazel::remote::execution::v2::{
     ActionResult, GetActionResultRequest, UpdateActionResultRequest,
 };
 
-use common::DigestInfo;
+use common::{log, DigestInfo};
 use error::{make_err, Code, Error, ResultExt};
 use store::Store;
 
@@ -104,12 +105,14 @@ impl ActionCache for AcServer {
         &self,
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        println!(
+        let now = Instant::now();
+        log::info!(
             "\x1b[0;31mget_action_result Req\x1b[0m: {:?}",
             grpc_request.get_ref()
         );
         let resp = self.inner_get_action_result(grpc_request).await;
-        println!("\x1b[0;31mget_action_result Resp\x1b[0m: {:?}", resp);
+        let d = now.elapsed().as_secs_f32();
+        log::info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?}", d, resp);
         return resp.map_err(|e| e.into());
     }
 
@@ -117,12 +120,18 @@ impl ActionCache for AcServer {
         &self,
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        println!(
+        let now = Instant::now();
+        log::info!(
             "\x1b[0;31mupdate_action_result Req\x1b[0m: {:?}",
             grpc_request.get_ref()
         );
         let resp = self.inner_update_action_result(grpc_request).await;
-        println!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {:?}", resp);
+        let d = now.elapsed().as_secs_f32();
+        log::info!(
+            "\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}",
+            d,
+            resp
+        );
         return resp.map_err(|e| e.into());
     }
 }

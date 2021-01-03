@@ -483,6 +483,16 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
+        name = "raze__env_logger__0_8_2",
+        url = "https://crates.io/api/v1/crates/env_logger/0.8.2/download",
+        type = "tar.gz",
+        sha256 = "f26ecb66b4bdca6c1409b40fb255eefc2bd4f6d135dab3c3124f80ffa2a9661e",
+        strip_prefix = "env_logger-0.8.2",
+        build_file = Label("//third_party/remote:BUILD.env_logger-0.8.2.bazel"),
+    )
+
+    maybe(
+        http_archive,
         name = "raze__event_listener__2_5_1",
         url = "https://crates.io/api/v1/crates/event-listener/2.5.1/download",
         type = "tar.gz",
@@ -779,6 +789,16 @@ def raze_fetch_remote_crates():
         sha256 = "df004cfca50ef23c36850aaaa59ad52cc70d0e90243c3c7737a4dd32dc7a3c4f",
         strip_prefix = "humantime-1.3.0",
         build_file = Label("//third_party/remote:BUILD.humantime-1.3.0.bazel"),
+    )
+
+    maybe(
+        http_archive,
+        name = "raze__humantime__2_0_1",
+        url = "https://crates.io/api/v1/crates/humantime/2.0.1/download",
+        type = "tar.gz",
+        sha256 = "3c1ad908cc71012b7bea4d0c53ba96a8cba9962f048fa68d143376143d863b7a",
+        strip_prefix = "humantime-2.0.1",
+        build_file = Label("//third_party/remote:BUILD.humantime-2.0.1.bazel"),
     )
 
     maybe(

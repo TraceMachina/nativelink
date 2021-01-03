@@ -5,6 +5,7 @@ use std::convert::TryInto;
 
 use hex::FromHex;
 use lazy_init::LazyTransform;
+pub use log;
 use proto::build::bazel::remote::execution::v2::Digest;
 
 use error::{make_input_err, Error, ResultExt};

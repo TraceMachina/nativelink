@@ -5,6 +5,7 @@ use std::convert::TryInto;
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::{stream::Stream, FutureExt, StreamExt};
 use tonic::{Request, Response, Status};
@@ -19,7 +20,7 @@ use proto::build::bazel::remote::execution::v2::{
 };
 use proto::google::rpc::Status as GrpcStatus;
 
-use common::DigestInfo;
+use common::{log, DigestInfo};
 use error::{error_if, Error, ResultExt};
 use store::Store;
 
@@ -158,30 +159,57 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        self.inner_find_missing_blobs(grpc_request)
+        log::info!(
+            "\x1b[0;31mfind_missing_blobs Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
+        let now = Instant::now();
+        let resp = self
+            .inner_find_missing_blobs(grpc_request)
             .await
             .err_tip(|| format!("Failed on find_missing_blobs() command"))
-            .map_err(|e| e.into())
+            .map_err(|e| e.into());
+        let d = now.elapsed().as_secs_f32();
+        log::info!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        resp
     }
 
     async fn batch_update_blobs(
         &self,
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        self.inner_batch_update_blobs(grpc_request)
+        log::info!(
+            "\x1b[0;31mbatch_update_blobs Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
+        let now = Instant::now();
+        let resp = self
+            .inner_batch_update_blobs(grpc_request)
             .await
             .err_tip(|| format!("Failed on batch_update_blobs() command"))
-            .map_err(|e| e.into())
+            .map_err(|e| e.into());
+        let d = now.elapsed().as_secs_f32();
+        log::info!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        resp
     }
 
     async fn batch_read_blobs(
         &self,
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        self.inner_batch_read_blobs(grpc_request)
+        log::info!(
+            "\x1b[0;31mbatch_read_blobs Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
+        let now = Instant::now();
+        let resp = self
+            .inner_batch_read_blobs(grpc_request)
             .await
             .err_tip(|| format!("Failed on batch_read_blobs() command"))
-            .map_err(|e| e.into())
+            .map_err(|e| e.into());
+        let d = now.elapsed().as_secs_f32();
+        log::info!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        resp
     }
 
     type GetTreeStream =
@@ -192,7 +220,7 @@ impl ContentAddressableStorage for CasServer {
     ) -> Result<Response<Self::GetTreeStream>, Status> {
         use stdext::function_name;
         let output = format!("{} not yet implemented", function_name!());
-        println!("{}", output);
+        log::info!("\x1b[0;31mget_tree\x1b[0m: {:?}", output);
         Err(Status::unimplemented(output))
     }
 }

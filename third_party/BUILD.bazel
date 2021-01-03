@@ -49,6 +49,15 @@ alias(
 )
 
 alias(
+    name = "env_logger",
+    actual = "@raze__env_logger__0_8_2//:env_logger",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "fixed_buffer",
     actual = "@raze__fixed_buffer__0_2_2//:fixed_buffer",
     tags = [
@@ -78,6 +87,15 @@ alias(
 alias(
     name = "lazy_init",
     actual = "@raze__lazy_init__0_4_0//:lazy_init",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "log",
+    actual = "@raze__log__0_4_11//:log",
     tags = [
         "cargo-raze",
         "manual",

@@ -11,6 +11,10 @@ use store::{StoreConfig, StoreType};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+
     let addr = "0.0.0.0:50051".parse()?;
 
     let ac_store = store::create_store(&StoreConfig {
