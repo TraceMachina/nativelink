@@ -47,7 +47,7 @@ impl ByteStreamServer {
             .err_tip(|| "Could not unwrap first stream message")?;
 
         let raw_buffer = vec![0u8; self.max_stream_buffer_size].into_boxed_slice();
-        let (rx, mut tx) = tokio::io::split(AsyncFixedBuf::new(Box::leak(raw_buffer)));
+        let (rx, mut tx) = tokio::io::split(AsyncFixedBuf::new(raw_buffer));
 
         let join_handle = {
             let store = self.store.clone();
