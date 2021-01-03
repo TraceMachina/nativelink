@@ -195,7 +195,7 @@ impl ByteStream for ByteStreamServer {
         &self,
         _grpc_request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
-        println!("\x1b[0;31mread\x1b[0m {:?}", _grpc_request);
+        println!("\x1b[0;31mread\x1b[0m {:?}", _grpc_request.get_ref());
         Err(Status::unimplemented(""))
     }
 
@@ -203,7 +203,7 @@ impl ByteStream for ByteStreamServer {
         &self,
         grpc_request: Request<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
-        println!("Write Req: {:?}", grpc_request);
+        println!("\x1b[0;31mWrite Req\x1b[0m: {:?}", grpc_request.get_ref());
         let resp = self
             .inner_write(grpc_request)
             .await
@@ -217,7 +217,7 @@ impl ByteStream for ByteStreamServer {
         &self,
         _grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Status> {
-        println!("query_write_status {:?}", _grpc_request);
+        println!("query_write_status {:?}", _grpc_request.get_ref());
         Err(Status::unimplemented(""))
     }
 }

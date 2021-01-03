@@ -104,7 +104,10 @@ impl ActionCache for AcServer {
         &self,
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        println!("\x1b[0;31mget_action_result Req\x1b[0m: {:?}", grpc_request);
+        println!(
+            "\x1b[0;31mget_action_result Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let resp = self.inner_get_action_result(grpc_request).await;
         println!("\x1b[0;31mget_action_result Resp\x1b[0m: {:?}", resp);
         return resp.map_err(|e| e.into());
@@ -116,7 +119,7 @@ impl ActionCache for AcServer {
     ) -> Result<Response<ActionResult>, Status> {
         println!(
             "\x1b[0;31mupdate_action_result Req\x1b[0m: {:?}",
-            grpc_request
+            grpc_request.get_ref()
         );
         let resp = self.inner_update_action_result(grpc_request).await;
         println!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {:?}", resp);
