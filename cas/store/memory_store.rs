@@ -38,7 +38,7 @@ impl StoreTrait for MemoryStore {
         digest: &'a DigestInfo,
         mut reader: Box<dyn AsyncRead + Send + Unpin + 'b>,
     ) -> Result<(), Error> {
-        let mut buffer = Vec::new();
+        let mut buffer = Vec::with_capacity(digest.size_bytes as usize);
         let read_size = reader.read_to_end(&mut buffer).await? as i64;
         error_if!(
             self.verify_size && read_size != digest.size_bytes,

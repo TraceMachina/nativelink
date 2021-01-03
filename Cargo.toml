@@ -16,7 +16,7 @@ async-trait = "0.1.42"
 fixed-buffer = "0.2.2"
 futures = "0.3.8"
 # We must use tokio 0.2.x because tonic runtime uses it.
-tokio = { version = "0.2", features = ["macros"] }
+tokio = { version = "0.2", features = ["macros", "io-util", "rt-threaded"] }
 tonic = "0.3.1"
 lazy-init = "0.4.0"
 log = "0.4.11"

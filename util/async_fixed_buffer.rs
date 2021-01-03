@@ -25,7 +25,6 @@ use fixed_buffer::FixedBuf;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-// #[derive(Pin)]
 pub struct AsyncFixedBuf<T> {
     inner: FixedBuf<T>,
     waker: Mutex<Option<Waker>>,
