@@ -7,7 +7,7 @@ use bytestream_server::ByteStreamServer;
 use tonic::Request;
 
 use common::DigestInfo;
-use store::{create_store, StoreType};
+use store::{create_store, StoreConfig, StoreType};
 
 const INSTANCE_NAME: &str = "foo";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
@@ -60,7 +60,10 @@ pub mod write_tests {
 
     #[tokio::test]
     pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
-        let store = create_store(&StoreType::Memory);
+        let store = create_store(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: true,
+        });
         let bs_server = ByteStreamServer::new(store.clone());
 
         // Setup stream.

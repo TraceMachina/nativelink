@@ -9,17 +9,19 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use common::DigestInfo;
 use error::{error_if, Code, Error, ResultExt};
-use traits::StoreTrait;
+use traits::{StoreConfig, StoreTrait};
 
 #[derive(Debug)]
 pub struct MemoryStore {
     map: Mutex<HashMap<[u8; 32], Arc<Vec<u8>>>>,
+    verify_size: bool,
 }
 
 impl MemoryStore {
-    pub fn new() -> Self {
+    pub fn new(config: &StoreConfig) -> Self {
         MemoryStore {
             map: Mutex::new(HashMap::new()),
+            verify_size: config.verify_size,
         }
     }
 }
@@ -39,7 +41,7 @@ impl StoreTrait for MemoryStore {
         let mut buffer = Vec::new();
         let read_size = reader.read_to_end(&mut buffer).await? as i64;
         error_if!(
-            read_size != digest.size_bytes,
+            self.verify_size && read_size != digest.size_bytes,
             "Expected size {} but got size {} for hash {} CAS insert",
             digest.size_bytes,
             read_size,

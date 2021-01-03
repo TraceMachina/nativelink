@@ -11,7 +11,7 @@ use proto::build::bazel::remote::execution::v2::{
 
 use ac_server::AcServer;
 use common::DigestInfo;
-use store::{create_store, Store, StoreType};
+use store::{create_store, Store, StoreConfig, StoreType};
 
 const INSTANCE_NAME: &str = "foo";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
@@ -58,8 +58,17 @@ mod get_action_results {
 
     #[tokio::test]
     async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store = create_store(&StoreType::Memory);
-        let ac_server = AcServer::new(ac_store.clone(), create_store(&StoreType::Memory));
+        let ac_store = create_store(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: false,
+        });
+        let ac_server = AcServer::new(
+            ac_store.clone(),
+            create_store(&StoreConfig {
+                store_type: StoreType::Memory,
+                verify_size: true,
+            }),
+        );
 
         let raw_response = get_action_result(&ac_server, HASH1, 0).await;
 
@@ -74,8 +83,17 @@ mod get_action_results {
 
     #[tokio::test]
     async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store = create_store(&StoreType::Memory);
-        let ac_server = AcServer::new(ac_store.clone(), create_store(&StoreType::Memory));
+        let ac_store = create_store(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: false,
+        });
+        let ac_server = AcServer::new(
+            ac_store.clone(),
+            create_store(&StoreConfig {
+                store_type: StoreType::Memory,
+                verify_size: true,
+            }),
+        );
 
         let mut action_result = ActionResult::default();
         action_result.exit_code = 45;
@@ -94,8 +112,17 @@ mod get_action_results {
 
     #[tokio::test]
     async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store = create_store(&StoreType::Memory);
-        let ac_server = AcServer::new(ac_store.clone(), create_store(&StoreType::Memory));
+        let ac_store = create_store(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: false,
+        });
+        let ac_server = AcServer::new(
+            ac_store.clone(),
+            create_store(&StoreConfig {
+                store_type: StoreType::Memory,
+                verify_size: true,
+            }),
+        );
 
         let mut action_result = ActionResult::default();
         action_result.exit_code = 45;
@@ -141,8 +168,17 @@ mod update_action_result {
 
     #[tokio::test]
     async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store = create_store(&StoreType::Memory);
-        let ac_server = AcServer::new(ac_store.clone(), create_store(&StoreType::Memory));
+        let ac_store = create_store(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: false,
+        });
+        let ac_server = AcServer::new(
+            ac_store.clone(),
+            create_store(&StoreConfig {
+                store_type: StoreType::Memory,
+                verify_size: true,
+            }),
+        );
 
         let mut action_result = ActionResult::default();
         action_result.exit_code = 45;

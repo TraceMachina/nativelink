@@ -7,14 +7,20 @@ use bytestream_server::ByteStreamServer;
 use capabilities_server::CapabilitiesServer;
 use cas_server::CasServer;
 use execution_server::ExecutionServer;
-use store;
+use store::{StoreConfig, StoreType};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:50051".parse()?;
 
-    let ac_store = store::create_store(&store::StoreType::Memory);
-    let cas_store = store::create_store(&store::StoreType::Memory);
+    let ac_store = store::create_store(&StoreConfig {
+        store_type: StoreType::Memory,
+        verify_size: false,
+    });
+    let cas_store = store::create_store(&StoreConfig {
+        store_type: StoreType::Memory,
+        verify_size: true,
+    });
 
     Server::builder()
         .add_service(AcServer::new(ac_store, cas_store.clone()).into_service())

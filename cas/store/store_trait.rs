@@ -6,6 +6,17 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use common::DigestInfo;
 use error::Error;
 
+pub enum StoreType {
+    Memory,
+}
+
+pub struct StoreConfig {
+    pub store_type: StoreType,
+
+    // If we need to verify the digest size of what is being uploaded.
+    pub verify_size: bool,
+}
+
 #[async_trait]
 pub trait StoreTrait: Sync + Send {
     async fn has(&self, digest: &DigestInfo) -> Result<bool, Error>;

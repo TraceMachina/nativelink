@@ -126,7 +126,6 @@ impl<'a> ResourceInfo<'a> {
 struct WriteRequestStreamWrapper {
     stream: Streaming<WriteRequest>,
     current_msg: WriteRequest,
-    original_resource_name: String,
     hash: String,
     expected_size: usize,
     is_first: bool,
@@ -141,15 +140,13 @@ impl WriteRequestStreamWrapper {
             .err_tip(|| "Error receiving first message in stream")?
             .err_tip(|| "Expected WriteRequest struct in stream")?;
 
-        let original_resource_name = current_msg.resource_name.clone();
-        let resource_info = ResourceInfo::new(&original_resource_name)
+        let resource_info = ResourceInfo::new(&current_msg.resource_name)
             .err_tip(|| "Could not extract resource info from first message of stream")?;
         let hash = resource_info.hash.to_string();
         let expected_size = resource_info.expected_size;
         Ok(WriteRequestStreamWrapper {
             stream,
             current_msg,
-            original_resource_name,
             hash,
             expected_size,
             is_first: true,
@@ -186,13 +183,6 @@ impl WriteRequestStreamWrapper {
             .err_tip(|| "Expected WriteRequest struct in stream")?;
         self.bytes_received += self.current_msg.data.len();
 
-        error_if!(
-            self.original_resource_name != self.current_msg.resource_name,
-            "Resource name missmatch, expected {} got {}",
-            self.original_resource_name,
-            self.current_msg.resource_name
-        );
-
         Ok(Some(&self.current_msg))
     }
 }
@@ -205,7 +195,7 @@ impl ByteStream for ByteStreamServer {
         &self,
         _grpc_request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
-        println!("read {:?}", _grpc_request);
+        println!("\x1b[0;31mread\x1b[0m {:?}", _grpc_request);
         Err(Status::unimplemented(""))
     }
 
@@ -219,7 +209,7 @@ impl ByteStream for ByteStreamServer {
             .await
             .err_tip(|| format!("Failed on write() command"))
             .map_err(|e| e.into());
-        println!("Write Resp: {:?}", resp);
+        println!("\x1b[0;31mWrite Resp\x1b[0m: {:?}", resp);
         resp
     }
 

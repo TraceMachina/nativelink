@@ -1,6 +1,5 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
-use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -14,7 +13,7 @@ use proto::build::bazel::remote::execution::v2::{
 };
 
 use common::DigestInfo;
-use error::{error_if, make_err, Code, Error, ResultExt};
+use error::{make_err, Code, Error, ResultExt};
 use store::Store;
 
 pub struct AcServer {
@@ -82,24 +81,16 @@ impl AcServer {
             .err_tip(|| "Action digest was not set in message")?
             .try_into()?;
 
-        let size_bytes = usize::try_from(digest.size_bytes)
-            .err_tip(|| "Digest size_bytes was not convertable to usize")?;
-
         let action_result = update_action_request
             .action_result
             .err_tip(|| "Action result was not set in message")?;
 
         // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
-        let mut store_data = Vec::with_capacity(size_bytes);
+        let mut store_data = Vec::new();
         action_result
             .encode(&mut store_data)
             .err_tip(|| "Provided ActionResult could not be serialized")?;
-        error_if!(
-            store_data.len() != size_bytes,
-            "Digest size does not match. Actual: {} Expected: {} ",
-            store_data.len(),
-            size_bytes
-        );
+
         self.ac_store
             .update(&digest, Box::new(Cursor::new(store_data)))
             .await?;
@@ -113,9 +104,9 @@ impl ActionCache for AcServer {
         &self,
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        println!("get_action_result Req: {:?}", grpc_request);
+        println!("\x1b[0;31mget_action_result Req\x1b[0m: {:?}", grpc_request);
         let resp = self.inner_get_action_result(grpc_request).await;
-        println!("get_action_result Resp: {:?}", resp);
+        println!("\x1b[0;31mget_action_result Resp\x1b[0m: {:?}", resp);
         return resp.map_err(|e| e.into());
     }
 
@@ -123,9 +114,12 @@ impl ActionCache for AcServer {
         &self,
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        println!("update_action_result Req: {:?}", grpc_request);
+        println!(
+            "\x1b[0;31mupdate_action_result Req\x1b[0m: {:?}",
+            grpc_request
+        );
         let resp = self.inner_update_action_result(grpc_request).await;
-        println!("update_action_result Resp: {:?}", resp);
+        println!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {:?}", resp);
         return resp.map_err(|e| e.into());
     }
 }

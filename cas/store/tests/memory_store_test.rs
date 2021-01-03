@@ -9,13 +9,16 @@ mod memory_store_tests {
 
     use common::DigestInfo;
     use memory_store::MemoryStore;
-    use traits::StoreTrait;
+    use traits::{StoreConfig, StoreTrait, StoreType};
 
     const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
     #[tokio::test]
     async fn insert_one_item_then_update() -> Result<(), Error> {
-        let store = MemoryStore::new();
+        let store = MemoryStore::new(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: false,
+        });
 
         {
             // Insert dummy value into store.
@@ -70,8 +73,29 @@ mod memory_store_tests {
     const INVALID_HASH: &str = "g111111111111111111111111111111111111111111111111111111111111111";
 
     #[tokio::test]
+    async fn verify_size_false_passes_on_update() -> Result<(), Error> {
+        let store = MemoryStore::new(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: false,
+        });
+        const VALUE1: &str = "123";
+        let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
+        let result = store.update(&digest, Box::new(Cursor::new(VALUE1))).await;
+        assert_eq!(
+            result,
+            Ok(()),
+            "Should have succeeded when verify_size = false, got: {:?}",
+            result
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn errors_with_invalid_inputs() -> Result<(), Error> {
-        let mut store = MemoryStore::new();
+        let mut store = MemoryStore::new(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: true,
+        });
         const VALUE1: &str = "123";
         {
             // .has() tests.
