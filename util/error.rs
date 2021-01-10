@@ -40,10 +40,7 @@ impl Error {
         if !msg.is_empty() {
             msgs.push(msg);
         }
-        Error {
-            code,
-            messages: msgs,
-        }
+        Error { code, messages: msgs }
     }
 }
 

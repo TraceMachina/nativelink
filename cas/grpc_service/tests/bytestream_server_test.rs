@@ -121,14 +121,12 @@ pub mod write_tests {
         {
             // One for spawn() future and one for result.
             let server_result = join_handle.await??;
-            let committed_size = usize::try_from(server_result.into_inner().committed_size)
-                .or(Err("Cant convert i64 to usize"))?;
+            let committed_size =
+                usize::try_from(server_result.into_inner().committed_size).or(Err("Cant convert i64 to usize"))?;
             assert_eq!(committed_size as usize, raw_data.len());
 
             // Now lets check our store to ensure it was written with proper data.
-            store
-                .has(&DigestInfo::try_new(&HASH1, raw_data.len())?)
-                .await?;
+            store.has(&DigestInfo::try_new(&HASH1, raw_data.len())?).await?;
             let mut store_data = Vec::new();
             store
                 .get(

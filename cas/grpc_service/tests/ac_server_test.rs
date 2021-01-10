@@ -5,9 +5,7 @@ use std::io::Cursor;
 use tonic::{Code, Request, Response, Status};
 
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::{
-    action_cache_server::ActionCache, ActionResult, Digest,
-};
+use proto::build::bazel::remote::execution::v2::{action_cache_server::ActionCache, ActionResult, Digest};
 
 use ac_server::AcServer;
 use common::DigestInfo;
@@ -24,9 +22,7 @@ async fn insert_into_store<T: Message>(
     let mut store_data = Vec::new();
     action_result.encode(&mut store_data)?;
     let digest = DigestInfo::try_new(&hash, store_data.len() as i64)?;
-    store
-        .update(&digest, Box::new(Cursor::new(store_data)))
-        .await?;
+    store.update(&digest, Box::new(Cursor::new(store_data))).await?;
     Ok(digest.size_bytes as i64)
 }
 
@@ -37,11 +33,7 @@ mod get_action_results {
 
     use proto::build::bazel::remote::execution::v2::GetActionResultRequest;
 
-    async fn get_action_result(
-        ac_server: &AcServer,
-        hash: &str,
-        size: i64,
-    ) -> Result<Response<ActionResult>, Status> {
+    async fn get_action_result(ac_server: &AcServer, hash: &str, size: i64) -> Result<Response<ActionResult>, Status> {
         ac_server
             .get_action_result(Request::new(GetActionResultRequest {
                 instance_name: INSTANCE_NAME.to_string(),
@@ -101,11 +93,7 @@ mod get_action_results {
         let digest_size = insert_into_store(ac_store.as_ref(), &HASH1, &action_result).await?;
         let raw_response = get_action_result(&ac_server, HASH1, digest_size).await;
 
-        assert!(
-            raw_response.is_ok(),
-            "Expected value, got error {:?}",
-            raw_response
-        );
+        assert!(raw_response.is_ok(), "Expected value, got error {:?}", raw_response);
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
         Ok(())
     }
@@ -195,18 +183,12 @@ mod update_action_result {
         )
         .await;
 
-        assert!(
-            raw_response.is_ok(),
-            "Expected success, got error {:?}",
-            raw_response
-        );
+        assert!(raw_response.is_ok(), "Expected success, got error {:?}", raw_response);
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
 
         let mut raw_data = Vec::new();
         let digest = DigestInfo::try_new(&HASH1, size_bytes)?;
-        ac_store
-            .get(&digest, &mut Cursor::new(&mut raw_data))
-            .await?;
+        ac_store.get(&digest, &mut Cursor::new(&mut raw_data)).await?;
 
         let decoded_action_result = ActionResult::decode(Cursor::new(&raw_data))?;
         assert_eq!(decoded_action_result, action_result);

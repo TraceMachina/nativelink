@@ -13,10 +13,9 @@ use tonic::{Request, Response, Status};
 use proto::build::bazel::remote::execution::v2::{
     batch_read_blobs_response, batch_update_blobs_response,
     content_addressable_storage_server::ContentAddressableStorage,
-    content_addressable_storage_server::ContentAddressableStorageServer as Server,
-    BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
-    BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest,
-    GetTreeResponse,
+    content_addressable_storage_server::ContentAddressableStorageServer as Server, BatchReadBlobsRequest,
+    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, FindMissingBlobsRequest,
+    FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
 };
 use proto::google::rpc::Status as GrpcStatus;
 
@@ -46,10 +45,10 @@ impl CasServer {
             let store = self.store.clone();
             let digest: DigestInfo = digest.try_into()?;
             futures.push(tokio::spawn(async move {
-                store.has(&digest).await.map_or_else(
-                    |_| None,
-                    |success| if success { None } else { Some(digest) },
-                )
+                store
+                    .has(&digest)
+                    .await
+                    .map_or_else(|_| None, |success| if success { None } else { Some(digest) })
             }));
         }
         let mut responses = Vec::with_capacity(futures.len());
@@ -70,10 +69,7 @@ impl CasServer {
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
         let mut futures = futures::stream::FuturesOrdered::new();
         for request in grpc_request.into_inner().requests {
-            let digest: DigestInfo = request
-                .digest
-                .err_tip(|| "Digest not found in request")?
-                .try_into()?;
+            let digest: DigestInfo = request.digest.err_tip(|| "Digest not found in request")?.try_into()?;
             let digest_copy = digest.clone();
             let store = self.store.clone();
             let request_data = request.data;
@@ -103,9 +99,7 @@ impl CasServer {
         while let Some(result) = futures.next().await {
             responses.push(result.err_tip(|| "Internal error joining future")?);
         }
-        Ok(Response::new(BatchUpdateBlobsResponse {
-            responses: responses,
-        }))
+        Ok(Response::new(BatchUpdateBlobsResponse { responses: responses }))
     }
 
     async fn inner_batch_read_blobs(
@@ -132,8 +126,7 @@ impl CasServer {
                     Ok(store_data)
                 }
                 .map(|result: Result<Vec<u8>, Error>| {
-                    let (status, data) =
-                        result.map_or_else(|e| (e.into(), vec![]), |v| (GrpcStatus::default(), v));
+                    let (status, data) = result.map_or_else(|e| (e.into(), vec![]), |v| (GrpcStatus::default(), v));
                     batch_read_blobs_response::Response {
                         status: Some(status),
                         digest: Some(digest.into()),
@@ -147,9 +140,7 @@ impl CasServer {
         while let Some(result) = futures.next().await {
             responses.push(result.err_tip(|| "Internal error joining future")?);
         }
-        Ok(Response::new(BatchReadBlobsResponse {
-            responses: responses,
-        }))
+        Ok(Response::new(BatchReadBlobsResponse { responses: responses }))
     }
 }
 
@@ -159,10 +150,7 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        log::info!(
-            "\x1b[0;31mfind_missing_blobs Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
+        log::info!("\x1b[0;31mfind_missing_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self
             .inner_find_missing_blobs(grpc_request)
@@ -178,10 +166,7 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        log::info!(
-            "\x1b[0;31mbatch_update_blobs Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
+        log::info!("\x1b[0;31mbatch_update_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self
             .inner_batch_update_blobs(grpc_request)
@@ -197,10 +182,7 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        log::info!(
-            "\x1b[0;31mbatch_read_blobs Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
+        log::info!("\x1b[0;31mbatch_read_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self
             .inner_batch_read_blobs(grpc_request)
@@ -212,12 +194,8 @@ impl ContentAddressableStorage for CasServer {
         resp
     }
 
-    type GetTreeStream =
-        Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + Sync + 'static>>;
-    async fn get_tree(
-        &self,
-        _request: Request<GetTreeRequest>,
-    ) -> Result<Response<Self::GetTreeStream>, Status> {
+    type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + Sync + 'static>>;
+    async fn get_tree(&self, _request: Request<GetTreeRequest>) -> Result<Response<Self::GetTreeStream>, Status> {
         use stdext::function_name;
         let output = format!("{} not yet implemented", function_name!());
         log::info!("\x1b[0;31mget_tree\x1b[0m: {:?}", output);

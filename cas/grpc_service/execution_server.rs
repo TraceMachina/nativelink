@@ -6,8 +6,7 @@ use futures::Stream;
 use tonic::{Request, Response, Status};
 
 use proto::build::bazel::remote::execution::v2::{
-    execution_server::Execution, execution_server::ExecutionServer as Server, ExecuteRequest,
-    WaitExecutionRequest,
+    execution_server::Execution, execution_server::ExecutionServer as Server, ExecuteRequest, WaitExecutionRequest,
 };
 use proto::google::longrunning::Operation;
 
@@ -22,20 +21,15 @@ impl ExecutionServer {
 
 #[tonic::async_trait]
 impl Execution for ExecutionServer {
-    type ExecuteStream =
-        Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + Sync + 'static>>;
-    async fn execute(
-        &self,
-        _request: Request<ExecuteRequest>,
-    ) -> Result<Response<Self::ExecuteStream>, Status> {
+    type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + Sync + 'static>>;
+    async fn execute(&self, _request: Request<ExecuteRequest>) -> Result<Response<Self::ExecuteStream>, Status> {
         use stdext::function_name;
         let output = format!("{} not yet implemented", function_name!());
         println!("{}", output);
         Err(Status::unimplemented(output))
     }
 
-    type WaitExecutionStream =
-        Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + Sync + 'static>>;
+    type WaitExecutionStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + Sync + 'static>>;
     async fn wait_execution(
         &self,
         _request: Request<WaitExecutionRequest>,

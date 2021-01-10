@@ -59,10 +59,7 @@ mod find_missing_blobs {
         const VALUE: &str = "1";
 
         store
-            .update(
-                &DigestInfo::try_new(HASH1, VALUE.len())?,
-                Box::new(Cursor::new(VALUE)),
-            )
+            .update(&DigestInfo::try_new(HASH1, VALUE.len())?, Box::new(Cursor::new(VALUE)))
             .await?;
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -90,10 +87,7 @@ mod find_missing_blobs {
         const VALUE: &str = "1";
 
         store
-            .update(
-                &DigestInfo::try_new(HASH1, VALUE.len())?,
-                Box::new(Cursor::new(VALUE)),
-            )
+            .update(&DigestInfo::try_new(HASH1, VALUE.len())?, Box::new(Cursor::new(VALUE)))
             .await?;
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -132,8 +126,7 @@ mod batch_update_blobs {
     use std::io::Cursor;
 
     use proto::build::bazel::remote::execution::v2::{
-        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest,
-        BatchUpdateBlobsResponse,
+        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
     };
 
     #[tokio::test]
@@ -213,8 +206,7 @@ mod batch_read_blobs {
     use tonic::Code;
 
     #[tokio::test]
-    async fn batch_read_blobs_read_two_blobs_success_one_fail(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dyn std::error::Error>> {
         let store = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: true,
@@ -307,13 +299,12 @@ mod end_to_end {
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use proto::build::bazel::remote::execution::v2::{
-        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest,
-        BatchUpdateBlobsResponse, FindMissingBlobsRequest,
+        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
+        FindMissingBlobsRequest,
     };
 
     #[tokio::test]
-    async fn batch_update_blobs_two_items_existence_with_third_missing(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn batch_update_blobs_two_items_existence_with_third_missing() -> Result<(), Box<dyn std::error::Error>> {
         let store = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: true,

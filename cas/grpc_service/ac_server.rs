@@ -9,8 +9,8 @@ use prost::Message;
 use tonic::{Request, Response, Status};
 
 use proto::build::bazel::remote::execution::v2::{
-    action_cache_server::ActionCache, action_cache_server::ActionCacheServer as Server,
-    ActionResult, GetActionResultRequest, UpdateActionResultRequest,
+    action_cache_server::ActionCache, action_cache_server::ActionCacheServer as Server, ActionResult,
+    GetActionResultRequest, UpdateActionResultRequest,
 };
 
 use common::{log, DigestInfo};
@@ -52,19 +52,11 @@ impl AcServer {
         let mut cursor = Cursor::new(&mut store_data);
         self.ac_store.get(&digest, &mut cursor).await?;
 
-        let action_result =
-            ActionResult::decode(Cursor::new(&store_data)).err_tip_with_code(|e| {
-                (
-                    Code::NotFound,
-                    format!("Stored value appears to be corrupt: {}", e),
-                )
-            })?;
+        let action_result = ActionResult::decode(Cursor::new(&store_data))
+            .err_tip_with_code(|e| (Code::NotFound, format!("Stored value appears to be corrupt: {}", e)))?;
 
         if store_data.len() != digest.size_bytes as usize {
-            return Err(make_err!(
-                Code::NotFound,
-                "Found item, but size does not match"
-            ));
+            return Err(make_err!(Code::NotFound, "Found item, but size does not match"));
         }
         Ok(Response::new(action_result))
     }
@@ -92,9 +84,7 @@ impl AcServer {
             .encode(&mut store_data)
             .err_tip(|| "Provided ActionResult could not be serialized")?;
 
-        self.ac_store
-            .update(&digest, Box::new(Cursor::new(store_data)))
-            .await?;
+        self.ac_store.update(&digest, Box::new(Cursor::new(store_data))).await?;
         Ok(Response::new(action_result))
     }
 }
@@ -106,10 +96,7 @@ impl ActionCache for AcServer {
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let now = Instant::now();
-        log::info!(
-            "\x1b[0;31mget_action_result Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
+        log::info!("\x1b[0;31mget_action_result Req\x1b[0m: {:?}", grpc_request.get_ref());
         let resp = self.inner_get_action_result(grpc_request).await;
         let d = now.elapsed().as_secs_f32();
         log::info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?}", d, resp);
@@ -127,11 +114,7 @@ impl ActionCache for AcServer {
         );
         let resp = self.inner_update_action_result(grpc_request).await;
         let d = now.elapsed().as_secs_f32();
-        log::info!(
-            "\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}",
-            d,
-            resp
-        );
+        log::info!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}", d, resp);
         return resp.map_err(|e| e.into());
     }
 }

@@ -10,9 +10,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::{Request, Response, Status, Streaming};
 
 use proto::google::bytestream::{
-    byte_stream_server::ByteStream, byte_stream_server::ByteStreamServer as Server,
-    QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest,
-    WriteResponse,
+    byte_stream_server::ByteStream, byte_stream_server::ByteStreamServer as Server, QueryWriteStatusRequest,
+    QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
 };
 
 use common::{log, DigestInfo};
@@ -55,9 +54,7 @@ impl ByteStreamServer {
             let expected_size = stream.expected_size;
             tokio::spawn(async move {
                 let rx = Box::new(rx.take(expected_size as u64));
-                store
-                    .update(&DigestInfo::try_new(&hash, expected_size)?, rx)
-                    .await
+                store.update(&DigestInfo::try_new(&hash, expected_size)?, rx).await
             })
         };
 
@@ -190,20 +187,13 @@ impl WriteRequestStreamWrapper {
 
 #[tonic::async_trait]
 impl ByteStream for ByteStreamServer {
-    type ReadStream =
-        Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + Sync + 'static>>;
-    async fn read(
-        &self,
-        _grpc_request: Request<ReadRequest>,
-    ) -> Result<Response<Self::ReadStream>, Status> {
+    type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + Sync + 'static>>;
+    async fn read(&self, _grpc_request: Request<ReadRequest>) -> Result<Response<Self::ReadStream>, Status> {
         log::info!("\x1b[0;31mread\x1b[0m {:?}", _grpc_request.get_ref());
         Err(Status::unimplemented(""))
     }
 
-    async fn write(
-        &self,
-        grpc_request: Request<Streaming<WriteRequest>>,
-    ) -> Result<Response<WriteResponse>, Status> {
+    async fn write(&self, grpc_request: Request<Streaming<WriteRequest>>) -> Result<Response<WriteResponse>, Status> {
         log::info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self

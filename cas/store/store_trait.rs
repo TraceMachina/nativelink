@@ -35,11 +35,7 @@ pub trait StoreTrait: Sync + Send {
         length: Option<usize>,
     ) -> Result<(), Error>;
 
-    async fn get(
-        &self,
-        digest: &DigestInfo,
-        writer: &mut (dyn AsyncWrite + Send + Unpin),
-    ) -> Result<(), Error> {
+    async fn get(&self, digest: &DigestInfo, writer: &mut (dyn AsyncWrite + Send + Unpin)) -> Result<(), Error> {
         self.get_part(digest, writer, 0, None).await
     }
 }

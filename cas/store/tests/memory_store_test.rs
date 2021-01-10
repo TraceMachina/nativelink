@@ -67,8 +67,7 @@ mod memory_store_tests {
         Ok(())
     }
 
-    const TOO_LONG_HASH: &str =
-        "0123456789abcdef000000000000000000010000000000000123456789abcdefff";
+    const TOO_LONG_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdefff";
     const TOO_SHORT_HASH: &str = "100000000000000000000000000000000000000000000000000000000000001";
     const INVALID_HASH: &str = "g111111111111111111111111111111111111111111111111111111111111111";
 
@@ -174,11 +173,7 @@ mod memory_store_tests {
             ) {
                 let digest = DigestInfo::try_new(&hash, expected_size);
                 assert!(
-                    digest.is_err()
-                        || store
-                            .get(&digest.unwrap(), &mut Cursor::new(out_data))
-                            .await
-                            .is_err(),
+                    digest.is_err() || store.get(&digest.unwrap(), &mut Cursor::new(out_data)).await.is_err(),
                     ".get() should have failed: {} {}",
                     hash,
                     expected_size
