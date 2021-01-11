@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use core::pin::Pin;
@@ -27,8 +28,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub struct AsyncFixedBuf<T> {
     inner: FixedBuf<T>,
-    waker: Mutex<Option<Waker>>,
-    did_shutdown: AtomicBool,
+    waker: Arc<Mutex<Option<Waker>>>,
+    did_shutdown: Arc<AtomicBool>,
     write_amt: AtomicUsize,
     read_amt: AtomicUsize,
 }
@@ -42,20 +43,37 @@ impl<T> AsyncFixedBuf<T> {
     pub fn new(mem: T) -> Self {
         AsyncFixedBuf {
             inner: FixedBuf::new(mem),
-            waker: Mutex::new(None),
-            did_shutdown: AtomicBool::new(false),
+            waker: Arc::new(Mutex::new(None)),
+            did_shutdown: Arc::new(AtomicBool::new(false)),
             write_amt: AtomicUsize::new(0),
             read_amt: AtomicUsize::new(0),
         }
     }
 
+    // Utility method that can be used to get a lambda that will close the
+    // stream. This is useful for the reader to close the stream.
+    pub fn get_closer(&mut self) -> Box<dyn FnMut() + Sync + Send> {
+        let did_shutdown = self.did_shutdown.clone();
+        let waker = self.waker.clone();
+        Box::new(move || {
+            if did_shutdown.load(Ordering::Relaxed) {
+                return;
+            }
+            did_shutdown.store(true, Ordering::Relaxed);
+            let mut waker = waker.lock().unwrap();
+            if let Some(w) = waker.take() {
+                w.wake()
+            }
+        })
+    }
+
     fn park(&mut self, new_waker: &Waker) {
-        let waker = self.waker.get_mut().unwrap();
+        let mut waker = self.waker.lock().unwrap();
         *waker = Some(new_waker.clone());
     }
 
     fn wake(&mut self) {
-        let waker = self.waker.get_mut().unwrap();
+        let mut waker = self.waker.lock().unwrap();
         if let Some(w) = waker.take() {
             w.wake()
         }
@@ -98,23 +116,23 @@ impl<T: AsRef<[u8]> + Unpin> tokio::io::AsyncRead for AsyncFixedBuf<T> {
 
 impl<T: AsMut<[u8]>> tokio::io::AsyncWrite for AsyncFixedBuf<T> {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
+        if self.did_shutdown.load(Ordering::Relaxed) {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Receiver disconnected",
+            )));
+        }
         match self.inner.writable() {
             Some(writable_slice) => {
                 let write_amt = buf.len().min(writable_slice.len());
-                let mut result = Ok(write_amt);
                 if write_amt > 0 {
                     writable_slice[..write_amt].clone_from_slice(&buf[..write_amt]);
                     self.inner.wrote(write_amt);
-                } else if self.did_shutdown.load(Ordering::Relaxed) {
-                    result = Err(std::io::Error::new(
-                        std::io::ErrorKind::BrokenPipe,
-                        "Receiver disconnected",
-                    ));
                 }
 
                 self.wake();
                 self.write_amt.fetch_add(write_amt, Ordering::Relaxed);
-                Poll::Ready(result)
+                Poll::Ready(Ok(write_amt))
             }
             None => {
                 self.park(cx.waker());

@@ -1,6 +1,6 @@
 # Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
-load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library")
+load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "error",
@@ -36,4 +36,15 @@ rust_library(
         "//third_party:fixed_buffer",
     ],
     visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "utils_tests",
+    srcs = ["tests/async_fixed_buffer_tests.rs"],
+    deps = [
+        ":async_fixed_buffer",
+        ":error",
+        "//third_party:tokio",
+        "//third_party:pretty_assertions",
+    ],
 )
