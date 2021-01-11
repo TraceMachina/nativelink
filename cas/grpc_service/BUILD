@@ -52,6 +52,7 @@ rust_library(
         "//util:common",
         "//util:error",
         "//cas/store",
+        "//third_party:drop_guard",
         "//third_party:tokio",
         "//third_party:futures",
     ],

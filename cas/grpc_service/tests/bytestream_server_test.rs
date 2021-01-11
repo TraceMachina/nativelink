@@ -145,3 +145,99 @@ pub mod write_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+pub mod read_tests {
+    use super::*;
+    use pretty_assertions::assert_eq; // Must be declared in every module.
+
+    use tokio::stream::StreamExt;
+
+    use proto::google::bytestream::{
+        byte_stream_server::ByteStream, // Needed to call .read().
+        ReadRequest,
+    };
+
+    #[tokio::test]
+    pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::error::Error>> {
+        let store = create_store(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: true,
+        });
+        let bs_server = ByteStreamServer::new(store.clone());
+        let store = Pin::new(store.as_ref());
+
+        const VALUE1: &str = "12456789abcdefghijk";
+
+        let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        store.update(digest, Box::new(Cursor::new(VALUE1))).await?;
+
+        let read_request = ReadRequest {
+            resource_name: format!(
+                "{}/uploads/{}/blobs/{}/{}",
+                INSTANCE_NAME,
+                "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
+                HASH1,
+                VALUE1.len()
+            ),
+            read_offset: 0,
+            read_limit: VALUE1.len() as i64,
+        };
+        let mut read_stream = bs_server.read(Request::new(read_request)).await?.into_inner();
+        {
+            let mut roundtrip_data = Vec::with_capacity(VALUE1.len());
+            assert!(VALUE1.len() > 0, "Expected at least one byte to be sent");
+            while let Some(result_read_response) = read_stream.next().await {
+                roundtrip_data.append(&mut result_read_response?.data);
+            }
+            assert_eq!(
+                roundtrip_data,
+                VALUE1.as_bytes(),
+                "Expected response to match what is in store"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::error::Error>> {
+        let store = create_store(&StoreConfig {
+            store_type: StoreType::Memory,
+            verify_size: true,
+        });
+        let bs_server = ByteStreamServer::new(store.clone());
+        let store = Pin::new(store.as_ref());
+
+        const DATA_SIZE: usize = 10_000_000;
+        let mut raw_data = vec![41u8; DATA_SIZE];
+        // Change just a few bits to ensure we don't get same packet
+        // over and over.
+        raw_data[5] = 42u8;
+        raw_data[DATA_SIZE - 2] = 43u8;
+
+        let digest = DigestInfo::try_new(&HASH1, raw_data.len())?;
+        store.update(digest, Box::new(Cursor::new(raw_data.as_slice()))).await?;
+
+        let read_request = ReadRequest {
+            resource_name: format!(
+                "{}/uploads/{}/blobs/{}/{}",
+                INSTANCE_NAME,
+                "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
+                HASH1,
+                raw_data.len()
+            ),
+            read_offset: 0,
+            read_limit: raw_data.len() as i64,
+        };
+        let mut read_stream = bs_server.read(Request::new(read_request)).await?.into_inner();
+        {
+            let mut roundtrip_data = Vec::with_capacity(raw_data.len());
+            assert!(raw_data.len() > 0, "Expected at least one byte to be sent");
+            while let Some(result_read_response) = read_stream.next().await {
+                roundtrip_data.append(&mut result_read_response?.data);
+            }
+            assert_eq!(roundtrip_data, raw_data, "Expected response to match what is in store");
+        }
+        Ok(())
+    }
+}
