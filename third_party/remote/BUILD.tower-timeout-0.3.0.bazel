@@ -51,7 +51,7 @@ rust_library(
     deps = [
         "@raze__pin_project__0_4_27//:pin_project",
         "@raze__tokio__0_2_24//:tokio",
-        "@raze__tower_layer__0_3_0//:tower_layer",
+        "@raze__tower_layer__0_3_1//:tower_layer",
         "@raze__tower_service__0_3_0//:tower_service",
     ],
 )

@@ -80,7 +80,7 @@ rust_library(
     deps = [
         ":stacker_build_script",
         "@raze__cfg_if__0_1_10//:cfg_if",
-        "@raze__libc__0_2_81//:libc",
+        "@raze__libc__0_2_82//:libc",
         "@raze__psm__0_1_12//:psm",
     ],
 )

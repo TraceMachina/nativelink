@@ -76,13 +76,13 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "1.4.2",
+    version = "1.4.3",
     # buildifier: leave-alone
     deps = [
         "@raze__aho_corasick__0_7_15//:aho_corasick",
         "@raze__memchr__2_3_4//:memchr",
-        "@raze__regex_syntax__0_6_21//:regex_syntax",
-        "@raze__thread_local__1_0_1//:thread_local",
+        "@raze__regex_syntax__0_6_22//:regex_syntax",
+        "@raze__thread_local__1_1_0//:thread_local",
     ],
 )
 

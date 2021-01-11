@@ -51,7 +51,7 @@ rust_library(
     version = "0.7.1",
     # buildifier: leave-alone
     deps = [
-        "@raze__byteorder__1_3_4//:byteorder",
+        "@raze__byteorder__1_4_2//:byteorder",
         "@raze__parking_lot__0_9_0//:parking_lot",
         "@raze__rustc_hash__1_1_0//:rustc_hash",
     ] + selects.with_or({

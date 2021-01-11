@@ -56,9 +56,9 @@ rust_library(
         "@raze__lazy_static__1_4_0//:lazy_static",
         "@raze__log__0_4_11//:log",
         "@raze__memchr__2_3_4//:memchr",
-        "@raze__regex__1_4_2//:regex",
+        "@raze__regex__1_4_3//:regex",
         "@raze__same_file__1_0_6//:same_file",
-        "@raze__thread_local__1_0_1//:thread_local",
+        "@raze__thread_local__1_1_0//:thread_local",
         "@raze__walkdir__2_3_1//:walkdir",
     ],
 )

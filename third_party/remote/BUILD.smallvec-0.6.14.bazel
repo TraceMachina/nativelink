@@ -33,20 +33,13 @@ licenses([
 # Unsupported target "bench" with type "bench" omitted
 
 rust_library(
-    name = "regex_syntax",
+    name = "smallvec",
     srcs = glob(["**/*.rs"]),
     crate_features = [
         "default",
-        "unicode",
-        "unicode-age",
-        "unicode-bool",
-        "unicode-case",
-        "unicode-gencat",
-        "unicode-perl",
-        "unicode-script",
-        "unicode-segment",
+        "std",
     ],
-    crate_root = "src/lib.rs",
+    crate_root = "lib.rs",
     crate_type = "lib",
     data = [],
     edition = "2015",
@@ -57,8 +50,9 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.6.21",
+    version = "0.6.14",
     # buildifier: leave-alone
     deps = [
+        "@raze__maybe_uninit__2_0_0//:maybe_uninit",
     ],
 )

@@ -25,15 +25,19 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT"
+    "unencumbered",  # Unlicense from expression "Unlicense OR MIT"
 ])
 
 # Generated Targets
 
+# Unsupported target "bench" with type "bench" omitted
+
 rust_library(
-    name = "tower_discover",
+    name = "byteorder",
     srcs = glob(["**/*.rs"]),
     crate_features = [
+        "default",
+        "std",
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
@@ -46,11 +50,8 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.0",
+    version = "1.4.2",
     # buildifier: leave-alone
     deps = [
-        "@raze__futures_core__0_3_9//:futures_core",
-        "@raze__pin_project__0_4_27//:pin_project",
-        "@raze__tower_service__0_3_0//:tower_service",
     ],
 )

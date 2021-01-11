@@ -52,16 +52,16 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.8",
+    version = "0.3.9",
     # buildifier: leave-alone
     deps = [
-        "@raze__futures_channel__0_3_8//:futures_channel",
-        "@raze__futures_core__0_3_8//:futures_core",
-        "@raze__futures_executor__0_3_8//:futures_executor",
-        "@raze__futures_io__0_3_8//:futures_io",
-        "@raze__futures_sink__0_3_8//:futures_sink",
-        "@raze__futures_task__0_3_8//:futures_task",
-        "@raze__futures_util__0_3_8//:futures_util",
+        "@raze__futures_channel__0_3_9//:futures_channel",
+        "@raze__futures_core__0_3_9//:futures_core",
+        "@raze__futures_executor__0_3_9//:futures_executor",
+        "@raze__futures_io__0_3_9//:futures_io",
+        "@raze__futures_sink__0_3_9//:futures_sink",
+        "@raze__futures_task__0_3_9//:futures_task",
+        "@raze__futures_util__0_3_9//:futures_util",
     ],
 )
 
