@@ -2,6 +2,7 @@
 
 use std::convert::TryFrom;
 use std::io::Cursor;
+use std::pin::Pin;
 
 use bytestream_server::ByteStreamServer;
 use tonic::Request;
@@ -65,6 +66,7 @@ pub mod write_tests {
             verify_size: true,
         });
         let bs_server = ByteStreamServer::new(store.clone());
+        let store = Pin::new(store.as_ref());
 
         // Setup stream.
         let (mut tx, join_handle) = {
@@ -126,11 +128,11 @@ pub mod write_tests {
             assert_eq!(committed_size as usize, raw_data.len());
 
             // Now lets check our store to ensure it was written with proper data.
-            store.has(&DigestInfo::try_new(&HASH1, raw_data.len())?).await?;
+            store.has(DigestInfo::try_new(&HASH1, raw_data.len())?).await?;
             let mut store_data = Vec::new();
             store
                 .get(
-                    &DigestInfo::try_new(&HASH1, raw_data.len())?,
+                    DigestInfo::try_new(&HASH1, raw_data.len())?,
                     &mut Cursor::new(&mut store_data),
                 )
                 .await?;

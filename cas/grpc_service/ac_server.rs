@@ -2,6 +2,7 @@
 
 use std::convert::TryInto;
 use std::io::Cursor;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -50,7 +51,8 @@ impl AcServer {
         // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
         let mut store_data = Vec::with_capacity(digest.size_bytes as usize);
         let mut cursor = Cursor::new(&mut store_data);
-        self.ac_store.get(&digest, &mut cursor).await?;
+        let ac_store = Pin::new(self.ac_store.as_ref());
+        ac_store.get(digest.clone(), &mut cursor).await?;
 
         let action_result = ActionResult::decode(Cursor::new(&store_data))
             .err_tip_with_code(|e| (Code::NotFound, format!("Stored value appears to be corrupt: {}", e)))?;
@@ -84,7 +86,8 @@ impl AcServer {
             .encode(&mut store_data)
             .err_tip(|| "Provided ActionResult could not be serialized")?;
 
-        self.ac_store.update(&digest, Box::new(Cursor::new(store_data))).await?;
+        let ac_store = Pin::new(self.ac_store.as_ref());
+        ac_store.update(digest, Box::new(Cursor::new(store_data))).await?;
         Ok(Response::new(action_result))
     }
 }

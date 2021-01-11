@@ -1,6 +1,10 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::marker::Send;
+use std::pin::Pin;
+
 use async_trait::async_trait;
+use futures::Future;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use common::DigestInfo;
@@ -17,25 +21,31 @@ pub struct StoreConfig {
     pub verify_size: bool,
 }
 
+pub type ResultFuture<'a, Res> = Pin<Box<dyn Future<Output = Result<Res, Error>> + 'a + Sync + Send>>;
+
 #[async_trait]
-pub trait StoreTrait: Sync + Send {
-    async fn has(&self, digest: &DigestInfo) -> Result<bool, Error>;
+pub trait StoreTrait: Sync + Send + Unpin {
+    fn has<'a>(self: Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, bool>;
 
-    async fn update<'a, 'b>(
-        &'a self,
-        digest: &'a DigestInfo,
-        mut reader: Box<dyn AsyncRead + Send + Unpin + 'b>,
-    ) -> Result<(), Error>;
+    fn update<'a>(
+        self: Pin<&'a Self>,
+        digest: DigestInfo,
+        reader: Box<dyn AsyncRead + Send + Unpin + Sync + 'a>,
+    ) -> ResultFuture<'a, ()>;
 
-    async fn get_part(
-        &self,
-        digest: &DigestInfo,
-        writer: &mut (dyn AsyncWrite + Send + Unpin),
+    fn get_part<'a>(
+        self: Pin<&'a Self>,
+        digest: DigestInfo,
+        writer: &'a mut (dyn AsyncWrite + Send + Unpin + Sync),
         offset: usize,
         length: Option<usize>,
-    ) -> Result<(), Error>;
+    ) -> ResultFuture<'a, ()>;
 
-    async fn get(&self, digest: &DigestInfo, writer: &mut (dyn AsyncWrite + Send + Unpin)) -> Result<(), Error> {
-        self.get_part(digest, writer, 0, None).await
+    fn get<'a>(
+        self: Pin<&'a Self>,
+        digest: DigestInfo,
+        writer: &'a mut (dyn AsyncWrite + Send + Unpin + Sync),
+    ) -> ResultFuture<'a, ()> {
+        self.get_part(digest, writer, 0, None)
     }
 }

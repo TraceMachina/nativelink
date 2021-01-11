@@ -49,12 +49,13 @@ impl ByteStreamServer {
         let (rx, mut tx) = tokio::io::split(AsyncFixedBuf::new(raw_buffer));
 
         let join_handle = {
-            let store = self.store.clone();
+            let store_clone = self.store.clone();
             let hash = stream.hash.clone();
             let expected_size = stream.expected_size;
             tokio::spawn(async move {
                 let rx = Box::new(rx.take(expected_size as u64));
-                store.update(&DigestInfo::try_new(&hash, expected_size)?, rx).await
+                let store = Pin::new(store_clone.as_ref());
+                store.update(DigestInfo::try_new(&hash, expected_size)?, rx).await
             })
         };
 

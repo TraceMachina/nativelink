@@ -1,6 +1,7 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::io::Cursor;
+use std::pin::Pin;
 
 use tonic::{Code, Request, Response, Status};
 
@@ -15,14 +16,14 @@ const INSTANCE_NAME: &str = "foo";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
 
 async fn insert_into_store<T: Message>(
-    store: &dyn Store,
+    store: Pin<&dyn Store>,
     hash: &str,
     action_result: &T,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let mut store_data = Vec::new();
     action_result.encode(&mut store_data)?;
     let digest = DigestInfo::try_new(&hash, store_data.len() as i64)?;
-    store.update(&digest, Box::new(Cursor::new(store_data))).await?;
+    store.update(digest.clone(), Box::new(Cursor::new(store_data))).await?;
     Ok(digest.size_bytes as i64)
 }
 
@@ -50,12 +51,12 @@ mod get_action_results {
 
     #[tokio::test]
     async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store = create_store(&StoreConfig {
+        let ac_store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: false,
         });
         let ac_server = AcServer::new(
-            ac_store.clone(),
+            ac_store_owned.clone(),
             create_store(&StoreConfig {
                 store_type: StoreType::Memory,
                 verify_size: true,
@@ -75,12 +76,12 @@ mod get_action_results {
 
     #[tokio::test]
     async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store = create_store(&StoreConfig {
+        let ac_store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: false,
         });
         let ac_server = AcServer::new(
-            ac_store.clone(),
+            ac_store_owned.clone(),
             create_store(&StoreConfig {
                 store_type: StoreType::Memory,
                 verify_size: true,
@@ -90,7 +91,8 @@ mod get_action_results {
         let mut action_result = ActionResult::default();
         action_result.exit_code = 45;
 
-        let digest_size = insert_into_store(ac_store.as_ref(), &HASH1, &action_result).await?;
+        let ac_store = Pin::new(ac_store_owned.as_ref());
+        let digest_size = insert_into_store(ac_store, &HASH1, &action_result).await?;
         let raw_response = get_action_result(&ac_server, HASH1, digest_size).await;
 
         assert!(raw_response.is_ok(), "Expected value, got error {:?}", raw_response);
@@ -100,12 +102,12 @@ mod get_action_results {
 
     #[tokio::test]
     async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store = create_store(&StoreConfig {
+        let ac_store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: false,
         });
         let ac_server = AcServer::new(
-            ac_store.clone(),
+            ac_store_owned.clone(),
             create_store(&StoreConfig {
                 store_type: StoreType::Memory,
                 verify_size: true,
@@ -115,7 +117,8 @@ mod get_action_results {
         let mut action_result = ActionResult::default();
         action_result.exit_code = 45;
 
-        let digest_size = insert_into_store(ac_store.as_ref(), &HASH1, &action_result).await?;
+        let ac_store = Pin::new(ac_store_owned.as_ref());
+        let digest_size = insert_into_store(ac_store, &HASH1, &action_result).await?;
         assert!(digest_size > 1, "Digest was too small");
         let raw_response = get_action_result(&ac_server, HASH1, digest_size - 1).await;
 
@@ -156,12 +159,12 @@ mod update_action_result {
 
     #[tokio::test]
     async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store = create_store(&StoreConfig {
+        let ac_store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: false,
         });
         let ac_server = AcServer::new(
-            ac_store.clone(),
+            ac_store_owned.clone(),
             create_store(&StoreConfig {
                 store_type: StoreType::Memory,
                 verify_size: true,
@@ -188,7 +191,8 @@ mod update_action_result {
 
         let mut raw_data = Vec::new();
         let digest = DigestInfo::try_new(&HASH1, size_bytes)?;
-        ac_store.get(&digest, &mut Cursor::new(&mut raw_data)).await?;
+        let ac_store = Pin::new(ac_store_owned.as_ref());
+        ac_store.get(digest, &mut Cursor::new(&mut raw_data)).await?;
 
         let decoded_action_result = ActionResult::decode(Cursor::new(&raw_data))?;
         assert_eq!(decoded_action_result, action_result);

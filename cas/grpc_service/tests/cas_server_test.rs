@@ -1,5 +1,7 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::pin::Pin;
+
 use tonic::Request;
 
 use proto::build::bazel::remote::execution::v2::{
@@ -28,11 +30,11 @@ mod find_missing_blobs {
 
     #[tokio::test]
     async fn empty_store() {
-        let store = create_store(&StoreConfig {
+        let store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: true,
         });
-        let cas_server = CasServer::new(store.clone());
+        let cas_server = CasServer::new(store_owned.clone());
 
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -50,16 +52,17 @@ mod find_missing_blobs {
 
     #[tokio::test]
     async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
-        let store = create_store(&StoreConfig {
+        let store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: true,
         });
-        let cas_server = CasServer::new(store.clone());
+        let cas_server = CasServer::new(store_owned.clone());
 
         const VALUE: &str = "1";
 
+        let store = Pin::new(store_owned.as_ref());
         store
-            .update(&DigestInfo::try_new(HASH1, VALUE.len())?, Box::new(Cursor::new(VALUE)))
+            .update(DigestInfo::try_new(HASH1, VALUE.len())?, Box::new(Cursor::new(VALUE)))
             .await?;
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -78,16 +81,17 @@ mod find_missing_blobs {
 
     #[tokio::test]
     async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Error>> {
-        let store = create_store(&StoreConfig {
+        let store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: true,
         });
-        let cas_server = CasServer::new(store.clone());
+        let cas_server = CasServer::new(store_owned.clone());
 
         const VALUE: &str = "1";
 
+        let store = Pin::new(store_owned.as_ref());
         store
-            .update(&DigestInfo::try_new(HASH1, VALUE.len())?, Box::new(Cursor::new(VALUE)))
+            .update(DigestInfo::try_new(HASH1, VALUE.len())?, Box::new(Cursor::new(VALUE)))
             .await?;
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -131,11 +135,11 @@ mod batch_update_blobs {
 
     #[tokio::test]
     async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
-        let store = create_store(&StoreConfig {
+        let store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: true,
         });
-        let cas_server = CasServer::new(store.clone());
+        let cas_server = CasServer::new(store_owned.clone());
 
         const VALUE1: &str = "1";
         const VALUE2: &str = "23";
@@ -145,9 +149,10 @@ mod batch_update_blobs {
             size_bytes: VALUE2.len() as i64,
         };
 
+        let store = Pin::new(store_owned.as_ref());
         store
             .update(
-                &DigestInfo::try_new(&HASH1, VALUE1.len())?,
+                DigestInfo::try_new(&HASH1, VALUE1.len())?,
                 Box::new(Cursor::new(VALUE1)),
             )
             .await
@@ -179,7 +184,7 @@ mod batch_update_blobs {
         let mut new_data = Vec::new();
         store
             .get(
-                &DigestInfo::try_new(&HASH1, HASH1.len())?,
+                DigestInfo::try_new(&HASH1, HASH1.len())?,
                 &mut Cursor::new(&mut new_data),
             )
             .await
@@ -207,11 +212,11 @@ mod batch_read_blobs {
 
     #[tokio::test]
     async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dyn std::error::Error>> {
-        let store = create_store(&StoreConfig {
+        let store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: true,
         });
-        let cas_server = CasServer::new(store.clone());
+        let cas_server = CasServer::new(store_owned.clone());
 
         const VALUE1: &str = "1";
         const VALUE2: &str = "23";
@@ -226,16 +231,17 @@ mod batch_read_blobs {
         };
         {
             // Insert dummy data.
+            let store = Pin::new(store_owned.as_ref());
             store
                 .update(
-                    &DigestInfo::try_new(&HASH1, VALUE1.len())?,
+                    DigestInfo::try_new(&HASH1, VALUE1.len())?,
                     Box::new(Cursor::new(VALUE1)),
                 )
                 .await
                 .expect("Update should have succeeded");
             store
                 .update(
-                    &DigestInfo::try_new(&HASH2, VALUE2.len())?,
+                    DigestInfo::try_new(&HASH2, VALUE2.len())?,
                     Box::new(Cursor::new(VALUE2)),
                 )
                 .await
@@ -305,11 +311,11 @@ mod end_to_end {
 
     #[tokio::test]
     async fn batch_update_blobs_two_items_existence_with_third_missing() -> Result<(), Box<dyn std::error::Error>> {
-        let store = create_store(&StoreConfig {
+        let store_owned = create_store(&StoreConfig {
             store_type: StoreType::Memory,
             verify_size: true,
         });
-        let cas_server = CasServer::new(store.clone());
+        let cas_server = CasServer::new(store_owned.clone());
 
         const VALUE1: &str = "1";
         const VALUE2: &str = "23";

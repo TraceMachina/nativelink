@@ -16,6 +16,7 @@ rust_library(
     name = "traits",
     srcs = ["store_trait.rs"],
     deps = [
+        "//third_party:futures",
         "//third_party:tokio",
         "//util:error",
         "//util:common",

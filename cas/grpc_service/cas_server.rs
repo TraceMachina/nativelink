@@ -42,11 +42,12 @@ impl CasServer {
     ) -> Result<Response<FindMissingBlobsResponse>, Error> {
         let mut futures = futures::stream::FuturesOrdered::new();
         for digest in request.into_inner().blob_digests.into_iter() {
-            let store = self.store.clone();
+            let store_owned = self.store.clone();
             let digest: DigestInfo = digest.try_into()?;
             futures.push(tokio::spawn(async move {
+                let store = Pin::new(store_owned.as_ref());
                 store
-                    .has(&digest)
+                    .has(digest.clone())
                     .await
                     .map_or_else(|_| None, |success| if success { None } else { Some(digest) })
             }));
@@ -71,7 +72,7 @@ impl CasServer {
         for request in grpc_request.into_inner().requests {
             let digest: DigestInfo = request.digest.err_tip(|| "Digest not found in request")?.try_into()?;
             let digest_copy = digest.clone();
-            let store = self.store.clone();
+            let store_owned = self.store.clone();
             let request_data = request.data;
             futures.push(tokio::spawn(
                 async move {
@@ -84,8 +85,9 @@ impl CasServer {
                         request_data.len()
                     );
                     let cursor = Box::new(Cursor::new(request_data));
+                    let store = Pin::new(store_owned.as_ref());
                     store
-                        .update(&digest_copy, cursor)
+                        .update(digest_copy, cursor)
                         .await
                         .err_tip(|| "Error writing to store")
                 }
@@ -111,7 +113,7 @@ impl CasServer {
         for digest in grpc_request.into_inner().digests {
             let digest: DigestInfo = digest.try_into()?;
             let digest_copy = digest.clone();
-            let store = self.store.clone();
+            let store_owned = self.store.clone();
 
             futures.push(tokio::spawn(
                 async move {
@@ -119,8 +121,9 @@ impl CasServer {
                         .err_tip(|| "Digest size_bytes was not convertable to usize")?;
                     // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
                     let mut store_data = Vec::with_capacity(size_bytes);
+                    let store = Pin::new(store_owned.as_ref());
                     store
-                        .get(&digest_copy, &mut Cursor::new(&mut store_data))
+                        .get(digest_copy, &mut Cursor::new(&mut store_data))
                         .await
                         .err_tip(|| "Error reading from store")?;
                     Ok(store_data)
