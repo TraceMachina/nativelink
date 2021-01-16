@@ -1,5 +1,6 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::convert::TryFrom;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -7,7 +8,7 @@ use std::time::Instant;
 use async_fixed_buffer::AsyncFixedBuf;
 use drop_guard::DropGuard;
 use futures::{stream::unfold, Stream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tonic::{Request, Response, Status, Streaming};
 
 use proto::google::bytestream::{
@@ -30,12 +31,10 @@ pub struct ByteStreamServer {
 }
 
 struct ReaderState {
-    read_limit: usize,
-    sent_bytes: usize,
     max_bytes_per_stream: usize,
     was_shutdown: bool,
     stream_closer: Box<dyn FnMut() + Sync + Send>,
-    rx: tokio::io::ReadHalf<AsyncFixedBuf<Box<[u8]>>>,
+    rx: Box<dyn AsyncRead + Sync + Send + Unpin>,
     reading_future: Box<tokio::task::JoinHandle<Result<(), Error>>>,
 }
 
@@ -80,27 +79,35 @@ impl ByteStreamServer {
     async fn inner_read(&self, grpc_request: Request<ReadRequest>) -> Result<Response<ReadStream>, Error> {
         let read_request = grpc_request.into_inner();
 
-        let read_limit = read_request.read_limit as usize;
+        let read_limit =
+            usize::try_from(read_request.read_limit).err_tip(|| "read_limit has is not convertable to usize")?;
         let resource_info = ResourceInfo::new(&read_request.resource_name)?;
         let digest = DigestInfo::try_new(&resource_info.hash, resource_info.expected_size)?;
 
         let mut raw_fixed_buffer = AsyncFixedBuf::new(vec![0u8; self.read_buffer_stream_size].into_boxed_slice());
         let stream_closer = raw_fixed_buffer.get_closer();
         let (rx, mut tx) = tokio::io::split(raw_fixed_buffer);
+        let rx: Box<dyn tokio::io::AsyncRead + Sync + Send + Unpin> = if read_limit != 0 {
+            Box::new(rx.take(u64::try_from(read_limit).err_tip(|| "read_limit has is not convertable to u64")?))
+        } else {
+            Box::new(rx)
+        };
 
         let store_clone = self.store.clone();
         let reading_future = Box::new(tokio::spawn(async move {
             let store = Pin::new(store_clone.as_ref());
-            store
-                .get_part(digest, &mut tx, read_request.read_offset as usize, Some(read_limit))
+            let read_limit = if read_limit != 0 { Some(read_limit) } else { None };
+            let p = store
+                .get_part(digest, &mut tx, read_request.read_offset as usize, read_limit)
                 .await
-                .err_tip(|| "Error retreiving data from store")
+                .err_tip(|| "Error retrieving data from store");
+            p
         }));
+
+        // This allows us to call a destructor when the the object is dropped.
         let state = Some(DropGuard::new(
             ReaderState {
-                read_limit: read_limit,
                 stream_closer: stream_closer,
-                sent_bytes: 0,
                 rx: rx,
                 max_bytes_per_stream: self.max_bytes_per_stream,
                 reading_future: reading_future,
@@ -124,14 +131,6 @@ impl ByteStreamServer {
 
         Ok(Response::new(Box::pin(unfold(state, move |state| async {
             let mut state = state?; // If state is None, we have already sent error if needed (None is Done).
-            if state.sent_bytes >= state.read_limit {
-                // We want to gracefully shutdown and in the event there
-                // are any errors present them here.
-                return state
-                    .shutdown()
-                    .await
-                    .map_or_else(|e| Some((Err(e.into()), None)), |_| None);
-            }
             let mut response = ReadResponse {
                 data: vec![0u8; state.max_bytes_per_stream],
             };
@@ -139,7 +138,15 @@ impl ByteStreamServer {
             match read_result.err_tip(|| "Error reading data from underlying store") {
                 Ok(sz) => {
                     response.data.resize(sz, 0u8);
-                    state.sent_bytes += sz;
+                    // Receiving zero bytes is an EOF.
+                    if sz == 0 {
+                        // We want to gracefully shutdown and in the event there
+                        // are any errors present them here.
+                        return state
+                            .shutdown()
+                            .await
+                            .map_or_else(|e| Some((Err(e.into()), None)), |_| None);
+                    }
                     Some((Ok(response), Some(state)))
                 }
                 Err(e) => Some((Err(e.into()), None)),
@@ -189,7 +196,7 @@ struct ResourceInfo<'a> {
     _instance_name: &'a str,
     // TODO(allada) Currently we do not support stream resuming, this is
     // the field we would need.
-    _uuid: &'a str,
+    _uuid: Option<&'a str>,
     hash: &'a str,
     expected_size: usize,
 }
@@ -199,21 +206,21 @@ impl<'a> ResourceInfo<'a> {
         let mut parts = resource_name.splitn(6, '/');
         const ERROR_MSG: &str = concat!(
             "Expected resource_name to be of pattern ",
-            "'{instance_name}/uploads/{uuid}/blobs/{hash}/{size}'"
+            "'{instance_name}/uploads/{uuid}/blobs/{hash}/{size}' or ",
+            "'{instance_name}/blobs/{hash}/{size}'",
         );
         let instance_name = &parts.next().err_tip(|| ERROR_MSG)?;
-        let uploads = &parts.next().err_tip(|| ERROR_MSG)?;
+        let mut blobs_or_uploads: &str = parts.next().err_tip(|| ERROR_MSG)?;
+        let mut uuid = None;
+        if &blobs_or_uploads == &"uploads" {
+            uuid = Some(parts.next().err_tip(|| ERROR_MSG)?);
+            blobs_or_uploads = parts.next().err_tip(|| ERROR_MSG)?;
+        }
+
         error_if!(
-            uploads != &"uploads",
-            "Element 2 of resource_name should have been 'uploads'. Got: {}",
-            uploads
-        );
-        let uuid = &parts.next().err_tip(|| ERROR_MSG)?;
-        let blobs = &parts.next().err_tip(|| ERROR_MSG)?;
-        error_if!(
-            blobs != &"blobs",
-            "Element 4 of resource_name should have been 'blobs'. Got: {}",
-            blobs
+            &blobs_or_uploads != &"blobs",
+            "Element 2 or 4 of resource_name should have been 'blobs'. Got: {}",
+            blobs_or_uploads
         );
         let hash = &parts.next().err_tip(|| ERROR_MSG)?;
         let raw_digest_size = parts.next().err_tip(|| ERROR_MSG)?;

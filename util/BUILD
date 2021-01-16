@@ -42,9 +42,10 @@ rust_test(
     name = "utils_tests",
     srcs = ["tests/async_fixed_buffer_tests.rs"],
     deps = [
+        "//third_party:futures",
+        "//third_party:pretty_assertions",
+        "//third_party:tokio",
         ":async_fixed_buffer",
         ":error",
-        "//third_party:tokio",
-        "//third_party:pretty_assertions",
     ],
 )

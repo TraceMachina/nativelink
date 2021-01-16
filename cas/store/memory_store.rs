@@ -72,7 +72,12 @@ impl StoreTrait for MemoryStore {
                 .as_ref();
             let default_len = value.len() - offset;
             let length = length.unwrap_or(default_len).min(default_len);
-            writer.write_all(&value[offset..length]).await?;
+            writer
+                .write_all(&value[offset..(offset + length)])
+                .await
+                .err_tip(|| "Error writing all data to writer")?;
+            writer.write(&[]).await.err_tip(|| "Error writing EOF to writer")?;
+            writer.shutdown().await.err_tip(|| "Error shutting down writer")?;
             Ok(())
         })
     }

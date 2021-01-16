@@ -32,6 +32,7 @@ pub struct AsyncFixedBuf<T> {
     did_shutdown: Arc<AtomicBool>,
     write_amt: AtomicUsize,
     read_amt: AtomicUsize,
+    received_eof: AtomicBool,
 }
 
 impl<T> AsyncFixedBuf<T> {
@@ -47,6 +48,7 @@ impl<T> AsyncFixedBuf<T> {
             did_shutdown: Arc::new(AtomicBool::new(false)),
             write_amt: AtomicUsize::new(0),
             read_amt: AtomicUsize::new(0),
+            received_eof: AtomicBool::new(false),
         }
     }
 
@@ -96,11 +98,16 @@ impl<T: AsRef<[u8]> + Unpin> tokio::io::AsyncRead for AsyncFixedBuf<T> {
         buf: &mut [u8],
     ) -> Poll<Result<usize, std::io::Error>> {
         let num_read = self.as_mut().inner.read_and_copy_bytes(buf);
-        if num_read <= 0 && self.did_shutdown.load(Ordering::Relaxed) {
-            return Poll::Ready(Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "Sender disconnected",
-            )));
+        if num_read <= 0 {
+            if self.received_eof.load(Ordering::Relaxed) {
+                self.received_eof.store(false, Ordering::Relaxed);
+                return Poll::Ready(Ok(0));
+            } else if self.did_shutdown.load(Ordering::Relaxed) {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "Sender disconnected",
+                )));
+            }
         }
         self.read_amt.fetch_add(num_read, Ordering::Relaxed);
         let mut result = Poll::Ready(Ok(num_read));
@@ -128,6 +135,9 @@ impl<T: AsMut<[u8]>> tokio::io::AsyncWrite for AsyncFixedBuf<T> {
                 if write_amt > 0 {
                     writable_slice[..write_amt].clone_from_slice(&buf[..write_amt]);
                     self.inner.wrote(write_amt);
+                } else if buf.len() == 0 {
+                    // EOF happens when a zero byte message is sent.
+                    self.received_eof.store(true, Ordering::Relaxed);
                 }
 
                 self.wake();
@@ -141,8 +151,13 @@ impl<T: AsMut<[u8]>> tokio::io::AsyncWrite for AsyncFixedBuf<T> {
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        Poll::Ready(Ok(()))
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        if self.inner.is_empty() {
+            self.wake();
+            return Poll::Ready(Ok(()));
+        }
+        self.park(cx.waker());
+        Poll::Pending
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {

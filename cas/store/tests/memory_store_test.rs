@@ -107,7 +107,7 @@ mod memory_store_tests {
 
         let mut store_data = Vec::new();
         store
-            .get_part(digest, &mut Cursor::new(&mut store_data), 1, Some(3))
+            .get_part(digest, &mut Cursor::new(&mut store_data), 1, Some(2))
             .await?;
 
         assert_eq!(
