@@ -79,8 +79,8 @@ rust_library(
         "@raze__rustc_rayon_core__0_3_0//:rustc_rayon_core",
         "@raze__smallvec__1_6_1//:smallvec",
         "@raze__stable_deref_trait__1_2_0//:stable_deref_trait",
-        "@raze__stacker__0_1_12//:stacker",
-        "@raze__tempfile__3_1_0//:tempfile",
+        "@raze__stacker__0_1_13//:stacker",
+        "@raze__tempfile__3_2_0//:tempfile",
         "@raze__tracing__0_1_22//:tracing",
     ],
 )

@@ -16,12 +16,14 @@ async-trait = "0.1.42"
 fixed-buffer = "0.2.2"
 futures = "0.3.8"
 # We must use tokio 0.2.x because tonic runtime uses it.
-tokio = { version = "0.2", features = ["macros", "io-util", "rt-threaded"] }
+tokio = { version = "0.2", features = ["macros", "io-util", "fs", "rt-threaded"] }
 tonic = "0.3.1"
 lazy-init = "0.4.0"
 log = "0.4.11"
 env_logger = "0.8.2"
 drop_guard = "0.2.1"
+serde = "1.0.119"
+json5 = "0.3.0"
 
 [dev-dependencies]
 clap = "2.33.3"
@@ -31,6 +33,9 @@ bytes = "0.5.6"
 tonic-build = "0.3.1"
 pretty_assertions = "0.6.1"
 rustfmt-nightly = "1.4.21"
+
+[package.metadata.raze.crates.json5.'*']
+data_attr = "['src/json5.pest']"
 
 [package.metadata.raze.crates.prost-build.'*']
 gen_buildrs = true

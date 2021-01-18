@@ -25,15 +25,25 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT"
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
 ])
 
 # Generated Targets
 
 rust_library(
-    name = "tower_ready_cache",
+    name = "rand",
     srcs = glob(["**/*.rs"]),
+    aliases = {
+    },
     crate_features = [
+        "alloc",
+        "default",
+        "getrandom",
+        "libc",
+        "rand_chacha",
+        "rand_hc",
+        "std",
+        "std_rng",
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
@@ -46,16 +56,18 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.1",
+    version = "0.8.2",
     # buildifier: leave-alone
     deps = [
-        "@raze__futures_core__0_3_12//:futures_core",
-        "@raze__futures_util__0_3_12//:futures_util",
-        "@raze__indexmap__1_6_1//:indexmap",
-        "@raze__log__0_4_13//:log",
-        "@raze__tokio__0_2_24//:tokio",
-        "@raze__tower_service__0_3_0//:tower_service",
-    ],
+        "@raze__rand_chacha__0_3_0//:rand_chacha",
+        "@raze__rand_core__0_6_1//:rand_core",
+    ] + selects.with_or({
+        # cfg(unix)
+        (
+            "@io_bazel_rules_rust//rust/platform:x86_64-unknown-linux-gnu",
+        ): [
+            "@raze__libc__0_2_82//:libc",
+        ],
+        "//conditions:default": [],
+    }),
 )
-
-# Unsupported target "ready_cache" with type "test" omitted

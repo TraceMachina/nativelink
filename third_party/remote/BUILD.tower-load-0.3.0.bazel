@@ -49,8 +49,8 @@ rust_library(
     version = "0.3.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__futures_core__0_3_9//:futures_core",
-        "@raze__log__0_4_11//:log",
+        "@raze__futures_core__0_3_12//:futures_core",
+        "@raze__log__0_4_13//:log",
         "@raze__pin_project__0_4_27//:pin_project",
         "@raze__tokio__0_2_24//:tokio",
         "@raze__tower_discover__0_3_0//:tower_discover",

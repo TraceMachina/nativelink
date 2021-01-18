@@ -54,7 +54,7 @@ rust_library(
         "@raze__aho_corasick__0_7_15//:aho_corasick",
         "@raze__bstr__0_2_14//:bstr",
         "@raze__fnv__1_0_7//:fnv",
-        "@raze__log__0_4_11//:log",
+        "@raze__log__0_4_13//:log",
         "@raze__regex__1_4_3//:regex",
     ],
 )

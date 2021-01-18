@@ -25,20 +25,20 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT"
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
 ])
 
 # Generated Targets
 
 rust_library(
-    name = "tower_ready_cache",
+    name = "pest_generator",
     srcs = glob(["**/*.rs"]),
     crate_features = [
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
     data = [],
-    edition = "2018",
+    edition = "2015",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -46,16 +46,13 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.1",
+    version = "2.1.3",
     # buildifier: leave-alone
     deps = [
-        "@raze__futures_core__0_3_12//:futures_core",
-        "@raze__futures_util__0_3_12//:futures_util",
-        "@raze__indexmap__1_6_1//:indexmap",
-        "@raze__log__0_4_13//:log",
-        "@raze__tokio__0_2_24//:tokio",
-        "@raze__tower_service__0_3_0//:tower_service",
+        "@raze__pest__2_1_3//:pest",
+        "@raze__pest_meta__2_1_3//:pest_meta",
+        "@raze__proc_macro2__1_0_24//:proc_macro2",
+        "@raze__quote__1_0_8//:quote",
+        "@raze__syn__1_0_58//:syn",
     ],
 )
-
-# Unsupported target "ready_cache" with type "test" omitted

@@ -68,7 +68,7 @@ alias(
 
 alias(
     name = "fixed_buffer",
-    actual = "@raze__fixed_buffer__0_2_2//:fixed_buffer",
+    actual = "@raze__fixed_buffer__0_2_3//:fixed_buffer",
     tags = [
         "cargo-raze",
         "manual",
@@ -77,7 +77,7 @@ alias(
 
 alias(
     name = "futures",
-    actual = "@raze__futures__0_3_9//:futures",
+    actual = "@raze__futures__0_3_12//:futures",
     tags = [
         "cargo-raze",
         "manual",
@@ -87,6 +87,15 @@ alias(
 alias(
     name = "hex",
     actual = "@raze__hex__0_4_2//:hex",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "json5",
+    actual = "@raze__json5__0_3_0//:json5",
     tags = [
         "cargo-raze",
         "manual",
@@ -104,7 +113,7 @@ alias(
 
 alias(
     name = "log",
-    actual = "@raze__log__0_4_11//:log",
+    actual = "@raze__log__0_4_13//:log",
     tags = [
         "cargo-raze",
         "manual",
@@ -161,6 +170,15 @@ alias(
     # N.B.: The exact form of this is subject to change.
     name = "cargo_bin_rustfmt",
     actual = "@raze__rustfmt_nightly__1_4_21//:cargo_bin_rustfmt",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "serde",
+    actual = "@raze__serde__1_0_119//:serde",
     tags = [
         "cargo-raze",
         "manual",

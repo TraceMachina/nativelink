@@ -31,12 +31,11 @@ licenses([
 # Generated Targets
 
 rust_library(
-    name = "futures_sink",
+    name = "tempfile",
     srcs = glob(["**/*.rs"]),
+    aliases = {
+    },
     crate_features = [
-        "alloc",
-        "default",
-        "std",
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
@@ -49,8 +48,27 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.9",
+    version = "3.2.0",
     # buildifier: leave-alone
     deps = [
-    ],
+        "@raze__cfg_if__1_0_0//:cfg_if",
+        "@raze__rand__0_8_2//:rand",
+        "@raze__remove_dir_all__0_5_3//:remove_dir_all",
+    ] + selects.with_or({
+        # cfg(unix)
+        (
+            "@io_bazel_rules_rust//rust/platform:x86_64-unknown-linux-gnu",
+        ): [
+            "@raze__libc__0_2_82//:libc",
+        ],
+        "//conditions:default": [],
+    }),
 )
+
+# Unsupported target "namedtempfile" with type "test" omitted
+
+# Unsupported target "spooled" with type "test" omitted
+
+# Unsupported target "tempdir" with type "test" omitted
+
+# Unsupported target "tempfile" with type "test" omitted

@@ -30,18 +30,18 @@ licenses([
 
 # Generated Targets
 
-# Unsupported target "thread_notify" with type "bench" omitted
-
 rust_library(
-    name = "futures_executor",
+    name = "futures_macro",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "std",
     ],
     crate_root = "src/lib.rs",
-    crate_type = "lib",
+    crate_type = "proc-macro",
     data = [],
     edition = "2018",
+    proc_macro_deps = [
+        "@raze__proc_macro_hack__0_5_19//:proc_macro_hack",
+    ],
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -49,13 +49,11 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.9",
+    version = "0.3.12",
     # buildifier: leave-alone
     deps = [
-        "@raze__futures_core__0_3_9//:futures_core",
-        "@raze__futures_task__0_3_9//:futures_task",
-        "@raze__futures_util__0_3_9//:futures_util",
+        "@raze__proc_macro2__1_0_24//:proc_macro2",
+        "@raze__quote__1_0_8//:quote",
+        "@raze__syn__1_0_58//:syn",
     ],
 )
-
-# Unsupported target "local_pool" with type "test" omitted

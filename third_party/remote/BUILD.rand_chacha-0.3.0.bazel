@@ -31,7 +31,7 @@ licenses([
 # Generated Targets
 
 rust_library(
-    name = "futures_io",
+    name = "rand_chacha",
     srcs = glob(["**/*.rs"]),
     crate_features = [
         "std",
@@ -47,8 +47,10 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.9",
+    version = "0.3.0",
     # buildifier: leave-alone
     deps = [
+        "@raze__ppv_lite86__0_2_10//:ppv_lite86",
+        "@raze__rand_core__0_6_1//:rand_core",
     ],
 )

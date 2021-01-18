@@ -29,45 +29,19 @@ licenses([
 ])
 
 # Generated Targets
-# buildifier: disable=load-on-top
-load(
-    "@io_bazel_rules_rust//cargo:cargo_build_script.bzl",
-    "cargo_build_script",
-)
 
-cargo_build_script(
-    name = "stacker_build_script",
-    srcs = glob(["**/*.rs"]),
-    build_script_env = {
-    },
-    crate_features = [
-    ],
-    crate_root = "build.rs",
-    data = glob(["**"]),
-    edition = "2015",
-    rustc_flags = [
-        "--cap-lints=allow",
-    ],
-    tags = [
-        "cargo-raze",
-        "manual",
-    ],
-    version = "0.1.12",
-    visibility = ["//visibility:private"],
-    deps = [
-        "@raze__cc__1_0_66//:cc",
-    ],
-)
+# Unsupported target "thread_notify" with type "bench" omitted
 
 rust_library(
-    name = "stacker",
+    name = "futures_executor",
     srcs = glob(["**/*.rs"]),
     crate_features = [
+        "std",
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
     data = [],
-    edition = "2015",
+    edition = "2018",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -75,16 +49,13 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.1.12",
+    version = "0.3.12",
     # buildifier: leave-alone
     deps = [
-        ":stacker_build_script",
-        "@raze__cfg_if__0_1_10//:cfg_if",
-        "@raze__libc__0_2_82//:libc",
-        "@raze__psm__0_1_12//:psm",
+        "@raze__futures_core__0_3_12//:futures_core",
+        "@raze__futures_task__0_3_12//:futures_task",
+        "@raze__futures_util__0_3_12//:futures_util",
     ],
 )
 
-# Unsupported target "simple" with type "test" omitted
-
-# Unsupported target "smoke" with type "test" omitted
+# Unsupported target "local_pool" with type "test" omitted

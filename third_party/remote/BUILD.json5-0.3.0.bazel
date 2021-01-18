@@ -25,20 +25,23 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT"
+    "notice",  # ISC from expression "ISC"
 ])
 
 # Generated Targets
 
 rust_library(
-    name = "tower_ready_cache",
+    name = "json5",
     srcs = glob(["**/*.rs"]),
     crate_features = [
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
-    data = [],
+    data = [] + ['src/json5.pest'],
     edition = "2018",
+    proc_macro_deps = [
+        "@raze__pest_derive__2_1_0//:pest_derive",
+    ],
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -46,16 +49,22 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.1",
+    version = "0.3.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__futures_core__0_3_12//:futures_core",
-        "@raze__futures_util__0_3_12//:futures_util",
-        "@raze__indexmap__1_6_1//:indexmap",
-        "@raze__log__0_4_13//:log",
-        "@raze__tokio__0_2_24//:tokio",
-        "@raze__tower_service__0_3_0//:tower_service",
+        "@raze__pest__2_1_3//:pest",
+        "@raze__serde__1_0_119//:serde",
     ],
 )
 
-# Unsupported target "ready_cache" with type "test" omitted
+# Unsupported target "adapted_from_js_reference" with type "test" omitted
+
+# Unsupported target "common" with type "test" omitted
+
+# Unsupported target "de" with type "test" omitted
+
+# Unsupported target "examples" with type "test" omitted
+
+# Unsupported target "json5_dot_org_example" with type "test" omitted
+
+# Unsupported target "ser" with type "test" omitted

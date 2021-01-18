@@ -31,16 +31,14 @@ licenses([
 # Generated Targets
 
 rust_library(
-    name = "tempfile",
+    name = "pest_derive",
     srcs = glob(["**/*.rs"]),
-    aliases = {
-    },
     crate_features = [
     ],
     crate_root = "src/lib.rs",
-    crate_type = "lib",
+    crate_type = "proc-macro",
     data = [],
-    edition = "2018",
+    edition = "2015",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -48,27 +46,18 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "3.1.0",
+    version = "2.1.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__cfg_if__0_1_10//:cfg_if",
-        "@raze__rand__0_7_3//:rand",
-        "@raze__remove_dir_all__0_5_3//:remove_dir_all",
-    ] + selects.with_or({
-        # cfg(unix)
-        (
-            "@io_bazel_rules_rust//rust/platform:x86_64-unknown-linux-gnu",
-        ): [
-            "@raze__libc__0_2_82//:libc",
-        ],
-        "//conditions:default": [],
-    }),
+        "@raze__pest__2_1_3//:pest",
+        "@raze__pest_generator__2_1_3//:pest_generator",
+    ],
 )
 
-# Unsupported target "namedtempfile" with type "test" omitted
+# Unsupported target "grammar" with type "test" omitted
 
-# Unsupported target "spooled" with type "test" omitted
+# Unsupported target "grammar_inline" with type "test" omitted
 
-# Unsupported target "tempdir" with type "test" omitted
+# Unsupported target "lists" with type "test" omitted
 
-# Unsupported target "tempfile" with type "test" omitted
+# Unsupported target "reporting" with type "test" omitted
