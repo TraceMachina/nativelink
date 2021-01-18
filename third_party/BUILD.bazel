@@ -121,6 +121,15 @@ alias(
 )
 
 alias(
+    name = "maplit",
+    actual = "@raze__maplit__1_0_2//:maplit",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "pretty_assertions",
     actual = "@raze__pretty_assertions__0_6_1//:pretty_assertions",
     tags = [

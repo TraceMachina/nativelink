@@ -410,6 +410,7 @@ dependencies = [
  "json5",
  "lazy-init",
  "log",
+ "maplit",
  "pretty_assertions",
  "prost",
  "prost-build",
