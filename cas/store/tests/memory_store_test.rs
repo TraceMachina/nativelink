@@ -11,17 +11,15 @@ mod memory_store_tests {
     use std::io::Cursor;
 
     use common::DigestInfo;
+    use config;
     use memory_store::MemoryStore;
-    use traits::{StoreConfig, StoreTrait, StoreType};
+    use traits::StoreTrait;
 
     const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
     #[tokio::test]
     async fn insert_one_item_then_update() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: false,
-        });
+        let store_owned = MemoryStore::new(&config::backends::MemoryStore {});
         let store = Pin::new(&store_owned);
 
         {
@@ -74,31 +72,8 @@ mod memory_store_tests {
     const INVALID_HASH: &str = "g111111111111111111111111111111111111111111111111111111111111111";
 
     #[tokio::test]
-    async fn verify_size_false_passes_on_update() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: false,
-        });
-        let store = Pin::new(&store_owned);
-
-        const VALUE1: &str = "123";
-        let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
-        let result = store.update(digest, Box::new(Cursor::new(VALUE1))).await;
-        assert_eq!(
-            result,
-            Ok(()),
-            "Should have succeeded when verify_size = false, got: {:?}",
-            result
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn read_partial() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: true,
-        });
+        let store_owned = MemoryStore::new(&config::backends::MemoryStore {});
         let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "1234";
@@ -122,10 +97,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn errors_with_invalid_inputs() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: true,
-        });
+        let store_owned = MemoryStore::new(&config::backends::MemoryStore {});
         let store = Pin::new(&store_owned);
         const VALUE1: &str = "123";
         {
@@ -167,8 +139,6 @@ mod memory_store_tests {
             update_should_fail(store, &TOO_LONG_HASH, VALUE1.len(), &VALUE1).await;
             update_should_fail(store, &TOO_SHORT_HASH, VALUE1.len(), &VALUE1).await;
             update_should_fail(store, &INVALID_HASH, VALUE1.len(), &VALUE1).await;
-            update_should_fail(store, &VALID_HASH1, VALUE1.len() + 1, &VALUE1).await;
-            update_should_fail(store, &VALID_HASH1, VALUE1.len() - 1, &VALUE1).await;
         }
         {
             // .update() tests.

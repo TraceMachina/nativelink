@@ -14,13 +14,6 @@ pub enum StoreType {
     Memory,
 }
 
-pub struct StoreConfig {
-    pub store_type: StoreType,
-
-    // If we need to verify the digest size of what is being uploaded.
-    pub verify_size: bool,
-}
-
 pub type ResultFuture<'a, Res> = Pin<Box<dyn Future<Output = Result<Res, Error>> + 'a + Sync + Send>>;
 
 #[async_trait]

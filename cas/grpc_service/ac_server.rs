@@ -1,5 +1,6 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io::Cursor;
 use std::pin::Pin;
@@ -15,8 +16,9 @@ use proto::build::bazel::remote::execution::v2::{
 };
 
 use common::{log, DigestInfo};
-use error::{Code, Error, ResultExt};
-use store::Store;
+use config::cas_server::{AcStoreConfig, InstanceName};
+use error::{make_input_err, Code, Error, ResultExt};
+use store::{Store, StoreManager};
 
 pub struct AcServer {
     ac_store: Arc<dyn Store>,
@@ -24,11 +26,21 @@ pub struct AcServer {
 }
 
 impl AcServer {
-    pub fn new(ac_store: Arc<dyn Store>, cas_store: Arc<dyn Store>) -> Self {
-        AcServer {
-            ac_store: ac_store,
-            _cas_store: cas_store,
+    pub fn new(config: &HashMap<InstanceName, AcStoreConfig>, store_manager: &StoreManager) -> Result<Self, Error> {
+        for (_instance_name, ac_cfg) in config {
+            let ac_store = store_manager
+                .get_store(&ac_cfg.ac_store)
+                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", ac_cfg.cas_store))?;
+            let cas_store = store_manager
+                .get_store(&ac_cfg.cas_store)
+                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", ac_cfg.cas_store))?;
+            // TODO(allada) We don't yet support instance_name.
+            return Ok(AcServer {
+                ac_store: ac_store.clone(),
+                _cas_store: cas_store.clone(),
+            });
         }
+        Err(make_input_err!("No configuration configured for 'ac' service"))
     }
 
     pub fn into_service(self) -> Server<AcServer> {

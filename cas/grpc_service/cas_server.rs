@@ -1,5 +1,6 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::io::Cursor;
@@ -20,16 +21,24 @@ use proto::build::bazel::remote::execution::v2::{
 use proto::google::rpc::Status as GrpcStatus;
 
 use common::{log, DigestInfo};
-use error::{error_if, Error, ResultExt};
-use store::Store;
+use config::cas_server::{CasStoreConfig, InstanceName};
+use error::{error_if, make_input_err, Error, ResultExt};
+use store::{Store, StoreManager};
 
 pub struct CasServer {
     store: Arc<dyn Store>,
 }
 
 impl CasServer {
-    pub fn new(store: Arc<dyn Store>) -> Self {
-        CasServer { store: store }
+    pub fn new(config: &HashMap<InstanceName, CasStoreConfig>, store_manager: &StoreManager) -> Result<Self, Error> {
+        for (_instance_name, cas_cfg) in config {
+            let store = store_manager
+                .get_store(&cas_cfg.cas_store)
+                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", cas_cfg.cas_store))?;
+            // TODO(allada) We don't yet support instance_name.
+            return Ok(CasServer { store: store.clone() });
+        }
+        Err(make_input_err!("No configuration configured for 'cas' service"))
     }
 
     pub fn into_service(self) -> Server<CasServer> {

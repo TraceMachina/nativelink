@@ -1,8 +1,9 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::io::Cursor;
 use std::pin::Pin;
 
+use maplit::hashmap;
 use tonic::{Code, Request, Response, Status};
 
 use prost::Message;
@@ -10,7 +11,9 @@ use proto::build::bazel::remote::execution::v2::{action_cache_server::ActionCach
 
 use ac_server::AcServer;
 use common::DigestInfo;
-use store::{create_store, Store, StoreConfig, StoreType};
+use config;
+use error::Error;
+use store::{Store, StoreManager};
 
 const INSTANCE_NAME: &str = "foo";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
@@ -25,6 +28,31 @@ async fn insert_into_store<T: Message>(
     let digest = DigestInfo::try_new(&hash, store_data.len() as i64)?;
     store.update(digest.clone(), Box::new(Cursor::new(store_data))).await?;
     Ok(digest.size_bytes as i64)
+}
+
+fn make_store_manager() -> Result<StoreManager, Error> {
+    let mut store_manager = StoreManager::new();
+    store_manager.make_store(
+        "main_cas",
+        &config::backends::StoreConfig::memory(config::backends::MemoryStore {}),
+    )?;
+    store_manager.make_store(
+        "main_ac",
+        &config::backends::StoreConfig::memory(config::backends::MemoryStore {}),
+    )?;
+    Ok(store_manager)
+}
+
+fn make_ac_server(store_manager: &mut StoreManager) -> Result<AcServer, Error> {
+    AcServer::new(
+        &hashmap! {
+            "main".to_string() => config::cas_server::AcStoreConfig{
+                cas_store: "main_cas".to_string(),
+                ac_store: "main_ac".to_string(),
+            }
+        },
+        &store_manager,
+    )
 }
 
 #[cfg(test)]
@@ -51,17 +79,8 @@ mod get_action_result {
 
     #[tokio::test]
     async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store_owned = create_store(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: false,
-        });
-        let ac_server = AcServer::new(
-            ac_store_owned.clone(),
-            create_store(&StoreConfig {
-                store_type: StoreType::Memory,
-                verify_size: true,
-            }),
-        );
+        let mut store_manager = make_store_manager()?;
+        let ac_server = make_ac_server(&mut store_manager)?;
 
         let raw_response = get_action_result(&ac_server, HASH1, 0).await;
 
@@ -76,17 +95,9 @@ mod get_action_result {
 
     #[tokio::test]
     async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store_owned = create_store(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: false,
-        });
-        let ac_server = AcServer::new(
-            ac_store_owned.clone(),
-            create_store(&StoreConfig {
-                store_type: StoreType::Memory,
-                verify_size: true,
-            }),
-        );
+        let mut store_manager = make_store_manager()?;
+        let ac_server = make_ac_server(&mut store_manager)?;
+        let ac_store_owned = store_manager.get_store("main_ac").unwrap();
 
         let mut action_result = ActionResult::default();
         action_result.exit_code = 45;
@@ -103,17 +114,9 @@ mod get_action_result {
     #[tokio::test]
     #[ignore] // TODO(allada) Currently we don't check size in store. This test needs fixed.
     async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store_owned = create_store(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: false,
-        });
-        let ac_server = AcServer::new(
-            ac_store_owned.clone(),
-            create_store(&StoreConfig {
-                store_type: StoreType::Memory,
-                verify_size: true,
-            }),
-        );
+        let mut store_manager = make_store_manager()?;
+        let ac_server = make_ac_server(&mut store_manager)?;
+        let ac_store_owned = store_manager.get_store("main_ac").unwrap();
 
         let mut action_result = ActionResult::default();
         action_result.exit_code = 45;
@@ -160,17 +163,9 @@ mod update_action_result {
 
     #[tokio::test]
     async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
-        let ac_store_owned = create_store(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: false,
-        });
-        let ac_server = AcServer::new(
-            ac_store_owned.clone(),
-            create_store(&StoreConfig {
-                store_type: StoreType::Memory,
-                verify_size: true,
-            }),
-        );
+        let mut store_manager = make_store_manager()?;
+        let ac_server = make_ac_server(&mut store_manager)?;
+        let ac_store_owned = store_manager.get_store("main_ac").unwrap();
 
         let mut action_result = ActionResult::default();
         action_result.exit_code = 45;

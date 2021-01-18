@@ -1,4 +1,4 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::result::Result;
 
@@ -149,6 +149,13 @@ pub trait ResultExt<T> {
     {
         self.err_tip_with_code(|e| (e.code, tip_fn()))
     }
+
+    fn merge<U>(self, _other: Result<U, Error>) -> Result<U, Error>
+    where
+        Self: Sized,
+    {
+        unreachable!();
+    }
 }
 
 impl<T, E: Into<Error>> ResultExt<T> for Result<T, E> {
@@ -165,6 +172,21 @@ impl<T, E: Into<Error>> ResultExt<T> for Result<T, E> {
             error.messages.push(message.to_string());
             error
         })
+    }
+
+    fn merge<U>(self, other: Result<U, Error>) -> Result<U, Error>
+    where
+        Self: Sized,
+    {
+        if let Err(e) = self {
+            let mut e: Error = e.into();
+            if let Err(other_err) = other {
+                let mut other_err: Error = other_err.into();
+                e.messages.append(&mut other_err.messages);
+            }
+            return Err(e);
+        }
+        other
     }
 }
 

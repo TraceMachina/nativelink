@@ -1,17 +1,40 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::convert::TryFrom;
 use std::io::Cursor;
 use std::pin::Pin;
 
 use bytestream_server::ByteStreamServer;
+use maplit::hashmap;
 use tonic::Request;
 
 use common::DigestInfo;
-use store::{create_store, StoreConfig, StoreType};
+use config;
+use error::Error;
+use store::StoreManager;
 
 const INSTANCE_NAME: &str = "foo";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
+
+fn make_store_manager() -> Result<StoreManager, Error> {
+    let mut store_manager = StoreManager::new();
+    store_manager.make_store(
+        "main_cas",
+        &config::backends::StoreConfig::memory(config::backends::MemoryStore {}),
+    )?;
+    Ok(store_manager)
+}
+
+fn make_bytestream_server(store_manager: &mut StoreManager) -> Result<ByteStreamServer, Error> {
+    ByteStreamServer::new(
+        &hashmap! {
+            "main".to_string() => config::cas_server::ByteStreamConfig{
+                cas_store: "main_cas".to_string(),
+            }
+        },
+        &store_manager,
+    )
+}
 
 #[cfg(test)]
 pub mod write_tests {
@@ -61,12 +84,11 @@ pub mod write_tests {
 
     #[tokio::test]
     pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
-        let store = create_store(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: true,
-        });
-        let bs_server = ByteStreamServer::new(store.clone());
-        let store = Pin::new(store.as_ref());
+        let mut store_manager = make_store_manager()?;
+        let bs_server = make_bytestream_server(&mut store_manager)?;
+        let store_owned = store_manager.get_store("main_cas").unwrap();
+
+        let store = Pin::new(store_owned.as_ref());
 
         // Setup stream.
         let (mut tx, join_handle) = {
@@ -160,12 +182,11 @@ pub mod read_tests {
 
     #[tokio::test]
     pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::error::Error>> {
-        let store = create_store(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: true,
-        });
-        let bs_server = ByteStreamServer::new(store.clone());
-        let store = Pin::new(store.as_ref());
+        let mut store_manager = make_store_manager()?;
+        let bs_server = make_bytestream_server(&mut store_manager)?;
+        let store_owned = store_manager.get_store("main_cas").unwrap();
+
+        let store = Pin::new(store_owned.as_ref());
 
         const VALUE1: &str = "12456789abcdefghijk";
 
@@ -201,12 +222,11 @@ pub mod read_tests {
 
     #[tokio::test]
     pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::error::Error>> {
-        let store = create_store(&StoreConfig {
-            store_type: StoreType::Memory,
-            verify_size: true,
-        });
-        let bs_server = ByteStreamServer::new(store.clone());
-        let store = Pin::new(store.as_ref());
+        let mut store_manager = make_store_manager()?;
+        let bs_server = make_bytestream_server(&mut store_manager)?;
+        let store_owned = store_manager.get_store("main_cas").unwrap();
+
+        let store = Pin::new(store_owned.as_ref());
 
         const DATA_SIZE: usize = 10_000_000;
         let mut raw_data = vec![41u8; DATA_SIZE];

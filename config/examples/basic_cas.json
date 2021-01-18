@@ -1,0 +1,38 @@
+{
+  "stores": {
+    "CAS_MAIN_STORE": {
+      "verify": {
+        "backend": {
+          "memory": {}
+        },
+        "verify_size": true
+      }
+    },
+    "AC_MAIN_STORE": {
+      "memory": {}
+    }
+  },
+  "servers": [{
+    "listen_address": "0.0.0.0:50051",
+    "services": {
+      "cas": {
+        "main": {
+          "cas_store": "CAS_MAIN_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "cas_store": "CAS_MAIN_STORE",
+          "ac_store": "AC_MAIN_STORE"
+        }
+      },
+      "capabilities": {},
+      "execution": {},
+      "bytestream": {
+        "main": {
+          "cas_store": "CAS_MAIN_STORE"
+        }
+      }
+    }
+  }]
+}

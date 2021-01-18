@@ -1,4 +1,4 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
 use tonic::{Request, Response, Status};
 
@@ -10,10 +10,18 @@ use proto::build::bazel::remote::execution::v2::{
 
 use proto::build::bazel::semver::SemVer;
 
+use config::cas_server::CapabilitiesConfig;
+use error::Error;
+use store::StoreManager;
+
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {}
 
 impl CapabilitiesServer {
+    pub fn new(_config: &CapabilitiesConfig, _store_manager: &StoreManager) -> Result<Self, Error> {
+        Ok(CapabilitiesServer {})
+    }
+
     pub fn into_service(self) -> Server<CapabilitiesServer> {
         Server::new(self)
     }

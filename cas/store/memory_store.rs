@@ -1,4 +1,4 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::collections::HashMap;
 use std::marker::Send;
@@ -9,20 +9,19 @@ use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use common::DigestInfo;
-use error::{error_if, Code, ResultExt};
-use traits::{ResultFuture, StoreConfig, StoreTrait};
+use config;
+use error::{Code, ResultExt};
+use traits::{ResultFuture, StoreTrait};
 
 #[derive(Debug)]
 pub struct MemoryStore {
     map: Mutex<HashMap<[u8; 32], Arc<Vec<u8>>>>,
-    verify_size: bool,
 }
 
 impl MemoryStore {
-    pub fn new(config: &StoreConfig) -> Self {
+    pub fn new(_config: &config::backends::MemoryStore) -> Self {
         MemoryStore {
             map: Mutex::new(HashMap::new()),
-            verify_size: config.verify_size,
         }
     }
 }
@@ -43,14 +42,7 @@ impl StoreTrait for MemoryStore {
     ) -> ResultFuture<'a, ()> {
         Box::pin(async move {
             let mut buffer = Vec::with_capacity(digest.size_bytes as usize);
-            let read_size = reader.read_to_end(&mut buffer).await? as i64;
-            error_if!(
-                self.verify_size && read_size != digest.size_bytes,
-                "Expected size {} but got size {} for hash {} CAS insert",
-                digest.size_bytes,
-                read_size,
-                digest.str()
-            );
+            reader.read_to_end(&mut buffer).await?;
             let mut map = self.map.lock().await;
             map.insert(digest.packed_hash, Arc::new(buffer));
             Ok(())

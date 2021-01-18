@@ -1,13 +1,18 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
+use futures::future::{select_all, BoxFuture};
+use json5;
+use runfiles::Runfiles;
 use tonic::transport::Server;
 
 use ac_server::AcServer;
 use bytestream_server::ByteStreamServer;
 use capabilities_server::CapabilitiesServer;
 use cas_server::CasServer;
+use config::cas_server::CasConfig;
+use error::ResultExt;
 use execution_server::ExecutionServer;
-use store::{StoreConfig, StoreType};
+use store::StoreManager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,25 +20,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .format_timestamp_millis()
         .init();
 
-    let addr = "0.0.0.0:50051".parse()?;
+    let r = Runfiles::create().err_tip(|| "Failed to create runfiles lookup object")?;
+    let contents = String::from_utf8(tokio::fs::read(r.rlocation("rust_cas/config/examples/basic_cas.json")).await?)?;
 
-    let ac_store = store::create_store(&StoreConfig {
-        store_type: StoreType::Memory,
-        verify_size: false,
-    });
-    let cas_store = store::create_store(&StoreConfig {
-        store_type: StoreType::Memory,
-        verify_size: true,
-    });
+    let cfg: CasConfig = json5::from_str(&contents)?;
 
-    Server::builder()
-        .add_service(AcServer::new(ac_store, cas_store.clone()).into_service())
-        .add_service(CasServer::new(cas_store.clone()).into_service())
-        .add_service(CapabilitiesServer::default().into_service())
-        .add_service(ExecutionServer::default().into_service())
-        .add_service(ByteStreamServer::new(cas_store).into_service())
-        .serve(addr)
-        .await?;
+    let mut store_manager = StoreManager::new();
+    for (name, store_cfg) in cfg.stores {
+        store_manager
+            .make_store(&name, &store_cfg)
+            .err_tip(|| format!("Failed to create store '{}'", name))?;
+    }
 
-    Ok(())
+    let mut servers: Vec<BoxFuture<Result<(), tonic::transport::Error>>> = Vec::new();
+    for server_cfg in cfg.servers {
+        let mut server = Server::builder();
+        let services = server_cfg.services.ok_or_else(|| "'services' must be configured")?;
+
+        let server = server
+            .add_optional_service(
+                services
+                    .ac
+                    .map_or(Ok(None), |cfg| {
+                        AcServer::new(&cfg, &store_manager).and_then(|v| Ok(Some(v.into_service())))
+                    })
+                    .err_tip(|| "Could not create AC service")?,
+            )
+            .add_optional_service(
+                services
+                    .cas
+                    .map_or(Ok(None), |cfg| {
+                        CasServer::new(&cfg, &store_manager).and_then(|v| Ok(Some(v.into_service())))
+                    })
+                    .err_tip(|| "Could not create CAS service")?,
+            )
+            .add_optional_service(
+                services
+                    .execution
+                    .map_or(Ok(None), |cfg| {
+                        ExecutionServer::new(&cfg, &store_manager).and_then(|v| Ok(Some(v.into_service())))
+                    })
+                    .err_tip(|| "Could not create Execution service")?,
+            )
+            .add_optional_service(
+                services
+                    .bytestream
+                    .map_or(Ok(None), |cfg| {
+                        ByteStreamServer::new(&cfg, &store_manager).and_then(|v| Ok(Some(v.into_service())))
+                    })
+                    .err_tip(|| "Could not create ByteStream service")?,
+            )
+            .add_optional_service(
+                services
+                    .capabilities
+                    .map_or(Ok(None), |cfg| {
+                        CapabilitiesServer::new(&cfg, &store_manager).and_then(|v| Ok(Some(v.into_service())))
+                    })
+                    .err_tip(|| "Could not create Capabilities service")?,
+            );
+
+        let addr = server_cfg.listen_address.parse()?;
+        servers.push(Box::pin(server.serve(addr)));
+    }
+
+    if let Err(e) = select_all(servers).await.0 {
+        panic!(e);
+    }
+    panic!("No servers should ever resolve their future");
 }

@@ -1,4 +1,4 @@
-# Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+# Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
 load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library", "rust_test")
 
@@ -6,8 +6,11 @@ rust_library(
     name = "store",
     srcs = ["lib.rs"],
     deps = [
+        "//config",
+        "//util:error",
         ":memory_store",
         ":traits",
+        ":verify_store",
     ],
     visibility = ["//cas:__pkg__", "//cas:__subpackages__"]
 )
@@ -18,8 +21,8 @@ rust_library(
     deps = [
         "//third_party:futures",
         "//third_party:tokio",
-        "//util:error",
         "//util:common",
+        "//util:error",
     ],
     proc_macro_deps = ["//third_party:async_trait"],
     visibility = ["//cas:__pkg__"]
@@ -29,25 +32,58 @@ rust_library(
     name = "memory_store",
     srcs = ["memory_store.rs"],
     deps = [
-        ":traits",
-        "//util:error",
+        "//config",
         "//third_party:async_mutex",
         "//third_party:tokio",
         "//util:common",
+        "//util:error",
+        ":traits",
+    ],
+    proc_macro_deps = ["//third_party:async_trait"],
+    visibility = ["//cas:__pkg__"]
+)
+
+rust_library(
+    name = "verify_store",
+    srcs = ["verify_store.rs"],
+    deps = [
+        "//config",
+        "//third_party:async_mutex",
+        "//third_party:tokio",
+        "//util:async_fixed_buffer",
+        "//util:common",
+        "//util:error",
+        ":traits",
     ],
     proc_macro_deps = ["//third_party:async_trait"],
     visibility = ["//cas:__pkg__"]
 )
 
 rust_test(
-    name = "store_tests",
+    name = "memory_store_test",
     srcs = ["tests/memory_store_test.rs"],
     deps = [
+        "//config",
+        "//third_party:pretty_assertions",
+        "//third_party:tokio",
+        "//util:common",
+        "//util:error",
         ":memory_store",
         ":traits",
-        "//util:error",
-        "//util:common",
-        "//third_party:tokio",
+    ],
+)
+
+rust_test(
+    name = "verify_store_test",
+    srcs = ["tests/verify_store_test.rs"],
+    deps = [
+        "//config",
         "//third_party:pretty_assertions",
+        "//third_party:tokio",
+        "//util:common",
+        "//util:error",
+        ":memory_store",
+        ":traits",
+        ":verify_store",
     ],
 )

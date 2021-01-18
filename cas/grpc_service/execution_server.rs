@@ -1,4 +1,4 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::pin::Pin;
 
@@ -10,10 +10,18 @@ use proto::build::bazel::remote::execution::v2::{
 };
 use proto::google::longrunning::Operation;
 
-#[derive(Debug, Default)]
+use config::cas_server::ExecutionConfig;
+use error::Error;
+use store::StoreManager;
+
+#[derive(Debug)]
 pub struct ExecutionServer {}
 
 impl ExecutionServer {
+    pub fn new(_config: &ExecutionConfig, _store_manager: &StoreManager) -> Result<Self, Error> {
+        Ok(ExecutionServer {})
+    }
+
     pub fn into_service(self) -> Server<ExecutionServer> {
         Server::new(self)
     }

@@ -1,5 +1,6 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -17,8 +18,9 @@ use proto::google::bytestream::{
 };
 
 use common::{log, DigestInfo};
-use error::{error_if, Error, ResultExt};
-use store::Store;
+use config::cas_server::{ByteStreamConfig, InstanceName};
+use error::{error_if, make_input_err, Error, ResultExt};
+use store::{Store, StoreManager};
 
 pub struct ByteStreamServer {
     store: Arc<dyn Store>,
@@ -40,7 +42,6 @@ struct ReaderState {
 
 impl ReaderState {
     async fn shutdown(&mut self) -> Result<(), Error> {
-        // let mut me = Pin::new(&mut self);
         self.was_shutdown = true;
         // Close stream then wait for reader stream to finish.
         (self.stream_closer)();
@@ -60,16 +61,23 @@ impl ReaderState {
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + Sync + 'static>>;
 
 impl ByteStreamServer {
-    pub fn new(store: Arc<dyn Store>) -> Self {
-        ByteStreamServer {
-            store: store,
-            // TODO(allada) Make this configurable.
-            // This value was choosen only because it is a common mem page size.
-            write_buffer_stream_size: 2 << 20, // 2Mb.
-            read_buffer_stream_size: 2 << 20,  // 2Mb.
-            // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
-            max_bytes_per_stream: 2 << 15, // 64Kb.
+    pub fn new(config: &HashMap<InstanceName, ByteStreamConfig>, store_manager: &StoreManager) -> Result<Self, Error> {
+        for (_instance_name, bytestream_cfg) in config {
+            let store = store_manager
+                .get_store(&bytestream_cfg.cas_store)
+                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", bytestream_cfg.cas_store))?;
+            // TODO(allada) We don't yet support instance_name.
+            return Ok(ByteStreamServer {
+                store: store.clone(),
+                // TODO(allada) Make this configurable.
+                // This value was choosen only because it is a common mem page size.
+                write_buffer_stream_size: 2 << 20, // 2Mb.
+                read_buffer_stream_size: 2 << 20,  // 2Mb.
+                // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
+                max_bytes_per_stream: 2 << 15, // 64Kb.
+            });
         }
+        Err(make_input_err!("No configuration configured for 'cas' service"))
     }
 
     pub fn into_service(self) -> Server<ByteStreamServer> {
