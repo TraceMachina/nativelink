@@ -1,18 +1,26 @@
+# Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
+
 load("@io_bazel_rules_rust//rust:rust.bzl", "rust_binary")
 
 rust_binary(
     name = "cas",
     srcs = ["cas_main.rs"],
+    data = ["//config:examples/basic_cas.json"],
     deps = [
-        "//cas/grpc_service:cas_server",
         "//cas/grpc_service:ac_server",
-        "//cas/grpc_service:capabilities_server",
-        "//cas/grpc_service:execution_server",
         "//cas/grpc_service:bytestream_server",
+        "//cas/grpc_service:capabilities_server",
+        "//cas/grpc_service:cas_server",
+        "//cas/grpc_service:execution_server",
         "//cas/store",
-        "//util:common",
+        "//config",
+        "//third_party:env_logger",
+        "//third_party:futures",
+        "//third_party:json5",
         "//third_party:tokio",
         "//third_party:tonic",
-        "//third_party:env_logger",
+        "//util:common",
+        "//util:error",
+        "@io_bazel_rules_rust//tools/runfiles",
     ],
 )
