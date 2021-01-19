@@ -51,13 +51,14 @@ impl CasServer {
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Error> {
         let mut futures = futures::stream::FuturesOrdered::new();
-        let request = grpc_request.into_inner();
-        for digest in request.blob_digests.into_iter() {
+        let inner_request = grpc_request.into_inner();
+        let instance_name = inner_request.instance_name;
+        for digest in inner_request.blob_digests.into_iter() {
             let digest: DigestInfo = digest.try_into()?;
             let store_owned = self
                 .stores
-                .get(&request.instance_name)
-                .err_tip(|| format!("'instance_name' not configured for '{}'", digest.str()))?
+                .get(&instance_name)
+                .err_tip(|| format!("'instance_name' not configured for '{}'", &instance_name))?
                 .clone();
             futures.push(tokio::spawn(async move {
                 let store = Pin::new(store_owned.as_ref());
@@ -85,13 +86,14 @@ impl CasServer {
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
         let mut futures = futures::stream::FuturesOrdered::new();
         let inner_request = grpc_request.into_inner();
+        let instance_name = inner_request.instance_name;
         for request in inner_request.requests {
             let digest: DigestInfo = request.digest.err_tip(|| "Digest not found in request")?.try_into()?;
             let digest_copy = digest.clone();
             let store_owned = self
                 .stores
-                .get(&inner_request.instance_name)
-                .err_tip(|| format!("'instance_name' not configured for '{}'", digest.str()))?
+                .get(&instance_name)
+                .err_tip(|| format!("'instance_name' not configured for '{}'", &instance_name))?
                 .clone();
             let request_data = request.data;
             futures.push(tokio::spawn(
@@ -130,13 +132,14 @@ impl CasServer {
     ) -> Result<Response<BatchReadBlobsResponse>, Error> {
         let mut futures = futures::stream::FuturesOrdered::new();
         let inner_request = grpc_request.into_inner();
+        let instance_name = inner_request.instance_name;
         for digest in inner_request.digests {
             let digest: DigestInfo = digest.try_into()?;
             let digest_copy = digest.clone();
             let store_owned = self
                 .stores
-                .get(&inner_request.instance_name)
-                .err_tip(|| format!("'instance_name' not configured for '{}'", digest.str()))?
+                .get(&instance_name)
+                .err_tip(|| format!("'instance_name' not configured for '{}'", &instance_name))?
                 .clone();
 
             futures.push(tokio::spawn(
