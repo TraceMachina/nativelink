@@ -15,7 +15,7 @@ use config;
 use error::Error;
 use store::{Store, StoreManager};
 
-const INSTANCE_NAME: &str = "foo";
+const INSTANCE_NAME: &str = "foo_instance_name";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
 
 async fn insert_into_store<T: Message>(
@@ -46,8 +46,7 @@ fn make_store_manager() -> Result<StoreManager, Error> {
 fn make_ac_server(store_manager: &mut StoreManager) -> Result<AcServer, Error> {
     AcServer::new(
         &hashmap! {
-            "main".to_string() => config::cas_server::AcStoreConfig{
-                cas_store: "main_cas".to_string(),
+            "foo_instance_name".to_string() => config::cas_server::AcStoreConfig{
                 ac_store: "main_ac".to_string(),
             }
         },

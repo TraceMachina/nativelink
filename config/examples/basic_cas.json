@@ -22,7 +22,6 @@
       },
       "ac": {
         "main": {
-          "cas_store": "CAS_MAIN_STORE",
           "ac_store": "AC_MAIN_STORE"
         }
       },

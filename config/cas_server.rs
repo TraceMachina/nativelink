@@ -17,10 +17,6 @@ pub type InstanceName = String;
 pub struct AcStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
-    pub cas_store: StoreRefName,
-
-    /// The store name referenced in the `stores` map in the main config.
-    /// This store name referenced here may be reused multiple times.
     pub ac_store: StoreRefName,
 }
 

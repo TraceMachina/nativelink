@@ -22,7 +22,6 @@ use store::{Store, StoreManager};
 
 pub struct AcServer {
     ac_store: Arc<dyn Store>,
-    _cas_store: Arc<dyn Store>,
 }
 
 impl AcServer {
@@ -30,14 +29,9 @@ impl AcServer {
         for (_instance_name, ac_cfg) in config {
             let ac_store = store_manager
                 .get_store(&ac_cfg.ac_store)
-                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", ac_cfg.cas_store))?;
-            let cas_store = store_manager
-                .get_store(&ac_cfg.cas_store)
-                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", ac_cfg.cas_store))?;
-            // TODO(allada) We don't yet support instance_name.
+                .ok_or_else(|| make_input_err!("'ac_store': '{}' does not exist", ac_cfg.ac_store))?;
             return Ok(AcServer {
                 ac_store: ac_store.clone(),
-                _cas_store: cas_store.clone(),
             });
         }
         Err(make_input_err!("No configuration configured for 'ac' service"))
