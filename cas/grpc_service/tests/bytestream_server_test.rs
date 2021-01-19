@@ -13,7 +13,7 @@ use config;
 use error::Error;
 use store::StoreManager;
 
-const INSTANCE_NAME: &str = "foo";
+const INSTANCE_NAME: &str = "foo_instance_name";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
 
 fn make_store_manager() -> Result<StoreManager, Error> {
@@ -27,13 +27,13 @@ fn make_store_manager() -> Result<StoreManager, Error> {
 
 fn make_bytestream_server(store_manager: &mut StoreManager) -> Result<ByteStreamServer, Error> {
     ByteStreamServer::new(
-        &hashmap! {
-            "main".to_string() => config::cas_server::ByteStreamConfig{
-                cas_store: "main_cas".to_string(),
-                max_bytes_per_stream: 1024,
-                read_buffer_stream_size: 1024,
-                write_buffer_stream_size: 1024,
-            }
+        &config::cas_server::ByteStreamConfig {
+            cas_stores: hashmap! {
+                "foo_instance_name".to_string() => "main_cas".to_string(),
+            },
+            max_bytes_per_stream: 1024,
+            read_buffer_stream_size: 1024,
+            write_buffer_stream_size: 1024,
         },
         &store_manager,
     )

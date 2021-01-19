@@ -38,7 +38,7 @@ pub struct ExecutionConfig {
 #[derive(Deserialize, Debug)]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
-    pub cas_store: StoreRefName,
+    pub cas_stores: HashMap<InstanceName, StoreRefName>,
 
     // Buffer size for transferring data between grpc endpoint and store.
     pub write_buffer_stream_size: usize,
@@ -74,7 +74,7 @@ pub struct ServicesConfig {
     /// This is the service used to stream data to and from the CAS.
     /// Bazel's protocol strongly encourages users to use this streaming
     /// interface to interact with the CAS when the data is large.
-    pub bytestream: Option<HashMap<InstanceName, ByteStreamConfig>>,
+    pub bytestream: Option<ByteStreamConfig>,
 }
 
 #[derive(Deserialize, Debug)]

@@ -18,12 +18,12 @@ use proto::google::bytestream::{
 };
 
 use common::{log, DigestInfo};
-use config::cas_server::{ByteStreamConfig, InstanceName};
+use config::cas_server::ByteStreamConfig;
 use error::{error_if, make_input_err, Error, ResultExt};
 use store::{Store, StoreManager};
 
 pub struct ByteStreamServer {
-    store: Arc<dyn Store>,
+    stores: HashMap<String, Arc<dyn Store>>,
     // Buffer size for transferring data between grpc endpoint and store.
     write_buffer_stream_size: usize,
     // Buffer size for transferring data between store and grpc endpoint.
@@ -61,20 +61,21 @@ impl ReaderState {
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + Sync + 'static>>;
 
 impl ByteStreamServer {
-    pub fn new(config: &HashMap<InstanceName, ByteStreamConfig>, store_manager: &StoreManager) -> Result<Self, Error> {
-        for (_instance_name, bytestream_cfg) in config {
+    pub fn new(config: &ByteStreamConfig, store_manager: &StoreManager) -> Result<Self, Error> {
+        let mut stores = HashMap::with_capacity(config.cas_stores.len());
+        for (instance_name, store_name) in &config.cas_stores {
             let store = store_manager
-                .get_store(&bytestream_cfg.cas_store)
-                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", bytestream_cfg.cas_store))?;
-            // TODO(allada) We don't yet support instance_name.
-            return Ok(ByteStreamServer {
-                store: store.clone(),
-                write_buffer_stream_size: bytestream_cfg.write_buffer_stream_size,
-                read_buffer_stream_size: bytestream_cfg.read_buffer_stream_size,
-                max_bytes_per_stream: bytestream_cfg.max_bytes_per_stream,
-            });
+                .get_store(&store_name)
+                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", store_name))?
+                .clone();
+            stores.insert(instance_name.to_string(), store);
         }
-        Err(make_input_err!("No configuration configured for 'cas' service"))
+        Ok(ByteStreamServer {
+            stores: stores,
+            write_buffer_stream_size: config.write_buffer_stream_size,
+            read_buffer_stream_size: config.read_buffer_stream_size,
+            max_bytes_per_stream: config.max_bytes_per_stream,
+        })
     }
 
     pub fn into_service(self) -> Server<ByteStreamServer> {
@@ -98,7 +99,13 @@ impl ByteStreamServer {
             Box::new(rx)
         };
 
-        let store_clone = self.store.clone();
+        let instance_name = resource_info.instance_name;
+        let store_clone = self
+            .stores
+            .get(instance_name)
+            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
+            .clone();
+
         let reading_future = Box::new(tokio::spawn(async move {
             let store = Pin::new(store_clone.as_ref());
             let read_limit = if read_limit != 0 { Some(read_limit) } else { None };
@@ -171,7 +178,12 @@ impl ByteStreamServer {
         let (rx, mut tx) = tokio::io::split(AsyncFixedBuf::new(raw_buffer));
 
         let join_handle = {
-            let store_clone = self.store.clone();
+            let instance_name = &stream.instance_name;
+            let store_clone = self
+                .stores
+                .get(instance_name)
+                .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
+                .clone();
             let hash = stream.hash.clone();
             let expected_size = stream.expected_size;
             tokio::spawn(async move {
@@ -197,8 +209,7 @@ impl ByteStreamServer {
 }
 
 struct ResourceInfo<'a> {
-    // TODO(allada) We do not support instance naming yet.
-    _instance_name: &'a str,
+    instance_name: &'a str,
     // TODO(allada) Currently we do not support stream resuming, this is
     // the field we would need.
     _uuid: Option<&'a str>,
@@ -236,7 +247,7 @@ impl<'a> ResourceInfo<'a> {
             )
         })?;
         Ok(ResourceInfo {
-            _instance_name: instance_name,
+            instance_name: instance_name,
             _uuid: uuid,
             hash,
             expected_size,
@@ -248,6 +259,7 @@ struct WriteRequestStreamWrapper {
     stream: Streaming<WriteRequest>,
     current_msg: WriteRequest,
     hash: String,
+    instance_name: String,
     expected_size: usize,
     is_first: bool,
     bytes_received: usize,
@@ -263,12 +275,14 @@ impl WriteRequestStreamWrapper {
 
         let resource_info = ResourceInfo::new(&current_msg.resource_name)
             .err_tip(|| "Could not extract resource info from first message of stream")?;
+        let instance_name = resource_info.instance_name.to_string();
         let hash = resource_info.hash.to_string();
         let expected_size = resource_info.expected_size;
         Ok(WriteRequestStreamWrapper {
             stream,
             current_msg,
             hash,
+            instance_name,
             expected_size,
             is_first: true,
             bytes_received: 0,
