@@ -30,6 +30,9 @@ fn make_bytestream_server(store_manager: &mut StoreManager) -> Result<ByteStream
         &hashmap! {
             "main".to_string() => config::cas_server::ByteStreamConfig{
                 cas_store: "main_cas".to_string(),
+                max_bytes_per_stream: 1024,
+                read_buffer_stream_size: 1024,
+                write_buffer_stream_size: 1024,
             }
         },
         &store_manager,

@@ -69,12 +69,9 @@ impl ByteStreamServer {
             // TODO(allada) We don't yet support instance_name.
             return Ok(ByteStreamServer {
                 store: store.clone(),
-                // TODO(allada) Make this configurable.
-                // This value was choosen only because it is a common mem page size.
-                write_buffer_stream_size: 2 << 20, // 2Mb.
-                read_buffer_stream_size: 2 << 20,  // 2Mb.
-                // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
-                max_bytes_per_stream: 2 << 15, // 64Kb.
+                write_buffer_stream_size: bytestream_cfg.write_buffer_stream_size,
+                read_buffer_stream_size: bytestream_cfg.read_buffer_stream_size,
+                max_bytes_per_stream: bytestream_cfg.max_bytes_per_stream,
             });
         }
         Err(make_input_err!("No configuration configured for 'cas' service"))

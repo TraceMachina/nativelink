@@ -69,9 +69,6 @@ impl AcServer {
         let action_result = ActionResult::decode(Cursor::new(&store_data))
             .err_tip_with_code(|e| (Code::NotFound, format!("Stored value appears to be corrupt: {}", e)))?;
 
-        // if store_data.len() != digest.size_bytes as usize {
-        //     return Err(make_err!(Code::NotFound, "Found item, but size does not match"));
-        // }
         Ok(Response::new(action_result))
     }
 
