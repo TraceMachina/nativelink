@@ -16,7 +16,7 @@ use config;
 use error::Error;
 use store::StoreManager;
 
-const INSTANCE_NAME: &str = "foo";
+const INSTANCE_NAME: &str = "foo_instance_name";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
 const HASH2: &str = "9993456789abcdef000000000000000000000000000000000123456789abc999";
 const HASH3: &str = "7773456789abcdef000000000000000000000000000000000123456789abc777";
@@ -34,7 +34,7 @@ fn make_store_manager() -> Result<StoreManager, Error> {
 fn make_cas_server(store_manager: &mut StoreManager) -> Result<CasServer, Error> {
     CasServer::new(
         &hashmap! {
-            "main".to_string() => config::cas_server::CasStoreConfig{
+            "foo_instance_name".to_string() => config::cas_server::CasStoreConfig{
                 cas_store: "main_cas".to_string(),
             }
         },

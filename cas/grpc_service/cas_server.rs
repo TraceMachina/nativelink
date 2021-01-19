@@ -26,19 +26,20 @@ use error::{error_if, make_input_err, Error, ResultExt};
 use store::{Store, StoreManager};
 
 pub struct CasServer {
-    store: Arc<dyn Store>,
+    stores: HashMap<String, Arc<dyn Store>>,
 }
 
 impl CasServer {
     pub fn new(config: &HashMap<InstanceName, CasStoreConfig>, store_manager: &StoreManager) -> Result<Self, Error> {
-        for (_instance_name, cas_cfg) in config {
+        let mut stores = HashMap::with_capacity(config.len());
+        for (instance_name, cas_cfg) in config {
             let store = store_manager
                 .get_store(&cas_cfg.cas_store)
-                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", cas_cfg.cas_store))?;
-            // TODO(allada) We don't yet support instance_name.
-            return Ok(CasServer { store: store.clone() });
+                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", cas_cfg.cas_store))?
+                .clone();
+            stores.insert(instance_name.to_string(), store);
         }
-        Err(make_input_err!("No configuration configured for 'cas' service"))
+        Ok(CasServer { stores: stores })
     }
 
     pub fn into_service(self) -> Server<CasServer> {
@@ -47,12 +48,17 @@ impl CasServer {
 
     async fn inner_find_missing_blobs(
         &self,
-        request: Request<FindMissingBlobsRequest>,
+        grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Error> {
         let mut futures = futures::stream::FuturesOrdered::new();
-        for digest in request.into_inner().blob_digests.into_iter() {
-            let store_owned = self.store.clone();
+        let request = grpc_request.into_inner();
+        for digest in request.blob_digests.into_iter() {
             let digest: DigestInfo = digest.try_into()?;
+            let store_owned = self
+                .stores
+                .get(&request.instance_name)
+                .err_tip(|| format!("'instance_name' not configured for '{}'", digest.str()))?
+                .clone();
             futures.push(tokio::spawn(async move {
                 let store = Pin::new(store_owned.as_ref());
                 store
@@ -78,10 +84,15 @@ impl CasServer {
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
         let mut futures = futures::stream::FuturesOrdered::new();
-        for request in grpc_request.into_inner().requests {
+        let inner_request = grpc_request.into_inner();
+        for request in inner_request.requests {
             let digest: DigestInfo = request.digest.err_tip(|| "Digest not found in request")?.try_into()?;
             let digest_copy = digest.clone();
-            let store_owned = self.store.clone();
+            let store_owned = self
+                .stores
+                .get(&inner_request.instance_name)
+                .err_tip(|| format!("'instance_name' not configured for '{}'", digest.str()))?
+                .clone();
             let request_data = request.data;
             futures.push(tokio::spawn(
                 async move {
@@ -118,11 +129,15 @@ impl CasServer {
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Error> {
         let mut futures = futures::stream::FuturesOrdered::new();
-
-        for digest in grpc_request.into_inner().digests {
+        let inner_request = grpc_request.into_inner();
+        for digest in inner_request.digests {
             let digest: DigestInfo = digest.try_into()?;
             let digest_copy = digest.clone();
-            let store_owned = self.store.clone();
+            let store_owned = self
+                .stores
+                .get(&inner_request.instance_name)
+                .err_tip(|| format!("'instance_name' not configured for '{}'", digest.str()))?
+                .clone();
 
             futures.push(tokio::spawn(
                 async move {
