@@ -53,7 +53,7 @@ cargo_build_script(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.1",
+    version = "0.2.2",
     visibility = ["//visibility:private"],
     deps = [
     ] + selects.with_or({
@@ -87,7 +87,7 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.1",
+    version = "0.2.2",
     # buildifier: leave-alone
     deps = [
         ":getrandom_build_script",
@@ -102,3 +102,9 @@ rust_library(
         "//conditions:default": [],
     }),
 )
+
+# Unsupported target "custom" with type "test" omitted
+
+# Unsupported target "normal" with type "test" omitted
+
+# Unsupported target "rdrand" with type "test" omitted

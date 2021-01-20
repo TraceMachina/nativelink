@@ -36,6 +36,9 @@ rust_library(
     name = "hashbrown",
     srcs = glob(["**/*.rs"]),
     crate_features = [
+        "ahash",
+        "default",
+        "inline-more",
         "raw",
     ],
     crate_root = "src/lib.rs",
@@ -52,6 +55,7 @@ rust_library(
     version = "0.9.1",
     # buildifier: leave-alone
     deps = [
+        "@raze__ahash__0_4_7//:ahash",
     ],
 )
 

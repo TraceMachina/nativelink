@@ -121,8 +121,26 @@ alias(
 )
 
 alias(
+    name = "lru",
+    actual = "@raze__lru__0_6_3//:lru",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "maplit",
     actual = "@raze__maplit__1_0_2//:maplit",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "mock_instant",
+    actual = "@raze__mock_instant__0_2_1//:mock_instant",
     tags = [
         "cargo-raze",
         "manual",
@@ -187,7 +205,7 @@ alias(
 
 alias(
     name = "serde",
-    actual = "@raze__serde__1_0_119//:serde",
+    actual = "@raze__serde__1_0_120//:serde",
     tags = [
         "cargo-raze",
         "manual",

@@ -13,6 +13,16 @@ def raze_fetch_remote_crates():
     """This function defines a collection of repos and should be called in a WORKSPACE file"""
     maybe(
         http_archive,
+        name = "raze__ahash__0_4_7",
+        url = "https://crates.io/api/v1/crates/ahash/0.4.7/download",
+        type = "tar.gz",
+        sha256 = "739f4a8db6605981345c5654f3a85b056ce52f37a39d34da03f25bf2151ea16e",
+        strip_prefix = "ahash-0.4.7",
+        build_file = Label("//third_party/remote:BUILD.ahash-0.4.7.bazel"),
+    )
+
+    maybe(
+        http_archive,
         name = "raze__aho_corasick__0_7_15",
         url = "https://crates.io/api/v1/crates/aho-corasick/0.7.15/download",
         type = "tar.gz",
@@ -703,12 +713,12 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__getrandom__0_2_1",
-        url = "https://crates.io/api/v1/crates/getrandom/0.2.1/download",
+        name = "raze__getrandom__0_2_2",
+        url = "https://crates.io/api/v1/crates/getrandom/0.2.2/download",
         type = "tar.gz",
-        sha256 = "4060f4657be78b8e766215b02b18a2e862d83745545de804638e2b545e81aee6",
-        strip_prefix = "getrandom-0.2.1",
-        build_file = Label("//third_party/remote:BUILD.getrandom-0.2.1.bazel"),
+        sha256 = "c9495705279e7140bf035dde1f6e750c162df8b625267cd52cc44e0b156732c8",
+        strip_prefix = "getrandom-0.2.2",
+        build_file = Label("//third_party/remote:BUILD.getrandom-0.2.2.bazel"),
     )
 
     maybe(
@@ -973,6 +983,16 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
+        name = "raze__lru__0_6_3",
+        url = "https://crates.io/api/v1/crates/lru/0.6.3/download",
+        type = "tar.gz",
+        sha256 = "3aae342b73d57ad0b8b364bd12584819f2c1fe9114285dfcf8b0722607671635",
+        strip_prefix = "lru-0.6.3",
+        build_file = Label("//third_party/remote:BUILD.lru-0.6.3.bazel"),
+    )
+
+    maybe(
+        http_archive,
         name = "raze__maplit__1_0_2",
         url = "https://crates.io/api/v1/crates/maplit/1.0.2/download",
         type = "tar.gz",
@@ -1059,6 +1079,16 @@ def raze_fetch_remote_crates():
         sha256 = "ebd808424166322d4a38da87083bfddd3ac4c131334ed55856112eb06d46944d",
         strip_prefix = "miow-0.2.2",
         build_file = Label("//third_party/remote:BUILD.miow-0.2.2.bazel"),
+    )
+
+    maybe(
+        http_archive,
+        name = "raze__mock_instant__0_2_1",
+        url = "https://crates.io/api/v1/crates/mock_instant/0.2.1/download",
+        type = "tar.gz",
+        sha256 = "717e29a243b81f8130e31e24e04fb151b04a44b5a7d05370935f7d937e9de06d",
+        strip_prefix = "mock_instant-0.2.1",
+        build_file = Label("//third_party/remote:BUILD.mock_instant-0.2.1.bazel"),
     )
 
     maybe(
@@ -1913,22 +1943,22 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__serde__1_0_119",
-        url = "https://crates.io/api/v1/crates/serde/1.0.119/download",
+        name = "raze__serde__1_0_120",
+        url = "https://crates.io/api/v1/crates/serde/1.0.120/download",
         type = "tar.gz",
-        sha256 = "9bdd36f49e35b61d49efd8aa7fc068fd295961fd2286d0b2ee9a4c7a14e99cc3",
-        strip_prefix = "serde-1.0.119",
-        build_file = Label("//third_party/remote:BUILD.serde-1.0.119.bazel"),
+        sha256 = "166b2349061381baf54a58e4b13c89369feb0ef2eaa57198899e2312aac30aab",
+        strip_prefix = "serde-1.0.120",
+        build_file = Label("//third_party/remote:BUILD.serde-1.0.120.bazel"),
     )
 
     maybe(
         http_archive,
-        name = "raze__serde_derive__1_0_119",
-        url = "https://crates.io/api/v1/crates/serde_derive/1.0.119/download",
+        name = "raze__serde_derive__1_0_120",
+        url = "https://crates.io/api/v1/crates/serde_derive/1.0.120/download",
         type = "tar.gz",
-        sha256 = "552954ce79a059ddd5fd68c271592374bd15cab2274970380c000118aeffe1cd",
-        strip_prefix = "serde_derive-1.0.119",
-        build_file = Label("//third_party/remote:BUILD.serde_derive-1.0.119.bazel"),
+        sha256 = "0ca2a8cb5805ce9e3b95435e3765b7b553cecc762d938d409434338386cb5775",
+        strip_prefix = "serde_derive-1.0.120",
+        build_file = Label("//third_party/remote:BUILD.serde_derive-1.0.120.bazel"),
     )
 
     maybe(

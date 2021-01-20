@@ -52,7 +52,7 @@ rust_library(
     # buildifier: leave-alone
     deps = [
         "@raze__semver_parser__0_7_0//:semver_parser",
-        "@raze__serde__1_0_119//:serde",
+        "@raze__serde__1_0_120//:serde",
     ],
 )
 
