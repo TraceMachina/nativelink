@@ -21,10 +21,10 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_size_false_passes_on_update() -> Result<(), Error> {
-        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore {}));
+        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
         let store_owned = VerifyStore::new(
             &config::backends::VerifyStore {
-                backend: None,
+                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
                 verify_size: false,
             },
             inner_store.clone(),
@@ -50,10 +50,10 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_size_true_fails_on_update() -> Result<(), Error> {
-        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore {}));
+        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
         let store_owned = VerifyStore::new(
             &config::backends::VerifyStore {
-                backend: None,
+                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
                 verify_size: true,
             },
             inner_store.clone(),
@@ -82,10 +82,10 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
-        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore {}));
+        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
         let store_owned = VerifyStore::new(
             &config::backends::VerifyStore {
-                backend: None,
+                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
                 verify_size: true,
             },
             inner_store.clone(),

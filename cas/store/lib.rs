@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use config::{self, backends::StoreConfig};
-use error::{Error, ResultExt};
+use error::Error;
 use memory_store::MemoryStore;
 use verify_store::VerifyStore;
 
@@ -19,12 +19,7 @@ fn private_make_store(backend: &StoreConfig) -> Result<Arc<dyn Store>, Error> {
         StoreConfig::memory(config) => Ok(Arc::new(MemoryStore::new(&config))),
         StoreConfig::verify(config) => Ok(Arc::new(VerifyStore::new(
             &config,
-            private_make_store(
-                config
-                    .backend
-                    .as_ref()
-                    .err_tip(|| "Expected verify store to have 'backend'")?,
-            )?,
+            private_make_store(&config.backend)?,
         ))),
     }
 }

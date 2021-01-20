@@ -1,8 +1,8 @@
 // Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
-use std::collections::HashMap;
 use std::marker::Send;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_mutex::Mutex;
 use async_trait::async_trait;
@@ -11,17 +11,19 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use common::DigestInfo;
 use config;
 use error::{Code, ResultExt};
+use evicting_map::EvictingMap;
 use traits::{ResultFuture, StoreTrait};
 
-#[derive(Debug)]
 pub struct MemoryStore {
-    map: Mutex<HashMap<[u8; 32], Arc<Vec<u8>>>>,
+    map: Mutex<EvictingMap<Instant>>,
 }
 
 impl MemoryStore {
-    pub fn new(_config: &config::backends::MemoryStore) -> Self {
+    pub fn new(config: &config::backends::MemoryStore) -> Self {
+        let empty_policy = config::backends::EvictionPolicy::default();
+        let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
         MemoryStore {
-            map: Mutex::new(HashMap::new()),
+            map: Mutex::new(EvictingMap::new(eviction_policy, Instant::now())),
         }
     }
 }
@@ -30,7 +32,7 @@ impl MemoryStore {
 impl StoreTrait for MemoryStore {
     fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, bool> {
         Box::pin(async move {
-            let map = self.map.lock().await;
+            let mut map = self.map.lock().await;
             Ok(map.contains_key(&digest.packed_hash))
         })
     }
@@ -57,7 +59,7 @@ impl StoreTrait for MemoryStore {
         length: Option<usize>,
     ) -> ResultFuture<'a, ()> {
         Box::pin(async move {
-            let map = self.map.lock().await;
+            let mut map = self.map.lock().await;
             let value = map
                 .get(&digest.packed_hash)
                 .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.str())))?

@@ -20,7 +20,7 @@ fn make_store_manager() -> Result<StoreManager, Error> {
     let mut store_manager = StoreManager::new();
     store_manager.make_store(
         "main_cas",
-        &config::backends::StoreConfig::memory(config::backends::MemoryStore {}),
+        &config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
     )?;
     Ok(store_manager)
 }

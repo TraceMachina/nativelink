@@ -37,6 +37,7 @@ rust_library(
         "//third_party:tokio",
         "//util:common",
         "//util:error",
+        "//util:evicting_map",
         ":traits",
     ],
     proc_macro_deps = ["//third_party:async_trait"],

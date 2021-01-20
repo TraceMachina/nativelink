@@ -9,7 +9,12 @@
       }
     },
     "AC_MAIN_STORE": {
-      "memory": {}
+      "memory": {
+        "eviction_policy": {
+          // 100mb.
+          "max_bytes": 100000000,
+        }
+      }
     }
   },
   "servers": [{

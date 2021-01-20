@@ -29,6 +29,16 @@ rust_library(
 )
 
 rust_library(
+    name = "evicting_map",
+    srcs = ["evicting_map.rs"],
+    deps = [
+        "//config",
+        "//third_party:lru",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
     name = "async_fixed_buffer",
     srcs = ["async_fixed_buffer.rs"],
     deps = [
@@ -39,13 +49,26 @@ rust_library(
 )
 
 rust_test(
-    name = "utils_tests",
-    srcs = ["tests/async_fixed_buffer_tests.rs"],
+    name = "async_fixed_buffer_test",
+    srcs = ["tests/async_fixed_buffer_test.rs"],
     deps = [
         "//third_party:futures",
         "//third_party:pretty_assertions",
         "//third_party:tokio",
         ":async_fixed_buffer",
         ":error",
+    ],
+)
+
+rust_test(
+    name = "evicting_map_test",
+    srcs = ["tests/evicting_map_test.rs"],
+    deps = [
+        "//config",
+        "//third_party:hex",
+        "//third_party:mock_instant",
+        "//third_party:tokio",
+        ":error",
+        ":evicting_map",
     ],
 )

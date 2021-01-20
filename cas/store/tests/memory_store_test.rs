@@ -1,4 +1,4 @@
-// Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::pin::Pin;
 
@@ -19,7 +19,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn insert_one_item_then_update() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&config::backends::MemoryStore {});
+        let store_owned = MemoryStore::new(&config::backends::MemoryStore::default());
         let store = Pin::new(&store_owned);
 
         {
@@ -73,7 +73,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn read_partial() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&config::backends::MemoryStore {});
+        let store_owned = MemoryStore::new(&config::backends::MemoryStore::default());
         let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "1234";
@@ -97,7 +97,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn errors_with_invalid_inputs() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&config::backends::MemoryStore {});
+        let store_owned = MemoryStore::new(&config::backends::MemoryStore::default());
         let store = Pin::new(&store_owned);
         const VALUE1: &str = "123";
         {
