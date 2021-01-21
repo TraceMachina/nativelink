@@ -24,7 +24,7 @@ mod memory_store_tests {
 
         {
             // Insert dummy value into store.
-            const VALUE1: &str = "1";
+            const VALUE1: &str = "13";
             store
                 .update(
                     DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?,
@@ -32,7 +32,7 @@ mod memory_store_tests {
                 )
                 .await?;
             assert!(
-                store.has(DigestInfo::try_new(&VALID_HASH1, VALID_HASH1.len())?).await?,
+                store.has(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?).await?,
                 "Expected memory store to have hash: {}",
                 VALID_HASH1
             );
@@ -50,7 +50,7 @@ mod memory_store_tests {
                 .await?;
             store
                 .get(
-                    DigestInfo::try_new(&VALID_HASH1, VALID_HASH1.len())?,
+                    DigestInfo::try_new(&VALID_HASH1, VALUE2.len())?,
                     &mut Cursor::new(&mut store_data),
                 )
                 .await?;

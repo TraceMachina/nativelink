@@ -3,14 +3,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hex::FromHex;
 use mock_instant::{Instant as MockInstant, MockClock};
 
 use common::DigestInfo;
 use config::backends::EvictionPolicy;
 use evicting_map::{EvictingMap, InstantWrapper};
 
-use error::{Error, ResultExt};
+use error::Error;
 
 /// Our mocked out instant that we can pass to our EvictionMap.
 struct MockInstantWrapped(MockInstant);
@@ -205,6 +204,36 @@ mod evicting_map_tests {
             evicting_map.contains_key(&DigestInfo::try_new(HASH3, 0)?),
             "Expected map to have item 3"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
+        let mut evicting_map = EvictingMap::new(
+            &EvictionPolicy {
+                max_count: 0,
+                max_seconds: 0,
+                max_bytes: 0,
+            },
+            Instant::now(),
+        );
+
+        let value1: Arc<Vec<u8>> = Arc::new("12345678".into());
+        let value2: Arc<Vec<u8>> = Arc::new("87654321".into());
+        evicting_map.insert(DigestInfo::try_new(HASH1, 0)?, value1.clone());
+        evicting_map.insert(DigestInfo::try_new(HASH1, 1)?, value2.clone());
+        assert!(
+            evicting_map.contains_key(&DigestInfo::try_new(HASH1, 0)?),
+            "HASH1/0 should exist"
+        );
+        assert!(
+            evicting_map.contains_key(&DigestInfo::try_new(HASH1, 1)?),
+            "HASH1/1 should exist"
+        );
+
+        assert_eq!(*evicting_map.get(&DigestInfo::try_new(HASH1, 0)?).unwrap(), value1);
+        assert_eq!(*evicting_map.get(&DigestInfo::try_new(HASH1, 1)?).unwrap(), value2);
 
         Ok(())
     }

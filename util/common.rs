@@ -2,6 +2,7 @@
 
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::hash::{Hash, Hasher};
 
 use hex::FromHex;
 use lazy_init::LazyTransform;
@@ -36,6 +37,21 @@ impl DigestInfo {
         &self
             .str_hash
             .get_or_create(|v| v.unwrap_or_else(|| hex::encode(self.packed_hash)))
+    }
+}
+
+impl PartialEq for DigestInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.size_bytes == other.size_bytes && self.packed_hash == other.packed_hash
+    }
+}
+
+impl Eq for DigestInfo {}
+
+impl Hash for DigestInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.size_bytes.hash(state);
+        self.packed_hash.hash(state);
     }
 }
 

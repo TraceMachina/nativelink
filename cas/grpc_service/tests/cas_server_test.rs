@@ -157,7 +157,7 @@ mod batch_update_blobs {
         let store_owned = store_manager.get_store("main_cas").unwrap();
 
         const VALUE1: &str = "1";
-        const VALUE2: &str = "23";
+        const VALUE2: &str = "2";
 
         let digest = Digest {
             hash: HASH1.to_string(),
@@ -199,7 +199,7 @@ mod batch_update_blobs {
         let mut new_data = Vec::new();
         store
             .get(
-                DigestInfo::try_new(&HASH1, HASH1.len())?,
+                DigestInfo::try_new(&HASH1, VALUE1.len())?,
                 &mut Cursor::new(&mut new_data),
             )
             .await
@@ -236,7 +236,7 @@ mod batch_read_blobs {
 
         let digest1 = Digest {
             hash: HASH1.to_string(),
-            size_bytes: VALUE2.len() as i64,
+            size_bytes: VALUE1.len() as i64,
         };
         let digest2 = Digest {
             hash: HASH2.to_string(),

@@ -27,7 +27,7 @@ struct EvictionItem {
 }
 
 pub struct EvictingMap<T: InstantWrapper> {
-    lru: LruCache<[u8; 32], EvictionItem>,
+    lru: LruCache<DigestInfo, EvictionItem>,
     anchor_time: T,
     sum_store_size: usize,
     max_bytes: usize,
@@ -74,7 +74,7 @@ impl<T: InstantWrapper> EvictingMap<T> {
     }
 
     pub fn contains_key(&mut self, hash: &DigestInfo) -> bool {
-        if let Some(mut entry) = self.lru.get_mut(&hash.packed_hash) {
+        if let Some(mut entry) = self.lru.get_mut(hash) {
             entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as u32;
             return true;
         }
@@ -82,7 +82,7 @@ impl<T: InstantWrapper> EvictingMap<T> {
     }
 
     pub fn get<'a>(&'a mut self, hash: &DigestInfo) -> Option<&'a Arc<Vec<u8>>> {
-        if let Some(mut entry) = self.lru.get_mut(&hash.packed_hash) {
+        if let Some(mut entry) = self.lru.get_mut(hash) {
             entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as u32;
             return Some(&entry.data);
         }
@@ -95,7 +95,7 @@ impl<T: InstantWrapper> EvictingMap<T> {
             seconds_since_anchor: self.anchor_time.elapsed().as_secs() as u32,
             data,
         };
-        if let Some(old_item) = self.lru.put(hash.packed_hash, eviction_item) {
+        if let Some(old_item) = self.lru.put(hash, eviction_item) {
             self.sum_store_size -= old_item.data.len();
         }
         self.sum_store_size += new_item_size;
