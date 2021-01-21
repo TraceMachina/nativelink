@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use hex::FromHex;
 use mock_instant::{Instant as MockInstant, MockClock};
 
+use common::DigestInfo;
 use config::backends::EvictionPolicy;
 use evicting_map::{EvictingMap, InstantWrapper};
 
@@ -29,10 +30,6 @@ mod evicting_map_tests {
     const HASH3: &str = "23456789abcdef000000000000000000000000000000000123456789abcdef12";
     const HASH4: &str = "3456789abcdef000000000000000000000000000000000123456789abcdef012";
 
-    fn to_vec(hash: &str) -> Result<[u8; 32], Error> {
-        Ok(<[u8; 32]>::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {}", hash))?)
-    }
-
     #[tokio::test]
     async fn insert_purges_at_max_count() -> Result<(), Error> {
         let mut evicting_map = EvictingMap::new(
@@ -43,25 +40,25 @@ mod evicting_map_tests {
             },
             Instant::now(),
         );
-        evicting_map.insert(to_vec(HASH1)?, Arc::new(vec![]));
-        evicting_map.insert(to_vec(HASH2)?, Arc::new(vec![]));
-        evicting_map.insert(to_vec(HASH3)?, Arc::new(vec![]));
-        evicting_map.insert(to_vec(HASH4)?, Arc::new(vec![]));
+        evicting_map.insert(DigestInfo::try_new(HASH1, 0)?, Arc::new(vec![]));
+        evicting_map.insert(DigestInfo::try_new(HASH2, 0)?, Arc::new(vec![]));
+        evicting_map.insert(DigestInfo::try_new(HASH3, 0)?, Arc::new(vec![]));
+        evicting_map.insert(DigestInfo::try_new(HASH4, 0)?, Arc::new(vec![]));
 
         assert!(
-            !evicting_map.contains_key(&to_vec(HASH1)?),
+            !evicting_map.contains_key(&DigestInfo::try_new(HASH1, 0)?),
             "Expected map to not have item 1"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH2)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH2, 0)?),
             "Expected map to have item 2"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH3)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH3, 0)?),
             "Expected map to have item 3"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH4)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH4, 0)?),
             "Expected map to have item 4"
         );
 
@@ -78,25 +75,25 @@ mod evicting_map_tests {
             },
             Instant::now(),
         );
-        evicting_map.insert(to_vec(HASH1)?, Arc::new("12345678".into()));
-        evicting_map.insert(to_vec(HASH2)?, Arc::new("12345678".into()));
-        evicting_map.insert(to_vec(HASH3)?, Arc::new("12345678".into()));
-        evicting_map.insert(to_vec(HASH4)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH1, 0)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH2, 0)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH3, 0)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH4, 0)?, Arc::new("12345678".into()));
 
         assert!(
-            !evicting_map.contains_key(&to_vec(HASH1)?),
+            !evicting_map.contains_key(&DigestInfo::try_new(HASH1, 0)?),
             "Expected map to not have item 1"
         );
         assert!(
-            !evicting_map.contains_key(&to_vec(HASH2)?),
+            !evicting_map.contains_key(&DigestInfo::try_new(HASH2, 0)?),
             "Expected map to not have item 2"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH3)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH3, 0)?),
             "Expected map to have item 3"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH4)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH4, 0)?),
             "Expected map to have item 4"
         );
 
@@ -114,28 +111,28 @@ mod evicting_map_tests {
             MockInstantWrapped(MockInstant::now()),
         );
 
-        evicting_map.insert(to_vec(HASH1)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH1, 0)?, Arc::new("12345678".into()));
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.insert(to_vec(HASH2)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH2, 0)?, Arc::new("12345678".into()));
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.insert(to_vec(HASH3)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH3, 0)?, Arc::new("12345678".into()));
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.insert(to_vec(HASH4)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH4, 0)?, Arc::new("12345678".into()));
 
         assert!(
-            !evicting_map.contains_key(&to_vec(HASH1)?),
+            !evicting_map.contains_key(&DigestInfo::try_new(HASH1, 0)?),
             "Expected map to not have item 1"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH2)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH2, 0)?),
             "Expected map to have item 2"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH3)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH3, 0)?),
             "Expected map to have item 3"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH4)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH4, 0)?),
             "Expected map to have item 4"
         );
 
@@ -153,24 +150,24 @@ mod evicting_map_tests {
             MockInstantWrapped(MockInstant::now()),
         );
 
-        evicting_map.insert(to_vec(HASH1)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH1, 0)?, Arc::new("12345678".into()));
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.insert(to_vec(HASH2)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH2, 0)?, Arc::new("12345678".into()));
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.get(&to_vec(HASH1)?); // HASH1 should now be last to be evicted.
+        evicting_map.get(&DigestInfo::try_new(HASH1, 0)?); // HASH1 should now be last to be evicted.
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.insert(to_vec(HASH3)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH3, 0)?, Arc::new("12345678".into()));
 
         assert!(
-            evicting_map.contains_key(&to_vec(HASH1)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH1, 0)?),
             "Expected map to have item 1"
         );
         assert!(
-            !evicting_map.contains_key(&to_vec(HASH2)?),
+            !evicting_map.contains_key(&DigestInfo::try_new(HASH2, 0)?),
             "Expected map to not have item 2"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH3)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH3, 0)?),
             "Expected map to have item 3"
         );
 
@@ -188,24 +185,24 @@ mod evicting_map_tests {
             MockInstantWrapped(MockInstant::now()),
         );
 
-        evicting_map.insert(to_vec(HASH1)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH1, 0)?, Arc::new("12345678".into()));
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.insert(to_vec(HASH2)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH2, 0)?, Arc::new("12345678".into()));
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.contains_key(&to_vec(HASH1)?); // HASH1 should now be last to be evicted.
+        evicting_map.contains_key(&DigestInfo::try_new(HASH1, 0)?); // HASH1 should now be last to be evicted.
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.insert(to_vec(HASH3)?, Arc::new("12345678".into()));
+        evicting_map.insert(DigestInfo::try_new(HASH3, 0)?, Arc::new("12345678".into()));
 
         assert!(
-            evicting_map.contains_key(&to_vec(HASH1)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH1, 0)?),
             "Expected map to have item 1"
         );
         assert!(
-            !evicting_map.contains_key(&to_vec(HASH2)?),
+            !evicting_map.contains_key(&DigestInfo::try_new(HASH2, 0)?),
             "Expected map to not have item 2"
         );
         assert!(
-            evicting_map.contains_key(&to_vec(HASH3)?),
+            evicting_map.contains_key(&DigestInfo::try_new(HASH3, 0)?),
             "Expected map to have item 3"
         );
 

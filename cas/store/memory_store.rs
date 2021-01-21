@@ -33,7 +33,7 @@ impl StoreTrait for MemoryStore {
     fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, bool> {
         Box::pin(async move {
             let mut map = self.map.lock().await;
-            Ok(map.contains_key(&digest.packed_hash))
+            Ok(map.contains_key(&digest))
         })
     }
 
@@ -46,7 +46,7 @@ impl StoreTrait for MemoryStore {
             let mut buffer = Vec::with_capacity(digest.size_bytes as usize);
             reader.read_to_end(&mut buffer).await?;
             let mut map = self.map.lock().await;
-            map.insert(digest.packed_hash, Arc::new(buffer));
+            map.insert(digest, Arc::new(buffer));
             Ok(())
         })
     }
@@ -61,7 +61,7 @@ impl StoreTrait for MemoryStore {
         Box::pin(async move {
             let mut map = self.map.lock().await;
             let value = map
-                .get(&digest.packed_hash)
+                .get(&digest)
                 .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.str())))?
                 .as_ref();
             let default_len = value.len() - offset;

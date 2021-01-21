@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use lru::LruCache;
 
+use common::DigestInfo;
 use config::backends::EvictionPolicy;
 
 /// Wrapper used to abstract away which underlying Instant impl we are using.
@@ -72,29 +73,29 @@ impl<T: InstantWrapper> EvictingMap<T> {
         }
     }
 
-    pub fn contains_key(&mut self, hash: &[u8; 32]) -> bool {
-        if let Some(mut entry) = self.lru.get_mut(hash) {
+    pub fn contains_key(&mut self, hash: &DigestInfo) -> bool {
+        if let Some(mut entry) = self.lru.get_mut(&hash.packed_hash) {
             entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as u32;
             return true;
         }
         false
     }
 
-    pub fn get<'a>(&'a mut self, hash: &[u8; 32]) -> Option<&'a Arc<Vec<u8>>> {
-        if let Some(mut entry) = self.lru.get_mut(hash) {
+    pub fn get<'a>(&'a mut self, hash: &DigestInfo) -> Option<&'a Arc<Vec<u8>>> {
+        if let Some(mut entry) = self.lru.get_mut(&hash.packed_hash) {
             entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as u32;
             return Some(&entry.data);
         }
         None
     }
 
-    pub fn insert(&mut self, hash: [u8; 32], data: Arc<Vec<u8>>) {
+    pub fn insert(&mut self, hash: DigestInfo, data: Arc<Vec<u8>>) {
         let new_item_size = data.len();
         let eviction_item = EvictionItem {
             seconds_since_anchor: self.anchor_time.elapsed().as_secs() as u32,
             data,
         };
-        if let Some(old_item) = self.lru.put(hash, eviction_item) {
+        if let Some(old_item) = self.lru.put(hash.packed_hash, eviction_item) {
             self.sum_store_size -= old_item.data.len();
         }
         self.sum_store_size += new_item_size;

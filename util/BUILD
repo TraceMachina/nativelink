@@ -34,6 +34,7 @@ rust_library(
     deps = [
         "//config",
         "//third_party:lru",
+        "//util:common",
     ],
     visibility = ["//visibility:public"],
 )
@@ -68,6 +69,7 @@ rust_test(
         "//third_party:hex",
         "//third_party:mock_instant",
         "//third_party:tokio",
+        "//util:common",
         ":error",
         ":evicting_map",
     ],
