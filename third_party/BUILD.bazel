@@ -204,6 +204,15 @@ alias(
 )
 
 alias(
+    name = "sha2",
+    actual = "@raze__sha2__0_9_2//:sha2",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "stdext",
     actual = "@raze__stdext__0_2_1//:stdext",
     tags = [
