@@ -111,7 +111,6 @@ mod get_action_result {
     }
 
     #[tokio::test]
-    #[ignore] // TODO(allada) Currently we don't check size in store. This test needs fixed.
     async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
         let mut store_manager = make_store_manager()?;
         let ac_server = make_ac_server(&mut store_manager)?;
@@ -127,7 +126,10 @@ mod get_action_result {
 
         let err = raw_response.unwrap_err();
         assert_eq!(err.code(), Code::NotFound);
-        assert_eq!(err.message(), "Found item, but size does not match");
+        assert_eq!(
+            err.message(),
+            "Hash 0123456789abcdef000000000000000000000000000000000123456789abcdef not found"
+        );
         Ok(())
     }
 }
