@@ -42,6 +42,13 @@ pub struct VerifyStore {
     /// This should be set to false for AC, but true for CAS stores.
     #[serde(default)]
     pub verify_size: bool,
+
+    /// If set this store will hash the contents and verify it matches the
+    /// digest hash before writing the entry to underlying store.
+    ///
+    /// This should be set to false for AC, but true for CAS stores.
+    #[serde(default)]
+    pub verify_hash: bool,
 }
 
 /// Eviction policy always works on LRU (Least Recently Used). Any time an entry

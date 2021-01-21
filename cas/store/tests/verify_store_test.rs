@@ -28,6 +28,7 @@ mod verify_store_tests {
             &config::backends::VerifyStore {
                 backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
                 verify_size: false,
+                verify_hash: false,
             },
             inner_store.clone(),
         );
@@ -57,6 +58,7 @@ mod verify_store_tests {
             &config::backends::VerifyStore {
                 backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
                 verify_size: true,
+                verify_hash: false,
             },
             inner_store.clone(),
         );
@@ -89,6 +91,7 @@ mod verify_store_tests {
             &config::backends::VerifyStore {
                 backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
                 verify_size: true,
+                verify_hash: false,
             },
             inner_store.clone(),
         );
@@ -113,6 +116,7 @@ mod verify_store_tests {
             &config::backends::VerifyStore {
                 backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
                 verify_size: true,
+                verify_hash: false,
             },
             inner_store.clone(),
         );
@@ -133,6 +137,68 @@ mod verify_store_tests {
             Pin::new(inner_store.as_ref()).has(digest).await?,
             true,
             "Expected data to exist in store after update"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verify_hash_true_suceeds_on_update() -> Result<(), Error> {
+        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let store_owned = VerifyStore::new(
+            &config::backends::VerifyStore {
+                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+                verify_size: false,
+                verify_hash: true,
+            },
+            inner_store.clone(),
+        );
+        let store = Pin::new(&store_owned);
+
+        /// This value is sha256("123").
+        const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+        const VALUE: &str = "123";
+        let digest = DigestInfo::try_new(&HASH, 3).unwrap();
+        let result = store.update(digest.clone(), Box::new(Cursor::new(VALUE))).await;
+        assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
+        assert_eq!(
+            Pin::new(inner_store.as_ref()).has(digest).await?,
+            true,
+            "Expected data to exist in store after update"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verify_hash_true_fails_on_update() -> Result<(), Error> {
+        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let store_owned = VerifyStore::new(
+            &config::backends::VerifyStore {
+                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+                verify_size: false,
+                verify_hash: true,
+            },
+            inner_store.clone(),
+        );
+        let store = Pin::new(&store_owned);
+
+        /// This value is sha256("12").
+        const HASH: &str = "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918";
+        const VALUE: &str = "123";
+        let digest = DigestInfo::try_new(&HASH, 3).unwrap();
+        let result = store.update(digest.clone(), Box::new(Cursor::new(VALUE))).await;
+        let err = result.unwrap_err().to_string();
+        const ACTUAL_HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+        let expected_err = format!("Hashes do not match, got: {} but digest hash was {}", HASH, ACTUAL_HASH);
+        assert!(
+            err.contains(&expected_err),
+            "Error should contain '{}', got: {:?}",
+            expected_err,
+            err
+        );
+        assert_eq!(
+            Pin::new(inner_store.as_ref()).has(digest).await?,
+            false,
+            "Expected data to not exist in store after update"
         );
         Ok(())
     }

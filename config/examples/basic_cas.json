@@ -5,7 +5,8 @@
         "backend": {
           "memory": {}
         },
-        "verify_size": true
+        "verify_size": true,
+        "verify_hash": true
       }
     },
     "AC_MAIN_STORE": {

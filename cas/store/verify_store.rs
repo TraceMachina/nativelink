@@ -5,6 +5,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use hex;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, WriteHalf};
 
 use async_fixed_buffer::AsyncFixedBuf;
@@ -15,6 +17,7 @@ use traits::{ResultFuture, StoreTrait};
 pub struct VerifyStore {
     inner_store: Arc<dyn StoreTrait>,
     verify_size: bool,
+    verify_hash: bool,
 }
 
 impl VerifyStore {
@@ -22,6 +25,7 @@ impl VerifyStore {
         VerifyStore {
             inner_store: inner_store,
             verify_size: config.verify_size,
+            verify_hash: config.verify_hash,
         }
     }
 
@@ -35,6 +39,7 @@ async fn inner_check_update<'a>(
     mut reader: Box<dyn AsyncRead + Send + Sync + Unpin + 'a>,
     expected_size: i64,
     verify_size: bool,
+    mut maybe_hasher: Option<([u8; 32], Sha256)>,
 ) -> Result<(), Error> {
     let mut buffer = vec![0u8; 1024 * 4];
     let mut sum_size: i64 = 0;
@@ -44,9 +49,12 @@ async fn inner_check_update<'a>(
             .await
             .err_tip(|| "Stream read terminated early")?;
         sum_size += sz as i64;
-        tx.write_all(&buffer[0..sz])
-            .await
-            .err_tip(|| "Failed to write to underlying store")?;
+        let write_future = tx.write_all(&buffer[0..sz]);
+        // This will allows us to hash while sending data to another thread.
+        if let Some((_, hasher)) = maybe_hasher.as_mut() {
+            hasher.update(&buffer[0..sz]);
+        }
+        write_future.await.err_tip(|| "Failed to write to underlying store")?;
         if sz != 0 {
             continue;
         }
@@ -56,6 +64,16 @@ async fn inner_check_update<'a>(
             expected_size,
             sum_size
         );
+        if let Some((original_hash, hasher)) = maybe_hasher {
+            let hash_result: [u8; 32] = hasher.finalize().into();
+            error_if!(
+                original_hash != hash_result,
+                "Hashes do not match, got: {} but digest hash was {}",
+                hex::encode(original_hash),
+                hex::encode(hash_result),
+            );
+        }
+
         // Note: EOF is not sent from write_all() only sent in write().
         tx.write(&vec![]).await.err_tip(|| "Failed to write EOF byte")?;
         tx.shutdown()
@@ -82,10 +100,15 @@ impl StoreTrait for VerifyStore {
             let mut stream_closer = raw_fixed_buffer.get_closer();
             let (rx, tx) = tokio::io::split(raw_fixed_buffer);
 
+            let hash_copy = digest.packed_hash;
             let inner_store_clone = self.inner_store.clone();
             let spawn_future =
                 tokio::spawn(async move { Pin::new(inner_store_clone.as_ref()).update(digest, Box::new(rx)).await });
-            let result = inner_check_update(tx, reader, expected_size, self.verify_size).await;
+            let mut hasher = None;
+            if self.verify_hash {
+                hasher = Some((hash_copy, Sha256::new()));
+            }
+            let result = inner_check_update(tx, reader, expected_size, self.verify_size, hasher).await;
             stream_closer();
             result.merge(
                 spawn_future

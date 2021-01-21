@@ -50,6 +50,8 @@ rust_library(
     deps = [
         "//config",
         "//third_party:async_mutex",
+        "//third_party:hex",
+        "//third_party:sha2",
         "//third_party:tokio",
         "//util:async_fixed_buffer",
         "//util:common",
