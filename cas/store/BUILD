@@ -81,6 +81,7 @@ rust_test(
         "//config",
         "//third_party:pretty_assertions",
         "//third_party:tokio",
+        "//util:async_fixed_buffer",
         "//util:common",
         "//util:error",
         ":memory_store",

@@ -44,18 +44,18 @@ async fn inner_check_update<'a>(
             .await
             .err_tip(|| "Stream read terminated early")?;
         sum_size += sz as i64;
-        error_if!(
-            verify_size && sum_size != expected_size,
-            "Expected size {} but got size {} on insert",
-            expected_size,
-            sum_size
-        );
         tx.write_all(&buffer[0..sz])
             .await
             .err_tip(|| "Failed to write to underlying store")?;
         if sz != 0 {
             continue;
         }
+        error_if!(
+            verify_size && sum_size != expected_size,
+            "Expected size {} but got size {} on insert",
+            expected_size,
+            sum_size
+        );
         // Note: EOF is not sent from write_all() only sent in write().
         tx.write(&vec![]).await.err_tip(|| "Failed to write EOF byte")?;
         tx.shutdown()
