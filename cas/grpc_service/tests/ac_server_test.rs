@@ -27,7 +27,7 @@ async fn insert_into_store<T: Message>(
     action_result.encode(&mut store_data)?;
     let digest = DigestInfo::try_new(&hash, store_data.len() as i64)?;
     store.update(digest.clone(), Box::new(Cursor::new(store_data))).await?;
-    Ok(digest.size_bytes as i64)
+    Ok(digest.size_bytes)
 }
 
 fn make_store_manager() -> Result<StoreManager, Error> {
