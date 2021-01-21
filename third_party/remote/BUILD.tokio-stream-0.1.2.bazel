@@ -31,9 +31,11 @@ licenses([
 # Generated Targets
 
 rust_library(
-    name = "tower_limit",
+    name = "tokio_stream",
     srcs = glob(["**/*.rs"]),
     crate_features = [
+        "default",
+        "time",
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
@@ -46,18 +48,35 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.1",
+    version = "0.1.2",
     # buildifier: leave-alone
     deps = [
         "@raze__futures_core__0_3_12//:futures_core",
-        "@raze__pin_project__0_4_27//:pin_project",
-        "@raze__tokio__0_2_24//:tokio",
-        "@raze__tower_layer__0_3_1//:tower_layer",
-        "@raze__tower_load__0_3_0//:tower_load",
-        "@raze__tower_service__0_3_0//:tower_service",
+        "@raze__pin_project_lite__0_2_4//:pin_project_lite",
+        "@raze__tokio__1_0_2//:tokio",
     ],
 )
 
-# Unsupported target "concurrency" with type "test" omitted
+# Unsupported target "async_send_sync" with type "test" omitted
 
-# Unsupported target "rate" with type "test" omitted
+# Unsupported target "stream_chain" with type "test" omitted
+
+# Unsupported target "stream_collect" with type "test" omitted
+
+# Unsupported target "stream_empty" with type "test" omitted
+
+# Unsupported target "stream_fuse" with type "test" omitted
+
+# Unsupported target "stream_iter" with type "test" omitted
+
+# Unsupported target "stream_merge" with type "test" omitted
+
+# Unsupported target "stream_once" with type "test" omitted
+
+# Unsupported target "stream_pending" with type "test" omitted
+
+# Unsupported target "stream_stream_map" with type "test" omitted
+
+# Unsupported target "stream_timeout" with type "test" omitted
+
+# Unsupported target "time_throttle" with type "test" omitted

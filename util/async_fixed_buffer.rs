@@ -17,14 +17,14 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use fixed_buffer::FixedBuf;
-
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tokio::io::ReadBuf;
 
 pub struct AsyncFixedBuf<T> {
     inner: FixedBuf<T>,
@@ -95,13 +95,14 @@ impl<T: AsRef<[u8]> + Unpin> tokio::io::AsyncRead for AsyncFixedBuf<T> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        let num_read = self.as_mut().inner.read_and_copy_bytes(buf);
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        let num_read = self.as_mut().inner.read_and_copy_bytes(buf.initialize_unfilled());
+        buf.advance(num_read);
         if num_read <= 0 {
             if self.received_eof.load(Ordering::Relaxed) {
                 self.received_eof.store(false, Ordering::Relaxed);
-                return Poll::Ready(Ok(0));
+                return Poll::Ready(Ok(()));
             } else if self.did_shutdown.load(Ordering::Relaxed) {
                 return Poll::Ready(Err(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
@@ -110,7 +111,7 @@ impl<T: AsRef<[u8]> + Unpin> tokio::io::AsyncRead for AsyncFixedBuf<T> {
             }
         }
         self.read_amt.fetch_add(num_read, Ordering::Relaxed);
-        let mut result = Poll::Ready(Ok(num_read));
+        let mut result = Poll::Ready(Ok(()));
         if num_read <= 0 {
             self.park(cx.waker());
             result = Poll::Pending;

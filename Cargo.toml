@@ -8,16 +8,16 @@ version = "0.0.0"
 path = "needed_only_to_make_cargo_tooling_happy.rs"
 
 [dependencies]
-prost = "0.6.1"
-prost-types = "0.6.1"
+prost = "0.7.0"
+prost-types = "0.7.0"
 hex = "0.4.2"
 async-mutex = "1.4.0"
 async-trait = "0.1.42"
 fixed-buffer = "0.2.2"
-futures = "0.3.8"
-# We must use tokio 0.2.x because tonic runtime uses it.
-tokio = { version = "0.2", features = ["macros", "io-util", "fs", "rt-threaded"] }
-tonic = "0.3.1"
+futures = "0.3.12"
+tokio = { version = "1.0.2", features = ["macros", "io-util", "fs", "rt-multi-thread"] }
+tokio-stream = "0.1.2"
+tonic = "0.4.0"
 lazy-init = "0.4.0"
 log = "0.4.11"
 env_logger = "0.8.2"
@@ -29,8 +29,7 @@ lru = "0.6.3"
 [dev-dependencies]
 clap = "2.33.3"
 stdext = "0.2.1"
-prost-build = "0.6.1"
-bytes = "0.5.6"
+prost-build = "0.7.0"
 tonic-build = "0.3.1"
 pretty_assertions = "0.6.1"
 rustfmt-nightly = "1.4.21"
@@ -44,7 +43,6 @@ data_attr = "['src/json5.pest']"
 gen_buildrs = true
 additional_deps = ["@com_google_protobuf//:protoc"]
 additional_env = { PROTOC = "bazel-out/host/bin/external/com_google_protobuf/protoc" }
-
 
 [package.metadata.raze.crates.rustfmt-nightly.'*']
 gen_buildrs = true
@@ -78,7 +76,6 @@ targets = [
 ]
 
 output_buildfile_suffix = "BUILD"
-
 
 # The two acceptable options are "Remote" and "Vendored" which
 # is used to idnicate whether the user is using a non-vendored or

@@ -31,18 +31,14 @@ licenses([
 # Generated Targets
 
 rust_library(
-    name = "mio",
+    name = "http_body",
     srcs = glob(["**/*.rs"]),
-    aliases = {
-    },
     crate_features = [
-        "default",
-        "with-deprecated",
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
     data = [],
-    edition = "2015",
+    edition = "2018",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -50,23 +46,12 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.6.23",
+    version = "0.4.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__cfg_if__0_1_10//:cfg_if",
-        "@raze__iovec__0_1_4//:iovec",
-        "@raze__log__0_4_13//:log",
-        "@raze__net2__0_2_37//:net2",
-        "@raze__slab__0_4_2//:slab",
-    ] + selects.with_or({
-        # cfg(unix)
-        (
-            "@io_bazel_rules_rust//rust/platform:x86_64-unknown-linux-gnu",
-        ): [
-            "@raze__libc__0_2_82//:libc",
-        ],
-        "//conditions:default": [],
-    }),
+        "@raze__bytes__1_0_1//:bytes",
+        "@raze__http__0_2_3//:http",
+    ],
 )
 
-# Unsupported target "test" with type "test" omitted
+# Unsupported target "is_end_stream" with type "test" omitted

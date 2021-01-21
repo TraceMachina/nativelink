@@ -25,13 +25,15 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT OR Apache-2.0"
+    "notice",  # MIT from expression "MIT"
 ])
 
 # Generated Targets
 
+# Unsupported target "tcp_accept" with type "example" omitted
+
 rust_library(
-    name = "rand_pcg",
+    name = "async_stream",
     srcs = glob(["**/*.rs"]),
     crate_features = [
     ],
@@ -39,6 +41,9 @@ rust_library(
     crate_type = "lib",
     data = [],
     edition = "2018",
+    proc_macro_deps = [
+        "@raze__async_stream_impl__0_3_0//:async_stream_impl",
+    ],
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -46,15 +51,15 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.1",
+    version = "0.3.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__rand_core__0_5_1//:rand_core",
+        "@raze__futures_core__0_3_12//:futures_core",
     ],
 )
 
-# Unsupported target "lcg128xsl64" with type "test" omitted
+# Unsupported target "for_await" with type "test" omitted
 
-# Unsupported target "lcg64xsh32" with type "test" omitted
+# Unsupported target "stream" with type "test" omitted
 
-# Unsupported target "mcg128xsl64" with type "test" omitted
+# Unsupported target "try_stream" with type "test" omitted

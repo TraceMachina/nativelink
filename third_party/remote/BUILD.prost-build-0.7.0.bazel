@@ -25,7 +25,7 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT"
+    "notice",  # Apache-2.0 from expression "Apache-2.0"
 ])
 
 # Generated Targets
@@ -36,7 +36,7 @@ load(
 )
 
 cargo_build_script(
-    name = "ws2_32_sys_build_script",
+    name = "prost_build_build_script",
     srcs = glob(["**/*.rs"]),
     build_script_env = {
     },
@@ -44,7 +44,7 @@ cargo_build_script(
     ],
     crate_root = "build.rs",
     data = glob(["**"]),
-    edition = "2015",
+    edition = "2018",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -52,31 +52,25 @@ cargo_build_script(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.1",
+    version = "0.7.0",
     visibility = ["//visibility:private"],
     deps = [
-        "@raze__winapi_build__0_1_1//:winapi_build",
-    ],
-)
-
-alias(
-    name = "ws2_32_sys",
-    actual = ":ws2_32",
-    tags = [
-        "cargo-raze",
-        "manual",
+        "@raze__which__4_0_2//:which",
     ],
 )
 
 rust_library(
-    name = "ws2_32",
+    name = "prost_build",
     srcs = glob(["**/*.rs"]),
     crate_features = [
     ],
     crate_root = "src/lib.rs",
     crate_type = "lib",
     data = [],
-    edition = "2015",
+    edition = "2018",
+    rustc_env = {
+        "PROTOC": "bazel-out/host/bin/external/com_google_protobuf/protoc",
+    },
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -84,10 +78,19 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.1",
+    version = "0.7.0",
     # buildifier: leave-alone
     deps = [
-        ":ws2_32_sys_build_script",
-        "@raze__winapi__0_2_8//:winapi",
+        ":prost_build_build_script",
+        "@raze__bytes__1_0_1//:bytes",
+        "@raze__heck__0_3_2//:heck",
+        "@raze__itertools__0_9_0//:itertools",
+        "@raze__log__0_4_13//:log",
+        "@raze__multimap__0_8_2//:multimap",
+        "@raze__petgraph__0_5_1//:petgraph",
+        "@raze__prost__0_7_0//:prost",
+        "@raze__prost_types__0_7_0//:prost_types",
+        "@raze__tempfile__3_2_0//:tempfile",
+        "@com_google_protobuf//:protoc",
     ],
 )

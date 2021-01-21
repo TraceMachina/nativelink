@@ -31,15 +31,6 @@ alias(
 )
 
 alias(
-    name = "bytes",
-    actual = "@raze__bytes__0_5_6//:bytes",
-    tags = [
-        "cargo-raze",
-        "manual",
-    ],
-)
-
-alias(
     name = "clap",
     actual = "@raze__clap__2_33_3//:clap",
     tags = [
@@ -158,7 +149,7 @@ alias(
 
 alias(
     name = "prost",
-    actual = "@raze__prost__0_6_1//:prost",
+    actual = "@raze__prost__0_7_0//:prost",
     tags = [
         "cargo-raze",
         "manual",
@@ -167,7 +158,7 @@ alias(
 
 alias(
     name = "prost_build",
-    actual = "@raze__prost_build__0_6_1//:prost_build",
+    actual = "@raze__prost_build__0_7_0//:prost_build",
     tags = [
         "cargo-raze",
         "manual",
@@ -176,7 +167,7 @@ alias(
 
 alias(
     name = "prost_types",
-    actual = "@raze__prost_types__0_6_1//:prost_types",
+    actual = "@raze__prost_types__0_7_0//:prost_types",
     tags = [
         "cargo-raze",
         "manual",
@@ -223,7 +214,16 @@ alias(
 
 alias(
     name = "tokio",
-    actual = "@raze__tokio__0_2_24//:tokio",
+    actual = "@raze__tokio__1_0_2//:tokio",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "tokio_stream",
+    actual = "@raze__tokio_stream__0_1_2//:tokio_stream",
     tags = [
         "cargo-raze",
         "manual",
@@ -232,7 +232,7 @@ alias(
 
 alias(
     name = "tonic",
-    actual = "@raze__tonic__0_3_1//:tonic",
+    actual = "@raze__tonic__0_4_0//:tonic",
     tags = [
         "cargo-raze",
         "manual",

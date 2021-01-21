@@ -59,7 +59,7 @@ pub mod write_tests {
 
     // Utility to encode our proto into GRPC stream format.
     fn encode<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::error::Error>> {
-        use bytes::{BufMut, BytesMut};
+        use prost::bytes::{BufMut, BytesMut};
         let mut buf = BytesMut::new();
         // See below comment on spec.
         use std::mem::size_of;
@@ -176,7 +176,7 @@ pub mod read_tests {
     use super::*;
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
-    use tokio::stream::StreamExt;
+    use tokio_stream::StreamExt;
 
     use proto::google::bytestream::{
         byte_stream_server::ByteStream, // Needed to call .read().
