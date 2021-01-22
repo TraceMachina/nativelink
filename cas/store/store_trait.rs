@@ -14,7 +14,7 @@ pub enum StoreType {
     Memory,
 }
 
-pub type ResultFuture<'a, Res> = Pin<Box<dyn Future<Output = Result<Res, Error>> + 'a + Sync + Send>>;
+pub type ResultFuture<'a, Res> = Pin<Box<dyn Future<Output = Result<Res, Error>> + 'a + Send>>;
 
 #[async_trait]
 pub trait StoreTrait: Sync + Send + Unpin {
