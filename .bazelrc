@@ -2,7 +2,7 @@
 
 build --test_output=errors
 
-build:debug -c debug
+build:debug -c dbg
 
 build:self_test --remote_instance_name=main
 build:self_test --remote_cache=grpc://127.0.0.1:50051
