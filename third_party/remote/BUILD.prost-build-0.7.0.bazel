@@ -6,15 +6,15 @@ DO NOT EDIT! Replaced on runs of cargo-raze
 """
 
 # buildifier: disable=load
+load("@bazel_skylib//lib:selects.bzl", "selects")
+
+# buildifier: disable=load
 load(
     "@io_bazel_rules_rust//rust:rust.bzl",
     "rust_binary",
     "rust_library",
     "rust_test",
 )
-
-# buildifier: disable=load
-load("@bazel_skylib//lib:selects.bzl", "selects")
 
 package(default_visibility = [
     # Public for visibility by "@raze__crate__version//" targets.
@@ -29,6 +29,7 @@ licenses([
 ])
 
 # Generated Targets
+# buildifier: disable=out-of-order-load
 # buildifier: disable=load-on-top
 load(
     "@io_bazel_rules_rust//cargo:cargo_build_script.bzl",
@@ -55,7 +56,7 @@ cargo_build_script(
     version = "0.7.0",
     visibility = ["//visibility:private"],
     deps = [
-        "@raze__which__4_0_2//:which",
+        "@raze__which__4_1_0//:which",
     ],
 )
 
@@ -82,15 +83,15 @@ rust_library(
     # buildifier: leave-alone
     deps = [
         ":prost_build_build_script",
+        "@com_google_protobuf//:protoc",
         "@raze__bytes__1_0_1//:bytes",
         "@raze__heck__0_3_2//:heck",
         "@raze__itertools__0_9_0//:itertools",
-        "@raze__log__0_4_13//:log",
-        "@raze__multimap__0_8_2//:multimap",
+        "@raze__log__0_4_14//:log",
+        "@raze__multimap__0_8_3//:multimap",
         "@raze__petgraph__0_5_1//:petgraph",
         "@raze__prost__0_7_0//:prost",
         "@raze__prost_types__0_7_0//:prost_types",
         "@raze__tempfile__3_2_0//:tempfile",
-        "@com_google_protobuf//:protoc",
     ],
 )

@@ -23,7 +23,7 @@ alias(
 
 alias(
     name = "async_trait",
-    actual = "@raze__async_trait__0_1_42//:async_trait",
+    actual = "@raze__async_trait__0_1_48//:async_trait",
     tags = [
         "cargo-raze",
         "manual",
@@ -50,7 +50,7 @@ alias(
 
 alias(
     name = "env_logger",
-    actual = "@raze__env_logger__0_8_2//:env_logger",
+    actual = "@raze__env_logger__0_8_3//:env_logger",
     tags = [
         "cargo-raze",
         "manual",
@@ -68,7 +68,7 @@ alias(
 
 alias(
     name = "futures",
-    actual = "@raze__futures__0_3_12//:futures",
+    actual = "@raze__futures__0_3_13//:futures",
     tags = [
         "cargo-raze",
         "manual",
@@ -77,7 +77,7 @@ alias(
 
 alias(
     name = "hex",
-    actual = "@raze__hex__0_4_2//:hex",
+    actual = "@raze__hex__0_4_3//:hex",
     tags = [
         "cargo-raze",
         "manual",
@@ -104,7 +104,7 @@ alias(
 
 alias(
     name = "log",
-    actual = "@raze__log__0_4_13//:log",
+    actual = "@raze__log__0_4_14//:log",
     tags = [
         "cargo-raze",
         "manual",
@@ -113,7 +113,7 @@ alias(
 
 alias(
     name = "lru",
-    actual = "@raze__lru__0_6_3//:lru",
+    actual = "@raze__lru__0_6_5//:lru",
     tags = [
         "cargo-raze",
         "manual",
@@ -196,7 +196,7 @@ alias(
 
 alias(
     name = "serde",
-    actual = "@raze__serde__1_0_120//:serde",
+    actual = "@raze__serde__1_0_125//:serde",
     tags = [
         "cargo-raze",
         "manual",
@@ -205,7 +205,7 @@ alias(
 
 alias(
     name = "sha2",
-    actual = "@raze__sha2__0_9_2//:sha2",
+    actual = "@raze__sha2__0_9_3//:sha2",
     tags = [
         "cargo-raze",
         "manual",
@@ -223,7 +223,7 @@ alias(
 
 alias(
     name = "tokio",
-    actual = "@raze__tokio__1_0_2//:tokio",
+    actual = "@raze__tokio__1_4_0//:tokio",
     tags = [
         "cargo-raze",
         "manual",
@@ -232,7 +232,7 @@ alias(
 
 alias(
     name = "tokio_stream",
-    actual = "@raze__tokio_stream__0_1_2//:tokio_stream",
+    actual = "@raze__tokio_stream__0_1_5//:tokio_stream",
     tags = [
         "cargo-raze",
         "manual",
@@ -241,7 +241,7 @@ alias(
 
 alias(
     name = "tonic",
-    actual = "@raze__tonic__0_4_0//:tonic",
+    actual = "@raze__tonic__0_4_1//:tonic",
     tags = [
         "cargo-raze",
         "manual",
@@ -255,4 +255,12 @@ alias(
         "cargo-raze",
         "manual",
     ],
+)
+
+# Export file for Stardoc support
+exports_files(
+    [
+        "crates.bzl",
+    ],
+    visibility = ["//visibility:public"],
 )

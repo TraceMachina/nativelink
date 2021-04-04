@@ -6,15 +6,15 @@ DO NOT EDIT! Replaced on runs of cargo-raze
 """
 
 # buildifier: disable=load
+load("@bazel_skylib//lib:selects.bzl", "selects")
+
+# buildifier: disable=load
 load(
     "@io_bazel_rules_rust//rust:rust.bzl",
     "rust_binary",
     "rust_library",
     "rust_test",
 )
-
-# buildifier: disable=load
-load("@bazel_skylib//lib:selects.bzl", "selects")
 
 package(default_visibility = [
     # Public for visibility by "@raze__crate__version//" targets.
@@ -29,6 +29,7 @@ licenses([
 ])
 
 # Generated Targets
+# buildifier: disable=out-of-order-load
 # buildifier: disable=load-on-top
 load(
     "@io_bazel_rules_rust//cargo:cargo_build_script.bzl",
@@ -86,7 +87,7 @@ rust_binary(
     data = [],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__derive_new__0_5_8//:derive_new",
+        "@raze__derive_new__0_5_9//:derive_new",
         "@raze__rustfmt_config_proc_macro__0_2_0//:rustfmt_config_proc_macro",
     ],
     rustc_flags = [
@@ -99,11 +100,10 @@ rust_binary(
     version = "1.4.21",
     # buildifier: leave-alone
     deps = [
-        # Binaries get an implicit dependency on their crate's lib
         ":rustfmt_nightly",
         ":rustfmt_nightly_build_script",
         "@raze__annotate_snippets__0_6_1//:annotate_snippets",
-        "@raze__anyhow__1_0_38//:anyhow",
+        "@raze__anyhow__1_0_40//:anyhow",
         "@raze__bytecount__0_6_2//:bytecount",
         "@raze__cargo_metadata__0_8_2//:cargo_metadata",
         "@raze__diff__0_1_12//:diff",
@@ -113,8 +113,8 @@ rust_binary(
         "@raze__ignore__0_4_17//:ignore",
         "@raze__itertools__0_8_2//:itertools",
         "@raze__lazy_static__1_4_0//:lazy_static",
-        "@raze__log__0_4_13//:log",
-        "@raze__regex__1_4_3//:regex",
+        "@raze__log__0_4_14//:log",
+        "@raze__regex__1_4_5//:regex",
         "@raze__rustc_ap_rustc_ast__677_0_0//:rustc_ap_rustc_ast",
         "@raze__rustc_ap_rustc_ast_pretty__677_0_0//:rustc_ap_rustc_ast_pretty",
         "@raze__rustc_ap_rustc_attr__677_0_0//:rustc_ap_rustc_attr",
@@ -125,11 +125,11 @@ rust_binary(
         "@raze__rustc_ap_rustc_session__677_0_0//:rustc_ap_rustc_session",
         "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span",
         "@raze__rustc_workspace_hack__1_0_0//:rustc_workspace_hack",
-        "@raze__serde__1_0_120//:serde",
-        "@raze__serde_json__1_0_61//:serde_json",
+        "@raze__serde__1_0_125//:serde",
+        "@raze__serde_json__1_0_64//:serde_json",
         "@raze__structopt__0_3_21//:structopt",
         "@raze__term__0_6_1//:term",
-        "@raze__thiserror__1_0_23//:thiserror",
+        "@raze__thiserror__1_0_24//:thiserror",
         "@raze__toml__0_5_8//:toml",
         "@raze__unicode_categories__0_1_1//:unicode_categories",
         "@raze__unicode_segmentation__1_7_1//:unicode_segmentation",
@@ -162,7 +162,7 @@ rust_binary(
     data = [],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__derive_new__0_5_8//:derive_new",
+        "@raze__derive_new__0_5_9//:derive_new",
         "@raze__rustfmt_config_proc_macro__0_2_0//:rustfmt_config_proc_macro",
     ],
     rustc_flags = [
@@ -175,11 +175,10 @@ rust_binary(
     version = "1.4.21",
     # buildifier: leave-alone
     deps = [
-        # Binaries get an implicit dependency on their crate's lib
         ":rustfmt_nightly",
         ":rustfmt_nightly_build_script",
         "@raze__annotate_snippets__0_6_1//:annotate_snippets",
-        "@raze__anyhow__1_0_38//:anyhow",
+        "@raze__anyhow__1_0_40//:anyhow",
         "@raze__bytecount__0_6_2//:bytecount",
         "@raze__cargo_metadata__0_8_2//:cargo_metadata",
         "@raze__diff__0_1_12//:diff",
@@ -189,8 +188,8 @@ rust_binary(
         "@raze__ignore__0_4_17//:ignore",
         "@raze__itertools__0_8_2//:itertools",
         "@raze__lazy_static__1_4_0//:lazy_static",
-        "@raze__log__0_4_13//:log",
-        "@raze__regex__1_4_3//:regex",
+        "@raze__log__0_4_14//:log",
+        "@raze__regex__1_4_5//:regex",
         "@raze__rustc_ap_rustc_ast__677_0_0//:rustc_ap_rustc_ast",
         "@raze__rustc_ap_rustc_ast_pretty__677_0_0//:rustc_ap_rustc_ast_pretty",
         "@raze__rustc_ap_rustc_attr__677_0_0//:rustc_ap_rustc_attr",
@@ -201,11 +200,11 @@ rust_binary(
         "@raze__rustc_ap_rustc_session__677_0_0//:rustc_ap_rustc_session",
         "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span",
         "@raze__rustc_workspace_hack__1_0_0//:rustc_workspace_hack",
-        "@raze__serde__1_0_120//:serde",
-        "@raze__serde_json__1_0_61//:serde_json",
+        "@raze__serde__1_0_125//:serde",
+        "@raze__serde_json__1_0_64//:serde_json",
         "@raze__structopt__0_3_21//:structopt",
         "@raze__term__0_6_1//:term",
-        "@raze__thiserror__1_0_23//:thiserror",
+        "@raze__thiserror__1_0_24//:thiserror",
         "@raze__toml__0_5_8//:toml",
         "@raze__unicode_categories__0_1_1//:unicode_categories",
         "@raze__unicode_segmentation__1_7_1//:unicode_segmentation",
@@ -238,7 +237,7 @@ rust_binary(
     data = [],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__derive_new__0_5_8//:derive_new",
+        "@raze__derive_new__0_5_9//:derive_new",
         "@raze__rustfmt_config_proc_macro__0_2_0//:rustfmt_config_proc_macro",
     ],
     rustc_flags = [
@@ -251,11 +250,10 @@ rust_binary(
     version = "1.4.21",
     # buildifier: leave-alone
     deps = [
-        # Binaries get an implicit dependency on their crate's lib
         ":rustfmt_nightly",
         ":rustfmt_nightly_build_script",
         "@raze__annotate_snippets__0_6_1//:annotate_snippets",
-        "@raze__anyhow__1_0_38//:anyhow",
+        "@raze__anyhow__1_0_40//:anyhow",
         "@raze__bytecount__0_6_2//:bytecount",
         "@raze__cargo_metadata__0_8_2//:cargo_metadata",
         "@raze__diff__0_1_12//:diff",
@@ -265,8 +263,8 @@ rust_binary(
         "@raze__ignore__0_4_17//:ignore",
         "@raze__itertools__0_8_2//:itertools",
         "@raze__lazy_static__1_4_0//:lazy_static",
-        "@raze__log__0_4_13//:log",
-        "@raze__regex__1_4_3//:regex",
+        "@raze__log__0_4_14//:log",
+        "@raze__regex__1_4_5//:regex",
         "@raze__rustc_ap_rustc_ast__677_0_0//:rustc_ap_rustc_ast",
         "@raze__rustc_ap_rustc_ast_pretty__677_0_0//:rustc_ap_rustc_ast_pretty",
         "@raze__rustc_ap_rustc_attr__677_0_0//:rustc_ap_rustc_attr",
@@ -277,11 +275,11 @@ rust_binary(
         "@raze__rustc_ap_rustc_session__677_0_0//:rustc_ap_rustc_session",
         "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span",
         "@raze__rustc_workspace_hack__1_0_0//:rustc_workspace_hack",
-        "@raze__serde__1_0_120//:serde",
-        "@raze__serde_json__1_0_61//:serde_json",
+        "@raze__serde__1_0_125//:serde",
+        "@raze__serde_json__1_0_64//:serde_json",
         "@raze__structopt__0_3_21//:structopt",
         "@raze__term__0_6_1//:term",
-        "@raze__thiserror__1_0_23//:thiserror",
+        "@raze__thiserror__1_0_24//:thiserror",
         "@raze__toml__0_5_8//:toml",
         "@raze__unicode_categories__0_1_1//:unicode_categories",
         "@raze__unicode_segmentation__1_7_1//:unicode_segmentation",
@@ -314,7 +312,7 @@ rust_binary(
     data = [],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__derive_new__0_5_8//:derive_new",
+        "@raze__derive_new__0_5_9//:derive_new",
         "@raze__rustfmt_config_proc_macro__0_2_0//:rustfmt_config_proc_macro",
     ],
     rustc_flags = [
@@ -327,11 +325,10 @@ rust_binary(
     version = "1.4.21",
     # buildifier: leave-alone
     deps = [
-        # Binaries get an implicit dependency on their crate's lib
         ":rustfmt_nightly",
         ":rustfmt_nightly_build_script",
         "@raze__annotate_snippets__0_6_1//:annotate_snippets",
-        "@raze__anyhow__1_0_38//:anyhow",
+        "@raze__anyhow__1_0_40//:anyhow",
         "@raze__bytecount__0_6_2//:bytecount",
         "@raze__cargo_metadata__0_8_2//:cargo_metadata",
         "@raze__diff__0_1_12//:diff",
@@ -341,8 +338,8 @@ rust_binary(
         "@raze__ignore__0_4_17//:ignore",
         "@raze__itertools__0_8_2//:itertools",
         "@raze__lazy_static__1_4_0//:lazy_static",
-        "@raze__log__0_4_13//:log",
-        "@raze__regex__1_4_3//:regex",
+        "@raze__log__0_4_14//:log",
+        "@raze__regex__1_4_5//:regex",
         "@raze__rustc_ap_rustc_ast__677_0_0//:rustc_ap_rustc_ast",
         "@raze__rustc_ap_rustc_ast_pretty__677_0_0//:rustc_ap_rustc_ast_pretty",
         "@raze__rustc_ap_rustc_attr__677_0_0//:rustc_ap_rustc_attr",
@@ -353,11 +350,11 @@ rust_binary(
         "@raze__rustc_ap_rustc_session__677_0_0//:rustc_ap_rustc_session",
         "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span",
         "@raze__rustc_workspace_hack__1_0_0//:rustc_workspace_hack",
-        "@raze__serde__1_0_120//:serde",
-        "@raze__serde_json__1_0_61//:serde_json",
+        "@raze__serde__1_0_125//:serde",
+        "@raze__serde_json__1_0_64//:serde_json",
         "@raze__structopt__0_3_21//:structopt",
         "@raze__term__0_6_1//:term",
-        "@raze__thiserror__1_0_23//:thiserror",
+        "@raze__thiserror__1_0_24//:thiserror",
         "@raze__toml__0_5_8//:toml",
         "@raze__unicode_categories__0_1_1//:unicode_categories",
         "@raze__unicode_segmentation__1_7_1//:unicode_segmentation",
@@ -389,7 +386,7 @@ rust_library(
     data = [],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__derive_new__0_5_8//:derive_new",
+        "@raze__derive_new__0_5_9//:derive_new",
         "@raze__rustfmt_config_proc_macro__0_2_0//:rustfmt_config_proc_macro",
     ],
     rustc_flags = [
@@ -404,7 +401,7 @@ rust_library(
     deps = [
         ":rustfmt_nightly_build_script",
         "@raze__annotate_snippets__0_6_1//:annotate_snippets",
-        "@raze__anyhow__1_0_38//:anyhow",
+        "@raze__anyhow__1_0_40//:anyhow",
         "@raze__bytecount__0_6_2//:bytecount",
         "@raze__cargo_metadata__0_8_2//:cargo_metadata",
         "@raze__diff__0_1_12//:diff",
@@ -414,8 +411,8 @@ rust_library(
         "@raze__ignore__0_4_17//:ignore",
         "@raze__itertools__0_8_2//:itertools",
         "@raze__lazy_static__1_4_0//:lazy_static",
-        "@raze__log__0_4_13//:log",
-        "@raze__regex__1_4_3//:regex",
+        "@raze__log__0_4_14//:log",
+        "@raze__regex__1_4_5//:regex",
         "@raze__rustc_ap_rustc_ast__677_0_0//:rustc_ap_rustc_ast",
         "@raze__rustc_ap_rustc_ast_pretty__677_0_0//:rustc_ap_rustc_ast_pretty",
         "@raze__rustc_ap_rustc_attr__677_0_0//:rustc_ap_rustc_attr",
@@ -426,11 +423,11 @@ rust_library(
         "@raze__rustc_ap_rustc_session__677_0_0//:rustc_ap_rustc_session",
         "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span",
         "@raze__rustc_workspace_hack__1_0_0//:rustc_workspace_hack",
-        "@raze__serde__1_0_120//:serde",
-        "@raze__serde_json__1_0_61//:serde_json",
+        "@raze__serde__1_0_125//:serde",
+        "@raze__serde_json__1_0_64//:serde_json",
         "@raze__structopt__0_3_21//:structopt",
         "@raze__term__0_6_1//:term",
-        "@raze__thiserror__1_0_23//:thiserror",
+        "@raze__thiserror__1_0_24//:thiserror",
         "@raze__toml__0_5_8//:toml",
         "@raze__unicode_categories__0_1_1//:unicode_categories",
         "@raze__unicode_segmentation__1_7_1//:unicode_segmentation",
