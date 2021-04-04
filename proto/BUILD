@@ -30,13 +30,14 @@ genrule(
     srcs = _proto_files,
     outs = _genproto_files,
     cmd = "\n".join([
+        "set -e",
         # By default `rustfmt` will be named `cargo_bin_rustfmt`, but in
         # `tonic_build` it is hard codded to look for `rustfmt` program, so we
         # make a temp directory symlink a new file with the right name in that
         # directory then change our path to look there first before running
         # `tonic_build`. Also cleanup the tmp directory after it runs.
         "TMPPATH=$$(mktemp -d -t gen_proto.XXXX)",
-        # "trap \"rm -rf $$TMPPATH\" EXIT",
+        "trap \"rm -rf $$TMPPATH\" EXIT",
         "ln -s $$PWD/$(location //third_party:cargo_bin_rustfmt) $$TMPPATH/rustfmt",
         "export PATH=$$TMPPATH:$$PATH",
         "$(execpath :gen_protos_tool) --output_dir $(RULEDIR) " + " ".join([
