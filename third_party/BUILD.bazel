@@ -23,7 +23,7 @@ alias(
 
 alias(
     name = "async_trait",
-    actual = "@raze__async_trait__0_1_48//:async_trait",
+    actual = "@raze__async_trait__0_1_51//:async_trait",
     tags = [
         "cargo-raze",
         "manual",
@@ -50,7 +50,7 @@ alias(
 
 alias(
     name = "env_logger",
-    actual = "@raze__env_logger__0_8_3//:env_logger",
+    actual = "@raze__env_logger__0_9_0//:env_logger",
     tags = [
         "cargo-raze",
         "manual",
@@ -68,7 +68,7 @@ alias(
 
 alias(
     name = "futures",
-    actual = "@raze__futures__0_3_13//:futures",
+    actual = "@raze__futures__0_3_16//:futures",
     tags = [
         "cargo-raze",
         "manual",
@@ -78,6 +78,15 @@ alias(
 alias(
     name = "hex",
     actual = "@raze__hex__0_4_3//:hex",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "http",
+    actual = "@raze__http__0_2_4//:http",
     tags = [
         "cargo-raze",
         "manual",
@@ -95,7 +104,7 @@ alias(
 
 alias(
     name = "lazy_init",
-    actual = "@raze__lazy_init__0_4_0//:lazy_init",
+    actual = "@raze__lazy_init__0_5_0//:lazy_init",
     tags = [
         "cargo-raze",
         "manual",
@@ -113,7 +122,7 @@ alias(
 
 alias(
     name = "lru",
-    actual = "@raze__lru__0_6_5//:lru",
+    actual = "@raze__lru__0_6_6//:lru",
     tags = [
         "cargo-raze",
         "manual",
@@ -140,7 +149,7 @@ alias(
 
 alias(
     name = "pretty_assertions",
-    actual = "@raze__pretty_assertions__0_6_1//:pretty_assertions",
+    actual = "@raze__pretty_assertions__0_7_2//:pretty_assertions",
     tags = [
         "cargo-raze",
         "manual",
@@ -175,6 +184,42 @@ alias(
 )
 
 alias(
+    name = "rand",
+    actual = "@raze__rand__0_8_4//:rand",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "rusoto_core",
+    actual = "@raze__rusoto_core__0_46_0//:rusoto_core",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "rusoto_mock",
+    actual = "@raze__rusoto_mock__0_46_0//:rusoto_mock",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "rusoto_s3",
+    actual = "@raze__rusoto_s3__0_46_0//:rusoto_s3",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "rustfmt_nightly",
     actual = "@raze__rustfmt_nightly__1_4_21//:rustfmt_nightly",
     tags = [
@@ -196,7 +241,7 @@ alias(
 
 alias(
     name = "serde",
-    actual = "@raze__serde__1_0_125//:serde",
+    actual = "@raze__serde__1_0_127//:serde",
     tags = [
         "cargo-raze",
         "manual",
@@ -205,7 +250,7 @@ alias(
 
 alias(
     name = "sha2",
-    actual = "@raze__sha2__0_9_3//:sha2",
+    actual = "@raze__sha2__0_9_5//:sha2",
     tags = [
         "cargo-raze",
         "manual",
@@ -223,7 +268,7 @@ alias(
 
 alias(
     name = "tokio",
-    actual = "@raze__tokio__1_4_0//:tokio",
+    actual = "@raze__tokio__1_10_0//:tokio",
     tags = [
         "cargo-raze",
         "manual",
@@ -232,7 +277,16 @@ alias(
 
 alias(
     name = "tokio_stream",
-    actual = "@raze__tokio_stream__0_1_5//:tokio_stream",
+    actual = "@raze__tokio_stream__0_1_7//:tokio_stream",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "tokio_util",
+    actual = "@raze__tokio_util__0_6_7//:tokio_util",
     tags = [
         "cargo-raze",
         "manual",
@@ -241,7 +295,7 @@ alias(
 
 alias(
     name = "tonic",
-    actual = "@raze__tonic__0_4_1//:tonic",
+    actual = "@raze__tonic__0_4_3//:tonic",
     tags = [
         "cargo-raze",
         "manual",
@@ -250,7 +304,16 @@ alias(
 
 alias(
     name = "tonic_build",
-    actual = "@raze__tonic_build__0_3_1//:tonic_build",
+    actual = "@raze__tonic_build__0_4_2//:tonic_build",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "zeroize",
+    actual = "@raze__zeroize__1_3_0//:zeroize",
     tags = [
         "cargo-raze",
         "manual",

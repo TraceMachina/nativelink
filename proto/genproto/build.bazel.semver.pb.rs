@@ -15,5 +15,5 @@ pub struct SemVer {
     /// must be filled. They are mutually exclusive. Pre-release versions are
     /// assumed to be earlier than any released versions.
     #[prost(string, tag = "4")]
-    pub prerelease: std::string::String,
+    pub prerelease: ::prost::alloc::string::String,
 }

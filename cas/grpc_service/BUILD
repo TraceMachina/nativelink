@@ -1,6 +1,6 @@
 # Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
-load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:rust.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "cas_server",

@@ -10,7 +10,7 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
 
 # buildifier: disable=load
 load(
-    "@io_bazel_rules_rust//rust:rust.bzl",
+    "@rules_rust//rust:rust.bzl",
     "rust_binary",
     "rust_library",
     "rust_test",
@@ -49,7 +49,7 @@ rust_library(
     version = "677.0.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__indexmap__1_6_2//:indexmap",
+        "@raze__indexmap__1_7_0//:indexmap",
         "@raze__smallvec__1_6_1//:smallvec",
     ],
 )

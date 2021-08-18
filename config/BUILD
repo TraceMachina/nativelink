@@ -1,6 +1,6 @@
 # Copyright 2021 Nathan (Blaise) Bruer.  All rights reserved.
 
-load("@io_bazel_rules_rust//rust:rust.bzl", "rust_library")
+load("@rules_rust//rust:rust.bzl", "rust_library")
 
 exports_files(["examples/basic_cas.json"])
 

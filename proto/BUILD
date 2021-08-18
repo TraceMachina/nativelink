@@ -1,6 +1,6 @@
 # Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
-load("@io_bazel_rules_rust//rust:rust.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:rust.bzl", "rust_binary", "rust_library")
 
 # These build rules will do the following:
 # 1. Fetch all .proto files under in this directory
@@ -40,6 +40,7 @@ genrule(
         "trap \"rm -rf $$TMPPATH\" EXIT",
         "ln -s $$PWD/$(location //third_party:cargo_bin_rustfmt) $$TMPPATH/rustfmt",
         "export PATH=$$TMPPATH:$$PATH",
+        "export PROTOC=bazel-out/host/bin/external/com_google_protobuf/protoc",
         "$(execpath :gen_protos_tool) --output_dir $(RULEDIR) " + " ".join([
             ("--input $(location :%s)" % file) for file in _proto_files
         ]),
