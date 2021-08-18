@@ -10,7 +10,7 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
 
 # buildifier: disable=load
 load(
-    "@io_bazel_rules_rust//rust:rust.bzl",
+    "@rules_rust//rust:rust.bzl",
     "rust_binary",
     "rust_library",
     "rust_test",
@@ -52,14 +52,14 @@ rust_library(
     # buildifier: leave-alone
     deps = [
         "@raze__cfg_if__1_0_0//:cfg_if",
-        "@raze__rand__0_8_3//:rand",
+        "@raze__rand__0_8_4//:rand",
         "@raze__remove_dir_all__0_5_3//:remove_dir_all",
     ] + selects.with_or({
         # cfg(unix)
         (
-            "@io_bazel_rules_rust//rust/platform:x86_64-unknown-linux-gnu",
+            "@rules_rust//rust/platform:x86_64-unknown-linux-gnu",
         ): [
-            "@raze__libc__0_2_92//:libc",
+            "@raze__libc__0_2_99//:libc",
         ],
         "//conditions:default": [],
     }),

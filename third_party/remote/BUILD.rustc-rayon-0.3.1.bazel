@@ -10,7 +10,7 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
 
 # buildifier: disable=load
 load(
-    "@io_bazel_rules_rust//rust:rust.bzl",
+    "@rules_rust//rust:rust.bzl",
     "rust_binary",
     "rust_library",
     "rust_test",
@@ -54,7 +54,7 @@ rust_library(
     version = "0.3.1",
     # buildifier: leave-alone
     deps = [
-        "@raze__crossbeam_deque__0_7_3//:crossbeam_deque",
+        "@raze__crossbeam_deque__0_7_4//:crossbeam_deque",
         "@raze__either__1_6_1//:either",
         "@raze__rustc_rayon_core__0_3_1//:rustc_rayon_core",
     ],

@@ -10,32 +10,44 @@ path = "needed_only_to_make_cargo_tooling_happy.rs"
 [dependencies]
 prost = "0.7.0"
 prost-types = "0.7.0"
-hex = "0.4.2"
+hex = "0.4.3"
 async-mutex = "1.4.0"
-async-trait = "0.1.42"
-fixed-buffer = "0.2.2"
-futures = "0.3.12"
-tokio = { version = "1.0.2", features = ["macros", "io-util", "fs", "rt-multi-thread"] }
-tokio-stream = "0.1.2"
-tonic = "0.4.0"
-lazy-init = "0.4.0"
-log = "0.4.11"
-env_logger = "0.8.2"
+async-trait = "0.1.51"
+fixed-buffer = "0.2.3"
+futures = "0.3.16"
+tokio = { version = "1.10.0", features = ["macros", "io-util", "fs", "rt-multi-thread"] }
+tokio-stream = "0.1.7"
+tokio-util = { version = "0.6.7", features = ["io"] }
+tonic = "0.5.2"
+lazy-init = "0.5.0"
+log = "0.4.14"
+env_logger = "0.9.0"
 drop_guard = "0.2.1"
-serde = "1.0.119"
+serde = "1.0.127"
 json5 = "0.3.0"
-sha2 = "0.9.2"
-lru = "0.6.3"
+sha2 = "0.9.5"
+lru = "0.6.6"
+rand = "0.8.4"
+rusoto_s3 = "0.46.0"
+rusoto_core = "0.46.0"
+http = "^0.2"
+zeroize = "<1.4"
 
 [dev-dependencies]
 clap = "2.33.3"
 stdext = "0.2.1"
 prost-build = "0.7.0"
-tonic-build = "0.3.1"
-pretty_assertions = "0.6.1"
+tonic-build = "0.5.2"
+pretty_assertions = "0.7.2"
 rustfmt-nightly = "1.4.21"
 maplit = "1.0.2"
-mock_instant = "0.2"
+mock_instant = "0.2.1"
+rusoto_mock = "0.46.0"
+
+[patch.crates-io]
+rusoto_mock = { git = "https://github.com/allada/rusoto.git", branch = "with_request_checker-owned-0.46.0" }
+rusoto_credential = { git = "https://github.com/allada/rusoto.git", branch = "with_request_checker-owned-0.46.0" }
+rusoto_signature = { git = "https://github.com/allada/rusoto.git", branch = "with_request_checker-owned-0.46.0" }
 
 [package.metadata.raze.crates.json5.'*']
 data_attr = "['src/json5.pest']"
@@ -65,7 +77,7 @@ workspace_path = "//third_party"
 
 default_gen_buildrs = true
 
-rust_rules_workspace_name = "io_bazel_rules_rust"
+rust_rules_workspace_name = "rules_rust"
 
 # This causes aliases for dependencies to be rendered in the BUILD
 # file located next to this `Cargo.toml` file.

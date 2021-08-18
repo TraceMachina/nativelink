@@ -7,13 +7,13 @@ pub struct Operation {
     /// originally returns it. If you use the default HTTP mapping, the
     /// `name` should be a resource name ending with `operations/{unique_id}`.
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
     /// Service-specific metadata associated with the operation.  It typically
     /// contains progress information and common metadata such as create time.
     /// Some services might not provide such metadata.  Any method that returns a
     /// long-running operation should document the metadata type, if any.
     #[prost(message, optional, tag = "2")]
-    pub metadata: ::std::option::Option<::prost_types::Any>,
+    pub metadata: ::core::option::Option<::prost_types::Any>,
     /// If the value is `false`, it means the operation is still in progress.
     /// If `true`, the operation is completed, and either `error` or `response` is
     /// available.
@@ -23,8 +23,9 @@ pub struct Operation {
     /// If `done` == `false`, neither `error` nor `response` is set.
     /// If `done` == `true`, exactly one of `error` or `response` is set.
     #[prost(oneof = "operation::Result", tags = "4, 5")]
-    pub result: ::std::option::Option<operation::Result>,
+    pub result: ::core::option::Option<operation::Result>,
 }
+/// Nested message and enum types in `Operation`.
 pub mod operation {
     /// The operation result, which can be either an `error` or a valid `response`.
     /// If `done` == `false`, neither `error` nor `response` is set.
@@ -51,59 +52,59 @@ pub mod operation {
 pub struct GetOperationRequest {
     /// The name of the operation resource.
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
 }
 /// The request message for [Operations.ListOperations][google.longrunning.Operations.ListOperations].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListOperationsRequest {
     /// The name of the operation's parent resource.
     #[prost(string, tag = "4")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
     /// The standard list filter.
     #[prost(string, tag = "1")]
-    pub filter: std::string::String,
+    pub filter: ::prost::alloc::string::String,
     /// The standard list page size.
     #[prost(int32, tag = "2")]
     pub page_size: i32,
     /// The standard list page token.
     #[prost(string, tag = "3")]
-    pub page_token: std::string::String,
+    pub page_token: ::prost::alloc::string::String,
 }
 /// The response message for [Operations.ListOperations][google.longrunning.Operations.ListOperations].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListOperationsResponse {
     /// A list of operations that matches the specified filter in the request.
     #[prost(message, repeated, tag = "1")]
-    pub operations: ::std::vec::Vec<Operation>,
+    pub operations: ::prost::alloc::vec::Vec<Operation>,
     /// The standard List next-page token.
     #[prost(string, tag = "2")]
-    pub next_page_token: std::string::String,
+    pub next_page_token: ::prost::alloc::string::String,
 }
 /// The request message for [Operations.CancelOperation][google.longrunning.Operations.CancelOperation].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelOperationRequest {
     /// The name of the operation resource to be cancelled.
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
 }
 /// The request message for [Operations.DeleteOperation][google.longrunning.Operations.DeleteOperation].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeleteOperationRequest {
     /// The name of the operation resource to be deleted.
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
 }
 /// The request message for [Operations.WaitOperation][google.longrunning.Operations.WaitOperation].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WaitOperationRequest {
     /// The name of the operation resource to wait on.
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
     /// The maximum duration to wait before timing out. If left blank, the wait
     /// will be at most the time permitted by the underlying HTTP/RPC protocol.
     /// If RPC context deadline is also specified, the shorter one will be used.
     #[prost(message, optional, tag = "2")]
-    pub timeout: ::std::option::Option<::prost_types::Duration>,
+    pub timeout: ::core::option::Option<::prost_types::Duration>,
 }
 /// A message representing the message types used by a long-running operation.
 ///
@@ -127,7 +128,7 @@ pub struct OperationInfo {
     ///
     /// Note: Altering this value constitutes a breaking change.
     #[prost(string, tag = "1")]
-    pub response_type: std::string::String,
+    pub response_type: ::prost::alloc::string::String,
     /// Required. The message name of the metadata type for this long-running
     /// operation.
     ///
@@ -136,7 +137,7 @@ pub struct OperationInfo {
     ///
     /// Note: Altering this value constitutes a breaking change.
     #[prost(string, tag = "2")]
-    pub metadata_type: std::string::String,
+    pub metadata_type: ::prost::alloc::string::String,
 }
 #[doc = r" Generated client implementations."]
 pub mod operations_client {
@@ -581,6 +582,7 @@ pub mod operations_server {
                     Ok(http::Response::builder()
                         .status(200)
                         .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
                         .body(tonic::body::BoxBody::empty())
                         .unwrap())
                 }),

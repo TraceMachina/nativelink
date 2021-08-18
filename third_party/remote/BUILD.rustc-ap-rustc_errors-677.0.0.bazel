@@ -10,7 +10,7 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
 
 # buildifier: disable=load
 load(
-    "@io_bazel_rules_rust//rust:rust.bzl",
+    "@rules_rust//rust:rust.bzl",
     "rust_binary",
     "rust_library",
     "rust_test",
@@ -65,7 +65,7 @@ rust_library(
         "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span",
         "@raze__termcolor__1_1_2//:termcolor",
         "@raze__termize__0_1_1//:termize",
-        "@raze__tracing__0_1_25//:tracing",
+        "@raze__tracing__0_1_26//:tracing",
         "@raze__unicode_width__0_1_8//:unicode_width",
     ],
 )

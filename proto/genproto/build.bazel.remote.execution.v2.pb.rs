@@ -26,7 +26,7 @@ pub struct Action {
     /// to run, which MUST be present in the
     /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "1")]
-    pub command_digest: ::std::option::Option<Digest>,
+    pub command_digest: ::core::option::Option<Digest>,
     /// The digest of the root
     /// [Directory][build.bazel.remote.execution.v2.Directory] for the input
     /// files. The files in the directory tree are available in the correct
@@ -35,7 +35,7 @@ pub struct Action {
     /// be in the
     /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "2")]
-    pub input_root_digest: ::std::option::Option<Digest>,
+    pub input_root_digest: ::core::option::Option<Digest>,
     /// A timeout after which the execution should be killed. If the timeout is
     /// absent, then the client is specifying that the execution should continue
     /// as long as the server will let it. The server SHOULD impose a timeout if
@@ -53,7 +53,7 @@ pub struct Action {
     /// timeout will result in a cache miss and the execution timeout will fail
     /// immediately, rather than whenever the cache entry gets evicted.
     #[prost(message, optional, tag = "6")]
-    pub timeout: ::std::option::Option<::prost_types::Duration>,
+    pub timeout: ::core::option::Option<::prost_types::Duration>,
     /// If true, then the `Action`'s result cannot be cached, and in-flight
     /// requests for the same `Action` may not be merged.
     #[prost(bool, tag = "7")]
@@ -64,8 +64,8 @@ pub struct Action {
     /// specific to sources such as repo and service configuration,
     /// and allows disowning an entire set of ActionResults that might have been
     /// poisoned by buggy software or tool failures.
-    #[prost(bytes, tag = "9")]
-    pub salt: std::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub salt: ::prost::alloc::vec::Vec<u8>,
     /// The optional platform requirements for the execution environment. The
     /// server MAY choose to execute the action on any worker satisfying the
     /// requirements, so the client SHOULD ensure that running the action on any
@@ -75,7 +75,7 @@ pub struct Action {
     /// as those in the [Command][build.bazel.remote.execution.v2.Command]. Servers
     /// SHOULD prefer those set here.
     #[prost(message, optional, tag = "10")]
-    pub platform: ::std::option::Option<Platform>,
+    pub platform: ::core::option::Option<Platform>,
 }
 /// A `Command` is the actual command executed by a worker running an
 /// [Action][build.bazel.remote.execution.v2.Action] and specifications of its
@@ -90,7 +90,7 @@ pub struct Command {
     /// executable, which must be either a relative path, in which case it is
     /// evaluated with respect to the input root, or an absolute path.
     #[prost(string, repeated, tag = "1")]
-    pub arguments: ::std::vec::Vec<std::string::String>,
+    pub arguments: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// The environment variables to set when running the program. The worker may
     /// provide its own default environment variables; these defaults can be
     /// overridden using this field. Additional variables can also be specified.
@@ -100,7 +100,7 @@ pub struct Command {
     /// value, the environment variables MUST be lexicographically sorted by name.
     /// Sorting of strings is done by code point, equivalently, by the UTF-8 bytes.
     #[prost(message, repeated, tag = "2")]
-    pub environment_variables: ::std::vec::Vec<command::EnvironmentVariable>,
+    pub environment_variables: ::prost::alloc::vec::Vec<command::EnvironmentVariable>,
     /// A list of the output files that the client expects to retrieve from the
     /// action. Only the listed files, as well as directories listed in
     /// `output_directories`, will be returned to the client as output.
@@ -125,7 +125,7 @@ pub struct Command {
     ///
     /// DEPRECATED since v2.1: Use `output_paths` instead.
     #[prost(string, repeated, tag = "3")]
-    pub output_files: ::std::vec::Vec<std::string::String>,
+    pub output_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// A list of the output directories that the client expects to retrieve from
     /// the action. Only the listed directories will be returned (an entire
     /// directory structure will be returned as a
@@ -156,7 +156,7 @@ pub struct Command {
     ///
     /// DEPRECATED since 2.1: Use `output_paths` instead.
     #[prost(string, repeated, tag = "4")]
-    pub output_directories: ::std::vec::Vec<std::string::String>,
+    pub output_directories: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// A list of the output paths that the client expects to retrieve from the
     /// action. Only the listed paths will be returned to the client as output.
     /// The type of the output (file or directory) is not specified, and will be
@@ -186,7 +186,7 @@ pub struct Command {
     /// `output_directories` fields. If `output_paths` is used, `output_files` and
     /// `output_directories` will be ignored!
     #[prost(string, repeated, tag = "7")]
-    pub output_paths: ::std::vec::Vec<std::string::String>,
+    pub output_paths: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// The platform requirements for the execution environment. The server MAY
     /// choose to execute the action on any worker satisfying the requirements, so
     /// the client SHOULD ensure that running the action on any such worker will
@@ -196,12 +196,12 @@ pub struct Command {
     /// the action. See documentation note in the
     /// [Action][build.bazel.remote.execution.v2.Action] for migration.
     #[prost(message, optional, tag = "5")]
-    pub platform: ::std::option::Option<Platform>,
+    pub platform: ::core::option::Option<Platform>,
     /// The working directory, relative to the input root, for the command to run
     /// in. It must be a directory which exists in the input tree. If it is left
     /// empty, then the action is run in the input root.
     #[prost(string, tag = "6")]
-    pub working_directory: std::string::String,
+    pub working_directory: ::prost::alloc::string::String,
     /// A list of keys for node properties the client expects to retrieve for
     /// output files and directories. Keys are either names of string-based
     /// [NodeProperty][build.bazel.remote.execution.v2.NodeProperty] or
@@ -214,8 +214,9 @@ pub struct Command {
     /// property is not recognized by the server, the server will return an
     /// `INVALID_ARGUMENT`.
     #[prost(string, repeated, tag = "8")]
-    pub output_node_properties: ::std::vec::Vec<std::string::String>,
+    pub output_node_properties: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
+/// Nested message and enum types in `Command`.
 pub mod command {
     /// An `EnvironmentVariable` is one variable to set in the running program's
     /// environment.
@@ -223,10 +224,10 @@ pub mod command {
     pub struct EnvironmentVariable {
         /// The variable name.
         #[prost(string, tag = "1")]
-        pub name: std::string::String,
+        pub name: ::prost::alloc::string::String,
         /// The variable value.
         #[prost(string, tag = "2")]
-        pub value: std::string::String,
+        pub value: ::prost::alloc::string::String,
     }
 }
 /// A `Platform` is a set of requirements, such as hardware, operating system, or
@@ -241,8 +242,9 @@ pub struct Platform {
     /// be lexicographically sorted by name, and then by value. Sorting of strings
     /// is done by code point, equivalently, by the UTF-8 bytes.
     #[prost(message, repeated, tag = "1")]
-    pub properties: ::std::vec::Vec<platform::Property>,
+    pub properties: ::prost::alloc::vec::Vec<platform::Property>,
 }
+/// Nested message and enum types in `Platform`.
 pub mod platform {
     /// A single property for the environment. The server is responsible for
     /// specifying the property `name`s that it accepts. If an unknown `name` is
@@ -270,10 +272,10 @@ pub mod platform {
     pub struct Property {
         /// The property name.
         #[prost(string, tag = "1")]
-        pub name: std::string::String,
+        pub name: ::prost::alloc::string::String,
         /// The property value.
         #[prost(string, tag = "2")]
-        pub value: std::string::String,
+        pub value: ::prost::alloc::string::String,
     }
 }
 /// A `Directory` represents a directory node in a file tree, containing zero or
@@ -356,15 +358,15 @@ pub mod platform {
 pub struct Directory {
     /// The files in the directory.
     #[prost(message, repeated, tag = "1")]
-    pub files: ::std::vec::Vec<FileNode>,
+    pub files: ::prost::alloc::vec::Vec<FileNode>,
     /// The subdirectories in the directory.
     #[prost(message, repeated, tag = "2")]
-    pub directories: ::std::vec::Vec<DirectoryNode>,
+    pub directories: ::prost::alloc::vec::Vec<DirectoryNode>,
     /// The symlinks in the directory.
     #[prost(message, repeated, tag = "3")]
-    pub symlinks: ::std::vec::Vec<SymlinkNode>,
+    pub symlinks: ::prost::alloc::vec::Vec<SymlinkNode>,
     #[prost(message, optional, tag = "5")]
-    pub node_properties: ::std::option::Option<NodeProperties>,
+    pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// A single property for [FileNodes][build.bazel.remote.execution.v2.FileNode],
 /// [DirectoryNodes][build.bazel.remote.execution.v2.DirectoryNode], and
@@ -375,10 +377,10 @@ pub struct Directory {
 pub struct NodeProperty {
     /// The property name.
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
     /// The property value.
     #[prost(string, tag = "2")]
-    pub value: std::string::String,
+    pub value: ::prost::alloc::string::String,
 }
 /// Node properties for [FileNodes][build.bazel.remote.execution.v2.FileNode],
 /// [DirectoryNodes][build.bazel.remote.execution.v2.DirectoryNode], and
@@ -390,28 +392,28 @@ pub struct NodeProperties {
     /// A list of string-based
     /// [NodeProperties][build.bazel.remote.execution.v2.NodeProperty].
     #[prost(message, repeated, tag = "1")]
-    pub properties: ::std::vec::Vec<NodeProperty>,
+    pub properties: ::prost::alloc::vec::Vec<NodeProperty>,
     /// The file's last modification timestamp.
     #[prost(message, optional, tag = "2")]
-    pub mtime: ::std::option::Option<::prost_types::Timestamp>,
+    pub mtime: ::core::option::Option<::prost_types::Timestamp>,
     /// The UNIX file mode, e.g., 0755.
     #[prost(message, optional, tag = "3")]
-    pub unix_mode: ::std::option::Option<u32>,
+    pub unix_mode: ::core::option::Option<u32>,
 }
 /// A `FileNode` represents a single file and associated metadata.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FileNode {
     /// The name of the file.
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
     /// The digest of the file's content.
     #[prost(message, optional, tag = "2")]
-    pub digest: ::std::option::Option<Digest>,
+    pub digest: ::core::option::Option<Digest>,
     /// True if file is executable, false otherwise.
     #[prost(bool, tag = "4")]
     pub is_executable: bool,
     #[prost(message, optional, tag = "6")]
-    pub node_properties: ::std::option::Option<NodeProperties>,
+    pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// A `DirectoryNode` represents a child of a
 /// [Directory][build.bazel.remote.execution.v2.Directory] which is itself
@@ -420,20 +422,20 @@ pub struct FileNode {
 pub struct DirectoryNode {
     /// The name of the directory.
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
     /// The digest of the
     /// [Directory][build.bazel.remote.execution.v2.Directory] object
     /// represented. See [Digest][build.bazel.remote.execution.v2.Digest]
     /// for information about how to take the digest of a proto message.
     #[prost(message, optional, tag = "2")]
-    pub digest: ::std::option::Option<Digest>,
+    pub digest: ::core::option::Option<Digest>,
 }
 /// A `SymlinkNode` represents a symbolic link.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SymlinkNode {
     /// The name of the symlink.
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
     /// The target path of the symlink. The path separator is a forward slash `/`.
     /// The target path can be relative to the parent directory of the symlink or
     /// it can be an absolute path starting with `/`. Support for absolute paths
@@ -444,9 +446,9 @@ pub struct SymlinkNode {
     /// To reduce potential cache misses, canonicalization is still recommended
     /// where this is possible without impacting correctness.
     #[prost(string, tag = "2")]
-    pub target: std::string::String,
+    pub target: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "4")]
-    pub node_properties: ::std::option::Option<NodeProperties>,
+    pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// A content digest. A digest for a given blob consists of the size of the blob
 /// and its hash. The hash algorithm to use is defined by the server.
@@ -484,7 +486,7 @@ pub struct Digest {
     /// The hash. In the case of SHA-256, it will always be a lowercase hex string
     /// exactly 64 characters long.
     #[prost(string, tag = "1")]
-    pub hash: std::string::String,
+    pub hash: ::prost::alloc::string::String,
     /// The size of the blob, in bytes.
     #[prost(int64, tag = "2")]
     pub size_bytes: i64,
@@ -494,39 +496,39 @@ pub struct Digest {
 pub struct ExecutedActionMetadata {
     /// The name of the worker which ran the execution.
     #[prost(string, tag = "1")]
-    pub worker: std::string::String,
+    pub worker: ::prost::alloc::string::String,
     /// When was the action added to the queue.
     #[prost(message, optional, tag = "2")]
-    pub queued_timestamp: ::std::option::Option<::prost_types::Timestamp>,
+    pub queued_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// When the worker received the action.
     #[prost(message, optional, tag = "3")]
-    pub worker_start_timestamp: ::std::option::Option<::prost_types::Timestamp>,
+    pub worker_start_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// When the worker completed the action, including all stages.
     #[prost(message, optional, tag = "4")]
-    pub worker_completed_timestamp: ::std::option::Option<::prost_types::Timestamp>,
+    pub worker_completed_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// When the worker started fetching action inputs.
     #[prost(message, optional, tag = "5")]
-    pub input_fetch_start_timestamp: ::std::option::Option<::prost_types::Timestamp>,
+    pub input_fetch_start_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// When the worker finished fetching action inputs.
     #[prost(message, optional, tag = "6")]
-    pub input_fetch_completed_timestamp: ::std::option::Option<::prost_types::Timestamp>,
+    pub input_fetch_completed_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// When the worker started executing the action command.
     #[prost(message, optional, tag = "7")]
-    pub execution_start_timestamp: ::std::option::Option<::prost_types::Timestamp>,
+    pub execution_start_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// When the worker completed executing the action command.
     #[prost(message, optional, tag = "8")]
-    pub execution_completed_timestamp: ::std::option::Option<::prost_types::Timestamp>,
+    pub execution_completed_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// When the worker started uploading action outputs.
     #[prost(message, optional, tag = "9")]
-    pub output_upload_start_timestamp: ::std::option::Option<::prost_types::Timestamp>,
+    pub output_upload_start_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// When the worker finished uploading action outputs.
     #[prost(message, optional, tag = "10")]
-    pub output_upload_completed_timestamp: ::std::option::Option<::prost_types::Timestamp>,
+    pub output_upload_completed_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// Details that are specific to the kind of worker used. For example,
     /// on POSIX-like systems this could contain a message with
     /// getrusage(2) statistics.
     #[prost(message, repeated, tag = "11")]
-    pub auxiliary_metadata: ::std::vec::Vec<::prost_types::Any>,
+    pub auxiliary_metadata: ::prost::alloc::vec::Vec<::prost_types::Any>,
 }
 /// An ActionResult represents the result of an
 /// [Action][build.bazel.remote.execution.v2.Action] being run.
@@ -549,7 +551,7 @@ pub struct ActionResult {
     /// will be omitted from the list. The server is free to arrange the output
     /// list as desired; clients MUST NOT assume that the output list is sorted.
     #[prost(message, repeated, tag = "2")]
-    pub output_files: ::std::vec::Vec<OutputFile>,
+    pub output_files: ::prost::alloc::vec::Vec<OutputFile>,
     /// The output files of the action that are symbolic links to other files. Those
     /// may be links to other output files, or input files, or even absolute paths
     /// outside of the working directory, if the server supports
@@ -569,7 +571,7 @@ pub struct ActionResult {
     /// DEPRECATED as of v2.1. Servers that wish to be compatible with v2.0 API
     /// should still populate this field in addition to `output_symlinks`.
     #[prost(message, repeated, tag = "10")]
-    pub output_file_symlinks: ::std::vec::Vec<OutputSymlink>,
+    pub output_file_symlinks: ::prost::alloc::vec::Vec<OutputSymlink>,
     /// New in v2.1: this field will only be populated if the command
     /// `output_paths` field was used, and not the pre v2.1 `output_files` or
     /// `output_directories` fields.
@@ -585,7 +587,7 @@ pub struct ActionResult {
     /// will be omitted from the list. The server is free to arrange the output
     /// list as desired; clients MUST NOT assume that the output list is sorted.
     #[prost(message, repeated, tag = "12")]
-    pub output_symlinks: ::std::vec::Vec<OutputSymlink>,
+    pub output_symlinks: ::prost::alloc::vec::Vec<OutputSymlink>,
     /// The output directories of the action. For each output directory requested
     /// in the `output_directories` or `output_paths` field of the Action, if the
     /// corresponding directory existed after the action completed, a single entry
@@ -649,7 +651,7 @@ pub struct ActionResult {
     /// the Command was found in `output_directories`, but was not a directory, the
     /// server will return a FAILED_PRECONDITION.
     #[prost(message, repeated, tag = "3")]
-    pub output_directories: ::std::vec::Vec<OutputDirectory>,
+    pub output_directories: ::prost::alloc::vec::Vec<OutputDirectory>,
     /// The output directories of the action that are symbolic links to other
     /// directories. Those may be links to other output directories, or input
     /// directories, or even absolute paths outside of the working directory,
@@ -669,7 +671,7 @@ pub struct ActionResult {
     /// DEPRECATED as of v2.1. Servers that wish to be compatible with v2.0 API
     /// should still populate this field in addition to `output_symlinks`.
     #[prost(message, repeated, tag = "11")]
-    pub output_directory_symlinks: ::std::vec::Vec<OutputSymlink>,
+    pub output_directory_symlinks: ::prost::alloc::vec::Vec<OutputSymlink>,
     /// The exit code of the command.
     #[prost(int32, tag = "4")]
     pub exit_code: i32,
@@ -678,28 +680,28 @@ pub struct ActionResult {
     /// [GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest]
     /// message. The server MAY omit inlining, even if requested, and MUST do so if inlining
     /// would cause the response to exceed message size limits.
-    #[prost(bytes, tag = "5")]
-    pub stdout_raw: std::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub stdout_raw: ::prost::alloc::vec::Vec<u8>,
     /// The digest for a blob containing the standard output of the action, which
     /// can be retrieved from the
     /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "6")]
-    pub stdout_digest: ::std::option::Option<Digest>,
+    pub stdout_digest: ::core::option::Option<Digest>,
     /// The standard error buffer of the action. The server SHOULD NOT inline
     /// stderr unless requested by the client in the
     /// [GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest]
     /// message. The server MAY omit inlining, even if requested, and MUST do so if inlining
     /// would cause the response to exceed message size limits.
-    #[prost(bytes, tag = "7")]
-    pub stderr_raw: std::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub stderr_raw: ::prost::alloc::vec::Vec<u8>,
     /// The digest for a blob containing the standard error of the action, which
     /// can be retrieved from the
     /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "8")]
-    pub stderr_digest: ::std::option::Option<Digest>,
+    pub stderr_digest: ::core::option::Option<Digest>,
     /// The details of the execution that originally produced this result.
     #[prost(message, optional, tag = "9")]
-    pub execution_metadata: ::std::option::Option<ExecutedActionMetadata>,
+    pub execution_metadata: ::core::option::Option<ExecutedActionMetadata>,
 }
 /// An `OutputFile` is similar to a
 /// [FileNode][build.bazel.remote.execution.v2.FileNode], but it is used as an
@@ -711,10 +713,10 @@ pub struct OutputFile {
     /// filename. The path separator is a forward slash `/`. Since this is a
     /// relative path, it MUST NOT begin with a leading forward slash.
     #[prost(string, tag = "1")]
-    pub path: std::string::String,
+    pub path: ::prost::alloc::string::String,
     /// The digest of the file's content.
     #[prost(message, optional, tag = "2")]
-    pub digest: ::std::option::Option<Digest>,
+    pub digest: ::core::option::Option<Digest>,
     /// True if file is executable, false otherwise.
     #[prost(bool, tag = "4")]
     pub is_executable: bool,
@@ -723,10 +725,10 @@ pub struct OutputFile {
     /// [GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest]
     /// message. The server MAY omit inlining, even if requested, and MUST do so if inlining
     /// would cause the response to exceed message size limits.
-    #[prost(bytes, tag = "5")]
-    pub contents: std::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub contents: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "7")]
-    pub node_properties: ::std::option::Option<NodeProperties>,
+    pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// A `Tree` contains all the
 /// [Directory][build.bazel.remote.execution.v2.Directory] protos in a
@@ -735,13 +737,13 @@ pub struct OutputFile {
 pub struct Tree {
     /// The root directory in the tree.
     #[prost(message, optional, tag = "1")]
-    pub root: ::std::option::Option<Directory>,
+    pub root: ::core::option::Option<Directory>,
     /// All the child directories: the directories referred to by the root and,
     /// recursively, all its children. In order to reconstruct the directory tree,
     /// the client must take the digests of each of the child directories and then
     /// build up a tree starting from the `root`.
     #[prost(message, repeated, tag = "2")]
-    pub children: ::std::vec::Vec<Directory>,
+    pub children: ::prost::alloc::vec::Vec<Directory>,
 }
 /// An `OutputDirectory` is the output in an `ActionResult` corresponding to a
 /// directory's full contents rather than a single file.
@@ -752,12 +754,12 @@ pub struct OutputDirectory {
     /// NOT begin with a leading forward slash. The empty string value is allowed,
     /// and it denotes the entire working directory.
     #[prost(string, tag = "1")]
-    pub path: std::string::String,
+    pub path: ::prost::alloc::string::String,
     /// The digest of the encoded
     /// [Tree][build.bazel.remote.execution.v2.Tree] proto containing the
     /// directory's contents.
     #[prost(message, optional, tag = "3")]
-    pub tree_digest: ::std::option::Option<Digest>,
+    pub tree_digest: ::core::option::Option<Digest>,
 }
 /// An `OutputSymlink` is similar to a
 /// [Symlink][build.bazel.remote.execution.v2.SymlinkNode], but it is used as an
@@ -770,16 +772,16 @@ pub struct OutputSymlink {
     /// filename. The path separator is a forward slash `/`. Since this is a
     /// relative path, it MUST NOT begin with a leading forward slash.
     #[prost(string, tag = "1")]
-    pub path: std::string::String,
+    pub path: ::prost::alloc::string::String,
     /// The target path of the symlink. The path separator is a forward slash `/`.
     /// The target path can be relative to the parent directory of the symlink or
     /// it can be an absolute path starting with `/`. Support for absolute paths
     /// can be checked using the [Capabilities][build.bazel.remote.execution.v2.Capabilities]
     /// API. `..` components are allowed anywhere in the target path.
     #[prost(string, tag = "2")]
-    pub target: std::string::String,
+    pub target: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "4")]
-    pub node_properties: ::std::option::Option<NodeProperties>,
+    pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// An `ExecutionPolicy` can be used to control the scheduling of the action.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -821,7 +823,7 @@ pub struct ExecuteRequest {
     /// between them in an implementation-defined fashion, otherwise it can be
     /// omitted.
     #[prost(string, tag = "1")]
-    pub instance_name: std::string::String,
+    pub instance_name: ::prost::alloc::string::String,
     /// If true, the action will be executed even if its result is already
     /// present in the [ActionCache][build.bazel.remote.execution.v2.ActionCache].
     /// The execution is still allowed to be merged with other in-flight executions
@@ -840,23 +842,23 @@ pub struct ExecuteRequest {
     /// The digest of the [Action][build.bazel.remote.execution.v2.Action] to
     /// execute.
     #[prost(message, optional, tag = "6")]
-    pub action_digest: ::std::option::Option<Digest>,
+    pub action_digest: ::core::option::Option<Digest>,
     /// An optional policy for execution of the action.
     /// The server will have a default policy if this is not provided.
     #[prost(message, optional, tag = "7")]
-    pub execution_policy: ::std::option::Option<ExecutionPolicy>,
+    pub execution_policy: ::core::option::Option<ExecutionPolicy>,
     /// An optional policy for the results of this execution in the remote cache.
     /// The server will have a default policy if this is not provided.
     /// This may be applied to both the ActionResult and the associated blobs.
     #[prost(message, optional, tag = "8")]
-    pub results_cache_policy: ::std::option::Option<ResultsCachePolicy>,
+    pub results_cache_policy: ::core::option::Option<ResultsCachePolicy>,
 }
 /// A `LogFile` is a log stored in the CAS.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LogFile {
     /// The digest of the log contents.
     #[prost(message, optional, tag = "1")]
-    pub digest: ::std::option::Option<Digest>,
+    pub digest: ::core::option::Option<Digest>,
     /// This is a hint as to the purpose of the log, and is set to true if the log
     /// is human-readable text that can be usefully displayed to a user, and false
     /// otherwise. For instance, if a command-line client wishes to print the
@@ -874,7 +876,7 @@ pub struct LogFile {
 pub struct ExecuteResponse {
     /// The result of the action.
     #[prost(message, optional, tag = "1")]
-    pub result: ::std::option::Option<ActionResult>,
+    pub result: ::core::option::Option<ActionResult>,
     /// True if the result was served from cache, false if it was executed.
     #[prost(bool, tag = "2")]
     pub cached_result: bool,
@@ -889,7 +891,7 @@ pub struct ExecuteResponse {
     /// populate the output-, stdout-, and stderr-related fields if it has any
     /// information available, such as the stdout and stderr of a timed-out action.
     #[prost(message, optional, tag = "3")]
-    pub status: ::std::option::Option<super::super::super::super::super::google::rpc::Status>,
+    pub status: ::core::option::Option<super::super::super::super::super::google::rpc::Status>,
     /// An optional list of additional log outputs the server wishes to provide. A
     /// server can use this to return execution-specific logs however it wishes.
     /// This is intended primarily to make it easier for users to debug issues that
@@ -898,15 +900,16 @@ pub struct ExecuteResponse {
     /// phase. The keys SHOULD be human readable so that a client can display them
     /// to a user.
     #[prost(map = "string, message", tag = "4")]
-    pub server_logs: ::std::collections::HashMap<std::string::String, LogFile>,
+    pub server_logs: ::std::collections::HashMap<::prost::alloc::string::String, LogFile>,
     /// Freeform informational message with details on the execution of the action
     /// that may be displayed to the user upon failure or when requested explicitly.
     #[prost(string, tag = "5")]
-    pub message: std::string::String,
+    pub message: ::prost::alloc::string::String,
 }
 /// The current stage of action execution.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionStage {}
+/// Nested message and enum types in `ExecutionStage`.
 pub mod execution_stage {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
     #[repr(i32)]
@@ -936,17 +939,17 @@ pub struct ExecuteOperationMetadata {
     /// The digest of the [Action][build.bazel.remote.execution.v2.Action]
     /// being executed.
     #[prost(message, optional, tag = "2")]
-    pub action_digest: ::std::option::Option<Digest>,
+    pub action_digest: ::core::option::Option<Digest>,
     /// If set, the client can use this resource name with
     /// [ByteStream.Read][google.bytestream.ByteStream.Read] to stream the
     /// standard output from the endpoint hosting streamed responses.
     #[prost(string, tag = "3")]
-    pub stdout_stream_name: std::string::String,
+    pub stdout_stream_name: ::prost::alloc::string::String,
     /// If set, the client can use this resource name with
     /// [ByteStream.Read][google.bytestream.ByteStream.Read] to stream the
     /// standard error from the endpoint hosting streamed responses.
     #[prost(string, tag = "4")]
-    pub stderr_stream_name: std::string::String,
+    pub stderr_stream_name: ::prost::alloc::string::String,
 }
 /// A request message for
 /// [WaitExecution][build.bazel.remote.execution.v2.Execution.WaitExecution].
@@ -955,7 +958,7 @@ pub struct WaitExecutionRequest {
     /// The name of the [Operation][google.longrunning.Operation]
     /// returned by [Execute][build.bazel.remote.execution.v2.Execution.Execute].
     #[prost(string, tag = "1")]
-    pub name: std::string::String,
+    pub name: ::prost::alloc::string::String,
 }
 /// A request message for
 /// [ActionCache.GetActionResult][build.bazel.remote.execution.v2.ActionCache.GetActionResult].
@@ -967,11 +970,11 @@ pub struct GetActionResultRequest {
     /// between them in an implementation-defined fashion, otherwise it can be
     /// omitted.
     #[prost(string, tag = "1")]
-    pub instance_name: std::string::String,
+    pub instance_name: ::prost::alloc::string::String,
     /// The digest of the [Action][build.bazel.remote.execution.v2.Action]
     /// whose result is requested.
     #[prost(message, optional, tag = "2")]
-    pub action_digest: ::std::option::Option<Digest>,
+    pub action_digest: ::core::option::Option<Digest>,
     /// A hint to the server to request inlining stdout in the
     /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] message.
     #[prost(bool, tag = "3")]
@@ -985,7 +988,7 @@ pub struct GetActionResultRequest {
     /// `output_files` (DEPRECATED since v2.1) in the
     /// [Command][build.bazel.remote.execution.v2.Command] message.
     #[prost(string, repeated, tag = "5")]
-    pub inline_output_files: ::std::vec::Vec<std::string::String>,
+    pub inline_output_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// A request message for
 /// [ActionCache.UpdateActionResult][build.bazel.remote.execution.v2.ActionCache.UpdateActionResult].
@@ -997,20 +1000,20 @@ pub struct UpdateActionResultRequest {
     /// between them in an implementation-defined fashion, otherwise it can be
     /// omitted.
     #[prost(string, tag = "1")]
-    pub instance_name: std::string::String,
+    pub instance_name: ::prost::alloc::string::String,
     /// The digest of the [Action][build.bazel.remote.execution.v2.Action]
     /// whose result is being uploaded.
     #[prost(message, optional, tag = "2")]
-    pub action_digest: ::std::option::Option<Digest>,
+    pub action_digest: ::core::option::Option<Digest>,
     /// The [ActionResult][build.bazel.remote.execution.v2.ActionResult]
     /// to store in the cache.
     #[prost(message, optional, tag = "3")]
-    pub action_result: ::std::option::Option<ActionResult>,
+    pub action_result: ::core::option::Option<ActionResult>,
     /// An optional policy for the results of this execution in the remote cache.
     /// The server will have a default policy if this is not provided.
     /// This may be applied to both the ActionResult and the associated blobs.
     #[prost(message, optional, tag = "4")]
-    pub results_cache_policy: ::std::option::Option<ResultsCachePolicy>,
+    pub results_cache_policy: ::core::option::Option<ResultsCachePolicy>,
 }
 /// A request message for
 /// [ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs].
@@ -1022,10 +1025,10 @@ pub struct FindMissingBlobsRequest {
     /// between them in an implementation-defined fashion, otherwise it can be
     /// omitted.
     #[prost(string, tag = "1")]
-    pub instance_name: std::string::String,
+    pub instance_name: ::prost::alloc::string::String,
     /// A list of the blobs to check.
     #[prost(message, repeated, tag = "2")]
-    pub blob_digests: ::std::vec::Vec<Digest>,
+    pub blob_digests: ::prost::alloc::vec::Vec<Digest>,
 }
 /// A response message for
 /// [ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs].
@@ -1033,7 +1036,7 @@ pub struct FindMissingBlobsRequest {
 pub struct FindMissingBlobsResponse {
     /// A list of the blobs requested *not* present in the storage.
     #[prost(message, repeated, tag = "2")]
-    pub missing_blob_digests: ::std::vec::Vec<Digest>,
+    pub missing_blob_digests: ::prost::alloc::vec::Vec<Digest>,
 }
 /// A request message for
 /// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
@@ -1045,21 +1048,22 @@ pub struct BatchUpdateBlobsRequest {
     /// between them in an implementation-defined fashion, otherwise it can be
     /// omitted.
     #[prost(string, tag = "1")]
-    pub instance_name: std::string::String,
+    pub instance_name: ::prost::alloc::string::String,
     /// The individual upload requests.
     #[prost(message, repeated, tag = "2")]
-    pub requests: ::std::vec::Vec<batch_update_blobs_request::Request>,
+    pub requests: ::prost::alloc::vec::Vec<batch_update_blobs_request::Request>,
 }
+/// Nested message and enum types in `BatchUpdateBlobsRequest`.
 pub mod batch_update_blobs_request {
     /// A request corresponding to a single blob that the client wants to upload.
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Request {
         /// The digest of the blob. This MUST be the digest of `data`.
         #[prost(message, optional, tag = "1")]
-        pub digest: ::std::option::Option<super::Digest>,
+        pub digest: ::core::option::Option<super::Digest>,
         /// The raw binary data.
-        #[prost(bytes, tag = "2")]
-        pub data: std::vec::Vec<u8>,
+        #[prost(bytes = "vec", tag = "2")]
+        pub data: ::prost::alloc::vec::Vec<u8>,
     }
 }
 /// A response message for
@@ -1068,19 +1072,20 @@ pub mod batch_update_blobs_request {
 pub struct BatchUpdateBlobsResponse {
     /// The responses to the requests.
     #[prost(message, repeated, tag = "1")]
-    pub responses: ::std::vec::Vec<batch_update_blobs_response::Response>,
+    pub responses: ::prost::alloc::vec::Vec<batch_update_blobs_response::Response>,
 }
+/// Nested message and enum types in `BatchUpdateBlobsResponse`.
 pub mod batch_update_blobs_response {
     /// A response corresponding to a single blob that the client tried to upload.
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Response {
         /// The blob digest to which this response corresponds.
         #[prost(message, optional, tag = "1")]
-        pub digest: ::std::option::Option<super::Digest>,
+        pub digest: ::core::option::Option<super::Digest>,
         /// The result of attempting to upload that blob.
         #[prost(message, optional, tag = "2")]
         pub status:
-            ::std::option::Option<super::super::super::super::super::super::google::rpc::Status>,
+            ::core::option::Option<super::super::super::super::super::super::google::rpc::Status>,
     }
 }
 /// A request message for
@@ -1093,10 +1098,10 @@ pub struct BatchReadBlobsRequest {
     /// between them in an implementation-defined fashion, otherwise it can be
     /// omitted.
     #[prost(string, tag = "1")]
-    pub instance_name: std::string::String,
+    pub instance_name: ::prost::alloc::string::String,
     /// The individual blob digests.
     #[prost(message, repeated, tag = "2")]
-    pub digests: ::std::vec::Vec<Digest>,
+    pub digests: ::prost::alloc::vec::Vec<Digest>,
 }
 /// A response message for
 /// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
@@ -1104,22 +1109,23 @@ pub struct BatchReadBlobsRequest {
 pub struct BatchReadBlobsResponse {
     /// The responses to the requests.
     #[prost(message, repeated, tag = "1")]
-    pub responses: ::std::vec::Vec<batch_read_blobs_response::Response>,
+    pub responses: ::prost::alloc::vec::Vec<batch_read_blobs_response::Response>,
 }
+/// Nested message and enum types in `BatchReadBlobsResponse`.
 pub mod batch_read_blobs_response {
     /// A response corresponding to a single blob that the client tried to download.
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Response {
         /// The digest to which this response corresponds.
         #[prost(message, optional, tag = "1")]
-        pub digest: ::std::option::Option<super::Digest>,
+        pub digest: ::core::option::Option<super::Digest>,
         /// The raw binary data.
-        #[prost(bytes, tag = "2")]
-        pub data: std::vec::Vec<u8>,
+        #[prost(bytes = "vec", tag = "2")]
+        pub data: ::prost::alloc::vec::Vec<u8>,
         /// The result of attempting to download that blob.
         #[prost(message, optional, tag = "3")]
         pub status:
-            ::std::option::Option<super::super::super::super::super::super::google::rpc::Status>,
+            ::core::option::Option<super::super::super::super::super::super::google::rpc::Status>,
     }
 }
 /// A request message for
@@ -1132,13 +1138,13 @@ pub struct GetTreeRequest {
     /// between them in an implementation-defined fashion, otherwise it can be
     /// omitted.
     #[prost(string, tag = "1")]
-    pub instance_name: std::string::String,
+    pub instance_name: ::prost::alloc::string::String,
     /// The digest of the root, which must be an encoded
     /// [Directory][build.bazel.remote.execution.v2.Directory] message
     /// stored in the
     /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "2")]
-    pub root_digest: ::std::option::Option<Digest>,
+    pub root_digest: ::core::option::Option<Digest>,
     /// A maximum page size to request. If present, the server will request no more
     /// than this many items. Regardless of whether a page size is specified, the
     /// server may place its own limit on the number of items to be returned and
@@ -1150,7 +1156,7 @@ pub struct GetTreeRequest {
     /// If present, the server will use that token as an offset, returning only
     /// that page and the ones that succeed it.
     #[prost(string, tag = "4")]
-    pub page_token: std::string::String,
+    pub page_token: ::prost::alloc::string::String,
 }
 /// A response message for
 /// [ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree].
@@ -1158,13 +1164,13 @@ pub struct GetTreeRequest {
 pub struct GetTreeResponse {
     /// The directories descended from the requested root.
     #[prost(message, repeated, tag = "1")]
-    pub directories: ::std::vec::Vec<Directory>,
+    pub directories: ::prost::alloc::vec::Vec<Directory>,
     /// If present, signifies that there are more results which the client can
     /// retrieve by passing this as the page_token in a subsequent
     /// [request][build.bazel.remote.execution.v2.GetTreeRequest].
     /// If empty, signifies that this is the last page of results.
     #[prost(string, tag = "2")]
-    pub next_page_token: std::string::String,
+    pub next_page_token: ::prost::alloc::string::String,
 }
 /// A request message for
 /// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
@@ -1176,7 +1182,7 @@ pub struct GetCapabilitiesRequest {
     /// between them in an implementation-defined fashion, otherwise it can be
     /// omitted.
     #[prost(string, tag = "1")]
-    pub instance_name: std::string::String,
+    pub instance_name: ::prost::alloc::string::String,
 }
 /// A response message for
 /// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
@@ -1184,24 +1190,25 @@ pub struct GetCapabilitiesRequest {
 pub struct ServerCapabilities {
     /// Capabilities of the remote cache system.
     #[prost(message, optional, tag = "1")]
-    pub cache_capabilities: ::std::option::Option<CacheCapabilities>,
+    pub cache_capabilities: ::core::option::Option<CacheCapabilities>,
     /// Capabilities of the remote execution system.
     #[prost(message, optional, tag = "2")]
-    pub execution_capabilities: ::std::option::Option<ExecutionCapabilities>,
+    pub execution_capabilities: ::core::option::Option<ExecutionCapabilities>,
     /// Earliest RE API version supported, including deprecated versions.
     #[prost(message, optional, tag = "3")]
-    pub deprecated_api_version: ::std::option::Option<super::super::super::semver::SemVer>,
+    pub deprecated_api_version: ::core::option::Option<super::super::super::semver::SemVer>,
     /// Earliest non-deprecated RE API version supported.
     #[prost(message, optional, tag = "4")]
-    pub low_api_version: ::std::option::Option<super::super::super::semver::SemVer>,
+    pub low_api_version: ::core::option::Option<super::super::super::semver::SemVer>,
     /// Latest RE API version supported.
     #[prost(message, optional, tag = "5")]
-    pub high_api_version: ::std::option::Option<super::super::super::semver::SemVer>,
+    pub high_api_version: ::core::option::Option<super::super::super::semver::SemVer>,
 }
 /// The digest function used for converting values into keys for CAS and Action
 /// Cache.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DigestFunction {}
+/// Nested message and enum types in `DigestFunction`.
 pub mod digest_function {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
     #[repr(i32)]
@@ -1240,8 +1247,9 @@ pub struct ActionCacheUpdateCapabilities {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PriorityCapabilities {
     #[prost(message, repeated, tag = "1")]
-    pub priorities: ::std::vec::Vec<priority_capabilities::PriorityRange>,
+    pub priorities: ::prost::alloc::vec::Vec<priority_capabilities::PriorityRange>,
 }
+/// Nested message and enum types in `PriorityCapabilities`.
 pub mod priority_capabilities {
     /// Supported range of priorities, including boundaries.
     #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1259,6 +1267,7 @@ pub mod priority_capabilities {
 /// Describes how the server treats absolute symlink targets.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SymlinkAbsolutePathStrategy {}
+/// Nested message and enum types in `SymlinkAbsolutePathStrategy`.
 pub mod symlink_absolute_path_strategy {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
     #[repr(i32)]
@@ -1281,13 +1290,13 @@ pub struct CacheCapabilities {
     /// All the digest functions supported by the remote cache.
     /// Remote cache may support multiple digest functions simultaneously.
     #[prost(enumeration = "digest_function::Value", repeated, tag = "1")]
-    pub digest_function: ::std::vec::Vec<i32>,
+    pub digest_function: ::prost::alloc::vec::Vec<i32>,
     /// Capabilities for updating the action cache.
     #[prost(message, optional, tag = "2")]
-    pub action_cache_update_capabilities: ::std::option::Option<ActionCacheUpdateCapabilities>,
+    pub action_cache_update_capabilities: ::core::option::Option<ActionCacheUpdateCapabilities>,
     /// Supported cache priority range for both CAS and ActionCache.
     #[prost(message, optional, tag = "3")]
-    pub cache_priority_capabilities: ::std::option::Option<PriorityCapabilities>,
+    pub cache_priority_capabilities: ::core::option::Option<PriorityCapabilities>,
     /// Maximum total size of blobs to be uploaded/downloaded using
     /// batch methods. A value of 0 means no limit is set, although
     /// in practice there will always be a message size limitation
@@ -1309,20 +1318,20 @@ pub struct ExecutionCapabilities {
     pub exec_enabled: bool,
     /// Supported execution priority range.
     #[prost(message, optional, tag = "3")]
-    pub execution_priority_capabilities: ::std::option::Option<PriorityCapabilities>,
+    pub execution_priority_capabilities: ::core::option::Option<PriorityCapabilities>,
     /// Supported node properties.
     #[prost(string, repeated, tag = "4")]
-    pub supported_node_properties: ::std::vec::Vec<std::string::String>,
+    pub supported_node_properties: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// Details for the tool used to call the API.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolDetails {
     /// Name of the tool, e.g. bazel.
     #[prost(string, tag = "1")]
-    pub tool_name: std::string::String,
+    pub tool_name: ::prost::alloc::string::String,
     /// Version of the tool used for the request, e.g. 5.0.3.
     #[prost(string, tag = "2")]
-    pub tool_version: std::string::String,
+    pub tool_version: ::prost::alloc::string::String,
 }
 /// An optional Metadata to attach to any RPC request to tell the server about an
 /// external context of the request. The server may use this for logging or other
@@ -1340,20 +1349,20 @@ pub struct ToolDetails {
 pub struct RequestMetadata {
     /// The details for the tool invoking the requests.
     #[prost(message, optional, tag = "1")]
-    pub tool_details: ::std::option::Option<ToolDetails>,
+    pub tool_details: ::core::option::Option<ToolDetails>,
     /// An identifier that ties multiple requests to the same action.
     /// For example, multiple requests to the CAS, Action Cache, and Execution
     /// API are used in order to compile foo.cc.
     #[prost(string, tag = "2")]
-    pub action_id: std::string::String,
+    pub action_id: ::prost::alloc::string::String,
     /// An identifier that ties multiple actions together to a final result.
     /// For example, multiple actions are required to build and run foo_test.
     #[prost(string, tag = "3")]
-    pub tool_invocation_id: std::string::String,
+    pub tool_invocation_id: ::prost::alloc::string::String,
     /// An identifier to tie multiple tool invocations together. For example,
     /// runs of foo_test, bar_test and baz_test on a post-submit of a given patch.
     #[prost(string, tag = "4")]
-    pub correlated_invocations_id: std::string::String,
+    pub correlated_invocations_id: ::prost::alloc::string::String,
 }
 #[doc = r" Generated client implementations."]
 pub mod execution_client {
@@ -2007,7 +2016,7 @@ pub mod execution_server {
     #[async_trait]
     pub trait Execution: Send + Sync + 'static {
         #[doc = "Server streaming response type for the Execute method."]
-        type ExecuteStream: Stream<
+        type ExecuteStream: futures_core::Stream<
                 Item = Result<
                     super::super::super::super::super::super::google::longrunning::Operation,
                     tonic::Status,
@@ -2088,7 +2097,7 @@ pub mod execution_server {
             request: tonic::Request<super::ExecuteRequest>,
         ) -> Result<tonic::Response<Self::ExecuteStream>, tonic::Status>;
         #[doc = "Server streaming response type for the WaitExecution method."]
-        type WaitExecutionStream: Stream<
+        type WaitExecutionStream: futures_core::Stream<
                 Item = Result<
                     super::super::super::super::super::super::google::longrunning::Operation,
                     tonic::Status,
@@ -2220,6 +2229,7 @@ pub mod execution_server {
                     Ok(http::Response::builder()
                         .status(200)
                         .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
                         .body(tonic::body::BoxBody::empty())
                         .unwrap())
                 }),
@@ -2412,6 +2422,7 @@ pub mod action_cache_server {
                     Ok(http::Response::builder()
                         .status(200)
                         .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
                         .body(tonic::body::BoxBody::empty())
                         .unwrap())
                 }),
@@ -2511,7 +2522,7 @@ pub mod content_addressable_storage_server {
             request: tonic::Request<super::BatchReadBlobsRequest>,
         ) -> Result<tonic::Response<super::BatchReadBlobsResponse>, tonic::Status>;
         #[doc = "Server streaming response type for the GetTree method."]
-        type GetTreeStream: Stream<Item = Result<super::GetTreeResponse, tonic::Status>>
+        type GetTreeStream: futures_core::Stream<Item = Result<super::GetTreeResponse, tonic::Status>>
             + Send
             + Sync
             + 'static;
@@ -2789,6 +2800,7 @@ pub mod content_addressable_storage_server {
                     Ok(http::Response::builder()
                         .status(200)
                         .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
                         .body(tonic::body::BoxBody::empty())
                         .unwrap())
                 }),
@@ -2912,6 +2924,7 @@ pub mod capabilities_server {
                     Ok(http::Response::builder()
                         .status(200)
                         .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
                         .body(tonic::body::BoxBody::empty())
                         .unwrap())
                 }),

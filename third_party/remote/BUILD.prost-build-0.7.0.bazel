@@ -10,7 +10,7 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
 
 # buildifier: disable=load
 load(
-    "@io_bazel_rules_rust//rust:rust.bzl",
+    "@rules_rust//rust:rust.bzl",
     "rust_binary",
     "rust_library",
     "rust_test",
@@ -32,7 +32,7 @@ licenses([
 # buildifier: disable=out-of-order-load
 # buildifier: disable=load-on-top
 load(
-    "@io_bazel_rules_rust//cargo:cargo_build_script.bzl",
+    "@rules_rust//cargo:cargo_build_script.bzl",
     "cargo_build_script",
 )
 
@@ -56,7 +56,7 @@ cargo_build_script(
     version = "0.7.0",
     visibility = ["//visibility:private"],
     deps = [
-        "@raze__which__4_1_0//:which",
+        "@raze__which__4_2_2//:which",
     ],
 )
 
@@ -85,7 +85,7 @@ rust_library(
         ":prost_build_build_script",
         "@com_google_protobuf//:protoc",
         "@raze__bytes__1_0_1//:bytes",
-        "@raze__heck__0_3_2//:heck",
+        "@raze__heck__0_3_3//:heck",
         "@raze__itertools__0_9_0//:itertools",
         "@raze__log__0_4_14//:log",
         "@raze__multimap__0_8_3//:multimap",

@@ -1,6 +1,6 @@
 # Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
-load("@io_bazel_rules_rust//rust:rust.bzl", "rust_binary")
+load("@rules_rust//rust:rust.bzl", "rust_binary")
 
 rust_binary(
     name = "cas",
@@ -21,6 +21,6 @@ rust_binary(
         "//third_party:tonic",
         "//util:common",
         "//util:error",
-        "@io_bazel_rules_rust//tools/runfiles",
+        "@rules_rust//tools/runfiles",
     ],
 )
