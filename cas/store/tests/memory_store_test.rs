@@ -117,17 +117,17 @@ mod memory_store_tests {
         }
         {
             // .update() tests.
-            async fn update_should_fail<'a, 'b>(
+            async fn update_should_fail<'a>(
                 store: Pin<&'a MemoryStore>,
                 hash: &'a str,
                 expected_size: usize,
-                value: &'b str,
+                value: &'static str,
             ) {
                 let digest = DigestInfo::try_new(&hash, expected_size);
                 assert!(
                     digest.is_err()
                         || store
-                            .update(digest.unwrap(), Box::new(Cursor::new(&value)))
+                            .update(digest.unwrap(), Box::new(Cursor::new(value)))
                             .await
                             .is_err(),
                     ".has() should have failed: {} {} {}",

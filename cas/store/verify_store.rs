@@ -92,7 +92,7 @@ impl StoreTrait for VerifyStore {
     fn update<'a>(
         self: std::pin::Pin<&'a Self>,
         digest: DigestInfo,
-        reader: Box<dyn AsyncRead + Send + Sync + Unpin + 'a>,
+        reader: Box<dyn AsyncRead + Send + Sync + Unpin + 'static>,
     ) -> ResultFuture<'a, ()> {
         let expected_size = digest.size_bytes;
         Box::pin(async move {
