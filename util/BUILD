@@ -56,6 +56,7 @@ rust_library(
     deps = [
         "//third_party:fixed_buffer",
         "//third_party:tokio",
+        "//third_party:pin_project_lite",
     ],
     visibility = ["//visibility:public"],
 )

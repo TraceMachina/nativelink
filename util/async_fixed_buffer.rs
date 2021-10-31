@@ -17,22 +17,31 @@
 
 #![forbid(unsafe_code)]
 
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::task::{Context, Poll, Waker};
 
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
 use fixed_buffer::FixedBuf;
-use tokio::io::ReadBuf;
+use pin_project_lite::pin_project;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-pub struct AsyncFixedBuf<T> {
-    inner: FixedBuf<T>,
-    waker: Arc<Mutex<Option<Waker>>>,
-    did_shutdown: Arc<AtomicBool>,
-    write_amt: AtomicUsize,
-    read_amt: AtomicUsize,
-    received_eof: AtomicBool,
+pin_project! {
+    pub struct AsyncFixedBuf<T> {
+        inner: FixedBuf<T>,
+        waker: Arc<Mutex<Option<Waker>>>,
+        did_shutdown: Arc<AtomicBool>,
+        write_amt: AtomicUsize,
+        read_amt: AtomicUsize,
+        received_eof: AtomicBool,
+    }
+
+    impl<T> PinnedDrop for AsyncFixedBuf<T> {
+        fn drop(mut this: Pin<&mut Self>) {
+            this.wake();
+        }
+    }
 }
 
 impl<T> AsyncFixedBuf<T> {
@@ -64,25 +73,24 @@ impl<T> AsyncFixedBuf<T> {
             did_shutdown.store(true, Ordering::Relaxed);
             let mut waker = waker.lock().unwrap();
             if let Some(w) = waker.take() {
-                w.wake()
+                w.wake();
             }
         })
     }
 
-    fn park(&mut self, new_waker: &Waker) {
+    fn park(&mut self, new_waker: Waker) {
         let mut waker = self.waker.lock().unwrap();
-        *waker = Some(new_waker.clone());
+        assert!(waker.is_none(), "Can't park while waker is populated");
+        *waker = Some(new_waker);
     }
 
     fn wake(&mut self) {
         let mut waker = self.waker.lock().unwrap();
         if let Some(w) = waker.take() {
-            w.wake()
+            w.wake();
         }
     }
 }
-
-impl<T> Unpin for AsyncFixedBuf<T> {}
 
 impl<T> std::ops::Deref for AsyncFixedBuf<T> {
     type Target = FixedBuf<T>;
@@ -91,7 +99,7 @@ impl<T> std::ops::Deref for AsyncFixedBuf<T> {
     }
 }
 
-impl<T: AsRef<[u8]> + Unpin> tokio::io::AsyncRead for AsyncFixedBuf<T> {
+impl<T: AsRef<[u8]> + Unpin> AsyncRead for AsyncFixedBuf<T> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -111,18 +119,16 @@ impl<T: AsRef<[u8]> + Unpin> tokio::io::AsyncRead for AsyncFixedBuf<T> {
             }
         }
         self.read_amt.fetch_add(num_read, Ordering::Relaxed);
-        let mut result = Poll::Ready(Ok(()));
         if num_read <= 0 {
-            self.park(cx.waker());
-            result = Poll::Pending;
-        } else {
-            self.wake();
+            self.park(cx.waker().clone());
+            return Poll::Pending;
         }
-        result
+        self.wake();
+        Poll::Ready(Ok(()))
     }
 }
 
-impl<T: AsMut<[u8]>> tokio::io::AsyncWrite for AsyncFixedBuf<T> {
+impl<T: AsMut<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
         if self.did_shutdown.load(Ordering::Relaxed) {
             return Poll::Ready(Err(std::io::Error::new(
@@ -146,7 +152,7 @@ impl<T: AsMut<[u8]>> tokio::io::AsyncWrite for AsyncFixedBuf<T> {
                 Poll::Ready(Ok(write_amt))
             }
             None => {
-                self.park(cx.waker());
+                self.park(cx.waker().clone());
                 Poll::Pending
             }
         }
@@ -154,10 +160,9 @@ impl<T: AsMut<[u8]>> tokio::io::AsyncWrite for AsyncFixedBuf<T> {
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         if self.inner.is_empty() {
-            self.wake();
             return Poll::Ready(Ok(()));
         }
-        self.park(cx.waker());
+        self.park(cx.waker().clone());
         Poll::Pending
     }
 
@@ -165,11 +170,5 @@ impl<T: AsMut<[u8]>> tokio::io::AsyncWrite for AsyncFixedBuf<T> {
         self.did_shutdown.store(true, Ordering::Relaxed);
         self.wake();
         Poll::Ready(Ok(()))
-    }
-}
-
-impl<T> Drop for AsyncFixedBuf<T> {
-    fn drop(&mut self) {
-        self.wake();
     }
 }
