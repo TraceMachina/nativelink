@@ -47,15 +47,16 @@ impl AcServer {
     ) -> Result<Response<ActionResult>, Error> {
         let get_action_request = grpc_request.into_inner();
 
-        // TODO(blaise.bruer) This needs to be fixed. It is using wrong macro.
-        // We also should write a test for these errors.
+        // TODO(blaise.bruer) We should write a test for these errors.
         let digest: DigestInfo = get_action_request
             .action_digest
             .err_tip(|| "Action digest was not set in message")?
             .try_into()?;
 
         // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
-        let mut store_data = Vec::with_capacity(digest.size_bytes as usize);
+        // Note: We don't know the real size of action cache results, so we apx it here with size_bytes * 2
+        // but it might be larger or smaller.
+        let mut store_data = Vec::with_capacity((digest.size_bytes as usize) * 2);
         let mut cursor = Cursor::new(&mut store_data);
         let instance_name = get_action_request.instance_name;
         let store = Pin::new(
