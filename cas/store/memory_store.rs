@@ -40,7 +40,7 @@ impl StoreTrait for MemoryStore {
     fn update<'a>(
         self: std::pin::Pin<&'a Self>,
         digest: DigestInfo,
-        mut reader: Box<dyn AsyncRead + Send + Sync + Unpin + 'a>,
+        mut reader: Box<dyn AsyncRead + Send + Sync + Unpin + 'static>,
     ) -> ResultFuture<'a, ()> {
         Box::pin(async move {
             let mut buffer = Vec::with_capacity(digest.size_bytes as usize);

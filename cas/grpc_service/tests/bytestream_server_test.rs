@@ -239,7 +239,7 @@ pub mod read_tests {
         raw_data[DATA_SIZE - 2] = 43u8;
 
         let digest = DigestInfo::try_new(&HASH1, raw_data.len())?;
-        store.update(digest, Box::new(Cursor::new(raw_data.as_slice()))).await?;
+        store.update(digest, Box::new(Cursor::new(raw_data.clone()))).await?;
 
         let read_request = ReadRequest {
             resource_name: format!(

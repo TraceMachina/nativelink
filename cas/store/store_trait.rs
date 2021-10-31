@@ -23,7 +23,7 @@ pub trait StoreTrait: Sync + Send + Unpin {
     fn update<'a>(
         self: Pin<&'a Self>,
         digest: DigestInfo,
-        reader: Box<dyn AsyncRead + Send + Unpin + Sync + 'a>,
+        reader: Box<dyn AsyncRead + Send + Unpin + Sync + 'static>,
     ) -> ResultFuture<'a, ()>;
 
     fn get_part<'a>(
