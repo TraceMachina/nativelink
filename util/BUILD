@@ -19,11 +19,11 @@ rust_library(
     name = "common",
     srcs = ["common.rs"],
     deps = [
-        ":error",
         "//proto",
         "//third_party:hex",
-        "//third_party:log",
         "//third_party:lazy_init",
+        "//third_party:log",
+        ":error",
     ],
     visibility = ["//visibility:public"],
 )
@@ -43,8 +43,19 @@ rust_library(
     name = "async_fixed_buffer",
     srcs = ["async_fixed_buffer.rs"],
     deps = [
-        "//third_party:tokio",
         "//third_party:fixed_buffer",
+        "//third_party:tokio",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "async_read_taker",
+    srcs = ["async_read_taker.rs"],
+    deps = [
+        "//third_party:pin_project_lite",
+        "//third_party:tokio",
+        "//third_party:fast_async_mutex",
     ],
     visibility = ["//visibility:public"],
 )
@@ -72,5 +83,19 @@ rust_test(
         "//util:common",
         ":error",
         ":evicting_map",
+    ],
+)
+
+rust_test(
+    name = "async_read_taker_test",
+    srcs = ["tests/async_read_taker_test.rs"],
+    deps = [
+        "//third_party:fast_async_mutex",
+        "//third_party:futures",
+        "//third_party:pretty_assertions",
+        "//third_party:tokio",
+        ":async_fixed_buffer",
+        ":async_read_taker",
+        ":error",
     ],
 )
