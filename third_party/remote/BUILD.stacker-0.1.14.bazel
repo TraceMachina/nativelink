@@ -10,9 +10,10 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
 
 # buildifier: disable=load
 load(
-    "@rules_rust//rust:rust.bzl",
+    "@rules_rust//rust:defs.bzl",
     "rust_binary",
     "rust_library",
+    "rust_proc_macro",
     "rust_test",
 )
 
@@ -56,7 +57,7 @@ cargo_build_script(
     version = "0.1.14",
     visibility = ["//visibility:private"],
     deps = [
-        "@raze__cc__1_0_69//:cc",
+        "@raze__cc__1_0_71//:cc",
     ],
 )
 
@@ -66,7 +67,6 @@ rust_library(
     crate_features = [
     ],
     crate_root = "src/lib.rs",
-    crate_type = "lib",
     data = [],
     edition = "2015",
     rustc_flags = [
@@ -81,8 +81,8 @@ rust_library(
     deps = [
         ":stacker_build_script",
         "@raze__cfg_if__1_0_0//:cfg_if",
-        "@raze__libc__0_2_99//:libc",
-        "@raze__psm__0_1_14//:psm",
+        "@raze__libc__0_2_106//:libc",
+        "@raze__psm__0_1_16//:psm",
     ],
 )
 
