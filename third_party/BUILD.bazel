@@ -58,6 +58,15 @@ alias(
 )
 
 alias(
+    name = "fast_async_mutex",
+    actual = "@raze__fast_async_mutex__0_6_7//:fast_async_mutex",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "fixed_buffer",
     actual = "@raze__fixed_buffer__0_2_3//:fixed_buffer",
     tags = [
@@ -68,7 +77,7 @@ alias(
 
 alias(
     name = "futures",
-    actual = "@raze__futures__0_3_16//:futures",
+    actual = "@raze__futures__0_3_17//:futures",
     tags = [
         "cargo-raze",
         "manual",
@@ -86,7 +95,7 @@ alias(
 
 alias(
     name = "http",
-    actual = "@raze__http__0_2_4//:http",
+    actual = "@raze__http__0_2_5//:http",
     tags = [
         "cargo-raze",
         "manual",
@@ -141,6 +150,15 @@ alias(
 alias(
     name = "mock_instant",
     actual = "@raze__mock_instant__0_2_1//:mock_instant",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "pin_project_lite",
+    actual = "@raze__pin_project_lite__0_2_7//:pin_project_lite",
     tags = [
         "cargo-raze",
         "manual",
@@ -220,17 +238,6 @@ alias(
 )
 
 alias(
-    name = "rustfmt_nightly",
-    actual = "@raze__rustfmt_nightly__1_4_21//:rustfmt_nightly",
-    tags = [
-        "cargo-raze",
-        "manual",
-    ],
-)
-
-alias(
-    # Extra aliased target, from raze configuration
-    # N.B.: The exact form of this is subject to change.
     name = "cargo_bin_rustfmt",
     actual = "@raze__rustfmt_nightly__1_4_21//:cargo_bin_rustfmt",
     tags = [
@@ -240,8 +247,17 @@ alias(
 )
 
 alias(
+    name = "rustfmt_nightly",
+    actual = "@raze__rustfmt_nightly__1_4_21//:rustfmt_nightly",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "serde",
-    actual = "@raze__serde__1_0_127//:serde",
+    actual = "@raze__serde__1_0_130//:serde",
     tags = [
         "cargo-raze",
         "manual",
@@ -250,7 +266,7 @@ alias(
 
 alias(
     name = "sha2",
-    actual = "@raze__sha2__0_9_5//:sha2",
+    actual = "@raze__sha2__0_9_8//:sha2",
     tags = [
         "cargo-raze",
         "manual",
@@ -268,7 +284,7 @@ alias(
 
 alias(
     name = "tokio",
-    actual = "@raze__tokio__1_10_0//:tokio",
+    actual = "@raze__tokio__1_13_0//:tokio",
     tags = [
         "cargo-raze",
         "manual",
@@ -277,7 +293,7 @@ alias(
 
 alias(
     name = "tokio_stream",
-    actual = "@raze__tokio_stream__0_1_7//:tokio_stream",
+    actual = "@raze__tokio_stream__0_1_8//:tokio_stream",
     tags = [
         "cargo-raze",
         "manual",
@@ -286,7 +302,7 @@ alias(
 
 alias(
     name = "tokio_util",
-    actual = "@raze__tokio_util__0_6_7//:tokio_util",
+    actual = "@raze__tokio_util__0_6_9//:tokio_util",
     tags = [
         "cargo-raze",
         "manual",

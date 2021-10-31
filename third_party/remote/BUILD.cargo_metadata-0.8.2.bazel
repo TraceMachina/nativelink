@@ -10,9 +10,10 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
 
 # buildifier: disable=load
 load(
-    "@rules_rust//rust:rust.bzl",
+    "@rules_rust//rust:defs.bzl",
     "rust_binary",
     "rust_library",
+    "rust_proc_macro",
     "rust_test",
 )
 
@@ -37,11 +38,10 @@ rust_library(
         "default",
     ],
     crate_root = "src/lib.rs",
-    crate_type = "lib",
     data = [],
     edition = "2015",
     proc_macro_deps = [
-        "@raze__serde_derive__1_0_127//:serde_derive",
+        "@raze__serde_derive__1_0_130//:serde_derive",
     ],
     rustc_flags = [
         "--cap-lints=allow",
@@ -54,8 +54,8 @@ rust_library(
     # buildifier: leave-alone
     deps = [
         "@raze__semver__0_9_0//:semver",
-        "@raze__serde__1_0_127//:serde",
-        "@raze__serde_json__1_0_66//:serde_json",
+        "@raze__serde__1_0_130//:serde",
+        "@raze__serde_json__1_0_68//:serde_json",
     ],
 )
 

@@ -10,9 +10,10 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
 
 # buildifier: disable=load
 load(
-    "@rules_rust//rust:rust.bzl",
+    "@rules_rust//rust:defs.bzl",
     "rust_binary",
     "rust_library",
+    "rust_proc_macro",
     "rust_test",
 )
 
@@ -36,7 +37,6 @@ rust_library(
     crate_features = [
     ],
     crate_root = "rusoto/signature/src/lib.rs",
-    crate_type = "lib",
     data = [],
     edition = "2018",
     rustc_flags = [
@@ -50,20 +50,20 @@ rust_library(
     # buildifier: leave-alone
     deps = [
         "@raze__base64__0_13_0//:base64",
-        "@raze__bytes__1_0_1//:bytes",
-        "@raze__futures__0_3_16//:futures",
+        "@raze__bytes__1_1_0//:bytes",
+        "@raze__futures__0_3_17//:futures",
         "@raze__hex__0_4_3//:hex",
         "@raze__hmac__0_10_1//:hmac",
-        "@raze__http__0_2_4//:http",
-        "@raze__hyper__0_14_11//:hyper",
+        "@raze__http__0_2_5//:http",
+        "@raze__hyper__0_14_14//:hyper",
         "@raze__log__0_4_14//:log",
         "@raze__md5__0_7_0//:md5",
         "@raze__percent_encoding__2_1_0//:percent_encoding",
         "@raze__pin_project_lite__0_2_7//:pin_project_lite",
         "@raze__rusoto_credential__0_46_0//:rusoto_credential",
-        "@raze__serde__1_0_127//:serde",
-        "@raze__sha2__0_9_5//:sha2",
+        "@raze__serde__1_0_130//:serde",
+        "@raze__sha2__0_9_8//:sha2",
         "@raze__time__0_2_27//:time",
-        "@raze__tokio__1_10_0//:tokio",
+        "@raze__tokio__1_13_0//:tokio",
     ],
 )

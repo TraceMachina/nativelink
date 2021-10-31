@@ -10,9 +10,10 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
 
 # buildifier: disable=load
 load(
-    "@rules_rust//rust:rust.bzl",
+    "@rules_rust//rust:defs.bzl",
     "rust_binary",
     "rust_library",
+    "rust_proc_macro",
     "rust_test",
 )
 
@@ -60,13 +61,12 @@ cargo_build_script(
     ],
 )
 
-rust_library(
+rust_proc_macro(
     name = "proc_macro_error_attr",
     srcs = glob(["**/*.rs"]),
     crate_features = [
     ],
     crate_root = "src/lib.rs",
-    crate_type = "proc-macro",
     data = [],
     edition = "2018",
     rustc_flags = [
@@ -80,7 +80,7 @@ rust_library(
     # buildifier: leave-alone
     deps = [
         ":proc_macro_error_attr_build_script",
-        "@raze__proc_macro2__1_0_28//:proc_macro2",
-        "@raze__quote__1_0_9//:quote",
+        "@raze__proc_macro2__1_0_32//:proc_macro2",
+        "@raze__quote__1_0_10//:quote",
     ],
 )
