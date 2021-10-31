@@ -72,3 +72,47 @@ pub struct EvictionPolicy {
     #[serde(default)]
     pub max_count: u64,
 }
+
+/// Retry configuration. This configuration is exponential and each iteration
+/// a jitter as a percentage is applied of the calculated delay. For example:
+/// ```
+/// Retry{
+///   max_retries: 7
+///   delay: .1,
+///   jitter: .5
+/// }
+/// ```
+/// will result in:
+/// Attempt - Delay
+/// 1         0ms
+/// 2         75ms - 125ms
+/// 3         150ms - 250ms
+/// 4         300ms - 500ms
+/// 5         600ms - 1s
+/// 6         1.2s - 2s
+/// 7         2.4s - 4s
+/// 8         4.8s - 8s
+/// Remember that to get total results is additive, meaning the above results
+/// would mean a single request would have a total delay of 9.525s - 15.875s.
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct Retry {
+    /// Maximum number of retries until retrying stops.
+    /// Setting this to zero will always attempt 1 time, but not retry.
+    #[serde(default)]
+    pub max_retries: usize,
+
+    /// Delay in seconds for exponential back off.
+    #[serde(default)]
+    pub delay: f32,
+
+    /// Amount of jitter to add as a percentage in decimal form. This will
+    /// change the formula like:
+    /// ```
+    /// random(
+    ///    2 ^ {attempt_number} * {delay}) * (1 - (jitter / 2)),
+    ///    2 ^ {attempt_number} * {delay}) * (1 + (jitter / 2)),
+    /// )
+    /// ```
+    #[serde(default)]
+    pub jitter: f32,
+}

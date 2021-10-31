@@ -29,6 +29,17 @@ rust_library(
 )
 
 rust_library(
+    name = "retry",
+    srcs = ["retry.rs"],
+    deps = [
+        "//third_party:futures",
+        "//third_party:tokio",
+        ":error",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
     name = "evicting_map",
     srcs = ["evicting_map.rs"],
     deps = [
@@ -83,6 +94,18 @@ rust_test(
         "//util:common",
         ":error",
         ":evicting_map",
+    ],
+)
+
+rust_test(
+    name = "retry_test",
+    srcs = ["tests/retry_test.rs"],
+    deps = [
+        "//third_party:futures",
+        "//third_party:pretty_assertions",
+        "//third_party:tokio",
+        ":error",
+        ":retry",
     ],
 )
 
