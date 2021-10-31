@@ -54,7 +54,8 @@ impl CasServer {
         let inner_request = grpc_request.into_inner();
         let instance_name = inner_request.instance_name;
         for digest in inner_request.blob_digests.into_iter() {
-            let digest: DigestInfo = digest.try_into()?;
+            let mut digest: DigestInfo = digest.try_into()?;
+            digest.trust_size = true;
             let store_owned = self
                 .stores
                 .get(&instance_name)
@@ -88,7 +89,8 @@ impl CasServer {
         let inner_request = grpc_request.into_inner();
         let instance_name = inner_request.instance_name;
         for request in inner_request.requests {
-            let digest: DigestInfo = request.digest.err_tip(|| "Digest not found in request")?.try_into()?;
+            let mut digest: DigestInfo = request.digest.err_tip(|| "Digest not found in request")?.try_into()?;
+            digest.trust_size = true;
             let digest_copy = digest.clone();
             let store_owned = self
                 .stores
@@ -134,7 +136,8 @@ impl CasServer {
         let inner_request = grpc_request.into_inner();
         let instance_name = inner_request.instance_name;
         for digest in inner_request.digests {
-            let digest: DigestInfo = digest.try_into()?;
+            let mut digest: DigestInfo = digest.try_into()?;
+            digest.trust_size = true;
             let digest_copy = digest.clone();
             let store_owned = self
                 .stores
