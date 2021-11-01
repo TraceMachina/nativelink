@@ -15,7 +15,7 @@ mod async_fixed_buffer_tests {
     #[tokio::test]
     async fn get_closer_closes_read_stream_early() -> Result<(), Error> {
         let mut raw_fixed_buffer = AsyncFixedBuf::new(vec![0u8; 32].into_boxed_slice());
-        let mut stream_closer = raw_fixed_buffer.get_closer();
+        let stream_closer_fut = raw_fixed_buffer.get_closer();
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
         tx.write_all(&vec![255u8; 4]).await?;
@@ -26,7 +26,7 @@ mod async_fixed_buffer_tests {
 
         assert!(poll!(&mut read_fut).is_pending(), "Expecting to be pending");
 
-        stream_closer(); // Now close the stream.
+        stream_closer_fut.await; // Now close the stream.
 
         let err: Error = read_fut.await.unwrap_err().into();
         assert_eq!(err, make_err!(Code::Internal, "Sender disconnected"));
@@ -36,7 +36,7 @@ mod async_fixed_buffer_tests {
     #[tokio::test]
     async fn get_closer_closes_write_stream_early() -> Result<(), Error> {
         let mut raw_fixed_buffer = AsyncFixedBuf::new(vec![0u8; 4].into_boxed_slice());
-        let mut stream_closer = raw_fixed_buffer.get_closer();
+        let stream_closer_fut = raw_fixed_buffer.get_closer();
         let (_, mut tx) = tokio::io::split(raw_fixed_buffer);
 
         let buffer = &vec![0u8; 5];
@@ -45,7 +45,7 @@ mod async_fixed_buffer_tests {
 
         assert!(poll!(&mut write_fut).is_pending(), "Expecting to be pending");
 
-        stream_closer(); // Now close the stream.
+        stream_closer_fut.await; // Now close the stream.
 
         let err: Error = write_fut.await.unwrap_err().into();
         assert_eq!(err, make_err!(Code::Internal, "Receiver disconnected"));

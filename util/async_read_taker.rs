@@ -6,9 +6,10 @@ use std::future::Future;
 use std::marker::Send;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll};
 
 use fast_async_mutex::mutex::Mutex;
+use futures::ready;
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, ReadBuf};
 

@@ -34,7 +34,7 @@ rust_library(
     srcs = ["memory_store.rs"],
     deps = [
         "//config",
-        "//third_party:async_mutex",
+        "//third_party:fast_async_mutex",
         "//third_party:tokio",
         "//util:common",
         "//util:error",
@@ -50,7 +50,7 @@ rust_library(
     srcs = ["verify_store.rs"],
     deps = [
         "//config",
-        "//third_party:async_mutex",
+        "//third_party:fast_async_mutex",
         "//third_party:hex",
         "//third_party:sha2",
         "//third_party:tokio",

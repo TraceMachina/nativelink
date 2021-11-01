@@ -3,17 +3,36 @@
     "CAS_MAIN_STORE": {
       "verify": {
         "backend": {
-          "memory": {}
+          "s3_store": {
+            "region": "us-west-1",
+            "bucket": "blaisebruer-cas-store",
+            "key_prefix": "test-prefix-cas",
+            "retry": {
+              "max_retries": 0,
+              "delay": 0.1,
+              "jitter": 0.0,
+            }
+          }
         },
         "verify_size": true,
         "verify_hash": true
       }
     },
     "AC_MAIN_STORE": {
-      "memory": {
-        "eviction_policy": {
-          // 100mb.
-          "max_bytes": 100000000,
+      // "memory": {
+      //   "eviction_policy": {
+      //     // 100mb.
+      //     "max_bytes": 100000000,
+      //   }
+      // }
+      "s3_store": {
+        "region": "us-west-1",
+        "bucket": "blaisebruer-cas-store",
+        "key_prefix": "test-prefix-ac",
+        "retry": {
+          "max_retries": 0,
+          "delay": 0.1,
+          "jitter": 0.0,
         }
       }
     }

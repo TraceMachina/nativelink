@@ -93,16 +93,6 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__async_mutex__1_4_0",
-        url = "https://crates.io/api/v1/crates/async-mutex/1.4.0/download",
-        type = "tar.gz",
-        sha256 = "479db852db25d9dbf6204e6cb6253698f175c15726470f78af0d918e99d6156e",
-        strip_prefix = "async-mutex-1.4.0",
-        build_file = Label("//third_party/remote:BUILD.async-mutex-1.4.0.bazel"),
-    )
-
-    maybe(
-        http_archive,
         name = "raze__async_stream__0_3_2",
         url = "https://crates.io/api/v1/crates/async-stream/0.3.2/download",
         type = "tar.gz",
@@ -599,16 +589,6 @@ def raze_fetch_remote_crates():
         sha256 = "0b2cf0344971ee6c64c31be0d530793fba457d322dfec2810c453d0ef228f9c3",
         strip_prefix = "env_logger-0.9.0",
         build_file = Label("//third_party/remote:BUILD.env_logger-0.9.0.bazel"),
-    )
-
-    maybe(
-        http_archive,
-        name = "raze__event_listener__2_5_1",
-        url = "https://crates.io/api/v1/crates/event-listener/2.5.1/download",
-        type = "tar.gz",
-        sha256 = "f7531096570974c3a9dcf9e4b8e1cede1ec26cf5046219fb3b9d897503b9be59",
-        strip_prefix = "event-listener-2.5.1",
-        build_file = Label("//third_party/remote:BUILD.event-listener-2.5.1.bazel"),
     )
 
     maybe(
@@ -1313,12 +1293,12 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__openssl_sys__0_9_69",
-        url = "https://crates.io/api/v1/crates/openssl-sys/0.9.69/download",
+        name = "raze__openssl_sys__0_9_70",
+        url = "https://crates.io/api/v1/crates/openssl-sys/0.9.70/download",
         type = "tar.gz",
-        sha256 = "14276c7942cb12d5ffab976d5b69789b0510d052576b230fcde58d8c581b8d1d",
-        strip_prefix = "openssl-sys-0.9.69",
-        build_file = Label("//third_party/remote:BUILD.openssl-sys-0.9.69.bazel"),
+        sha256 = "c6517987b3f8226b5da3661dad65ff7f300cc59fb5ea8333ca191fc65fde3edf",
+        strip_prefix = "openssl-sys-0.9.70",
+        build_file = Label("//third_party/remote:BUILD.openssl-sys-0.9.70.bazel"),
     )
 
     maybe(

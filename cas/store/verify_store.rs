@@ -97,7 +97,7 @@ impl StoreTrait for VerifyStore {
         let expected_size = digest.size_bytes;
         Box::pin(async move {
             let mut raw_fixed_buffer = AsyncFixedBuf::new(vec![0u8; 1024 * 4].into_boxed_slice());
-            let mut stream_closer = raw_fixed_buffer.get_closer();
+            let stream_closer_fut = raw_fixed_buffer.get_closer();
             let (rx, tx) = tokio::io::split(raw_fixed_buffer);
 
             let hash_copy = digest.packed_hash;
@@ -109,7 +109,7 @@ impl StoreTrait for VerifyStore {
                 hasher = Some((hash_copy, Sha256::new()));
             }
             let result = inner_check_update(tx, reader, expected_size, self.verify_size, hasher).await;
-            stream_closer();
+            stream_closer_fut.await;
             result.merge(
                 spawn_future
                     .await

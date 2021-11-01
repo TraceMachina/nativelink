@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use async_fixed_buffer::AsyncFixedBuf;
 use drop_guard::DropGuard;
-use futures::{stream::unfold, Stream};
+use futures::{stream::unfold, Stream, Future};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tonic::{Request, Response, Status, Streaming};
 
@@ -35,7 +35,7 @@ pub struct ByteStreamServer {
 struct ReaderState {
     max_bytes_per_stream: usize,
     was_shutdown: bool,
-    stream_closer: Box<dyn FnMut() + Sync + Send>,
+    stream_closer_fut: Option<Pin<Box<dyn Future<Output = ()> + Sync + Send>>>,
     rx: Box<dyn AsyncRead + Sync + Send + Unpin>,
     reading_future: Box<tokio::task::JoinHandle<Result<(), Error>>>,
 }
@@ -44,7 +44,9 @@ impl ReaderState {
     async fn shutdown(&mut self) -> Result<(), Error> {
         self.was_shutdown = true;
         // Close stream then wait for reader stream to finish.
-        (self.stream_closer)();
+        if let Some(stream_closer) = self.stream_closer_fut.take() {
+            stream_closer.await;
+        }
         let mut drainer = tokio::io::sink();
         // Note: We ignore errors here or else we will get "Sender Disconnected" errors.
         let _ = tokio::io::copy(&mut self.rx, &mut drainer).await;
@@ -91,7 +93,7 @@ impl ByteStreamServer {
         let digest = DigestInfo::try_new(&resource_info.hash, resource_info.expected_size)?;
 
         let mut raw_fixed_buffer = AsyncFixedBuf::new(vec![0u8; self.read_buffer_stream_size].into_boxed_slice());
-        let stream_closer = raw_fixed_buffer.get_closer();
+        let stream_closer_fut = Some(raw_fixed_buffer.get_closer());
         let (rx, mut tx) = tokio::io::split(raw_fixed_buffer);
         let rx: Box<dyn tokio::io::AsyncRead + Sync + Send + Unpin> = if read_limit != 0 {
             Box::new(rx.take(u64::try_from(read_limit).err_tip(|| "read_limit has is not convertable to u64")?))
@@ -119,7 +121,7 @@ impl ByteStreamServer {
         // This allows us to call a destructor when the the object is dropped.
         let state = Some(DropGuard::new(
             ReaderState {
-                stream_closer: stream_closer,
+                stream_closer_fut,
                 rx: rx,
                 max_bytes_per_stream: self.max_bytes_per_stream,
                 reading_future: reading_future,

@@ -18,12 +18,13 @@
 #![forbid(unsafe_code)]
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 
+use fast_async_mutex::mutex::Mutex;
 use fixed_buffer::FixedBuf;
+use futures::{ready, Future};
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -35,12 +36,6 @@ pin_project! {
         write_amt: AtomicUsize,
         read_amt: AtomicUsize,
         received_eof: AtomicBool,
-    }
-
-    impl<T> PinnedDrop for AsyncFixedBuf<T> {
-        fn drop(mut this: Pin<&mut Self>) {
-            this.wake();
-        }
     }
 }
 
@@ -63,32 +58,36 @@ impl<T> AsyncFixedBuf<T> {
 
     // Utility method that can be used to get a lambda that will close the
     // stream. This is useful for the reader to close the stream.
-    pub fn get_closer(&mut self) -> Box<dyn FnMut() + Sync + Send> {
+    pub fn get_closer(&mut self) -> Pin<Box<dyn Future<Output = ()> + Sync + Send>> {
         let did_shutdown = self.did_shutdown.clone();
         let waker = self.waker.clone();
-        Box::new(move || {
+        Box::pin(async move {
             if did_shutdown.load(Ordering::Relaxed) {
                 return;
             }
             did_shutdown.store(true, Ordering::Relaxed);
-            let mut waker = waker.lock().unwrap();
+            let mut waker = waker.lock().await;
             if let Some(w) = waker.take() {
                 w.wake();
             }
         })
     }
 
-    fn park(&mut self, new_waker: Waker) {
-        let mut waker = self.waker.lock().unwrap();
+    fn park_poll(self: &Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut waker_lock = self.waker.lock();
+        let mut waker = ready!(Pin::new(&mut waker_lock).poll(cx));
         assert!(waker.is_none(), "Can't park while waker is populated");
-        *waker = Some(new_waker);
+        *waker = Some(cx.waker().clone());
+        Poll::Ready(())
     }
 
-    fn wake(&mut self) {
-        let mut waker = self.waker.lock().unwrap();
+    fn wake_poll(self: &Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut waker_lock = self.waker.lock();
+        let mut waker = ready!(Pin::new(&mut waker_lock).poll(cx));
         if let Some(w) = waker.take() {
             w.wake();
         }
+        Poll::Ready(())
     }
 }
 
@@ -120,10 +119,10 @@ impl<T: AsRef<[u8]> + Unpin> AsyncRead for AsyncFixedBuf<T> {
         }
         self.read_amt.fetch_add(num_read, Ordering::Relaxed);
         if num_read <= 0 {
-            self.park(cx.waker().clone());
+            ready!(self.park_poll(cx));
             return Poll::Pending;
         }
-        self.wake();
+        ready!(self.wake_poll(cx));
         Poll::Ready(Ok(()))
     }
 }
@@ -147,28 +146,28 @@ impl<T: AsMut<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
                     self.received_eof.store(true, Ordering::Relaxed);
                 }
 
-                self.wake();
+                ready!(self.wake_poll(cx));
                 self.write_amt.fetch_add(write_amt, Ordering::Relaxed);
                 Poll::Ready(Ok(write_amt))
             }
             None => {
-                self.park(cx.waker().clone());
+                ready!(self.park_poll(cx));
                 Poll::Pending
             }
         }
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         if self.inner.is_empty() {
             return Poll::Ready(Ok(()));
         }
-        self.park(cx.waker().clone());
+        ready!(self.park_poll(cx));
         Poll::Pending
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         self.did_shutdown.store(true, Ordering::Relaxed);
-        self.wake();
+        ready!(self.wake_poll(cx));
         Poll::Ready(Ok(()))
     }
 }

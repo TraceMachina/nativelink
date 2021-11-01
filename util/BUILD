@@ -54,9 +54,11 @@ rust_library(
     name = "async_fixed_buffer",
     srcs = ["async_fixed_buffer.rs"],
     deps = [
+        "//third_party:fast_async_mutex",
         "//third_party:fixed_buffer",
-        "//third_party:tokio",
+        "//third_party:futures",
         "//third_party:pin_project_lite",
+        "//third_party:tokio",
     ],
     visibility = ["//visibility:public"],
 )
@@ -65,9 +67,10 @@ rust_library(
     name = "async_read_taker",
     srcs = ["async_read_taker.rs"],
     deps = [
+        "//third_party:fast_async_mutex",
+        "//third_party:futures",
         "//third_party:pin_project_lite",
         "//third_party:tokio",
-        "//third_party:fast_async_mutex",
     ],
     visibility = ["//visibility:public"],
 )
