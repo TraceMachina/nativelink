@@ -119,9 +119,14 @@ impl ActionCache for AcServer {
     ) -> Result<Response<ActionResult>, Status> {
         let now = Instant::now();
         log::info!("\x1b[0;31mget_action_result Req\x1b[0m: {:?}", grpc_request.get_ref());
+        let hash = grpc_request
+            .get_ref()
+            .action_digest
+            .as_ref()
+            .map(|v| v.hash.to_string());
         let resp = self.inner_get_action_result(grpc_request).await;
         let d = now.elapsed().as_secs_f32();
-        log::info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?}", d, resp);
+        log::info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
         return resp.map_err(|e| e.into());
     }
 

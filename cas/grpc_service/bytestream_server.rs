@@ -88,7 +88,7 @@ impl ByteStreamServer {
         let read_request = grpc_request.into_inner();
 
         let read_limit =
-            usize::try_from(read_request.read_limit).err_tip(|| "read_limit has is not convertable to usize")?;
+            usize::try_from(read_request.read_limit).err_tip(|| "read_limit has is not convertible to usize")?;
         let resource_info = ResourceInfo::new(&read_request.resource_name)?;
         let digest = DigestInfo::try_new(&resource_info.hash, resource_info.expected_size)?;
 
@@ -96,7 +96,7 @@ impl ByteStreamServer {
         let stream_closer_fut = Some(raw_fixed_buffer.get_closer());
         let (rx, mut tx) = tokio::io::split(raw_fixed_buffer);
         let rx: Box<dyn tokio::io::AsyncRead + Sync + Send + Unpin> = if read_limit != 0 {
-            Box::new(rx.take(u64::try_from(read_limit).err_tip(|| "read_limit has is not convertable to u64")?))
+            Box::new(rx.take(u64::try_from(read_limit).err_tip(|| "read_limit has is not convertible to u64")?))
         } else {
             Box::new(rx)
         };
@@ -168,14 +168,7 @@ impl ByteStreamServer {
         }))))
     }
 
-    async fn inner_write(
-        &self,
-        grpc_request: Request<Streaming<WriteRequest>>,
-    ) -> Result<Response<WriteResponse>, Error> {
-        let mut stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
-            .await
-            .err_tip(|| "Could not unwrap first stream message")?;
-
+    async fn inner_write(&self, mut stream: WriteRequestStreamWrapper) -> Result<Response<WriteResponse>, Error> {
         let raw_buffer = vec![0u8; self.write_buffer_stream_size].into_boxed_slice();
         let (rx, mut tx) = tokio::io::split(AsyncFixedBuf::new(raw_buffer));
 
@@ -246,7 +239,7 @@ impl<'a> ResourceInfo<'a> {
         let raw_digest_size = parts.next().err_tip(|| ERROR_MSG)?;
         let expected_size = raw_digest_size.parse::<usize>().err_tip(|| {
             format!(
-                "Digest size_bytes was not convertable to usize. Got: {}",
+                "Digest size_bytes was not convertible to usize. Got: {}",
                 raw_digest_size
             )
         })?;
@@ -259,6 +252,7 @@ impl<'a> ResourceInfo<'a> {
     }
 }
 
+#[derive(Debug)]
 struct WriteRequestStreamWrapper {
     stream: Streaming<WriteRequest>,
     current_msg: WriteRequest,
@@ -343,15 +337,24 @@ impl ByteStream for ByteStreamServer {
     }
 
     async fn write(&self, grpc_request: Request<Streaming<WriteRequest>>) -> Result<Response<WriteResponse>, Status> {
-        log::info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
+        let stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
+            .await
+            .err_tip(|| "Could not unwrap first stream message")
+            .map_err(|e| Into::<Status>::into(e))?;
+        let hash = if log::log_enabled!(log::Level::Info) {
+            Some(stream.hash.clone())
+        } else {
+            None
+        };
+        log::info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", hash);
         let resp = self
-            .inner_write(grpc_request)
+            .inner_write(stream)
             .await
             .err_tip(|| format!("Failed on write() command"))
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
-        log::info!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?}", d, resp);
+        log::info!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?}", d, hash);
         resp
     }
 

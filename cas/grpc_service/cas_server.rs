@@ -99,7 +99,7 @@ impl CasServer {
             futures.push(tokio::spawn(
                 async move {
                     let size_bytes = usize::try_from(digest_copy.size_bytes)
-                        .err_tip(|| "Digest size_bytes was not convertable to usize")?;
+                        .err_tip(|| "Digest size_bytes was not convertible to usize")?;
                     error_if!(
                         size_bytes != request_data.len(),
                         "Digest for upload had mismatching sizes, digest said {} data  said {}",
@@ -145,7 +145,7 @@ impl CasServer {
             futures.push(tokio::spawn(
                 async move {
                     let size_bytes = usize::try_from(digest_copy.size_bytes)
-                        .err_tip(|| "Digest size_bytes was not convertable to usize")?;
+                        .err_tip(|| "Digest size_bytes was not convertible to usize")?;
                     // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
                     let mut store_data = Vec::with_capacity(size_bytes);
                     let store = Pin::new(store_owned.as_ref());
