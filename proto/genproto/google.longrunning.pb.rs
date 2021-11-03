@@ -47,14 +47,14 @@ pub mod operation {
         Response(::prost_types::Any),
     }
 }
-/// The request message for [Operations.GetOperation][google.longrunning.Operations.GetOperation].
+/// The request message for \[Operations.GetOperation][google.longrunning.Operations.GetOperation\].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetOperationRequest {
     /// The name of the operation resource.
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
-/// The request message for [Operations.ListOperations][google.longrunning.Operations.ListOperations].
+/// The request message for \[Operations.ListOperations][google.longrunning.Operations.ListOperations\].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListOperationsRequest {
     /// The name of the operation's parent resource.
@@ -70,7 +70,7 @@ pub struct ListOperationsRequest {
     #[prost(string, tag = "3")]
     pub page_token: ::prost::alloc::string::String,
 }
-/// The response message for [Operations.ListOperations][google.longrunning.Operations.ListOperations].
+/// The response message for \[Operations.ListOperations][google.longrunning.Operations.ListOperations\].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListOperationsResponse {
     /// A list of operations that matches the specified filter in the request.
@@ -80,21 +80,21 @@ pub struct ListOperationsResponse {
     #[prost(string, tag = "2")]
     pub next_page_token: ::prost::alloc::string::String,
 }
-/// The request message for [Operations.CancelOperation][google.longrunning.Operations.CancelOperation].
+/// The request message for \[Operations.CancelOperation][google.longrunning.Operations.CancelOperation\].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelOperationRequest {
     /// The name of the operation resource to be cancelled.
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
-/// The request message for [Operations.DeleteOperation][google.longrunning.Operations.DeleteOperation].
+/// The request message for \[Operations.DeleteOperation][google.longrunning.Operations.DeleteOperation\].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeleteOperationRequest {
     /// The name of the operation resource to be deleted.
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
-/// The request message for [Operations.WaitOperation][google.longrunning.Operations.WaitOperation].
+/// The request message for \[Operations.WaitOperation][google.longrunning.Operations.WaitOperation\].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WaitOperationRequest {
     /// The name of the operation resource to wait on.
@@ -141,7 +141,7 @@ pub struct OperationInfo {
 }
 #[doc = r" Generated client implementations."]
 pub mod operations_client {
-    #![allow(unused_variables, dead_code, missing_docs)]
+    #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
     #[doc = " Manages long-running operations with an API service."]
     #[doc = ""]
@@ -152,6 +152,7 @@ pub mod operations_client {
     #[doc = " Google Cloud Pub/Sub API) to receive the response.  Any API service that"]
     #[doc = " returns long-running operations should implement the `Operations` interface"]
     #[doc = " so developers can have a consistent client experience."]
+    #[derive(Debug, Clone)]
     pub struct OperationsClient<T> {
         inner: tonic::client::Grpc<T>,
     }
@@ -169,17 +170,43 @@ pub mod operations_client {
     impl<T> OperationsClient<T>
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
-        T::ResponseBody: Body + HttpBody + Send + 'static,
+        T::ResponseBody: Body + Send + 'static,
         T::Error: Into<StdError>,
-        <T::ResponseBody as HttpBody>::Error: Into<StdError> + Send,
+        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
     {
         pub fn new(inner: T) -> Self {
             let inner = tonic::client::Grpc::new(inner);
             Self { inner }
         }
-        pub fn with_interceptor(inner: T, interceptor: impl Into<tonic::Interceptor>) -> Self {
-            let inner = tonic::client::Grpc::with_interceptor(inner, interceptor);
-            Self { inner }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> OperationsClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
+                Into<StdError> + Send + Sync,
+        {
+            OperationsClient::new(InterceptedService::new(inner, interceptor))
+        }
+        #[doc = r" Compress requests with `gzip`."]
+        #[doc = r""]
+        #[doc = r" This requires the server to support it otherwise it might respond with an"]
+        #[doc = r" error."]
+        pub fn send_gzip(mut self) -> Self {
+            self.inner = self.inner.send_gzip();
+            self
+        }
+        #[doc = r" Enable decompressing responses with `gzip`."]
+        pub fn accept_gzip(mut self) -> Self {
+            self.inner = self.inner.accept_gzip();
+            self
         }
         #[doc = " Lists operations that match the specified filter in the request. If the"]
         #[doc = " server doesn't support this method, it returns `UNIMPLEMENTED`."]
@@ -297,22 +324,10 @@ pub mod operations_client {
             self.inner.unary(request.into_request(), path, codec).await
         }
     }
-    impl<T: Clone> Clone for OperationsClient<T> {
-        fn clone(&self) -> Self {
-            Self {
-                inner: self.inner.clone(),
-            }
-        }
-    }
-    impl<T> std::fmt::Debug for OperationsClient<T> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "OperationsClient {{ ... }}")
-        }
-    }
 }
 #[doc = r" Generated server implementations."]
 pub mod operations_server {
-    #![allow(unused_variables, dead_code, missing_docs)]
+    #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
     #[doc = "Generated trait containing gRPC methods that should be implemented for use with OperationsServer."]
     #[async_trait]
@@ -386,24 +401,31 @@ pub mod operations_server {
     #[derive(Debug)]
     pub struct OperationsServer<T: Operations> {
         inner: _Inner<T>,
+        accept_compression_encodings: (),
+        send_compression_encodings: (),
     }
-    struct _Inner<T>(Arc<T>, Option<tonic::Interceptor>);
+    struct _Inner<T>(Arc<T>);
     impl<T: Operations> OperationsServer<T> {
         pub fn new(inner: T) -> Self {
             let inner = Arc::new(inner);
-            let inner = _Inner(inner, None);
-            Self { inner }
+            let inner = _Inner(inner);
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+            }
         }
-        pub fn with_interceptor(inner: T, interceptor: impl Into<tonic::Interceptor>) -> Self {
-            let inner = Arc::new(inner);
-            let inner = _Inner(inner, Some(interceptor.into()));
-            Self { inner }
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
         }
     }
-    impl<T, B> Service<http::Request<B>> for OperationsServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for OperationsServer<T>
     where
         T: Operations,
-        B: HttpBody + Send + Sync + 'static,
+        B: Body + Send + 'static,
         B::Error: Into<StdError> + Send + 'static,
     {
         type Response = http::Response<tonic::body::BoxBody>;
@@ -432,17 +454,17 @@ pub mod operations_server {
                             Box::pin(fut)
                         }
                     }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let interceptor = inner.1.clone();
                         let inner = inner.0;
                         let method = ListOperationsSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = if let Some(interceptor) = interceptor {
-                            tonic::server::Grpc::with_interceptor(codec, interceptor)
-                        } else {
-                            tonic::server::Grpc::new(codec)
-                        };
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -463,17 +485,17 @@ pub mod operations_server {
                             Box::pin(fut)
                         }
                     }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let interceptor = inner.1.clone();
                         let inner = inner.0;
                         let method = GetOperationSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = if let Some(interceptor) = interceptor {
-                            tonic::server::Grpc::with_interceptor(codec, interceptor)
-                        } else {
-                            tonic::server::Grpc::new(codec)
-                        };
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -496,17 +518,17 @@ pub mod operations_server {
                             Box::pin(fut)
                         }
                     }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let interceptor = inner.1.clone();
                         let inner = inner.0;
                         let method = DeleteOperationSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = if let Some(interceptor) = interceptor {
-                            tonic::server::Grpc::with_interceptor(codec, interceptor)
-                        } else {
-                            tonic::server::Grpc::new(codec)
-                        };
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -529,17 +551,17 @@ pub mod operations_server {
                             Box::pin(fut)
                         }
                     }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let interceptor = inner.1.clone();
                         let inner = inner.0;
                         let method = CancelOperationSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = if let Some(interceptor) = interceptor {
-                            tonic::server::Grpc::with_interceptor(codec, interceptor)
-                        } else {
-                            tonic::server::Grpc::new(codec)
-                        };
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -562,17 +584,17 @@ pub mod operations_server {
                             Box::pin(fut)
                         }
                     }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let interceptor = inner.1.clone();
                         let inner = inner.0;
                         let method = WaitOperationSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = if let Some(interceptor) = interceptor {
-                            tonic::server::Grpc::with_interceptor(codec, interceptor)
-                        } else {
-                            tonic::server::Grpc::new(codec)
-                        };
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -583,7 +605,7 @@ pub mod operations_server {
                         .status(200)
                         .header("grpc-status", "12")
                         .header("content-type", "application/grpc")
-                        .body(tonic::body::BoxBody::empty())
+                        .body(empty_body())
                         .unwrap())
                 }),
             }
@@ -592,12 +614,16 @@ pub mod operations_server {
     impl<T: Operations> Clone for OperationsServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
-            Self { inner }
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+            }
         }
     }
     impl<T: Operations> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(self.0.clone(), self.1.clone())
+            Self(self.0.clone())
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {

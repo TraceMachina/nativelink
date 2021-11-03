@@ -27,7 +27,6 @@ rust_library(
         "//config",
         "//proto",
         "//third_party:prost",
-        "//third_party:stdext",
         "//third_party:tokio",
         "//third_party:tonic",
         "//util:common",

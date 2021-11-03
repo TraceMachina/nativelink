@@ -26,13 +26,13 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # Apache-2.0 from expression "Apache-2.0"
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
 ])
 
 # Generated Targets
 
-rust_proc_macro(
-    name = "prost_derive",
+rust_library(
+    name = "tokio_io_timeout",
     srcs = glob(["**/*.rs"]),
     crate_features = [
     ],
@@ -46,13 +46,10 @@ rust_proc_macro(
         "cargo-raze",
         "manual",
     ],
-    version = "0.7.0",
+    version = "1.1.1",
     # buildifier: leave-alone
     deps = [
-        "@raze__anyhow__1_0_45//:anyhow",
-        "@raze__itertools__0_9_0//:itertools",
-        "@raze__proc_macro2__1_0_32//:proc_macro2",
-        "@raze__quote__1_0_10//:quote",
-        "@raze__syn__1_0_81//:syn",
+        "@raze__pin_project_lite__0_2_7//:pin_project_lite",
+        "@raze__tokio__1_13_0//:tokio",
     ],
 )

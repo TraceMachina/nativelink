@@ -37,7 +37,7 @@ rust_library(
     name = "tonic",
     srcs = glob(["**/*.rs"]),
     aliases = {
-        "@raze__prost__0_7_0//:prost": "prost1",
+        "@raze__prost__0_9_0//:prost": "prost1",
     },
     crate_features = [
         "async-trait",
@@ -45,6 +45,7 @@ rust_library(
         "default",
         "h2",
         "hyper",
+        "hyper-timeout",
         "prost",
         "prost-derive",
         "prost1",
@@ -55,10 +56,10 @@ rust_library(
     ],
     crate_root = "src/lib.rs",
     data = [],
-    edition = "2018",
+    edition = "2021",
     proc_macro_deps = [
         "@raze__async_trait__0_1_51//:async_trait",
-        "@raze__prost_derive__0_7_0//:prost_derive",
+        "@raze__prost_derive__0_9_0//:prost_derive",
     ],
     rustc_flags = [
         "--cap-lints=allow",
@@ -67,7 +68,7 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.4.3",
+    version = "0.6.1",
     # buildifier: leave-alone
     deps = [
         "@raze__async_stream__0_3_2//:async_stream",
@@ -79,13 +80,15 @@ rust_library(
         "@raze__http__0_2_5//:http",
         "@raze__http_body__0_4_4//:http_body",
         "@raze__hyper__0_14_14//:hyper",
+        "@raze__hyper_timeout__0_4_1//:hyper_timeout",
         "@raze__percent_encoding__2_1_0//:percent_encoding",
         "@raze__pin_project__1_0_8//:pin_project",
-        "@raze__prost__0_7_0//:prost",
+        "@raze__prost__0_9_0//:prost",
         "@raze__tokio__1_13_0//:tokio",
         "@raze__tokio_stream__0_1_8//:tokio_stream",
         "@raze__tokio_util__0_6_9//:tokio_util",
         "@raze__tower__0_4_10//:tower",
+        "@raze__tower_layer__0_3_1//:tower_layer",
         "@raze__tower_service__0_3_1//:tower_service",
         "@raze__tracing__0_1_29//:tracing",
         "@raze__tracing_futures__0_2_5//:tracing_futures",

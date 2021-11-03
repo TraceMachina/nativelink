@@ -26,31 +26,27 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT OR Apache-2.0"
+    "notice",  # Apache-2.0 from expression "Apache-2.0"
 ])
 
 # Generated Targets
 
-# Unsupported target "dijkstra" with type "bench" omitted
-
-# Unsupported target "iso" with type "bench" omitted
-
-# Unsupported target "matrix_graph" with type "bench" omitted
-
-# Unsupported target "ograph" with type "bench" omitted
-
-# Unsupported target "stable_graph" with type "bench" omitted
-
-# Unsupported target "unionfind" with type "bench" omitted
+# Unsupported target "varint" with type "bench" omitted
 
 rust_library(
-    name = "petgraph",
+    name = "prost",
     srcs = glob(["**/*.rs"]),
     crate_features = [
+        "default",
+        "prost-derive",
+        "std",
     ],
     crate_root = "src/lib.rs",
     data = [],
     edition = "2018",
+    proc_macro_deps = [
+        "@raze__prost_derive__0_9_0//:prost_derive",
+    ],
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -58,22 +54,9 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.5.1",
+    version = "0.9.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__fixedbitset__0_2_0//:fixedbitset",
-        "@raze__indexmap__1_7_0//:indexmap",
+        "@raze__bytes__1_1_0//:bytes",
     ],
 )
-
-# Unsupported target "graph" with type "test" omitted
-
-# Unsupported target "graphmap" with type "test" omitted
-
-# Unsupported target "iso" with type "test" omitted
-
-# Unsupported target "quickcheck" with type "test" omitted
-
-# Unsupported target "stable_graph" with type "test" omitted
-
-# Unsupported target "unionfind" with type "test" omitted
