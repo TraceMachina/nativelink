@@ -176,6 +176,7 @@ mod s3_store_tests {
                 .update(
                     DigestInfo::try_new(&VALID_HASH1, 199)?,
                     Box::new(Cursor::new(send_data.clone())),
+                    199,
                 )
                 .await?;
         }
@@ -329,8 +330,7 @@ mod s3_store_tests {
 
         {
             // Send payload.
-            let mut digest = DigestInfo::try_new(&VALID_HASH1, send_data.len())?;
-            digest.trust_size = true;
+            let digest = DigestInfo::try_new(&VALID_HASH1, send_data.len())?;
             let store = S3Store::new_with_client_and_jitter(
                 &config::backends::S3Store {
                     bucket: BUCKET_NAME.to_string(),
@@ -340,8 +340,9 @@ mod s3_store_tests {
                 Box::new(move |_delay| Duration::from_secs(0)),
             )?;
             let store_pin = Pin::new(&store);
+            let data_len = send_data.len();
             store_pin
-                .update(digest, Box::new(Cursor::new(send_data.clone())))
+                .update(digest, Box::new(Cursor::new(send_data.clone())), data_len)
                 .await?;
         }
 

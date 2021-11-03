@@ -2,6 +2,7 @@
 
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use hex::FromHex;
@@ -19,10 +20,6 @@ pub struct DigestInfo {
     // Raw hash in packed form.
     pub packed_hash: [u8; 32],
 
-    // If you can trust the size_bytes to be the size of the data.
-    // CAS requests/updates should be true, AC should be false.
-    pub trust_size: bool,
-
     // Cached string representation of the `packed_hash`.
     str_hash: LazyTransform<Option<String>, String>,
 }
@@ -39,7 +36,6 @@ impl DigestInfo {
         Ok(DigestInfo {
             size_bytes: size_bytes,
             packed_hash: packed_hash,
-            trust_size: false,
             str_hash: LazyTransform::new(None),
         })
     }
@@ -48,6 +44,15 @@ impl DigestInfo {
         &self
             .str_hash
             .get_or_create(|v| v.unwrap_or_else(|| hex::encode(self.packed_hash)))
+    }
+}
+
+impl fmt::Debug for DigestInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DigestInfo")
+            .field("size_bytes", &self.size_bytes)
+            .field("hash", &self.str())
+            .finish()
     }
 }
 
@@ -71,7 +76,6 @@ impl Clone for DigestInfo {
         DigestInfo {
             size_bytes: self.size_bytes,
             packed_hash: self.packed_hash,
-            trust_size: self.trust_size,
             str_hash: LazyTransform::new(None),
         }
     }
@@ -85,7 +89,6 @@ impl TryFrom<Digest> for DigestInfo {
         Ok(DigestInfo {
             size_bytes: digest.size_bytes,
             packed_hash: packed_hash,
-            trust_size: false,
             str_hash: LazyTransform::new(Some(digest.hash)),
         })
     }

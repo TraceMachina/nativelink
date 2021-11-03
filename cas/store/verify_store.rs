@@ -1,5 +1,6 @@
 // Copyright 2021 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::convert::TryFrom;
 use std::marker::Send;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -37,18 +38,17 @@ impl VerifyStore {
 async fn inner_check_update<'a>(
     mut tx: WriteHalf<AsyncFixedBuf<Box<[u8]>>>,
     mut reader: Box<dyn AsyncRead + Send + Sync + Unpin + 'a>,
-    expected_size: i64,
-    verify_size: bool,
+    expected_size: usize,
     mut maybe_hasher: Option<([u8; 32], Sha256)>,
 ) -> Result<(), Error> {
     let mut buffer = vec![0u8; 1024 * 4];
-    let mut sum_size: i64 = 0;
+    let mut sum_size: usize = 0;
     loop {
         let sz = reader
             .read(&mut buffer[..])
             .await
             .err_tip(|| "Stream read terminated early")?;
-        sum_size += sz as i64;
+        sum_size += sz;
         let write_future = tx.write_all(&buffer[0..sz]);
         // This will allows us to hash while sending data to another thread.
         if let Some((_, hasher)) = maybe_hasher.as_mut() {
@@ -59,7 +59,7 @@ async fn inner_check_update<'a>(
             continue;
         }
         error_if!(
-            verify_size && sum_size != expected_size,
+            sum_size != expected_size,
             "Expected size {} but got size {} on insert",
             expected_size,
             sum_size
@@ -93,22 +93,33 @@ impl StoreTrait for VerifyStore {
         self: std::pin::Pin<&'a Self>,
         digest: DigestInfo,
         reader: Box<dyn AsyncRead + Send + Sync + Unpin + 'static>,
+        expected_size: usize,
     ) -> ResultFuture<'a, ()> {
-        let expected_size = digest.size_bytes;
         Box::pin(async move {
+            let digest_size =
+                usize::try_from(digest.size_bytes).err_tip(|| "Digest size_bytes was not convertible to usize")?;
+            error_if!(
+                self.verify_size && expected_size != digest_size,
+                "Expected size to match. Got {} but digest says {} on update",
+                expected_size,
+                digest.size_bytes
+            );
             let mut raw_fixed_buffer = AsyncFixedBuf::new(vec![0u8; 1024 * 4].into_boxed_slice());
             let stream_closer_fut = raw_fixed_buffer.get_closer();
             let (rx, tx) = tokio::io::split(raw_fixed_buffer);
 
             let hash_copy = digest.packed_hash;
             let inner_store_clone = self.inner_store.clone();
-            let spawn_future =
-                tokio::spawn(async move { Pin::new(inner_store_clone.as_ref()).update(digest, Box::new(rx)).await });
+            let spawn_future = tokio::spawn(async move {
+                Pin::new(inner_store_clone.as_ref())
+                    .update(digest, Box::new(rx), expected_size)
+                    .await
+            });
             let mut hasher = None;
             if self.verify_hash {
                 hasher = Some((hash_copy, Sha256::new()));
             }
-            let result = inner_check_update(tx, reader, expected_size, self.verify_size, hasher).await;
+            let result = inner_check_update(tx, reader, expected_size, hasher).await;
             stream_closer_fut.await;
             result.merge(
                 spawn_future
