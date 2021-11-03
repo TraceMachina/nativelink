@@ -1,6 +1,6 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 /// Defines the HTTP configuration for an API service. It contains a list of
-/// [HttpRule][google.api.HttpRule], each specifying the mapping of an RPC method
+/// \[HttpRule][google.api.HttpRule\], each specifying the mapping of an RPC method
 /// to one or more HTTP REST API methods.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Http {
@@ -23,10 +23,10 @@ pub struct Http {
 /// gRPC Transcoding is a feature for mapping between a gRPC method and one or
 /// more HTTP REST endpoints. It allows developers to build a single API service
 /// that supports both gRPC APIs and REST APIs. Many systems, including [Google
-/// APIs](https://github.com/googleapis/googleapis),
-/// [Cloud Endpoints](https://cloud.google.com/endpoints), [gRPC
-/// Gateway](https://github.com/grpc-ecosystem/grpc-gateway),
-/// and [Envoy](https://github.com/envoyproxy/envoy) proxy support this feature
+/// APIs](<https://github.com/googleapis/googleapis>),
+/// [Cloud Endpoints](<https://cloud.google.com/endpoints>), [gRPC
+/// Gateway](<https://github.com/grpc-ecosystem/grpc-gateway>),
+/// and \[Envoy\](<https://github.com/envoyproxy/envoy>) proxy support this feature
 /// and use it for large scale production services.
 ///
 /// `HttpRule` defines the schema of the gRPC/REST mapping. The mapping specifies
@@ -187,15 +187,15 @@ pub struct Http {
 /// 1. Leaf request fields (recursive expansion nested messages in the request
 ///    message) are classified into three categories:
 ///    - Fields referred by the path template. They are passed via the URL path.
-///    - Fields referred by the [HttpRule.body][google.api.HttpRule.body]. They are passed via the HTTP
+///    - Fields referred by the \[HttpRule.body][google.api.HttpRule.body\]. They are passed via the HTTP
 ///      request body.
 ///    - All other fields are passed via the URL query parameters, and the
 ///      parameter name is the field path in the request message. A repeated
 ///      field can be represented as multiple query parameters under the same
 ///      name.
-///  2. If [HttpRule.body][google.api.HttpRule.body] is "*", there is no URL query parameter, all fields
+///  2. If \[HttpRule.body][google.api.HttpRule.body\] is "*", there is no URL query parameter, all fields
 ///     are passed via URL path and HTTP request body.
-///  3. If [HttpRule.body][google.api.HttpRule.body] is omitted, there is no HTTP request body, all
+///  3. If \[HttpRule.body][google.api.HttpRule.body\] is omitted, there is no HTTP request body, all
 ///     fields are passed via URL path and URL query parameters.
 ///
 /// ### Path template syntax
@@ -222,19 +222,19 @@ pub struct Http {
 ///
 /// If a variable contains exactly one path segment, such as `"{var}"` or
 /// `"{var=*}"`, when such a variable is expanded into a URL path on the client
-/// side, all characters except `[-_.~0-9a-zA-Z]` are percent-encoded. The
+/// side, all characters except `\[-_.~0-9a-zA-Z\]` are percent-encoded. The
 /// server side does the reverse decoding. Such variables show up in the
 /// [Discovery
-/// Document](https://developers.google.com/discovery/v1/reference/apis) as
+/// Document](<https://developers.google.com/discovery/v1/reference/apis>) as
 /// `{var}`.
 ///
 /// If a variable contains multiple path segments, such as `"{var=foo/*}"`
 /// or `"{var=**}"`, when such a variable is expanded into a URL path on the
-/// client side, all characters except `[-_.~/0-9a-zA-Z]` are percent-encoded.
+/// client side, all characters except `\[-_.~/0-9a-zA-Z\]` are percent-encoded.
 /// The server side does the reverse decoding, except "%2F" and "%2f" are left
 /// unchanged. Such variables show up in the
 /// [Discovery
-/// Document](https://developers.google.com/discovery/v1/reference/apis) as
+/// Document](<https://developers.google.com/discovery/v1/reference/apis>) as
 /// `{+var}`.
 ///
 /// ## Using gRPC API Service Configuration
@@ -264,10 +264,10 @@ pub struct Http {
 ///
 /// When gRPC Transcoding is used to map a gRPC to JSON REST endpoints, the
 /// proto to JSON conversion must follow the [proto3
-/// specification](https://developers.google.com/protocol-buffers/docs/proto3#json).
+/// specification](<https://developers.google.com/protocol-buffers/docs/proto3#json>).
 ///
 /// While the single segment variable follows the semantics of
-/// [RFC 6570](https://tools.ietf.org/html/rfc6570) Section 3.2.2 Simple String
+/// [RFC 6570](<https://tools.ietf.org/html/rfc6570>) Section 3.2.2 Simple String
 /// Expansion, the multi segment variable **does not** follow RFC 6570 Section
 /// 3.2.3 Reserved Expansion. The reason is that the Reserved Expansion
 /// does not expand special characters like `?` and `#`, which would lead
@@ -291,7 +291,7 @@ pub struct Http {
 pub struct HttpRule {
     /// Selects a method to which this rule applies.
     ///
-    /// Refer to [selector][google.api.DocumentationRule.selector] for syntax details.
+    /// Refer to \[selector][google.api.DocumentationRule.selector\] for syntax details.
     #[prost(string, tag = "1")]
     pub selector: ::prost::alloc::string::String,
     /// The name of the request field whose value is mapped to the HTTP request

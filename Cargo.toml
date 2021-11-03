@@ -8,16 +8,16 @@ version = "0.0.0"
 path = "needed_only_to_make_cargo_tooling_happy.rs"
 
 [dependencies]
-prost = "0.7.0"
-prost-types = "0.7.0"
+prost = "0.9.0"
+prost-types = "0.9.0"
 hex = "0.4.3"
 async-trait = "0.1.51"
 fixed-buffer = "0.2.3"
-futures = "0.3.16"
-tokio = { version = "1.10.0", features = ["macros", "io-util", "fs", "rt-multi-thread"] }
-tokio-stream = "0.1.7"
-tokio-util = { version = "0.6.7", features = ["io"] }
-tonic = "0.4.0"
+futures = "0.3.17"
+tokio = { version = "1.13.0", features = ["macros", "io-util", "fs", "rt-multi-thread"] }
+tokio-stream = "0.1.8"
+tokio-util = { version = "0.6.9", features = ["io"] }
+tonic = "0.6.1"
 lazy-init = "0.5.0"
 log = "0.4.14"
 env_logger = "0.9.0"
@@ -30,15 +30,14 @@ rand = "0.8.4"
 rusoto_s3 = "0.46.0"
 rusoto_core = "0.46.0"
 http = "^0.2"
-zeroize = "<1.4"
 pin-project-lite = "0.2.7"
 fast-async-mutex = "0.6.7"
 
 [dev-dependencies]
 clap = "2.33.3"
 stdext = "0.2.1"
-prost-build = "0.7.0"
-tonic-build = "0.4.0"
+prost-build = "0.9.0"
+tonic-build = "0.6.0"
 pretty_assertions = "0.7.2"
 # Crates.io does not have `rustfmt` that is sufficient version, so load from github directly.
 rustfmt-nightly =  { git = "https://github.com/rust-lang/rustfmt", tag = "v1.4.38" }
