@@ -3,7 +3,6 @@
 use std::cmp;
 use std::marker::Send;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,8 +13,9 @@ use http::status::StatusCode;
 use rand::{rngs::OsRng, Rng};
 use rusoto_core::{region::Region, ByteStream, RusotoError};
 use rusoto_s3::{
-    AbortMultipartUploadRequest, CompleteMultipartUploadRequest, CreateMultipartUploadRequest, GetObjectRequest,
-    HeadObjectError, HeadObjectRequest, PutObjectRequest, S3Client, UploadPartRequest, S3,
+    AbortMultipartUploadRequest, CompleteMultipartUploadRequest, CompletedMultipartUpload, CompletedPart,
+    CreateMultipartUploadRequest, GetObjectError, GetObjectRequest, HeadObjectError, HeadObjectRequest,
+    PutObjectRequest, S3Client, UploadPartRequest, S3,
 };
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::time::sleep;
@@ -199,28 +199,29 @@ impl StoreTrait for S3Store {
                 .err_tip(|| "Expected upload_id to be set by s3 response")?;
 
             let complete_result = {
-                let mut part_number = 1;
+                let mut part_number: i64 = 1;
 
                 let reader = Arc::new(Mutex::new(reader));
-                let is_done = Arc::new(AtomicBool::new(false));
+                // We might end up with +1 capacity units than needed, but that is the worst case.
+                let mut completed_parts = Vec::with_capacity((expected_size / bytes_per_upload_part) + 1);
                 loop {
-                    let is_done_clone = is_done.clone();
+                    let possible_last_chunk_size = expected_size - bytes_per_upload_part * ((part_number as usize) - 1);
+                    let content_length = cmp::min(possible_last_chunk_size, bytes_per_upload_part);
+                    let is_last_chunk = bytes_per_upload_part * (part_number as usize) >= expected_size;
                     // Wrap `AsyncRead` so we can hold a copy of it in this scope between iterations.
                     // This is quite difficult because we need to give full ownership of an AsyncRead
                     // to `ByteStream` which has an unknown lifetime.
                     // This wrapper will also ensure we only send `bytes_per_upload_part` then close the
                     // stream.
-                    let taker = AsyncReadTaker::new(
-                        reader.clone(),
-                        Some(move || is_done_clone.store(true, Ordering::Relaxed)),
-                        bytes_per_upload_part,
-                    );
+                    let taker = AsyncReadTaker::new(reader.clone(), content_length);
                     {
                         let body = Some(ByteStream::new(ReaderStream::new(taker)));
-                        self.s3_client
+                        let response = self
+                            .s3_client
                             .upload_part(UploadPartRequest {
                                 bucket: self.bucket.to_owned(),
                                 key: s3_path.to_owned(),
+                                content_length: Some(content_length as i64),
                                 body,
                                 part_number,
                                 upload_id: upload_id.clone(),
@@ -228,8 +229,12 @@ impl StoreTrait for S3Store {
                             })
                             .await
                             .map_err(|e| make_err!(Code::Unknown, "Failed to upload part: {:?}", e))?;
+                        completed_parts.push(CompletedPart {
+                            e_tag: response.e_tag,
+                            part_number: Some(part_number),
+                        });
                     }
-                    if is_done.load(Ordering::Relaxed) {
+                    if is_last_chunk {
                         break;
                     }
                     part_number += 1;
@@ -240,6 +245,9 @@ impl StoreTrait for S3Store {
                         bucket: self.bucket.to_owned(),
                         key: s3_path.to_owned(),
                         upload_id: upload_id.clone(),
+                        multipart_upload: Some(CompletedMultipartUpload {
+                            parts: Some(completed_parts),
+                        }),
                         ..Default::default()
                     })
                     .await
@@ -288,11 +296,12 @@ impl StoreTrait for S3Store {
                 ..Default::default()
             };
 
-            let get_object_output = self
-                .s3_client
-                .get_object(get_req)
-                .await
-                .map_err(|e| make_err!(Code::Unavailable, "Error uploading to S3: {:?}", e))?;
+            let get_object_output = self.s3_client.get_object(get_req).await.map_err(|e| match e {
+                RusotoError::Service(GetObjectError::NoSuchKey(err)) => {
+                    return make_err!(Code::NotFound, "Error reading from S3: {:?}", err)
+                }
+                _ => make_err!(Code::Unknown, "Error reading from S3: {:?}", e),
+            })?;
             let s3_in_stream = get_object_output
                 .body
                 .err_tip(|| "Expected body to be set in s3 get request")?;
