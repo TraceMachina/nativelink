@@ -6,3 +6,13 @@ build:debug -c dbg
 
 build:self_test --remote_instance_name=main
 build:self_test --remote_cache=grpc://127.0.0.1:50051
+
+build --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
+build --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
+# This will make rustfmt only run on `bazel test`.
+test --output_groups=+rustfmt_checks
+
+# Simple hack to remove Bazel debug warning:
+# "indicated that a canonical reproducible form can be obtained by modifying arguments shallow_since".
+# If cargo raze ever supports something that will make this error go away we can remove this.
+build --ui_event_filters=-DEBUG

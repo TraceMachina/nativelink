@@ -230,7 +230,7 @@ alias(
 
 alias(
     name = "cargo_bin_rustfmt",
-    actual = "@raze__rustfmt_nightly__1_4_21//:cargo_bin_rustfmt",
+    actual = "@raze__rustfmt_nightly__1_4_38//:cargo_bin_rustfmt",
     tags = [
         "cargo-raze",
         "manual",
@@ -239,7 +239,7 @@ alias(
 
 alias(
     name = "rustfmt_nightly",
-    actual = "@raze__rustfmt_nightly__1_4_21//:rustfmt_nightly",
+    actual = "@raze__rustfmt_nightly__1_4_38//:rustfmt_nightly",
     tags = [
         "cargo-raze",
         "manual",

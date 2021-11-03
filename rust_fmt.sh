@@ -5,9 +5,9 @@ set -eu -o pipefail
 
 cd "$(dirname $(realpath $0))"
 
-RUST_FMT="./bazel-bin/external/raze__rustfmt_nightly__1_4_21/cargo_bin_rustfmt"
+RUST_FMT="./bazel-bin/external/raze__rustfmt_nightly__1_4_38/cargo_bin_rustfmt"
 if [ ! -e "$RUST_FMT" ] ; then
-  bazel build @raze__rustfmt_nightly__1_4_21//:cargo_bin_rustfmt
+  bazel build @raze__rustfmt_nightly__1_4_38//:cargo_bin_rustfmt
 fi
 if [ "${1:-}" != "" ]; then
   FILES="$@"

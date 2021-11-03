@@ -35,7 +35,6 @@ rust_library(
     name = "digest",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "std",
     ],
     crate_root = "src/lib.rs",
     data = [],

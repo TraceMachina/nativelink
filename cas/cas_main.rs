@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Err(e) = select_all(servers).await.0 {
-        panic!(e);
+        panic!("{}", e);
     }
     panic!("No servers should ever resolve their future");
 }

@@ -37,7 +37,7 @@ rust_proc_macro(
     crate_features = [
         "default",
     ],
-    crate_root = "src/lib.rs",
+    crate_root = "config_proc_macro/src/lib.rs",
     data = [],
     edition = "2018",
     rustc_flags = [

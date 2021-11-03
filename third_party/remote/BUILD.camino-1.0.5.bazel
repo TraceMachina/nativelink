@@ -30,16 +30,48 @@ licenses([
 ])
 
 # Generated Targets
+# buildifier: disable=out-of-order-load
+# buildifier: disable=load-on-top
+load(
+    "@rules_rust//cargo:cargo_build_script.bzl",
+    "cargo_build_script",
+)
 
-rust_library(
-    name = "rustc_ap_rustc_ast_pretty",
+cargo_build_script(
+    name = "camino_build_script",
     srcs = glob(["**/*.rs"]),
-    aliases = {
-        "@raze__rustc_ap_rustc_ast__677_0_0//:rustc_ap_rustc_ast": "rustc_ast",
-        "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span": "rustc_span",
-        "@raze__rustc_ap_rustc_target__677_0_0//:rustc_ap_rustc_target": "rustc_target",
+    build_script_env = {
     },
     crate_features = [
+        "serde",
+        "serde1",
+    ],
+    crate_root = "build.rs",
+    data = glob(["**"]),
+    edition = "2018",
+    rustc_flags = [
+        "--cap-lints=allow",
+    ],
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+    version = "1.0.5",
+    visibility = ["//visibility:private"],
+    deps = [
+    ],
+)
+
+# Unsupported target "serde" with type "example" omitted
+
+# Unsupported target "structopt" with type "example" omitted
+
+rust_library(
+    name = "camino",
+    srcs = glob(["**/*.rs"]),
+    crate_features = [
+        "serde",
+        "serde1",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -51,12 +83,12 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "677.0.0",
+    version = "1.0.5",
     # buildifier: leave-alone
     deps = [
-        "@raze__rustc_ap_rustc_ast__677_0_0//:rustc_ap_rustc_ast",
-        "@raze__rustc_ap_rustc_span__677_0_0//:rustc_ap_rustc_span",
-        "@raze__rustc_ap_rustc_target__677_0_0//:rustc_ap_rustc_target",
-        "@raze__tracing__0_1_29//:tracing",
+        ":camino_build_script",
+        "@raze__serde__1_0_130//:serde",
     ],
 )
+
+# Unsupported target "integration_tests" with type "test" omitted

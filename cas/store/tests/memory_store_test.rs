@@ -112,7 +112,7 @@ mod memory_store_tests {
                     hash,
                     expected_size
                 );
-            };
+            }
             has_should_fail(store, &TOO_LONG_HASH, VALUE1.len()).await;
             has_should_fail(store, &TOO_SHORT_HASH, VALUE1.len()).await;
             has_should_fail(store, &INVALID_HASH, VALUE1.len()).await;
@@ -137,7 +137,7 @@ mod memory_store_tests {
                     expected_size,
                     value
                 );
-            };
+            }
             update_should_fail(store, &TOO_LONG_HASH, VALUE1.len(), &VALUE1).await;
             update_should_fail(store, &TOO_SHORT_HASH, VALUE1.len(), &VALUE1).await;
             update_should_fail(store, &INVALID_HASH, VALUE1.len(), &VALUE1).await;
@@ -157,7 +157,7 @@ mod memory_store_tests {
                     hash,
                     expected_size
                 );
-            };
+            }
             let mut out_data: Vec<u8> = Vec::new();
 
             get_should_fail(store, &TOO_LONG_HASH, 1, &mut out_data).await;

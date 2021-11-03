@@ -40,7 +40,8 @@ stdext = "0.2.1"
 prost-build = "0.7.0"
 tonic-build = "0.4.0"
 pretty_assertions = "0.7.2"
-rustfmt-nightly = "1.4.21"
+# Crates.io does not have `rustfmt` that is sufficient version, so load from github directly.
+rustfmt-nightly =  { git = "https://github.com/rust-lang/rustfmt", tag = "v1.4.38" }
 maplit = "1.0.2"
 mock_instant = "0.2.1"
 rusoto_mock = "0.46.0"
@@ -63,12 +64,6 @@ gen_buildrs = true
 extra_aliased_targets = [
     "cargo_bin_rustfmt"
 ]
-
-[package.metadata.raze.crates.rustc-ap-rustc_target.'*']
-data_attr = "[':src/spec/mipsel_sony_psp_linker_script.ld']"
-
-[package.metadata.raze.crates.rustc-ap-rustc_attr.'*']
-additional_env = { CFG_RELEASE_CHANNEL = "nightly", CFG_RELEASE = "nightly" }
 
 [package.metadata.raze]
 # The path relative path to the Bazel workspace root (location of
