@@ -4,8 +4,8 @@ use std::marker::Send;
 use std::sync::Arc;
 use std::time::Instant;
 
-use fast_async_mutex::mutex::Mutex;
 use async_trait::async_trait;
+use fast_async_mutex::mutex::Mutex;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use common::DigestInfo;

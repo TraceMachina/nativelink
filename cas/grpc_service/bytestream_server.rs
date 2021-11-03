@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use async_fixed_buffer::AsyncFixedBuf;
 use drop_guard::DropGuard;
-use futures::{stream::unfold, Stream, Future};
+use futures::{stream::unfold, Future, Stream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tonic::{Request, Response, Status, Streaming};
 
