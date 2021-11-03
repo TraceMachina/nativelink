@@ -29,6 +29,7 @@ mod memory_store_tests {
                 .update(
                     DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?,
                     Box::new(Cursor::new(VALUE1)),
+                    VALUE1.len(),
                 )
                 .await?;
             assert!(
@@ -46,6 +47,7 @@ mod memory_store_tests {
                 .update(
                     DigestInfo::try_new(&VALID_HASH1, VALUE2.len())?,
                     Box::new(Cursor::new(VALUE2)),
+                    VALUE2.len(),
                 )
                 .await?;
             store
@@ -78,7 +80,7 @@ mod memory_store_tests {
 
         const VALUE1: &str = "1234";
         let digest = DigestInfo::try_new(&VALID_HASH1, 4).unwrap();
-        store.update(digest.clone(), Box::new(Cursor::new(VALUE1))).await?;
+        store.update(digest.clone(), Box::new(Cursor::new(VALUE1)), 4).await?;
 
         let mut store_data = Vec::new();
         store
@@ -127,7 +129,7 @@ mod memory_store_tests {
                 assert!(
                     digest.is_err()
                         || store
-                            .update(digest.unwrap(), Box::new(Cursor::new(value)))
+                            .update(digest.unwrap(), Box::new(Cursor::new(value)), expected_size)
                             .await
                             .is_err(),
                     ".has() should have failed: {} {} {}",

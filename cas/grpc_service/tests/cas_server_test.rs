@@ -81,7 +81,11 @@ mod find_missing_blobs {
 
         let store = Pin::new(store_owned.as_ref());
         store
-            .update(DigestInfo::try_new(HASH1, VALUE.len())?, Box::new(Cursor::new(VALUE)))
+            .update(
+                DigestInfo::try_new(HASH1, VALUE.len())?,
+                Box::new(Cursor::new(VALUE)),
+                VALUE.len(),
+            )
             .await?;
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -108,7 +112,11 @@ mod find_missing_blobs {
 
         let store = Pin::new(store_owned.as_ref());
         store
-            .update(DigestInfo::try_new(HASH1, VALUE.len())?, Box::new(Cursor::new(VALUE)))
+            .update(
+                DigestInfo::try_new(HASH1, VALUE.len())?,
+                Box::new(Cursor::new(VALUE)),
+                VALUE.len(),
+            )
             .await?;
         let raw_response = cas_server
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
@@ -169,6 +177,7 @@ mod batch_update_blobs {
             .update(
                 DigestInfo::try_new(&HASH1, VALUE1.len())?,
                 Box::new(Cursor::new(VALUE1)),
+                VALUE1.len(),
             )
             .await
             .expect("Update should have succeeded");
@@ -249,6 +258,7 @@ mod batch_read_blobs {
                 .update(
                     DigestInfo::try_new(&HASH1, VALUE1.len())?,
                     Box::new(Cursor::new(VALUE1)),
+                    VALUE1.len(),
                 )
                 .await
                 .expect("Update should have succeeded");
@@ -256,6 +266,7 @@ mod batch_read_blobs {
                 .update(
                     DigestInfo::try_new(&HASH2, VALUE2.len())?,
                     Box::new(Cursor::new(VALUE2)),
+                    VALUE2.len(),
                 )
                 .await
                 .expect("Update should have succeeded");

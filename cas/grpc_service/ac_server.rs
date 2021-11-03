@@ -20,6 +20,10 @@ use config::cas_server::{AcStoreConfig, InstanceName};
 use error::{make_input_err, Code, Error, ResultExt};
 use store::{Store, StoreManager};
 
+// NOTE(blaise.bruer) From some local testing it looks like action cache items are rarely greater than
+// 1.2k. Giving a bit more just in case to reduce allocs.
+const ESTIMATED_DIGEST_SIZE: usize = 2048;
+
 pub struct AcServer {
     stores: HashMap<String, Arc<dyn Store>>,
 }
@@ -53,10 +57,7 @@ impl AcServer {
             .err_tip(|| "Action digest was not set in message")?
             .try_into()?;
 
-        // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
-        // Note: We don't know the real size of action cache results, so we apx it here with size_bytes * 2
-        // but it might be larger or smaller.
-        let mut store_data = Vec::with_capacity((digest.size_bytes as usize) * 2);
+        let mut store_data = Vec::with_capacity(ESTIMATED_DIGEST_SIZE);
         let mut cursor = Cursor::new(&mut store_data);
         let instance_name = get_action_request.instance_name;
         let store = Pin::new(
@@ -90,8 +91,7 @@ impl AcServer {
             .action_result
             .err_tip(|| "Action result was not set in message")?;
 
-        // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
-        let mut store_data = Vec::new();
+        let mut store_data = Vec::with_capacity(ESTIMATED_DIGEST_SIZE);
         action_result
             .encode(&mut store_data)
             .err_tip(|| "Provided ActionResult could not be serialized")?;
@@ -103,7 +103,10 @@ impl AcServer {
                 .err_tip(|| format!("'instance_name' not configured for '{}'", &instance_name))?
                 .as_ref(),
         );
-        store.update(digest, Box::new(Cursor::new(store_data))).await?;
+        let expected_size = store_data.len();
+        store
+            .update(digest, Box::new(Cursor::new(store_data)), expected_size)
+            .await?;
         Ok(Response::new(action_result))
     }
 }

@@ -191,7 +191,9 @@ impl ByteStreamServer {
             tokio::spawn(async move {
                 let rx = Box::new(rx.take(expected_size as u64));
                 let store = Pin::new(store_clone.as_ref());
-                store.update(DigestInfo::try_new(&hash, expected_size)?, rx).await
+                store
+                    .update(DigestInfo::try_new(&hash, expected_size)?, rx, expected_size)
+                    .await
             })
         };
 

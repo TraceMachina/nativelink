@@ -25,8 +25,11 @@ async fn insert_into_store<T: Message>(
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let mut store_data = Vec::new();
     action_result.encode(&mut store_data)?;
-    let digest = DigestInfo::try_new(&hash, store_data.len() as i64)?;
-    store.update(digest.clone(), Box::new(Cursor::new(store_data))).await?;
+    let data_len = store_data.len();
+    let digest = DigestInfo::try_new(&hash, data_len as i64)?;
+    store
+        .update(digest.clone(), Box::new(Cursor::new(store_data)), data_len)
+        .await?;
     Ok(digest.size_bytes)
 }
 

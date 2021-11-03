@@ -41,9 +41,10 @@ impl StoreTrait for MemoryStore {
         self: std::pin::Pin<&'a Self>,
         digest: DigestInfo,
         mut reader: Box<dyn AsyncRead + Send + Sync + Unpin + 'static>,
+        expected_size: usize,
     ) -> ResultFuture<'a, ()> {
         Box::pin(async move {
-            let mut buffer = Vec::with_capacity(digest.size_bytes as usize);
+            let mut buffer = Vec::with_capacity(expected_size);
             reader.read_to_end(&mut buffer).await?;
             let mut map = self.map.lock().await;
             map.insert(digest, Arc::new(buffer));

@@ -24,6 +24,7 @@ pub trait StoreTrait: Sync + Send + Unpin {
         self: Pin<&'a Self>,
         digest: DigestInfo,
         reader: Box<dyn AsyncRead + Send + Unpin + Sync + 'static>,
+        upload_size: usize,
     ) -> ResultFuture<'a, ()>;
 
     fn get_part<'a>(

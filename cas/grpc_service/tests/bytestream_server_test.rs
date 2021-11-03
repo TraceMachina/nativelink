@@ -194,7 +194,9 @@ pub mod read_tests {
         const VALUE1: &str = "12456789abcdefghijk";
 
         let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
-        store.update(digest, Box::new(Cursor::new(VALUE1))).await?;
+        store
+            .update(digest, Box::new(Cursor::new(VALUE1)), VALUE1.len())
+            .await?;
 
         let read_request = ReadRequest {
             resource_name: format!(
@@ -238,8 +240,11 @@ pub mod read_tests {
         raw_data[5] = 42u8;
         raw_data[DATA_SIZE - 2] = 43u8;
 
-        let digest = DigestInfo::try_new(&HASH1, raw_data.len())?;
-        store.update(digest, Box::new(Cursor::new(raw_data.clone()))).await?;
+        let data_len = raw_data.len();
+        let digest = DigestInfo::try_new(&HASH1, data_len)?;
+        store
+            .update(digest, Box::new(Cursor::new(raw_data.clone())), data_len)
+            .await?;
 
         let read_request = ReadRequest {
             resource_name: format!(

@@ -31,7 +31,7 @@ use async_read_taker::AsyncReadTaker;
 
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MIN_MULTIPART_SIZE: i64 = 5_000_000; // 5mb.
+const MIN_MULTIPART_SIZE: usize = 5_000_000; // 5mb.
 
 pub struct S3Store {
     s3_client: S3Client,
@@ -154,6 +154,7 @@ impl StoreTrait for S3Store {
         self: Pin<&'a Self>,
         digest: DigestInfo,
         reader: Box<dyn AsyncRead + Send + Unpin + Sync + 'static>,
+        expected_size: usize,
     ) -> ResultFuture<'a, ()> {
         Box::pin(async move {
             let s3_path = &self.make_s3_path(&digest);
@@ -163,15 +164,11 @@ impl StoreTrait for S3Store {
             // it should be `trust_size = true` which we can upload in one chunk if small enough (and more efficient)
             // but only if the size is small enough. We could use MAX_UPLOAD_PART_SIZE (5gb), but I think it's fine
             // to use 5mb as a limit too.
-            if !digest.trust_size || digest.size_bytes < MIN_MULTIPART_SIZE {
+            if expected_size < MIN_MULTIPART_SIZE {
                 let put_object_request = PutObjectRequest {
                     bucket: self.bucket.to_owned(),
                     key: s3_path.to_owned(),
-                    content_length: if digest.trust_size {
-                        Some(digest.size_bytes)
-                    } else {
-                        None
-                    },
+                    content_length: Some(expected_size as i64),
                     body: Some(ByteStream::new(ReaderStream::new(reader))),
                     ..Default::default()
                 };
@@ -185,8 +182,7 @@ impl StoreTrait for S3Store {
 
             // S3 requires us to upload in parts if the size is greater than 5GB. The part size must be at least
             // 5mb and can have up to 10,000 parts.
-            let bytes_per_upload_part =
-                cmp::max(MIN_MULTIPART_SIZE, digest.size_bytes / (MIN_MULTIPART_SIZE - 1)) as usize;
+            let bytes_per_upload_part = cmp::max(MIN_MULTIPART_SIZE, expected_size / (MIN_MULTIPART_SIZE - 1));
 
             let response = self
                 .s3_client
