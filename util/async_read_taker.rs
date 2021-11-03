@@ -1,7 +1,5 @@
 // Copyright 2021 Nathan (Blaise) Bruer.  All rights reserved.
 
-#![feature(ready_macro)]
-
 use std::future::Future;
 use std::marker::Send;
 use std::pin::Pin;
