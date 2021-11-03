@@ -1,5 +1,7 @@
 # Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
+exports_files([".rustfmt.toml"])
+
 genrule(
     name = "dummy_test_sh",
     outs = ["dummy_test.sh"],

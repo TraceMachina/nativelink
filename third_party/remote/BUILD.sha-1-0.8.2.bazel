@@ -48,8 +48,6 @@ rust_library(
     name = "sha1",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "default",
-        "std",
     ],
     crate_root = "src/lib.rs",
     data = [],

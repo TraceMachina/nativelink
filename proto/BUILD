@@ -1,6 +1,6 @@
 # Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
 
-load("@rules_rust//rust:rust.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 
 # These build rules will do the following:
 # 1. Fetch all .proto files under in this directory
@@ -25,6 +25,7 @@ rust_binary(
         "//third_party:rustfmt_nightly",
     ]
 )
+
 genrule(
     name = "gen_rs_protos",
     srcs = _proto_files,

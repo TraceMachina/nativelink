@@ -26,16 +26,23 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # Apache-2.0 from expression "Apache-2.0 OR MIT"
+    "notice",  # MIT from expression "MIT"
 ])
 
 # Generated Targets
 
+# Unsupported target "256_colours" with type "example" omitted
+
+# Unsupported target "basic_colours" with type "example" omitted
+
+# Unsupported target "overwrite" with type "example" omitted
+
+# Unsupported target "rgb_colours" with type "example" omitted
+
 rust_library(
-    name = "lock_api",
+    name = "yansi_term",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "nightly",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -47,9 +54,8 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.3.4",
+    version = "0.1.2",
     # buildifier: leave-alone
     deps = [
-        "@raze__scopeguard__1_1_0//:scopeguard",
     ],
 )

@@ -1,6 +1,6 @@
 # Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
-load("@rules_rust//rust:rust.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 rust_binary(
     name = "cas",

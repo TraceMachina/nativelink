@@ -31,14 +31,12 @@ licenses([
 
 # Generated Targets
 
-# Unsupported target "bench" with type "bench" omitted
+# Unsupported target "matches" with type "example" omitted
 
 rust_library(
-    name = "smallvec",
+    name = "cargo_platform",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "may_dangle",
-        "union",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -50,10 +48,11 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "1.7.0",
+    version = "0.1.2",
     # buildifier: leave-alone
     deps = [
+        "@raze__serde__1_0_130//:serde",
     ],
 )
 
-# Unsupported target "macro" with type "test" omitted
+# Unsupported target "test_cfg" with type "test" omitted
