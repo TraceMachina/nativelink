@@ -13,31 +13,26 @@ use tokio::io::{AsyncRead, ReadBuf};
 
 pub type ArcMutexAsyncRead = Arc<Mutex<Box<dyn AsyncRead + Send + Unpin + Sync + 'static>>>;
 
+// TODO(blaise.bruer) It does not look like this class is needed any more. Should consider removing it.
 pin_project! {
     /// Useful object that can be used to chunk an AsyncReader by a specific size.
     /// This also requires the inner reader be sharable between threads. This allows
     /// the caller to still "own" the underlying reader in a way that once `limit` is
     /// reached the caller can keep using it, but still use this struct to read the data.
-    pub struct AsyncReadTaker<F: FnOnce()> {
+    pub struct AsyncReadTaker {
         inner: ArcMutexAsyncRead,
-        done_fn: Option<F>,
         // Add '_' to avoid conflicts with `limit` method.
         limit_: usize,
     }
 }
 
-impl<F: FnOnce()> AsyncReadTaker<F> {
-    /// `done_fn` can be used to pass a functor that will fire when the stream has no more data.
-    pub fn new(inner: ArcMutexAsyncRead, done_fn: Option<F>, limit: usize) -> Self {
-        AsyncReadTaker {
-            inner,
-            done_fn: done_fn,
-            limit_: limit,
-        }
+impl AsyncReadTaker {
+    pub fn new(inner: ArcMutexAsyncRead, limit: usize) -> Self {
+        AsyncReadTaker { inner, limit_: limit }
     }
 }
 
-impl<F: FnOnce()> AsyncRead for AsyncReadTaker<F> {
+impl AsyncRead for AsyncReadTaker {
     /// Note: This function is modeled after tokio::Take::poll_read.
     /// see: https://docs.rs/tokio/1.12.0/src/tokio/io/util/take.rs.html#77
     fn poll_read(
@@ -61,11 +56,6 @@ impl<F: FnOnce()> AsyncRead for AsyncReadTaker<F> {
         // We need to update the original ReadBuf
         unsafe {
             buf.assume_init(n);
-        }
-        if n == 0 {
-            if let Some(done_fn) = self.done_fn.take() {
-                done_fn();
-            }
         }
         buf.advance(n);
         self.limit_ -= n;

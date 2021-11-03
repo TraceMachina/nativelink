@@ -34,7 +34,7 @@ fn receive_request(sender: mpsc::Sender<(SignedRequest, Vec<u8>)>) -> impl Fn(Si
                 let mut async_reader = stream.into_async_read();
                 assert!(block_on(async_reader.read_to_end(&mut raw_payload)).is_ok());
             }
-            Some(SignedRequestPayload::Buffer(buffer)) => raw_payload.copy_from_slice(&buffer[..]),
+            Some(SignedRequestPayload::Buffer(buffer)) => raw_payload.extend_from_slice(&buffer[..]),
             None => {}
         }
         sender.try_send((request, raw_payload)).expect("Failed to send payload");
@@ -361,6 +361,10 @@ mod s3_store_tests {
                 from_utf8(&request.headers["host"][0]).unwrap(),
                 "s3.us-east-1.amazonaws.com"
             );
+            assert_eq!(
+                from_utf8(&request.headers["content-length"][0]).unwrap(),
+                format!("{}", rt_data.len())
+            );
             assert_eq!(request.canonical_query_string, "uploads=");
             assert_eq!(
                 request.canonical_uri,
@@ -380,6 +384,10 @@ mod s3_store_tests {
                 from_utf8(&request.headers["host"][0]).unwrap(),
                 "s3.us-east-1.amazonaws.com"
             );
+            assert_eq!(
+                from_utf8(&request.headers["content-length"][0]).unwrap(),
+                format!("{}", rt_data.len())
+            );
             assert_eq!(request.canonical_query_string, "partNumber=1&uploadId=Dummy-uploadid");
             assert_eq!(
                 request.canonical_uri,
@@ -392,6 +400,10 @@ mod s3_store_tests {
                 &send_data[MIN_MULTIPART_SIZE..MIN_MULTIPART_SIZE * 2],
                 rt_data,
                 "Expected data to match"
+            );
+            assert_eq!(
+                from_utf8(&request.headers["content-length"][0]).unwrap(),
+                format!("{}", rt_data.len())
             );
             assert_eq!(request.canonical_query_string, "partNumber=2&uploadId=Dummy-uploadid");
             assert_eq!(
@@ -406,6 +418,10 @@ mod s3_store_tests {
                 rt_data,
                 "Expected data to match"
             );
+            assert_eq!(
+                from_utf8(&request.headers["content-length"][0]).unwrap(),
+                format!("{}", rt_data.len())
+            );
             assert_eq!(request.canonical_query_string, "partNumber=3&uploadId=Dummy-uploadid");
             assert_eq!(
                 request.canonical_uri,
@@ -415,7 +431,28 @@ mod s3_store_tests {
         {
             // Final payload is the complete_multipart_upload request.
             let (request, rt_data) = receiver.next().await.err_tip(|| "Could not get next payload")?;
-            assert_eq!(&send_data[0..0], rt_data, "Expected data to match");
+            const COMPLETE_MULTIPART_PAYLOAD_DATA: &str = concat!(
+                r#"<?xml version="1.0" encoding="utf-8"?>"#,
+                "<CompleteMultipartUpload>",
+                "<Part><PartNumber>1</PartNumber></Part>",
+                "<Part><PartNumber>2</PartNumber></Part>",
+                "<Part><PartNumber>3</PartNumber></Part>",
+                "</CompleteMultipartUpload>",
+            );
+            assert_eq!(
+                from_utf8(&rt_data).unwrap(),
+                COMPLETE_MULTIPART_PAYLOAD_DATA,
+                "Expected last payload to be empty"
+            );
+            assert_eq!(request.method, "POST");
+            assert_eq!(
+                from_utf8(&request.headers["content-length"][0]).unwrap(),
+                format!("{}", COMPLETE_MULTIPART_PAYLOAD_DATA.len())
+            );
+            assert_eq!(
+                from_utf8(&request.headers["x-amz-content-sha256"][0]).unwrap(),
+                "730f96c9a87580c7930b5bd4fd0457fbe01b34f2261dcdde877d09b06d937b5e"
+            );
             assert_eq!(request.canonical_query_string, "uploadId=Dummy-uploadid");
             assert_eq!(
                 request.canonical_uri,

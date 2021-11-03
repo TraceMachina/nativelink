@@ -6,7 +6,7 @@
           "s3_store": {
             "region": "us-west-1",
             "bucket": "blaisebruer-cas-store",
-            "key_prefix": "test-prefix-cas",
+            "key_prefix": "test-prefix-cas/",
             "retry": {
               "max_retries": 0,
               "delay": 0.1,
@@ -28,7 +28,7 @@
       "s3_store": {
         "region": "us-west-1",
         "bucket": "blaisebruer-cas-store",
-        "key_prefix": "test-prefix-ac",
+        "key_prefix": "test-prefix-ac/",
         "retry": {
           "max_retries": 0,
           "delay": 0.1,
@@ -56,7 +56,7 @@
         "cas_stores": {
           "main": "CAS_MAIN_STORE",
         },
-        // This value was choosen only because it is a common mem page size.
+        // This value was chosen only because it is a common mem page size.
         "write_buffer_stream_size": 2e6, // 2mb.
         "read_buffer_stream_size": 2e6, // 2mb.
         // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
