@@ -126,7 +126,11 @@ impl ActionCache for AcServer {
             .map(|v| v.hash.to_string());
         let resp = self.inner_get_action_result(grpc_request).await;
         let d = now.elapsed().as_secs_f32();
-        log::info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
+        if resp.is_err() && resp.as_ref().err().unwrap().code != error::Code::NotFound {
+            log::error!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
+        } else {
+            log::info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
+        }
         return resp.map_err(|e| e.into());
     }
 
@@ -141,7 +145,11 @@ impl ActionCache for AcServer {
         );
         let resp = self.inner_update_action_result(grpc_request).await;
         let d = now.elapsed().as_secs_f32();
-        log::info!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}", d, resp);
+        if resp.is_err() {
+            log::error!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}", d, resp);
+        } else {
+            log::info!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}", d, resp);
+        }
         return resp.map_err(|e| e.into());
     }
 }

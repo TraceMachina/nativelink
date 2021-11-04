@@ -30,8 +30,8 @@ macro_rules! error_if {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Error {
-    code: Code,
-    messages: Vec<String>,
+    pub code: Code,
+    pub messages: Vec<String>,
 }
 
 impl Error {
@@ -255,7 +255,6 @@ impl From<tonic::Code> for Code {
             tonic::Code::Unavailable => Code::Unavailable,
             tonic::Code::DataLoss => Code::DataLoss,
             tonic::Code::Unauthenticated => Code::Unauthenticated,
-            _ => Code::Unknown,
         }
     }
 }

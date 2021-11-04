@@ -31,7 +31,7 @@ use async_read_taker::AsyncReadTaker;
 
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MIN_MULTIPART_SIZE: usize = 5_000_000; // 5mb.
+const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
 
 pub struct S3Store {
     s3_client: S3Client,

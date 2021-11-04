@@ -188,7 +188,11 @@ impl ContentAddressableStorage for CasServer {
             .err_tip(|| format!("Failed on find_missing_blobs() command"))
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
-        log::info!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        if resp.is_err() {
+            log::error!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        } else {
+            log::info!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        }
         resp
     }
 
@@ -204,7 +208,11 @@ impl ContentAddressableStorage for CasServer {
             .err_tip(|| format!("Failed on batch_update_blobs() command"))
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
-        log::info!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        if resp.is_err() {
+            log::error!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        } else {
+            log::info!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        }
         resp
     }
 
@@ -220,7 +228,11 @@ impl ContentAddressableStorage for CasServer {
             .err_tip(|| format!("Failed on batch_read_blobs() command"))
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
-        log::info!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        if resp.is_err() {
+            log::error!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        } else {
+            log::info!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
+        }
         resp
     }
 
@@ -228,7 +240,7 @@ impl ContentAddressableStorage for CasServer {
     async fn get_tree(&self, _request: Request<GetTreeRequest>) -> Result<Response<Self::GetTreeStream>, Status> {
         use stdext::function_name;
         let output = format!("{} not yet implemented", function_name!());
-        log::info!("\x1b[0;31mget_tree\x1b[0m: {:?}", output);
+        log::error!("\x1b[0;31mget_tree\x1b[0m: {:?}", output);
         Err(Status::unimplemented(output))
     }
 }
