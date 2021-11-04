@@ -332,7 +332,11 @@ impl ByteStream for ByteStreamServer {
             .err_tip(|| format!("Failed on read() command"))
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
-        log::info!("\x1b[0;31mRead Resp\x1b[0m: {}", d);
+        if let Err(err) = resp.as_ref() {
+            log::error!("\x1b[0;31mRead Resp\x1b[0m: {} {:?}", d, err);
+        } else {
+            log::info!("\x1b[0;31mRead Resp\x1b[0m: {}", d);
+        }
         resp
     }
 
@@ -354,7 +358,11 @@ impl ByteStream for ByteStreamServer {
             .err_tip(|| format!("Failed on write() command"))
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
-        log::info!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?}", d, hash);
+        if let Err(err) = resp.as_ref() {
+            log::error!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?} {:?}", d, hash, err);
+        } else {
+            log::info!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?}", d, hash);
+        }
         resp
     }
 
@@ -362,7 +370,7 @@ impl ByteStream for ByteStreamServer {
         &self,
         _grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Status> {
-        log::info!("query_write_status {:?}", _grpc_request.get_ref());
+        log::error!("query_write_status {:?}", _grpc_request.get_ref());
         Err(Status::unimplemented(""))
     }
 }

@@ -16,7 +16,7 @@ use store::StoreManager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error"))
         .format_timestamp_millis()
         .init();
 
@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Err(e) = select_all(servers).await.0 {
-        panic!("{}", e);
+        panic!("{:?}", e);
     }
     panic!("No servers should ever resolve their future");
 }

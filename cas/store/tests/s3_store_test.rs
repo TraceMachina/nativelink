@@ -23,7 +23,7 @@ use s3_store::S3Store;
 use traits::StoreTrait;
 
 // Should match constant in s3_store.
-const MIN_MULTIPART_SIZE: usize = 5_000_000; // 5mb.
+const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
 
 fn receive_request(sender: mpsc::Sender<(SignedRequest, Vec<u8>)>) -> impl Fn(SignedRequest) {
     move |mut request| {
@@ -368,7 +368,7 @@ mod s3_store_tests {
             assert_eq!(request.canonical_query_string, "uploads=");
             assert_eq!(
                 request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10000050"
+                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
             );
         }
         {
@@ -391,7 +391,7 @@ mod s3_store_tests {
             assert_eq!(request.canonical_query_string, "partNumber=1&uploadId=Dummy-uploadid");
             assert_eq!(
                 request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10000050"
+                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
             );
         }
         {
@@ -408,7 +408,7 @@ mod s3_store_tests {
             assert_eq!(request.canonical_query_string, "partNumber=2&uploadId=Dummy-uploadid");
             assert_eq!(
                 request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10000050"
+                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
             );
         }
         {
@@ -425,7 +425,7 @@ mod s3_store_tests {
             assert_eq!(request.canonical_query_string, "partNumber=3&uploadId=Dummy-uploadid");
             assert_eq!(
                 request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10000050"
+                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
             );
         }
         {
@@ -456,7 +456,7 @@ mod s3_store_tests {
             assert_eq!(request.canonical_query_string, "uploadId=Dummy-uploadid");
             assert_eq!(
                 request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10000050"
+                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
             );
         }
 

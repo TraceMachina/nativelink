@@ -8,7 +8,7 @@ build:self_test --remote_instance_name=main
 build:self_test --remote_cache=grpc://127.0.0.1:50051
 
 build --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
-build --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
+test --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
 # This will make rustfmt only run on `bazel test`.
 test --output_groups=+rustfmt_checks
 
