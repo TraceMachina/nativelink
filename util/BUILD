@@ -64,6 +64,16 @@ rust_library(
     visibility = ["//visibility:public"],
 )
 
+rust_library(
+    name = "write_counter",
+    srcs = ["write_counter.rs"],
+    deps = [
+        "//third_party:pin_project_lite",
+        "//third_party:tokio",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 rust_test(
     name = "async_fixed_buffer_test",
     srcs = ["tests/async_fixed_buffer_test.rs"],
