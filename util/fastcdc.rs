@@ -87,11 +87,14 @@ impl Decoder for FastCDC {
         if buf.len() <= self.min_size {
             return Ok(None);
         }
-        let mut found_split_point = Option::<usize>::None;
+        // Zero means not found.
+        let mut split_point = 0;
 
         let start_point = std::cmp::max(self.state.position, self.min_size);
 
-        for i in start_point..buf.len() {
+        // Note: We use this kind of loop because it improved performance of this loop by 20%.
+        let mut i = start_point;
+        while i < buf.len() {
             let byte = buf[i] as usize;
             self.state.hash = (self.state.hash >> 1) + TABLE[byte];
 
@@ -102,29 +105,27 @@ impl Decoder for FastCDC {
             } else {
                 self.mask_easy
             };
-            if (self.state.hash & mask) == 0 {
-                found_split_point = Some(i);
+            if (self.state.hash & mask) == 0 || i >= self.max_size {
+                split_point = i;
                 break;
             }
-            if i >= self.max_size {
-                found_split_point = Some(i);
-                break;
-            }
+            i += 1;
         }
 
-        if let Some(split_point) = found_split_point {
-            if split_point >= self.min_size {
-                self.state.reset();
-                assert!(
-                    split_point <= self.max_size,
-                    "Expected {} < {}",
-                    split_point,
-                    self.max_size
-                );
-                return Ok(Some(buf.split_to(split_point)));
-            }
+        if split_point >= self.min_size {
+            self.state.reset();
+            debug_assert!(
+                split_point <= self.max_size,
+                "Expected {} < {}",
+                split_point,
+                self.max_size
+            );
+            return Ok(Some(buf.split_to(split_point)));
         }
-        self.state.position = found_split_point.unwrap_or(buf.len());
+        self.state.position = split_point;
+        if self.state.position == 0 {
+            self.state.position = buf.len();
+        }
 
         return Ok(None);
     }
