@@ -85,7 +85,6 @@ mod fastcdc_tests {
             rng.fill(&mut data[..]);
             data
         };
-        // file.read_to_end(&mut data).await?;
         let mut cursor = Cursor::new(&data);
         let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(1024, 2048, 4096));
 
