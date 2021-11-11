@@ -35,10 +35,10 @@ impl MemoryStore {
 
 #[async_trait]
 impl StoreTrait for MemoryStore {
-    fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, bool> {
+    fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>> {
         Box::pin(async move {
             let mut map = self.map.lock().await;
-            Ok(map.contains_key(&digest))
+            Ok(map.size_for_key(&digest))
         })
     }
 

@@ -87,7 +87,7 @@ async fn inner_check_update<'a>(
 
 #[async_trait]
 impl StoreTrait for VerifyStore {
-    fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, bool> {
+    fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>> {
         Box::pin(async move { self.pin_inner().has(digest).await })
     }
 

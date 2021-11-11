@@ -103,7 +103,7 @@ impl DedupStore {
 
 #[async_trait]
 impl StoreTrait for DedupStore {
-    fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, bool> {
+    fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>> {
         Box::pin(async move { Pin::new(self.content_store.as_ref()).has(digest).await })
     }
 
@@ -143,7 +143,7 @@ impl StoreTrait for DedupStore {
 
                         let content_store_pin = Pin::new(content_store.as_ref());
                         let digest = DigestInfo::new(hash.clone().into(), frame.len() as i64);
-                        if content_store_pin.has(digest.clone()).await? {
+                        if content_store_pin.has(digest.clone()).await?.is_some() {
                             // If our store has this digest, we don't need to upload it.
                             return Ok(index_entry);
                         }

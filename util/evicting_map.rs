@@ -73,12 +73,12 @@ impl<T: InstantWrapper> EvictingMap<T> {
         }
     }
 
-    pub fn contains_key(&mut self, hash: &DigestInfo) -> bool {
+    pub fn size_for_key(&mut self, hash: &DigestInfo) -> Option<usize> {
         if let Some(mut entry) = self.lru.get_mut(hash) {
             entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as u32;
-            return true;
+            return Some(entry.data.len());
         }
-        false
+        None
     }
 
     pub fn get<'a>(&'a mut self, hash: &DigestInfo) -> Option<&'a Arc<Vec<u8>>> {

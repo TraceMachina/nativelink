@@ -32,8 +32,9 @@ mod memory_store_tests {
                     UploadSizeInfo::ExactSize(VALUE1.len()),
                 )
                 .await?;
-            assert!(
-                store.has(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?).await?,
+            assert_eq!(
+                store.has(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?).await,
+                Ok(Some(VALUE1.len())),
                 "Expected memory store to have hash: {}",
                 VALID_HASH1
             );
