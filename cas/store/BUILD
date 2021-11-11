@@ -10,6 +10,7 @@ rust_library(
         "//util:error",
         ":compression_store",
         ":dedup_store",
+        ":fast_slow_store",
         ":memory_store",
         ":s3_store",
         ":traits",
@@ -56,6 +57,23 @@ rust_library(
         "//third_party:fast_async_mutex",
         "//third_party:hex",
         "//third_party:sha2",
+        "//third_party:tokio",
+        "//util:async_fixed_buffer",
+        "//util:common",
+        "//util:error",
+        ":traits",
+    ],
+    proc_macro_deps = ["//third_party:async_trait"],
+    visibility = ["//cas:__pkg__"]
+)
+
+rust_library(
+    name = "fast_slow_store",
+    srcs = ["fast_slow_store.rs"],
+    deps = [
+        "//config",
+        "//third_party:bytes",
+        "//third_party:futures",
         "//third_party:tokio",
         "//util:async_fixed_buffer",
         "//util:common",
@@ -126,6 +144,22 @@ rust_library(
     ],
     proc_macro_deps = ["//third_party:async_trait"],
     visibility = ["//cas:__pkg__"]
+)
+
+rust_test(
+    name = "fast_slow_store_test",
+    srcs = ["tests/fast_slow_store_test.rs"],
+    deps = [
+        "//config",
+        "//third_party:pretty_assertions",
+        "//third_party:rand",
+        "//third_party:tokio",
+        "//util:common",
+        "//util:error",
+        ":fast_slow_store",
+        ":memory_store",
+        ":traits",
+    ],
 )
 
 rust_test(
