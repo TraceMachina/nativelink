@@ -5,14 +5,26 @@
         "backend": {
           "dedup": {
             "index_store": {
-              "s3_store": {
-                "region": "us-west-1",
-                "bucket": "blaisebruer-cas-store",
-                "key_prefix": "test-prefix-index/",
-                "retry": {
-                  "max_retries": 6,
-                  "delay": 0.3,
-                  "jitter": 0.5,
+              "fast_slow": {
+                "fast": {
+                  "memory": {
+                    "eviction_policy": {
+                      // 32mb.
+                      "max_bytes": 100000000,
+                    }
+                  }
+                },
+                "slow": {
+                  "s3_store": {
+                    "region": "us-west-1",
+                    "bucket": "blaisebruer-cas-store",
+                    "key_prefix": "test-prefix-index/",
+                    "retry": {
+                      "max_retries": 6,
+                      "delay": 0.3,
+                      "jitter": 0.5,
+                    }
+                  }
                 }
               }
             },
@@ -22,14 +34,26 @@
                   "LZ4": {}
                 },
                 "backend": {
-                  "s3_store": {
-                    "region": "us-west-1",
-                    "bucket": "blaisebruer-cas-store",
-                    "key_prefix": "test-prefix-dedup-cas/",
-                    "retry": {
-                      "max_retries": 6,
-                      "delay": 0.3,
-                      "jitter": 0.5,
+                  "fast_slow": {
+                    "fast": {
+                      "memory": {
+                        "eviction_policy": {
+                          // 900mb.
+                          "max_bytes": 900000000,
+                        }
+                      }
+                    },
+                    "slow": {
+                      "s3_store": {
+                        "region": "us-west-1",
+                        "bucket": "blaisebruer-cas-store",
+                        "key_prefix": "test-prefix-dedup-cas/",
+                        "retry": {
+                          "max_retries": 6,
+                          "delay": 0.3,
+                          "jitter": 0.5,
+                        }
+                      }
                     }
                   }
                 }
