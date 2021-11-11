@@ -220,7 +220,7 @@ impl CompressionStore {
 
 #[async_trait]
 impl StoreTrait for CompressionStore {
-    fn has<'a>(self: Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, bool> {
+    fn has<'a>(self: Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>> {
         Box::pin(async move { Pin::new(self.inner_store.as_ref()).has(digest).await })
     }
 

@@ -32,7 +32,7 @@ pub enum UploadSizeInfo {
 
 #[async_trait]
 pub trait StoreTrait: Sync + Send + Unpin {
-    fn has<'a>(self: Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, bool>;
+    fn has<'a>(self: Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>>;
 
     fn update<'a>(
         self: Pin<&'a Self>,

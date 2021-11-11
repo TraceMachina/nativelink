@@ -62,10 +62,10 @@ impl CasServer {
                 .clone();
             futures.push(tokio::spawn(async move {
                 let store = Pin::new(store_owned.as_ref());
-                store
-                    .has(digest.clone())
-                    .await
-                    .map_or_else(|_| None, |success| if success { None } else { Some(digest) })
+                store.has(digest.clone()).await.map_or_else(
+                    |_| None,
+                    |maybe_sz| if maybe_sz.is_some() { None } else { Some(digest) },
+                )
             }));
         }
         let mut responses = Vec::with_capacity(futures.len());

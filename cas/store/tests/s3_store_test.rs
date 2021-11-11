@@ -118,7 +118,7 @@ mod s3_store_tests {
     #[tokio::test]
     async fn simple_has_object_found() -> Result<(), Error> {
         let s3_client = S3Client::new_with(
-            MockRequestDispatcher::with_status(StatusCode::OK.into()),
+            MockRequestDispatcher::with_status(StatusCode::OK.into()).with_header("Content-Length", "512"),
             MockCredentialsProvider,
             Region::UsEast1,
         );
@@ -134,7 +134,7 @@ mod s3_store_tests {
 
         let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
         let result = store_pin.has(digest.clone()).await;
-        assert_eq!(result, Ok(true), "Expected to find item, got: {:?}", result);
+        assert_eq!(result, Ok(Some(512)), "Expected to find item, got: {:?}", result);
         Ok(())
     }
 
@@ -166,7 +166,7 @@ mod s3_store_tests {
 
         let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
         let result = store_pin.has(digest.clone()).await;
-        assert_eq!(result, Ok(false), "Expected to not find item, got: {:?}", result);
+        assert_eq!(result, Ok(None), "Expected to not find item, got: {:?}", result);
         Ok(())
     }
 
@@ -181,7 +181,7 @@ mod s3_store_tests {
                 // Dispatch errors are retried. Like timeouts.
                 MockRequestDispatcher::with_dispatch_error(HttpDispatchError::new("maybe timeout?".to_string())),
                 // Note: "OK" must always be last.
-                MockRequestDispatcher::with_status(StatusCode::OK.into()),
+                MockRequestDispatcher::with_status(StatusCode::OK.into()).with_header("Content-Length", "111"),
             ]),
             MockCredentialsProvider,
             Region::UsEast1,
@@ -203,7 +203,7 @@ mod s3_store_tests {
 
         let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
         let result = store_pin.has(digest.clone()).await;
-        assert_eq!(result, Ok(true), "Expected to find item, got: {:?}", result);
+        assert_eq!(result, Ok(Some(111)), "Expected to find item, got: {:?}", result);
         Ok(())
     }
 

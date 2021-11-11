@@ -134,7 +134,7 @@ impl S3Store {
 
 #[async_trait]
 impl StoreTrait for S3Store {
-    fn has<'a>(self: Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, bool> {
+    fn has<'a>(self: Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>> {
         Box::pin(async move {
             let retry_config = ExponentialBackoff::new(Duration::from_millis(self.retry.delay as u64))
                 .map(|d| (self.jitter_fn)(d))
@@ -152,14 +152,22 @@ impl StoreTrait for S3Store {
 
                         let result = self.s3_client.head_object(head_req).await;
                         if let Err(RusotoError::Service(HeadObjectError::NoSuchKey(_))) = &result {
-                            return Some((RetryResult::Ok(false), state));
+                            return Some((RetryResult::Ok(None), state));
                         }
 
                         match should_retry(result) {
-                            RetryResult::Ok(_) => Some((RetryResult::Ok(true), state)),
+                            RetryResult::Ok(result) => {
+                                if let Some(sz) = result.content_length {
+                                    return Some((RetryResult::Ok(Some(sz as usize)), state));
+                                }
+                                Some((
+                                    RetryResult::Err(make_input_err!("Expected size to exist in s3 store has")),
+                                    state,
+                                ))
+                            }
                             RetryResult::Err(err) => {
                                 if err.code == Code::NotFound {
-                                    return Some((RetryResult::Ok(false), state));
+                                    return Some((RetryResult::Ok(None), state));
                                 }
                                 Some((RetryResult::Err(err), state))
                             }

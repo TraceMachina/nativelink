@@ -50,8 +50,8 @@ mod verify_store_tests {
             result
         );
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await?,
-            true,
+            Pin::new(inner_store.as_ref()).has(digest).await,
+            Ok(Some(VALUE1.len())),
             "Expected data to exist in store after update"
         );
         Ok(())
@@ -89,8 +89,8 @@ mod verify_store_tests {
             err
         );
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await?,
-            false,
+            Pin::new(inner_store.as_ref()).has(digest).await,
+            Ok(None),
             "Expected data to not exist in store after update"
         );
         Ok(())
@@ -120,8 +120,8 @@ mod verify_store_tests {
             .await;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await?,
-            true,
+            Pin::new(inner_store.as_ref()).has(digest).await,
+            Ok(Some(VALUE1.len())),
             "Expected data to exist in store after update"
         );
         Ok(())
@@ -156,8 +156,8 @@ mod verify_store_tests {
         let result = future.await.err_tip(|| "Failed to join spawn future")?;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await?,
-            true,
+            Pin::new(inner_store.as_ref()).has(digest).await,
+            Ok(Some(6)),
             "Expected data to exist in store after update"
         );
         Ok(())
@@ -189,8 +189,8 @@ mod verify_store_tests {
             .await;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await?,
-            true,
+            Pin::new(inner_store.as_ref()).has(digest).await,
+            Ok(Some(VALUE.len())),
             "Expected data to exist in store after update"
         );
         Ok(())
@@ -230,8 +230,8 @@ mod verify_store_tests {
             err
         );
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await?,
-            false,
+            Pin::new(inner_store.as_ref()).has(digest).await,
+            Ok(None),
             "Expected data to not exist in store after update"
         );
         Ok(())
