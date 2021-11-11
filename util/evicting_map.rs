@@ -21,21 +21,31 @@ impl InstantWrapper for Instant {
     }
 }
 
-struct EvictionItem {
+struct EvictionItem<T: LenEntry> {
     seconds_since_anchor: u32,
-    data: Arc<Vec<u8>>,
+    data: Arc<T>,
 }
 
-pub struct EvictingMap<T: InstantWrapper> {
-    lru: LruCache<DigestInfo, EvictionItem>,
-    anchor_time: T,
+pub trait LenEntry {
+    fn len(&self) -> usize;
+}
+
+impl LenEntry for Vec<u8> {
+    fn len(&self) -> usize {
+        <Vec<u8>>::len(self)
+    }
+}
+
+pub struct EvictingMap<T: LenEntry, I: InstantWrapper> {
+    lru: LruCache<DigestInfo, EvictionItem<T>>,
+    anchor_time: I,
     sum_store_size: usize,
     max_bytes: usize,
     max_seconds: u32,
 }
 
-impl<T: InstantWrapper> EvictingMap<T> {
-    pub fn new(config: &EvictionPolicy, anchor_time: T) -> Self {
+impl<T: LenEntry, I: InstantWrapper> EvictingMap<T, I> {
+    pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
         let mut lru = LruCache::unbounded();
         if config.max_count != 0 {
             lru = LruCache::new(config.max_count.try_into().expect("Could not convert max_count to u64"));
@@ -81,7 +91,7 @@ impl<T: InstantWrapper> EvictingMap<T> {
         None
     }
 
-    pub fn get<'a>(&'a mut self, hash: &DigestInfo) -> Option<&'a Arc<Vec<u8>>> {
+    pub fn get<'a>(&'a mut self, hash: &DigestInfo) -> Option<&'a Arc<T>> {
         if let Some(mut entry) = self.lru.get_mut(hash) {
             entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as u32;
             return Some(&entry.data);
@@ -89,7 +99,7 @@ impl<T: InstantWrapper> EvictingMap<T> {
         None
     }
 
-    pub fn insert(&mut self, hash: DigestInfo, data: Arc<Vec<u8>>) {
+    pub fn insert(&mut self, hash: DigestInfo, data: Arc<T>) {
         let new_item_size = data.len();
         let eviction_item = EvictionItem {
             seconds_since_anchor: self.anchor_time.elapsed().as_secs() as u32,

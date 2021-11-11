@@ -15,7 +15,7 @@ use evicting_map::EvictingMap;
 use traits::{ResultFuture, StoreTrait, UploadSizeInfo};
 
 pub struct MemoryStore {
-    map: Mutex<EvictingMap<Instant>>,
+    map: Mutex<EvictingMap<Vec<u8>, Instant>>,
 }
 
 impl MemoryStore {
@@ -38,7 +38,7 @@ impl StoreTrait for MemoryStore {
     fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>> {
         Box::pin(async move {
             let mut map = self.map.lock().await;
-            Ok(map.size_for_key(&digest))
+            Ok(map.size_for_key(&digest).map(|v| v as usize))
         })
     }
 
