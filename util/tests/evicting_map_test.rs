@@ -31,7 +31,7 @@ mod evicting_map_tests {
 
     #[tokio::test]
     async fn insert_purges_at_max_count() -> Result<(), Error> {
-        let mut evicting_map = EvictingMap::new(
+        let mut evicting_map = EvictingMap::<Vec<u8>, Instant>::new(
             &EvictionPolicy {
                 max_count: 3,
                 max_seconds: 0,
@@ -70,7 +70,7 @@ mod evicting_map_tests {
 
     #[tokio::test]
     async fn insert_purges_at_max_bytes() -> Result<(), Error> {
-        let mut evicting_map = EvictingMap::new(
+        let mut evicting_map = EvictingMap::<Vec<u8>, Instant>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 0,
@@ -110,7 +110,7 @@ mod evicting_map_tests {
 
     #[tokio::test]
     async fn insert_purges_at_max_seconds() -> Result<(), Error> {
-        let mut evicting_map = EvictingMap::new(
+        let mut evicting_map = EvictingMap::<Vec<u8>, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 5,
@@ -154,7 +154,7 @@ mod evicting_map_tests {
 
     #[tokio::test]
     async fn get_refreshes_time() -> Result<(), Error> {
-        let mut evicting_map = EvictingMap::new(
+        let mut evicting_map = EvictingMap::<Vec<u8>, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 3,
@@ -193,7 +193,7 @@ mod evicting_map_tests {
 
     #[tokio::test]
     async fn contains_key_refreshes_time() -> Result<(), Error> {
-        let mut evicting_map = EvictingMap::new(
+        let mut evicting_map = EvictingMap::<Vec<u8>, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 3,
@@ -232,7 +232,7 @@ mod evicting_map_tests {
 
     #[tokio::test]
     async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
-        let mut evicting_map = EvictingMap::new(
+        let mut evicting_map = EvictingMap::<Vec<u8>, Instant>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 0,
