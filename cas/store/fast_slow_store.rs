@@ -176,20 +176,19 @@ impl StoreTrait for FastSlowStore {
                 let mut writer_pin = Pin::new(writer);
                 let mut output_buf = BytesMut::new();
                 loop {
+                    println!("ASDF");
                     slow_rx
                         .read_buf(&mut output_buf)
                         .await
                         .err_tip(|| "Failed to read data data buffer from slow store")?;
                     if output_buf.is_empty() {
-                        // EOF received.
-                        fast_tx
-                            .write(&[])
-                            .await
-                            .err_tip(|| "Failed to write eof to fast store in fast_slow store")?;
-                        writer_pin
-                            .write(&[])
-                            .await
-                            .err_tip(|| "Failed to write eof to writer in fast_slow store")?;
+                        // Write out our EOF.
+                        // It is possible for the client to disconnect the stream because they got
+                        // all the data they wanted, which could lead to an error when writing this
+                        // EOF. If that was to happen, we could end up terminating this early and
+                        // the resulting upload to the fast store might fail.
+                        let _ = fast_tx.write(&[]).await?;
+                        let _ = writer_pin.write(&[]).await?;
                         return Ok(());
                     }
                     let (fast_tx_res, writer_res) = {
