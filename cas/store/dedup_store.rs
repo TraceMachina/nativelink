@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::codec::FramedRead;
 
-use common::{DigestInfo, JoinHandleDropGuard};
+use common::{DigestInfo, JoinHandleDropGuard, SerializableDigestInfo};
 use config;
 use error::{make_err, Code, Error, ResultExt};
 use fastcdc::FastCDC;
@@ -34,15 +34,8 @@ const DEFAULT_MAX_SIZE: usize = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
-#[repr(C)]
-pub struct IndexEntry {
-    pub hash: [u8; 32],
-    pub size_bytes: u32,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
 pub struct DedupIndex {
-    pub entries: Vec<IndexEntry>,
+    pub entries: Vec<SerializableDigestInfo>,
 }
 
 pub struct DedupStore {
@@ -136,9 +129,9 @@ impl StoreTrait for DedupStore {
                         let hash = Sha256::digest(&frame[..]);
 
                         let frame_len = frame.len();
-                        let index_entry = IndexEntry {
+                        let index_entry = SerializableDigestInfo {
                             hash: hash.into(),
-                            size_bytes: frame_len as u32,
+                            size_bytes: frame_len as u64,
                         };
 
                         let content_store_pin = Pin::new(content_store.as_ref());
@@ -207,7 +200,7 @@ impl StoreTrait for DedupStore {
             let index_entries = {
                 // First we need to read from our index_store to get a list of all the files and locations.
                 let est_parts = (digest.size_bytes as usize / self.upload_normal_size) + 1;
-                let mut data = Vec::with_capacity(est_parts * size_of::<IndexEntry>());
+                let mut data = Vec::with_capacity(est_parts * size_of::<SerializableDigestInfo>());
                 self.pin_index_store()
                     .get_part(digest, &mut data, 0, None)
                     .await

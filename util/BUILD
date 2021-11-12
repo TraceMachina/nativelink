@@ -23,6 +23,7 @@ rust_library(
         "//third_party:hex",
         "//third_party:lazy_init",
         "//third_party:log",
+        "//third_party:serde",
         "//third_party:tokio",
         ":error",
     ],
@@ -45,7 +46,9 @@ rust_library(
     srcs = ["evicting_map.rs"],
     deps = [
         "//config",
+        "//third_party:fast_async_mutex",
         "//third_party:lru",
+        "//third_party:serde",
         "//util:common",
     ],
     visibility = ["//visibility:public"],

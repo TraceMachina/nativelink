@@ -2,10 +2,9 @@
 
 use std::marker::Send;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
-use fast_async_mutex::mutex::Mutex;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use common::DigestInfo;
@@ -15,7 +14,7 @@ use evicting_map::EvictingMap;
 use traits::{ResultFuture, StoreTrait, UploadSizeInfo};
 
 pub struct MemoryStore {
-    map: Mutex<EvictingMap<Vec<u8>, Instant>>,
+    map: EvictingMap<Vec<u8>, SystemTime>,
 }
 
 impl MemoryStore {
@@ -23,23 +22,19 @@ impl MemoryStore {
         let empty_policy = config::backends::EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
         MemoryStore {
-            map: Mutex::new(EvictingMap::new(eviction_policy, Instant::now())),
+            map: EvictingMap::new(eviction_policy, SystemTime::now()),
         }
     }
 
     pub async fn remove_entry(&self, digest: &DigestInfo) -> bool {
-        let mut map = self.map.lock().await;
-        map.remove(digest)
+        self.map.remove(digest).await
     }
 }
 
 #[async_trait]
 impl StoreTrait for MemoryStore {
     fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>> {
-        Box::pin(async move {
-            let mut map = self.map.lock().await;
-            Ok(map.size_for_key(&digest).map(|v| v as usize))
-        })
+        Box::pin(async move { Ok(self.map.size_for_key(&digest).await.map(|v| v as usize)) })
     }
 
     fn update<'a>(
@@ -56,8 +51,7 @@ impl StoreTrait for MemoryStore {
             let mut buffer = Vec::with_capacity(max_size);
             reader.read_to_end(&mut buffer).await?;
             buffer.shrink_to_fit();
-            let mut map = self.map.lock().await;
-            map.insert(digest, Arc::new(buffer));
+            self.map.insert(digest, Arc::new(buffer)).await;
             Ok(())
         })
     }
@@ -70,11 +64,11 @@ impl StoreTrait for MemoryStore {
         length: Option<usize>,
     ) -> ResultFuture<'a, ()> {
         Box::pin(async move {
-            let mut map = self.map.lock().await;
-            let value = map
+            let value = self
+                .map
                 .get(&digest)
-                .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.str())))?
-                .as_ref();
+                .await
+                .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.str())))?;
             let default_len = value.len() - offset;
             let length = length.unwrap_or(default_len).min(default_len);
             writer
