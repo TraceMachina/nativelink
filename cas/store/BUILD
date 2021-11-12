@@ -38,7 +38,6 @@ rust_library(
     srcs = ["memory_store.rs"],
     deps = [
         "//config",
-        "//third_party:fast_async_mutex",
         "//third_party:tokio",
         "//util:common",
         "//util:error",

@@ -11,6 +11,7 @@ use hex::FromHex;
 use lazy_init::LazyTransform;
 pub use log;
 use proto::build::bazel::remote::execution::v2::Digest;
+use serde::{Deserialize, Serialize};
 use tokio::task::{JoinError, JoinHandle};
 
 use error::{make_input_err, Error, ResultExt};
@@ -117,6 +118,19 @@ impl Into<Digest> for DigestInfo {
             size_bytes: self.size_bytes,
         }
     }
+}
+
+impl Into<DigestInfo> for SerializableDigestInfo {
+    fn into(self) -> DigestInfo {
+        DigestInfo::new(self.hash, self.size_bytes as i64)
+    }
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
+#[repr(C)]
+pub struct SerializableDigestInfo {
+    pub hash: [u8; 32],
+    pub size_bytes: u64,
 }
 
 /// Simple wrapper that will abort a future that is running in another spawn in the
