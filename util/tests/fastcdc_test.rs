@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::marker::Unpin;
 
-use bytes::BytesMut;
+use bytes::Bytes;
 use futures::stream::StreamExt;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use sha2::{Digest, Sha256};
@@ -108,7 +108,7 @@ mod fastcdc_tests {
         let fast_cdc = FastCDC::new(1024, 2048, 4096);
         let left_frames = {
             let mut frame_reader = FramedRead::new(Cursor::new(&rand_data), fast_cdc.clone());
-            let frames: Vec<BytesMut> = get_frames(&mut frame_reader).await?;
+            let frames: Vec<Bytes> = get_frames(&mut frame_reader).await?;
 
             let mut frames_map = HashMap::new();
             let mut pos = 0;
@@ -129,7 +129,7 @@ mod fastcdc_tests {
 
         let mut right_frames = {
             let mut frame_reader = FramedRead::new(Cursor::new(&rand_data), fast_cdc.clone());
-            let frames: Vec<BytesMut> = get_frames(&mut frame_reader).await?;
+            let frames: Vec<Bytes> = get_frames(&mut frame_reader).await?;
 
             let mut frames_map = HashMap::new();
             let mut pos = 0;
