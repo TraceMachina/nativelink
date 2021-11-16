@@ -48,7 +48,7 @@ rust_binary(
         "cargo-raze",
         "manual",
     ],
-    version = "1.0.71",
+    version = "1.0.72",
     # buildifier: leave-alone
     deps = [
         ":cc",
@@ -70,7 +70,7 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "1.0.71",
+    version = "1.0.72",
     # buildifier: leave-alone
     deps = [
     ],

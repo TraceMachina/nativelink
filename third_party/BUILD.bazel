@@ -31,6 +31,15 @@ alias(
 )
 
 alias(
+    name = "byteorder",
+    actual = "@raze__byteorder__1_4_3//:byteorder",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "bytes",
     actual = "@raze__bytes__1_1_0//:bytes",
     tags = [
@@ -149,7 +158,7 @@ alias(
 
 alias(
     name = "lz4_flex",
-    actual = "@raze__lz4_flex__0_9_0//:lz4_flex",
+    actual = "@raze__lz4_flex__0_9_1//:lz4_flex",
     tags = [
         "cargo-raze",
         "manual",

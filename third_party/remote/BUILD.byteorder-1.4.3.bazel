@@ -37,6 +37,8 @@ rust_library(
     name = "byteorder",
     srcs = glob(["**/*.rs"]),
     crate_features = [
+        "default",
+        "std",
     ],
     crate_root = "src/lib.rs",
     data = [],
