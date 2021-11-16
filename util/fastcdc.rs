@@ -4,7 +4,7 @@
 // This implementation is heavily based on:
 // https://github.com/nlfiedler/fastcdc-rs/blob/1e804fe27444e37b2c4f93d540f861d170c8a257/src/lib.rs
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use tokio_util::codec::Decoder;
 
 struct State {
@@ -80,7 +80,7 @@ impl FastCDC {
 }
 
 impl Decoder for FastCDC {
-    type Item = BytesMut;
+    type Item = Bytes;
     type Error = std::io::Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -120,14 +120,14 @@ impl Decoder for FastCDC {
                 split_point,
                 self.max_size
             );
-            return Ok(Some(buf.split_to(split_point)));
+            return Ok(Some(buf.split_to(split_point).freeze()));
         }
         self.state.position = split_point;
         if self.state.position == 0 {
             self.state.position = buf.len();
         }
 
-        return Ok(None);
+        Ok(None)
     }
 
     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -140,7 +140,7 @@ impl Decoder for FastCDC {
                     // If our buffer is empty we don't have any more data.
                     return Ok(None);
                 }
-                Ok(Some(buf.split()))
+                Ok(Some(buf.split().freeze()))
             }
         }
     }
