@@ -233,9 +233,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.0.71"
+version = "1.0.72"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79c2681d6594606957bbb8631c4b90a7fcaaa72cdb714743a437b156d6a7eedd"
+checksum = "22a9137b95ea06864e018375b72adfb7db6e6f68cfc8df5a04d00288050485ee"
 
 [[package]]
 name = "cfg-if"
@@ -437,6 +437,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "bincode",
+ "byteorder",
  "bytes",
  "clap",
  "env_logger 0.9.0",
@@ -986,9 +987,9 @@ dependencies = [
 
 [[package]]
 name = "lz4_flex"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "177c079243f6867429aca5af5053747f57e329d44f0c58bebca078cd14873ec2"
+checksum = "1d1a6649ffd1b508f85a7096441dc253e7550bad421be855b374363a667ebef5"
 dependencies = [
  "twox-hash",
 ]
@@ -1773,9 +1774,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.69"
+version = "1.0.70"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e466864e431129c7e0d3476b92f20458e5879919a0596c6472738d9fa2d342f8"
+checksum = "e277c495ac6cd1a01a58d0a0c574568b4d1ddf14f59965c6a58b8d96400b54f3"
 dependencies = [
  "itoa",
  "ryu",

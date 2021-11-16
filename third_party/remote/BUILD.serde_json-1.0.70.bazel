@@ -26,22 +26,50 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT"
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
 ])
 
 # Generated Targets
+# buildifier: disable=out-of-order-load
+# buildifier: disable=load-on-top
+load(
+    "@rules_rust//cargo:cargo_build_script.bzl",
+    "cargo_build_script",
+)
 
-# Unsupported target "crit_bench" with type "bench" omitted
+cargo_build_script(
+    name = "serde_json_build_script",
+    srcs = glob(["**/*.rs"]),
+    build_script_env = {
+    },
+    crate_features = [
+        "default",
+        "std",
+        "unbounded_depth",
+    ],
+    crate_root = "build.rs",
+    data = glob(["**"]),
+    edition = "2018",
+    rustc_flags = [
+        "--cap-lints=allow",
+    ],
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+    version = "1.0.70",
+    visibility = ["//visibility:private"],
+    deps = [
+    ],
+)
 
 rust_library(
-    name = "lz4_flex",
+    name = "serde_json",
     srcs = glob(["**/*.rs"]),
     crate_features = [
         "default",
-        "frame",
-        "safe-decode",
-        "safe-encode",
         "std",
+        "unbounded_depth",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -53,9 +81,12 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.9.0",
+    version = "1.0.70",
     # buildifier: leave-alone
     deps = [
-        "@raze__twox_hash__1_6_1//:twox_hash",
+        ":serde_json_build_script",
+        "@raze__itoa__0_4_8//:itoa",
+        "@raze__ryu__1_0_5//:ryu",
+        "@raze__serde__1_0_130//:serde",
     ],
 )
