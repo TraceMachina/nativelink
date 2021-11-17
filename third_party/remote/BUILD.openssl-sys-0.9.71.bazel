@@ -30,9 +30,42 @@ licenses([
 ])
 
 # Generated Targets
+# buildifier: disable=out-of-order-load
+# buildifier: disable=load-on-top
+load(
+    "@rules_rust//cargo:cargo_build_script.bzl",
+    "cargo_build_script",
+)
+
+cargo_build_script(
+    name = "openssl_sys_build_script",
+    srcs = glob(["**/*.rs"]),
+    build_script_env = {
+    },
+    crate_features = [
+    ],
+    crate_root = "build/main.rs",
+    data = glob(["**"]),
+    edition = "2015",
+    links = "openssl",
+    rustc_flags = [
+        "--cap-lints=allow",
+    ],
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+    version = "0.9.71",
+    visibility = ["//visibility:private"],
+    deps = [
+        "@raze__autocfg__1_0_1//:autocfg",
+        "@raze__cc__1_0_72//:cc",
+        "@raze__pkg_config__0_3_22//:pkg_config",
+    ],
+)
 
 rust_library(
-    name = "lockfree",
+    name = "openssl_sys",
     srcs = glob(["**/*.rs"]),
     crate_features = [
     ],
@@ -46,9 +79,10 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.5.1",
+    version = "0.9.71",
     # buildifier: leave-alone
     deps = [
-        "@raze__owned_alloc__0_2_0//:owned_alloc",
+        ":openssl_sys_build_script",
+        "@raze__libc__0_2_107//:libc",
     ],
 )

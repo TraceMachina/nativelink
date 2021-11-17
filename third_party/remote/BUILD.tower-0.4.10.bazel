@@ -77,7 +77,7 @@ rust_library(
         "@raze__pin_project_lite__0_2_7//:pin_project_lite",
         "@raze__rand__0_8_4//:rand",
         "@raze__slab__0_4_5//:slab",
-        "@raze__tokio__1_13_0//:tokio",
+        "@raze__tokio__1_14_0//:tokio",
         "@raze__tokio_stream__0_1_8//:tokio_stream",
         "@raze__tokio_util__0_6_9//:tokio_util",
         "@raze__tower_layer__0_3_1//:tower_layer",

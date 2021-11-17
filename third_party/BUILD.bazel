@@ -130,8 +130,8 @@ alias(
 )
 
 alias(
-    name = "lease",
-    actual = "@raze__lease__0_2_3//:lease",
+    name = "lazy_static",
+    actual = "@raze__lazy_static__1_4_0//:lazy_static",
     tags = [
         "cargo-raze",
         "manual",
@@ -158,7 +158,7 @@ alias(
 
 alias(
     name = "lz4_flex",
-    actual = "@raze__lz4_flex__0_9_1//:lz4_flex",
+    actual = "@raze__lz4_flex__0_9_2//:lz4_flex",
     tags = [
         "cargo-raze",
         "manual",
@@ -265,6 +265,15 @@ alias(
 )
 
 alias(
+    name = "rusoto_signature",
+    actual = "@raze__rusoto_signature__0_46_0//:rusoto_signature",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "cargo_bin_rustfmt",
     actual = "@raze__rustfmt_nightly__1_4_38//:cargo_bin_rustfmt",
     tags = [
@@ -311,7 +320,7 @@ alias(
 
 alias(
     name = "tokio",
-    actual = "@raze__tokio__1_13_0//:tokio",
+    actual = "@raze__tokio__1_14_0//:tokio",
     tags = [
         "cargo-raze",
         "manual",

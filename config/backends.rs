@@ -261,18 +261,19 @@ pub struct S3Store {
     #[serde(default)]
     pub retry: Retry,
 
-    /// The number of buffer objects available to this store. The default value is 5MB
-    /// for each entry. Due to the way S3Store buffers it's data and can process multiple
-    /// uploads and downloads at a time (even for the same request), it might be possible
-    /// for localhost to send data much faster than S3 can receive the data. If we do not
-    /// use a pool of buffer objects we might end up with a significant amount of data
-    /// queued up for upload in memory. This value will help curb this event from happening
-    /// by throttling a request from being able to read/write more data until a previous
-    /// pooled object is released.
+    /// Additional number of active requests this store will add to the total
+    /// amount of permitted concurrent requests to s3. Instead of limiting the
+    /// number of requests to s3 per store, we instead have a central counter
+    /// that is global to all s3 stores. This means that if one store has this
+    /// value set to 5 and another set to 0, both stores can use a maximum of 5.
+    /// It is done this way because it is rare that a user would want to limit
+    /// a certain store to a certain number of concurrent requests, but instead
+    /// would want to globally limit it, but because s3_store has no global
+    /// settings we do it on the individual store level to apply globally.
     ///
-    /// Default: 50 - This is arbitrary and no research was performed to choose this number.
+    /// Default: 20.
     #[serde(default)]
-    pub buffer_pool_size: usize,
+    pub additional_max_concurrent_requests: usize,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
