@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use common::{DigestInfo, JoinHandleDropGuard};
 use error::{error_if, make_err, Code, Error, ResultExt};
-use traits::{ResultFuture, StoreTrait, UploadSizeInfo};
+use traits::{StoreTrait, UploadSizeInfo};
 
 // In the event the bytestream format changes this number should be incremented to prevent
 // backwards compatibility issues.
@@ -221,346 +221,342 @@ impl CompressionStore {
 
 #[async_trait]
 impl StoreTrait for CompressionStore {
-    fn has<'a>(self: Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>> {
-        Box::pin(async move { Pin::new(self.inner_store.as_ref()).has(digest).await })
+    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+        Pin::new(self.inner_store.as_ref()).has(digest).await
     }
 
-    fn update<'a>(
-        self: Pin<&'a Self>,
+    async fn update(
+        self: Pin<&Self>,
         digest: DigestInfo,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> ResultFuture<'a, ()> {
-        Box::pin(async move {
-            let mut output_state = UploadState::new(&self, upload_size);
+    ) -> Result<(), Error> {
+        let mut output_state = UploadState::new(&self, upload_size);
 
-            let (mut tx, rx) = make_buf_channel_pair();
+        let (mut tx, rx) = make_buf_channel_pair();
 
-            let inner_store = self.inner_store.clone();
-            let update_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
-                Pin::new(inner_store.as_ref())
-                    .update(
-                        digest,
-                        rx,
-                        UploadSizeInfo::MaxSize(output_state.max_output_size as usize),
-                    )
+        let inner_store = self.inner_store.clone();
+        let update_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
+            Pin::new(inner_store.as_ref())
+                .update(
+                    digest,
+                    rx,
+                    UploadSizeInfo::MaxSize(output_state.max_output_size as usize),
+                )
+                .await
+                .err_tip(|| "Inner store update in compression store failed")
+        }))
+        .map(
+            |result| match result.err_tip(|| "Failed to run compression update spawn") {
+                Ok(inner_result) => inner_result.err_tip(|| "Compression underlying store update failed"),
+                Err(e) => Err(e),
+            },
+        );
+
+        let write_fut = async move {
+            {
+                // Write Header.
+                let serialized_header = self
+                    .bincode_options
+                    .serialize(&output_state.header)
+                    .map_err(|e| make_err!(Code::Internal, "Failed to serialize header : {:?}", e))?;
+                tx.send(serialized_header.into())
                     .await
-                    .err_tip(|| "Inner store update in compression store failed")
-            }))
-            .map(
-                |result| match result.err_tip(|| "Failed to run compression update spawn") {
-                    Ok(inner_result) => inner_result.err_tip(|| "Compression underlying store update failed"),
-                    Err(e) => Err(e),
-                },
-            );
+                    .err_tip(|| "Failed to write compression header on upload")?;
+            }
 
-            let write_fut = async move {
-                {
-                    // Write Header.
-                    let serialized_header = self
-                        .bincode_options
-                        .serialize(&output_state.header)
-                        .map_err(|e| make_err!(Code::Internal, "Failed to serialize header : {:?}", e))?;
-                    tx.send(serialized_header.into())
-                        .await
-                        .err_tip(|| "Failed to write compression header on upload")?;
+            let mut received_amt = 0;
+            let mut index_count = 0;
+            for index in &mut output_state.footer.indexes {
+                let chunk = reader
+                    .take(self.config.block_size as usize)
+                    .await
+                    .err_tip(|| "Failed to read take in update in compression store")?;
+                if chunk.len() == 0 {
+                    break; // EOF.
                 }
 
-                let mut received_amt = 0;
-                let mut index_count = 0;
-                for index in &mut output_state.footer.indexes {
-                    let chunk = reader
-                        .take(self.config.block_size as usize)
-                        .await
-                        .err_tip(|| "Failed to read take in update in compression store")?;
-                    if chunk.len() == 0 {
-                        break; // EOF.
-                    }
+                received_amt = received_amt + chunk.len();
+                error_if!(
+                    received_amt > output_state.input_max_size,
+                    "Got more data than stated in compression store upload request"
+                );
 
-                    received_amt = received_amt + chunk.len();
-                    error_if!(
-                        received_amt > output_state.input_max_size,
-                        "Got more data than stated in compression store upload request"
-                    );
+                let max_output_size = get_maximum_output_size(self.config.block_size as usize);
+                let mut compressed_data_buf = BytesMut::with_capacity(max_output_size);
+                compressed_data_buf.put_u8(CHUNK_FRAME_TYPE);
+                compressed_data_buf.put_u32_le(0); // Filled later.
 
-                    let max_output_size = get_maximum_output_size(self.config.block_size as usize);
-                    let mut compressed_data_buf = BytesMut::with_capacity(max_output_size);
-                    compressed_data_buf.put_u8(CHUNK_FRAME_TYPE);
-                    compressed_data_buf.put_u32_le(0); // Filled later.
+                // For efficiency reasons we do some raw slice manipulation so we can write directly
+                // into our buffer instead of having to do another allocation.
+                let mut raw_compressed_data = unsafe {
+                    std::slice::from_raw_parts_mut(compressed_data_buf.chunk_mut().as_mut_ptr(), max_output_size)
+                };
 
-                    // For efficiency reasons we do some raw slice manipulation so we can write directly
-                    // into our buffer instead of having to do another allocation.
-                    let mut raw_compressed_data = unsafe {
-                        std::slice::from_raw_parts_mut(compressed_data_buf.chunk_mut().as_mut_ptr(), max_output_size)
-                    };
-
-                    let compressed_data_sz = compress_into(&chunk, &mut raw_compressed_data)
-                        .map_err(|e| make_err!(Code::Internal, "Compression error {:?}", e))?;
-                    unsafe {
-                        compressed_data_buf.advance_mut(compressed_data_sz);
-                    }
-
-                    // Now fill the size in our slice.
-                    LittleEndian::write_u32(&mut compressed_data_buf[1..5], compressed_data_sz as u32);
-
-                    // Now send our chunk.
-                    tx.send(compressed_data_buf.freeze())
-                        .await
-                        .err_tip(|| "Failed to write chunk to inner store in compression store")?;
-
-                    index.position_from_prev_index = compressed_data_sz as u32;
-
-                    index_count += 1;
-                }
-                // Index 0 is actually a pointer to the second chunk. This is because we don't need
-                // an index for the first item, since it starts at position `{header_len}`.
-                // The code above causes us to create 1 more index than we actually need, so we
-                // remove the last index from our vector here, because at this point we are always
-                // one index too many.
-                // Note: We need to be careful that if we don't have any data (zero bytes) it
-                // doesn't go to -1.
-                if index_count > 0 {
-                    index_count -= 1;
-                }
-                output_state
-                    .footer
-                    .indexes
-                    .resize(index_count, SliceIndex { ..Default::default() });
-                output_state.footer.index_count = output_state.footer.indexes.len() as u32;
-                output_state.footer.uncompressed_data_size = received_amt as u64;
-                {
-                    // Write Footer.
-                    let serialized_footer = self
-                        .bincode_options
-                        .serialize(&output_state.footer)
-                        .map_err(|e| make_err!(Code::Internal, "Failed to serialize header : {:?}", e))?;
-
-                    let mut footer = BytesMut::with_capacity(1 + 4 + serialized_footer.len());
-                    footer.put_u8(FOOTER_FRAME_TYPE);
-                    footer.put_u32_le(serialized_footer.len() as u32);
-                    footer.extend_from_slice(&serialized_footer);
-
-                    tx.send(footer.freeze())
-                        .await
-                        .err_tip(|| "Failed to write footer to inner store in compression store")?;
-                    tx.send_eof()
-                        .await
-                        .err_tip(|| "Failed writing EOF in compression store update")?;
+                let compressed_data_sz = compress_into(&chunk, &mut raw_compressed_data)
+                    .map_err(|e| make_err!(Code::Internal, "Compression error {:?}", e))?;
+                unsafe {
+                    compressed_data_buf.advance_mut(compressed_data_sz);
                 }
 
-                Result::<(), Error>::Ok(())
-            };
-            let (write_result, update_result) = tokio::join!(write_fut, update_fut);
-            write_result.merge(update_result)
-        })
+                // Now fill the size in our slice.
+                LittleEndian::write_u32(&mut compressed_data_buf[1..5], compressed_data_sz as u32);
+
+                // Now send our chunk.
+                tx.send(compressed_data_buf.freeze())
+                    .await
+                    .err_tip(|| "Failed to write chunk to inner store in compression store")?;
+
+                index.position_from_prev_index = compressed_data_sz as u32;
+
+                index_count += 1;
+            }
+            // Index 0 is actually a pointer to the second chunk. This is because we don't need
+            // an index for the first item, since it starts at position `{header_len}`.
+            // The code above causes us to create 1 more index than we actually need, so we
+            // remove the last index from our vector here, because at this point we are always
+            // one index too many.
+            // Note: We need to be careful that if we don't have any data (zero bytes) it
+            // doesn't go to -1.
+            if index_count > 0 {
+                index_count -= 1;
+            }
+            output_state
+                .footer
+                .indexes
+                .resize(index_count, SliceIndex { ..Default::default() });
+            output_state.footer.index_count = output_state.footer.indexes.len() as u32;
+            output_state.footer.uncompressed_data_size = received_amt as u64;
+            {
+                // Write Footer.
+                let serialized_footer = self
+                    .bincode_options
+                    .serialize(&output_state.footer)
+                    .map_err(|e| make_err!(Code::Internal, "Failed to serialize header : {:?}", e))?;
+
+                let mut footer = BytesMut::with_capacity(1 + 4 + serialized_footer.len());
+                footer.put_u8(FOOTER_FRAME_TYPE);
+                footer.put_u32_le(serialized_footer.len() as u32);
+                footer.extend_from_slice(&serialized_footer);
+
+                tx.send(footer.freeze())
+                    .await
+                    .err_tip(|| "Failed to write footer to inner store in compression store")?;
+                tx.send_eof()
+                    .await
+                    .err_tip(|| "Failed writing EOF in compression store update")?;
+            }
+
+            Result::<(), Error>::Ok(())
+        };
+        let (write_result, update_result) = tokio::join!(write_fut, update_fut);
+        write_result.merge(update_result)
     }
 
-    fn get_part<'a>(
-        self: Pin<&'a Self>,
+    async fn get_part(
+        self: Pin<&Self>,
         digest: DigestInfo,
         mut writer: DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
-    ) -> ResultFuture<'a, ()> {
-        Box::pin(async move {
-            let offset = offset as u64;
-            let (tx, mut rx) = make_buf_channel_pair();
+    ) -> Result<(), Error> {
+        let offset = offset as u64;
+        let (tx, mut rx) = make_buf_channel_pair();
 
-            let inner_store = self.inner_store.clone();
-            let get_part_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
-                Pin::new(inner_store.as_ref())
-                    .get_part(digest, tx, 0, None)
-                    .await
-                    .err_tip(|| "Inner store get in compression store failed")
-            }))
-            .map(
-                |result| match result.err_tip(|| "Failed to run compression get spawn") {
-                    Ok(inner_result) => inner_result.err_tip(|| "Compression underlying store get failed"),
-                    Err(e) => Err(e),
-                },
-            );
-            let read_fut = async move {
-                let header = {
-                    // Read header.
-                    static EMPTY_HEADER: Header = Header {
-                        version: CURRENT_STREAM_FORMAT_VERSION,
-                        config: Lz4Config { block_size: 0 },
-                        upload_size: UploadSizeInfo::ExactSize(0),
-                    };
-                    let header_size = self.bincode_options.serialized_size(&EMPTY_HEADER).unwrap() as u64;
-                    let chunk = rx
-                        .take(header_size as usize)
-                        .await
-                        .err_tip(|| "Failed to read header in get_part compression store")?;
-                    error_if!(
-                        chunk.len() as u64 != header_size,
-                        "Expected inner store to return the proper amount of data in compression store {} != {}",
-                        chunk.len(),
-                        header_size,
-                    );
-
-                    self.bincode_options
-                        .deserialize::<Header>(&chunk)
-                        .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))?
+        let inner_store = self.inner_store.clone();
+        let get_part_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
+            Pin::new(inner_store.as_ref())
+                .get_part(digest, tx, 0, None)
+                .await
+                .err_tip(|| "Inner store get in compression store failed")
+        }))
+        .map(
+            |result| match result.err_tip(|| "Failed to run compression get spawn") {
+                Ok(inner_result) => inner_result.err_tip(|| "Compression underlying store get failed"),
+                Err(e) => Err(e),
+            },
+        );
+        let read_fut = async move {
+            let header = {
+                // Read header.
+                static EMPTY_HEADER: Header = Header {
+                    version: CURRENT_STREAM_FORMAT_VERSION,
+                    config: Lz4Config { block_size: 0 },
+                    upload_size: UploadSizeInfo::ExactSize(0),
                 };
+                let header_size = self.bincode_options.serialized_size(&EMPTY_HEADER).unwrap() as u64;
+                let chunk = rx
+                    .take(header_size as usize)
+                    .await
+                    .err_tip(|| "Failed to read header in get_part compression store")?;
+                error_if!(
+                    chunk.len() as u64 != header_size,
+                    "Expected inner store to return the proper amount of data in compression store {} != {}",
+                    chunk.len(),
+                    header_size,
+                );
 
+                self.bincode_options
+                    .deserialize::<Header>(&chunk)
+                    .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))?
+            };
+
+            error_if!(
+                header.version != CURRENT_STREAM_FORMAT_VERSION,
+                "Expected header version to match in get compression, got {}, want {}",
+                header.version,
+                CURRENT_STREAM_FORMAT_VERSION
+            );
+            error_if!(
+                header.config.block_size > self.config.max_decode_block_size,
+                "Block size is too large in compression, got {} > {}",
+                header.config.block_size,
+                self.config.max_decode_block_size
+            );
+
+            let mut chunk = rx
+                .take(1 + 4)
+                .await
+                .err_tip(|| "Failed to read init frame info in compression store")?;
+            error_if!(
+                chunk.len() < 1 + 4,
+                "Received EOF too early while reading init frame info in compression store"
+            );
+
+            let mut frame_type = chunk.get_u8();
+            let mut frame_sz = chunk.get_u32_le();
+
+            let mut uncompressed_data_sz: u64 = 0;
+            let mut remaining_bytes_to_send: u64 = length.unwrap_or(usize::MAX) as u64;
+            let mut chunks_count = 0;
+            while frame_type != FOOTER_FRAME_TYPE {
                 error_if!(
-                    header.version != CURRENT_STREAM_FORMAT_VERSION,
-                    "Expected header version to match in get compression, got {}, want {}",
-                    header.version,
-                    CURRENT_STREAM_FORMAT_VERSION
+                    frame_type != CHUNK_FRAME_TYPE,
+                    "Expected frame to be BODY in compression store, got {} at {}",
+                    frame_type,
+                    chunks_count
                 );
-                error_if!(
-                    header.config.block_size > self.config.max_decode_block_size,
-                    "Block size is too large in compression, got {} > {}",
-                    header.config.block_size,
-                    self.config.max_decode_block_size
-                );
+
+                let chunk = rx
+                    .take(frame_sz as usize)
+                    .await
+                    .err_tip(|| "Failed to read chunk in get_part compression store")?;
+                if chunk.len() < frame_sz as usize {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Got EOF earlier than expected. Maybe the data is not compressed or different format?"
+                    ));
+                }
+                {
+                    let max_output_size = get_maximum_output_size(header.config.block_size as usize);
+                    let mut uncompressed_data = BytesMut::with_capacity(max_output_size);
+
+                    // For efficiency reasons we do some raw slice manipulation so we can write directly
+                    // into our buffer instead of having to do another allocation.
+                    let mut raw_decompressed_data = unsafe {
+                        std::slice::from_raw_parts_mut(uncompressed_data.chunk_mut().as_mut_ptr(), max_output_size)
+                    };
+
+                    let uncompressed_chunk_sz = decompress_into(&chunk, &mut raw_decompressed_data)
+                        .map_err(|e| make_err!(Code::Internal, "Decompression error {:?}", e))?;
+                    unsafe { uncompressed_data.advance_mut(uncompressed_chunk_sz) };
+                    let new_uncompressed_data_sz = uncompressed_data_sz + uncompressed_chunk_sz as u64;
+                    if new_uncompressed_data_sz >= offset && remaining_bytes_to_send > 0 {
+                        let start_pos = if offset <= uncompressed_data_sz {
+                            0
+                        } else {
+                            offset - uncompressed_data_sz
+                        } as usize;
+                        let end_pos = cmp::min(start_pos + remaining_bytes_to_send as usize, uncompressed_chunk_sz);
+                        if end_pos != start_pos {
+                            // Make sure we don't send an EOF by accident.
+                            writer
+                                .send(uncompressed_data.freeze().slice(start_pos..end_pos))
+                                .await
+                                .err_tip(|| "Failed sending chunk in compression store")?;
+                        }
+                        remaining_bytes_to_send -= (end_pos - start_pos) as u64;
+                    }
+                    uncompressed_data_sz = new_uncompressed_data_sz;
+                }
+                chunks_count += 1;
 
                 let mut chunk = rx
                     .take(1 + 4)
                     .await
-                    .err_tip(|| "Failed to read init frame info in compression store")?;
+                    .err_tip(|| "Failed to read frame info in compression store")?;
                 error_if!(
                     chunk.len() < 1 + 4,
-                    "Received EOF too early while reading init frame info in compression store"
+                    "Received EOF too early while reading frame info in compression store"
                 );
 
-                let mut frame_type = chunk.get_u8();
-                let mut frame_sz = chunk.get_u32_le();
-
-                let mut uncompressed_data_sz: u64 = 0;
-                let mut remaining_bytes_to_send: u64 = length.unwrap_or(usize::MAX) as u64;
-                let mut chunks_count = 0;
-                while frame_type != FOOTER_FRAME_TYPE {
-                    error_if!(
-                        frame_type != CHUNK_FRAME_TYPE,
-                        "Expected frame to be BODY in compression store, got {} at {}",
-                        frame_type,
-                        chunks_count
-                    );
-
-                    let chunk = rx
-                        .take(frame_sz as usize)
-                        .await
-                        .err_tip(|| "Failed to read chunk in get_part compression store")?;
-                    if chunk.len() < frame_sz as usize {
-                        return Err(make_err!(
-                            Code::Internal,
-                            "Got EOF earlier than expected. Maybe the data is not compressed or different format?"
-                        ));
-                    }
-                    {
-                        let max_output_size = get_maximum_output_size(header.config.block_size as usize);
-                        let mut uncompressed_data = BytesMut::with_capacity(max_output_size);
-
-                        // For efficiency reasons we do some raw slice manipulation so we can write directly
-                        // into our buffer instead of having to do another allocation.
-                        let mut raw_decompressed_data = unsafe {
-                            std::slice::from_raw_parts_mut(uncompressed_data.chunk_mut().as_mut_ptr(), max_output_size)
-                        };
-
-                        let uncompressed_chunk_sz = decompress_into(&chunk, &mut raw_decompressed_data)
-                            .map_err(|e| make_err!(Code::Internal, "Decompression error {:?}", e))?;
-                        unsafe { uncompressed_data.advance_mut(uncompressed_chunk_sz) };
-                        let new_uncompressed_data_sz = uncompressed_data_sz + uncompressed_chunk_sz as u64;
-                        if new_uncompressed_data_sz >= offset && remaining_bytes_to_send > 0 {
-                            let start_pos = if offset <= uncompressed_data_sz {
-                                0
-                            } else {
-                                offset - uncompressed_data_sz
-                            } as usize;
-                            let end_pos = cmp::min(start_pos + remaining_bytes_to_send as usize, uncompressed_chunk_sz);
-                            if end_pos != start_pos {
-                                // Make sure we don't send an EOF by accident.
-                                writer
-                                    .send(uncompressed_data.freeze().slice(start_pos..end_pos))
-                                    .await
-                                    .err_tip(|| "Failed sending chunk in compression store")?;
-                            }
-                            remaining_bytes_to_send -= (end_pos - start_pos) as u64;
-                        }
-                        uncompressed_data_sz = new_uncompressed_data_sz;
-                    }
-                    chunks_count += 1;
-
-                    let mut chunk = rx
-                        .take(1 + 4)
-                        .await
-                        .err_tip(|| "Failed to read frame info in compression store")?;
-                    error_if!(
-                        chunk.len() < 1 + 4,
-                        "Received EOF too early while reading frame info in compression store"
-                    );
-
-                    frame_type = chunk.get_u8();
-                    frame_sz = chunk.get_u32_le();
-                }
-                // Index count will always be +1 (unless it is zero bytes long).
-                if chunks_count > 0 {
-                    chunks_count -= 1;
-                }
-                {
-                    // Read and validate footer.
-                    let chunk = rx
-                        .take(frame_sz as usize)
-                        .await
-                        .err_tip(|| "Failed to read chunk in get_part compression store")?;
-                    error_if!(
-                        chunk.len() < frame_sz as usize,
-                        "Unexpected EOF when reading footer in compression store get_part"
-                    );
-
-                    let footer = self
-                        .bincode_options
-                        .deserialize::<Footer>(&chunk)
-                        .map_err(|e| make_err!(Code::Internal, "Failed to deserialize footer : {:?}", e))?;
-
-                    error_if!(
-                        header.version != footer.version,
-                        "Expected header and footer versions to match compression store get_part, {} != {}",
-                        header.version,
-                        footer.version
-                    );
-                    error_if!(
-                        footer.indexes.len() != footer.index_count as usize,
-                        "Expected index counts to match in compression store footer in get_part, {} != {}",
-                        footer.indexes.len(),
-                        footer.index_count
-                    );
-                    error_if!(
-                        footer.index_count != chunks_count,
-                        concat!(
-                            "Expected index counts to match received chunks count ",
-                            "in compression store footer in get_part, {} != {}"
-                        ),
-                        footer.index_count,
-                        chunks_count
-                    );
-                    error_if!(
-                        footer.uncompressed_data_size != uncompressed_data_sz,
-                        "Expected uncompressed data sizes to match in compression store footer in get_part, {} != {}",
-                        footer.uncompressed_data_size,
-                        uncompressed_data_sz
-                    );
-                }
-
-                writer
-                    .send_eof()
-                    .await
-                    .err_tip(|| "Failed to send eof in compression store write")?;
-                Ok(())
-            };
-
-            let (read_result, get_part_fut_result) = tokio::join!(read_fut, get_part_fut);
-            if let Err(mut e) = read_result {
-                // We may need to propagate the error from reading the data through first.
-                if let Err(err) = get_part_fut_result {
-                    e = err.merge(e);
-                }
-                return Err(e);
+                frame_type = chunk.get_u8();
+                frame_sz = chunk.get_u32_le();
             }
+            // Index count will always be +1 (unless it is zero bytes long).
+            if chunks_count > 0 {
+                chunks_count -= 1;
+            }
+            {
+                // Read and validate footer.
+                let chunk = rx
+                    .take(frame_sz as usize)
+                    .await
+                    .err_tip(|| "Failed to read chunk in get_part compression store")?;
+                error_if!(
+                    chunk.len() < frame_sz as usize,
+                    "Unexpected EOF when reading footer in compression store get_part"
+                );
+
+                let footer = self
+                    .bincode_options
+                    .deserialize::<Footer>(&chunk)
+                    .map_err(|e| make_err!(Code::Internal, "Failed to deserialize footer : {:?}", e))?;
+
+                error_if!(
+                    header.version != footer.version,
+                    "Expected header and footer versions to match compression store get_part, {} != {}",
+                    header.version,
+                    footer.version
+                );
+                error_if!(
+                    footer.indexes.len() != footer.index_count as usize,
+                    "Expected index counts to match in compression store footer in get_part, {} != {}",
+                    footer.indexes.len(),
+                    footer.index_count
+                );
+                error_if!(
+                    footer.index_count != chunks_count,
+                    concat!(
+                        "Expected index counts to match received chunks count ",
+                        "in compression store footer in get_part, {} != {}"
+                    ),
+                    footer.index_count,
+                    chunks_count
+                );
+                error_if!(
+                    footer.uncompressed_data_size != uncompressed_data_sz,
+                    "Expected uncompressed data sizes to match in compression store footer in get_part, {} != {}",
+                    footer.uncompressed_data_size,
+                    uncompressed_data_sz
+                );
+            }
+
+            writer
+                .send_eof()
+                .await
+                .err_tip(|| "Failed to send eof in compression store write")?;
             Ok(())
-        })
+        };
+
+        let (read_result, get_part_fut_result) = tokio::join!(read_fut, get_part_fut);
+        if let Err(mut e) = read_result {
+            // We may need to propagate the error from reading the data through first.
+            if let Err(err) = get_part_fut_result {
+                e = err.merge(e);
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 }

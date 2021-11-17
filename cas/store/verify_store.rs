@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
 use error::{error_if, Error, ResultExt};
-use traits::{ResultFuture, StoreTrait, UploadSizeInfo};
+use traits::{StoreTrait, UploadSizeInfo};
 
 pub struct VerifyStore {
     inner_store: Arc<dyn StoreTrait>,
@@ -28,7 +28,7 @@ impl VerifyStore {
         }
     }
 
-    fn pin_inner<'a>(&'a self) -> std::pin::Pin<&'a dyn StoreTrait> {
+    fn pin_inner<'a>(&'a self) -> Pin<&'a dyn StoreTrait> {
         Pin::new(self.inner_store.as_ref())
     }
 }
@@ -86,51 +86,49 @@ async fn inner_check_update(
 
 #[async_trait]
 impl StoreTrait for VerifyStore {
-    fn has<'a>(self: std::pin::Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>> {
-        Box::pin(async move { self.pin_inner().has(digest).await })
+    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+        self.pin_inner().has(digest).await
     }
 
-    fn update<'a>(
-        self: std::pin::Pin<&'a Self>,
+    async fn update(
+        self: Pin<&Self>,
         digest: DigestInfo,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-    ) -> ResultFuture<'a, ()> {
-        Box::pin(async move {
-            let digest_size =
-                usize::try_from(digest.size_bytes).err_tip(|| "Digest size_bytes was not convertible to usize")?;
-            if let UploadSizeInfo::ExactSize(expected_size) = size_info {
-                error_if!(
-                    self.verify_size && expected_size != digest_size,
-                    "Expected size to match. Got {} but digest says {} on update",
-                    expected_size,
-                    digest.size_bytes
-                );
-            }
+    ) -> Result<(), Error> {
+        let digest_size =
+            usize::try_from(digest.size_bytes).err_tip(|| "Digest size_bytes was not convertible to usize")?;
+        if let UploadSizeInfo::ExactSize(expected_size) = size_info {
+            error_if!(
+                self.verify_size && expected_size != digest_size,
+                "Expected size to match. Got {} but digest says {} on update",
+                expected_size,
+                digest.size_bytes
+            );
+        }
 
-            let mut hasher = None;
-            if self.verify_hash {
-                hasher = Some((digest.packed_hash, Sha256::new()));
-            }
+        let mut hasher = None;
+        if self.verify_hash {
+            hasher = Some((digest.packed_hash, Sha256::new()));
+        }
 
-            let (tx, rx) = make_buf_channel_pair();
+        let (tx, rx) = make_buf_channel_pair();
 
-            let update_fut = self.pin_inner().update(digest, rx, size_info);
-            let check_fut = inner_check_update(tx, reader, size_info, hasher);
+        let update_fut = self.pin_inner().update(digest, rx, size_info);
+        let check_fut = inner_check_update(tx, reader, size_info, hasher);
 
-            let (update_res, check_res) = tokio::join!(update_fut, check_fut);
+        let (update_res, check_res) = tokio::join!(update_fut, check_fut);
 
-            update_res.merge(check_res)
-        })
+        update_res.merge(check_res)
     }
 
-    fn get_part<'a>(
-        self: std::pin::Pin<&'a Self>,
+    async fn get_part(
+        self: Pin<&Self>,
         digest: DigestInfo,
         writer: DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
-    ) -> ResultFuture<'a, ()> {
-        Box::pin(async move { self.pin_inner().get_part(digest, writer, offset, length).await })
+    ) -> Result<(), Error> {
+        self.pin_inner().get_part(digest, writer, offset, length).await
     }
 }
