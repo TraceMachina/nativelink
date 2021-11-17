@@ -4,15 +4,13 @@ use std::marker::Send;
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use futures::{join, try_join, Future};
+use futures::{join, try_join};
 use serde::{Deserialize, Serialize};
 
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use bytes::Bytes;
 use common::DigestInfo;
 use error::{Error, ResultExt};
-
-pub type ResultFuture<'a, Res> = Pin<Box<dyn Future<Output = Result<Res, Error>> + 'a + Send>>;
 
 #[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum UploadSizeInfo {
@@ -29,14 +27,14 @@ pub enum UploadSizeInfo {
 
 #[async_trait]
 pub trait StoreTrait: Sync + Send + Unpin {
-    fn has<'a>(self: Pin<&'a Self>, digest: DigestInfo) -> ResultFuture<'a, Option<usize>>;
+    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error>;
 
-    fn update<'a>(
-        self: Pin<&'a Self>,
+    async fn update(
+        self: Pin<&Self>,
         digest: DigestInfo,
         reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> ResultFuture<'a, ()>;
+    ) -> Result<(), Error>;
 
     // Utility to send all the data to the store when you have all the bytes.
     async fn update_oneshot(self: Pin<&Self>, digest: DigestInfo, data: Bytes) -> Result<(), Error> {
@@ -62,16 +60,16 @@ pub trait StoreTrait: Sync + Send + Unpin {
         Ok(())
     }
 
-    fn get_part<'a>(
-        self: Pin<&'a Self>,
+    async fn get_part(
+        self: Pin<&Self>,
         digest: DigestInfo,
         writer: DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
-    ) -> ResultFuture<'a, ()>;
+    ) -> Result<(), Error>;
 
-    fn get<'a>(self: Pin<&'a Self>, digest: DigestInfo, writer: DropCloserWriteHalf) -> ResultFuture<'a, ()> {
-        self.get_part(digest, writer, 0, None)
+    async fn get(self: Pin<&Self>, digest: DigestInfo, writer: DropCloserWriteHalf) -> Result<(), Error> {
+        self.get_part(digest, writer, 0, None).await
     }
 
     // Utility that will return all the bytes at once instead of in a streaming manner.
