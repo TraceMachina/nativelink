@@ -1,11 +1,12 @@
 // Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
+use fast_async_mutex::mutex::Mutex;
 use futures::{stream::unfold, Stream};
 use proto::google::bytestream::{
     byte_stream_server::ByteStream, byte_stream_server::ByteStreamServer as Server, QueryWriteStatusRequest,
@@ -31,6 +32,7 @@ pub struct ByteStreamServer {
     stores: HashMap<String, Arc<dyn Store>>,
     // Max number of bytes to send on each grpc stream chunk.
     max_bytes_per_stream: usize,
+    active_uploads: Mutex<HashSet<String>>,
 }
 
 impl ByteStreamServer {
@@ -46,6 +48,7 @@ impl ByteStreamServer {
         Ok(ByteStreamServer {
             stores: stores,
             max_bytes_per_stream: config.max_bytes_per_stream,
+            active_uploads: Mutex::new(HashSet::new()),
         })
     }
 
@@ -172,13 +175,58 @@ impl ByteStreamServer {
             committed_size: stream.bytes_received as i64,
         }))
     }
+
+    async fn inner_query_write_status(
+        &self,
+        query_request: &QueryWriteStatusRequest,
+    ) -> Result<Response<QueryWriteStatusResponse>, Error> {
+        let mut resource_info = ResourceInfo::new(&query_request.resource_name)?;
+
+        let uuid = resource_info
+            .uuid
+            .take()
+            .ok_or_else(|| make_input_err!("UUID must be set if querying write status"))?;
+
+        {
+            let active_uploads = self.active_uploads.lock().await;
+            if active_uploads.contains(uuid) {
+                return Ok(Response::new(QueryWriteStatusResponse {
+                    // TODO(blaise.bruer) We currently don't support resuming a stream, so we always
+                    // start from zero.
+                    committed_size: 0,
+                    complete: false,
+                }));
+            }
+        }
+
+        let store_clone = self
+            .stores
+            .get(resource_info.instance_name)
+            .err_tip(|| {
+                format!(
+                    "'instance_name' not configured for '{}'",
+                    (&resource_info).instance_name
+                )
+            })?
+            .clone();
+        let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
+        let result = tokio::spawn(async move { Pin::new(store_clone.as_ref()).has(digest).await })
+            .await
+            .err_tip(|| "Failed to join spawn")?;
+
+        if result.err_tip(|| "Failed to call .has() on store")?.is_none() {
+            return Err(make_err!(Code::NotFound, "{}", "not found"));
+        }
+        Ok(Response::new(QueryWriteStatusResponse {
+            committed_size: 0,
+            complete: true,
+        }))
+    }
 }
 
 struct ResourceInfo<'a> {
     instance_name: &'a str,
-    // TODO(allada) Currently we do not support stream resuming, this is
-    // the field we would need.
-    _uuid: Option<&'a str>,
+    uuid: Option<&'a str>,
     hash: &'a str,
     expected_size: usize,
 }
@@ -214,7 +262,7 @@ impl<'a> ResourceInfo<'a> {
         })?;
         Ok(ResourceInfo {
             instance_name: instance_name,
-            _uuid: uuid,
+            uuid,
             hash,
             expected_size,
         })
@@ -225,6 +273,7 @@ impl<'a> ResourceInfo<'a> {
 struct WriteRequestStreamWrapper {
     stream: Streaming<WriteRequest>,
     first_msg: Option<WriteRequest>,
+    uuid: Option<String>,
     hash: String,
     instance_name: String,
     expected_size: usize,
@@ -245,11 +294,13 @@ impl WriteRequestStreamWrapper {
         let instance_name = resource_info.instance_name.to_string();
         let hash = resource_info.hash.to_string();
         let expected_size = resource_info.expected_size;
+        let uuid = resource_info.uuid.map(|v| v.to_string());
         let write_finished = first_msg.finish_write;
 
         Ok(WriteRequestStreamWrapper {
             stream,
             first_msg: Some(first_msg),
+            uuid,
             hash,
             instance_name,
             expected_size,
@@ -313,7 +364,7 @@ impl ByteStream for ByteStreamServer {
 
     async fn write(&self, grpc_request: Request<Streaming<WriteRequest>>) -> Result<Response<WriteResponse>, Status> {
         let now = Instant::now();
-        let stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
+        let mut stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
             .await
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(|e| Into::<Status>::into(e))?;
@@ -322,12 +373,34 @@ impl ByteStream for ByteStreamServer {
         } else {
             None
         };
+
+        let uuid = stream
+            .uuid
+            .take()
+            .ok_or_else(|| Into::<Status>::into(make_input_err!("UUID must be set if writing data")))?;
+        {
+            // Check to see if request is already being uploaded and if it is error, otherwise insert entry.
+            let mut active_uploads = self.active_uploads.lock().await;
+            if active_uploads.contains(&uuid) {
+                return Err(Into::<Status>::into(make_input_err!(
+                    "Cannot upload same UUID simultaneously"
+                )));
+            }
+            active_uploads.insert(uuid.clone());
+        }
+
         log::info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", hash);
         let resp = self
             .inner_write(stream)
             .await
-            .err_tip(|| format!("Failed on write() command"))
+            .err_tip(|| "Failed on write() command")
             .map_err(|e| e.into());
+
+        {
+            // Remove the active upload request.
+            let mut active_uploads = self.active_uploads.lock().await;
+            active_uploads.remove(&uuid);
+        }
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = resp.as_ref() {
             log::error!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?} {:?}", d, hash, err);
@@ -339,9 +412,25 @@ impl ByteStream for ByteStreamServer {
 
     async fn query_write_status(
         &self,
-        _grpc_request: Request<QueryWriteStatusRequest>,
+        grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Status> {
-        log::error!("query_write_status {:?}", _grpc_request.get_ref());
-        Err(Status::unimplemented(""))
+        let now = Instant::now();
+        let query_request = grpc_request.into_inner();
+
+        let resp = self
+            .inner_query_write_status(&query_request)
+            .await
+            .err_tip(|| "Failed on query_write_status() command")
+            .map_err(|e| e.into());
+
+        let d = now.elapsed().as_secs_f32();
+        if resp.is_err() {
+            log::error!("\x1b[0;31mQuery Req\x1b[0m: {:?}", query_request);
+            log::error!("\x1b[0;31mQuery Resp\x1b[0m: {} {:?}", d, resp);
+        } else {
+            log::info!("\x1b[0;31mQuery Req\x1b[0m: {:?}", query_request);
+            log::info!("\x1b[0;31mQuery Resp\x1b[0m: {} {:?}", d, resp);
+        }
+        resp
     }
 }

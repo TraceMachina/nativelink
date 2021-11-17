@@ -123,6 +123,10 @@ impl DropCloserWriteHalf {
 impl Drop for DropCloserWriteHalf {
     /// This will notify the reader of an error if we did not send an EOF.
     fn drop(&mut self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            println!("No tokio runtime active. Tx was dropped but can't send error.");
+            return; // Cant send error, no runtime.
+        }
         if let Some(tx) = self.tx.take() {
             // If we do not notify the receiver of the premature close of the stream (ie: without EOF)
             // we could end up with the receiver thinking everything is good and saving this bad data.

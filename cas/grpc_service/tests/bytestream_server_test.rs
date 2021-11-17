@@ -2,10 +2,12 @@
 
 use std::convert::TryFrom;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use bytestream_server::ByteStreamServer;
 use futures::{pin_mut, poll, task::Poll};
 use maplit::hashmap;
+use prost::{bytes::Bytes, Message};
 use tokio::task::yield_now;
 use tonic::Request;
 
@@ -38,12 +40,39 @@ fn make_bytestream_server(store_manager: &mut StoreManager) -> Result<ByteStream
     )
 }
 
+// Utility to encode our proto into GRPC stream format.
+fn encode<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::error::Error>> {
+    use prost::bytes::{BufMut, BytesMut};
+    let mut buf = BytesMut::new();
+    // See below comment on spec.
+    use std::mem::size_of;
+    const PREFIX_BYTES: usize = size_of::<u8>() + size_of::<u32>();
+    for _ in 0..PREFIX_BYTES {
+        // Advance our buffer first.
+        // We will backfill it once we know the size of the message.
+        buf.put_u8(0);
+    }
+    proto.encode(&mut buf)?;
+    let len = buf.len() - PREFIX_BYTES;
+    {
+        let mut buf = &mut buf[0..PREFIX_BYTES];
+        // See: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#:~:text=Compressed-Flag
+        // for more details on spec.
+        // Compressed-Flag -> 0 / 1 # encoded as 1 byte unsigned integer.
+        buf.put_u8(0);
+        // Message-Length -> {length of Message} # encoded as 4 byte unsigned integer (big endian).
+        buf.put_u32(len as u32);
+        // Message -> *{binary octet}.
+    }
+
+    Ok(buf.freeze())
+}
+
 #[cfg(test)]
 pub mod write_tests {
     use super::*;
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
-    use prost::{bytes::Bytes, Message};
     use tonic::{
         codec::Codec, // Needed for .decoder().
         codec::ProstCodec,
@@ -55,34 +84,6 @@ pub mod write_tests {
         byte_stream_server::ByteStream, // Needed to call .write().
         WriteRequest,
     };
-
-    // Utility to encode our proto into GRPC stream format.
-    fn encode<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::error::Error>> {
-        use prost::bytes::{BufMut, BytesMut};
-        let mut buf = BytesMut::new();
-        // See below comment on spec.
-        use std::mem::size_of;
-        const PREFIX_BYTES: usize = size_of::<u8>() + size_of::<u32>();
-        for _ in 0..PREFIX_BYTES {
-            // Advance our buffer first.
-            // We will backfill it once we know the size of the message.
-            buf.put_u8(0);
-        }
-        proto.encode(&mut buf)?;
-        let len = buf.len() - PREFIX_BYTES;
-        {
-            let mut buf = &mut buf[0..PREFIX_BYTES];
-            // See: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#:~:text=Compressed-Flag
-            // for more details on spec.
-            // Compressed-Flag -> 0 / 1 # encoded as 1 byte unsigned integer.
-            buf.put_u8(0);
-            // Message-Length -> {length of Message} # encoded as 4 byte unsigned integer (big endian).
-            buf.put_u32(len as u32);
-            // Message -> *{binary octet}.
-        }
-
-        Ok(buf.freeze())
-    }
 
     #[tokio::test]
     pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
@@ -309,6 +310,121 @@ pub mod read_tests {
                 "Expected error data to match"
             );
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub mod query_tests {
+    use super::*;
+    use pretty_assertions::assert_eq; // Must be declared in every module.
+
+    use proto::google::bytestream::{
+        byte_stream_server::ByteStream, QueryWriteStatusRequest, QueryWriteStatusResponse, WriteRequest,
+    };
+
+    use tonic::{codec::Codec, codec::ProstCodec, transport::Body, Streaming};
+
+    #[tokio::test]
+    pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store_manager = make_store_manager()?;
+        let bs_server = Arc::new(make_bytestream_server(&mut store_manager)?);
+
+        let raw_data = "12456789abcdefghijk".as_bytes();
+        let resource_name = format!(
+            "{}/uploads/{}/blobs/{}/{}",
+            INSTANCE_NAME,
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
+            HASH1,
+            raw_data.len()
+        );
+
+        {
+            let response = bs_server
+                .query_write_status(Request::new(QueryWriteStatusRequest {
+                    resource_name: resource_name.clone(),
+                }))
+                .await;
+            assert_eq!(response.is_err(), true);
+            let expected_err = make_err!(
+                Code::NotFound,
+                "{}{}",
+                "status: NotFound, message: \"not found : Failed on query_write_status() ",
+                "command\", details: [], metadata: MetadataMap { headers: {} }"
+            );
+            assert_eq!(Into::<Error>::into(response.unwrap_err()), expected_err);
+        }
+
+        // Setup stream.
+        let (mut tx, join_handle) = {
+            let (tx, body) = Body::channel();
+            let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
+            // Note: This is an undocumented function.
+            let stream = Streaming::new_request(codec.decoder(), body);
+
+            let bs_server_clone = bs_server.clone();
+            let join_handle = tokio::spawn(async move {
+                let response_future = bs_server_clone.write(Request::new(stream));
+                response_future.await
+            });
+            (tx, join_handle)
+        };
+
+        const BYTE_SPLIT_OFFSET: usize = 8;
+
+        let mut write_request = WriteRequest {
+            resource_name: resource_name.clone(),
+            write_offset: 0,
+            finish_write: false,
+            data: vec![].into(),
+        };
+
+        // Write first chunk of data.
+        write_request.write_offset = 0;
+        write_request.data = raw_data[..BYTE_SPLIT_OFFSET].into();
+        tx.send_data(encode(&write_request)?).await?;
+
+        {
+            // Check to see if our request is active.
+            tokio::task::yield_now().await;
+            let data = bs_server
+                .query_write_status(Request::new(QueryWriteStatusRequest {
+                    resource_name: resource_name.clone(),
+                }))
+                .await?;
+            assert_eq!(
+                data.into_inner(),
+                QueryWriteStatusResponse {
+                    committed_size: 0,
+                    complete: false,
+                }
+            );
+        }
+
+        // Finish writing our data.
+        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.data = raw_data[BYTE_SPLIT_OFFSET..].into();
+        write_request.finish_write = true;
+        tx.send_data(encode(&write_request)?).await?;
+
+        {
+            // Now that it's done uploading, ensure it returns a success when requested again.
+            tokio::task::yield_now().await;
+            let data = bs_server
+                .query_write_status(Request::new(QueryWriteStatusRequest { resource_name }))
+                .await?;
+            assert_eq!(
+                data.into_inner(),
+                QueryWriteStatusResponse {
+                    committed_size: 0,
+                    complete: true,
+                }
+            );
+        }
+        join_handle
+            .await
+            .err_tip(|| "Failed to join")?
+            .err_tip(|| "Failed write")?;
         Ok(())
     }
 }
