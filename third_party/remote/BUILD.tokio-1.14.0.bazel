@@ -74,7 +74,7 @@ cargo_build_script(
         "cargo-raze",
         "manual",
     ],
-    version = "1.13.0",
+    version = "1.14.0",
     visibility = ["//visibility:private"],
     deps = [
         "@raze__autocfg__1_0_1//:autocfg",
@@ -119,7 +119,7 @@ rust_library(
     data = [],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__tokio_macros__1_5_1//:tokio_macros",
+        "@raze__tokio_macros__1_6_0//:tokio_macros",
     ],
     rustc_flags = [
         "--cap-lints=allow",
@@ -128,7 +128,7 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "1.13.0",
+    version = "1.14.0",
     # buildifier: leave-alone
     deps = [
         ":tokio_build_script",

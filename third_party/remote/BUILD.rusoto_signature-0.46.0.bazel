@@ -55,7 +55,7 @@ rust_library(
         "@raze__hex__0_4_3//:hex",
         "@raze__hmac__0_10_1//:hmac",
         "@raze__http__0_2_5//:http",
-        "@raze__hyper__0_14_14//:hyper",
+        "@raze__hyper__0_14_15//:hyper",
         "@raze__log__0_4_14//:log",
         "@raze__md5__0_7_0//:md5",
         "@raze__percent_encoding__2_1_0//:percent_encoding",
@@ -64,6 +64,6 @@ rust_library(
         "@raze__serde__1_0_130//:serde",
         "@raze__sha2__0_9_8//:sha2",
         "@raze__time__0_2_27//:time",
-        "@raze__tokio__1_13_0//:tokio",
+        "@raze__tokio__1_14_0//:tokio",
     ],
 )

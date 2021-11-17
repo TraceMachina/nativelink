@@ -26,7 +26,7 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT"
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
 ])
 
 # Generated Targets
@@ -38,16 +38,18 @@ load(
 )
 
 cargo_build_script(
-    name = "openssl_sys_build_script",
+    name = "serde_json_build_script",
     srcs = glob(["**/*.rs"]),
     build_script_env = {
     },
     crate_features = [
+        "default",
+        "std",
+        "unbounded_depth",
     ],
-    crate_root = "build/main.rs",
+    crate_root = "build.rs",
     data = glob(["**"]),
-    edition = "2015",
-    links = "openssl",
+    edition = "2018",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -55,23 +57,23 @@ cargo_build_script(
         "cargo-raze",
         "manual",
     ],
-    version = "0.9.70",
+    version = "1.0.71",
     visibility = ["//visibility:private"],
     deps = [
-        "@raze__autocfg__1_0_1//:autocfg",
-        "@raze__cc__1_0_72//:cc",
-        "@raze__pkg_config__0_3_22//:pkg_config",
     ],
 )
 
 rust_library(
-    name = "openssl_sys",
+    name = "serde_json",
     srcs = glob(["**/*.rs"]),
     crate_features = [
+        "default",
+        "std",
+        "unbounded_depth",
     ],
     crate_root = "src/lib.rs",
     data = [],
-    edition = "2015",
+    edition = "2018",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -79,10 +81,12 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.9.70",
+    version = "1.0.71",
     # buildifier: leave-alone
     deps = [
-        ":openssl_sys_build_script",
-        "@raze__libc__0_2_107//:libc",
+        ":serde_json_build_script",
+        "@raze__itoa__0_4_8//:itoa",
+        "@raze__ryu__1_0_5//:ryu",
+        "@raze__serde__1_0_130//:serde",
     ],
 )

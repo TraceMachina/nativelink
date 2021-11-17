@@ -26,15 +26,22 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # BSD-3-Clause from expression "BSD-3-Clause"
+    "notice",  # MIT from expression "MIT"
 ])
 
 # Generated Targets
 
+# Unsupported target "crit_bench" with type "bench" omitted
+
 rust_library(
-    name = "instant",
+    name = "lz4_flex",
     srcs = glob(["**/*.rs"]),
     crate_features = [
+        "default",
+        "frame",
+        "safe-decode",
+        "safe-encode",
+        "std",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -46,11 +53,9 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.1.12",
+    version = "0.9.2",
     # buildifier: leave-alone
     deps = [
-        "@raze__cfg_if__1_0_0//:cfg_if",
+        "@raze__twox_hash__1_6_1//:twox_hash",
     ],
 )
-
-# Unsupported target "wasm" with type "test" omitted

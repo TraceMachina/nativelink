@@ -3,27 +3,26 @@
 use std::cmp;
 use std::io::Cursor;
 use std::marker::Send;
-use std::ops::DerefMut;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures::future::{try_join_all, FutureExt};
 use futures::stream::unfold;
-use futures::task::Context;
-use futures::task::Poll;
-use futures::Stream;
 use http::status::StatusCode;
-use lease::{Lease, Pool as ObjectPool};
+use lazy_static::lazy_static;
 use rand::{rngs::OsRng, Rng};
-use rusoto_core::{region::Region, ByteStream, RusotoError};
+use rusoto_core::credential::DefaultCredentialsProvider;
+use rusoto_core::request::{DispatchSignedRequest, DispatchSignedRequestFuture};
+use rusoto_core::{region::Region, ByteStream, HttpClient, HttpDispatchError, RusotoError};
 use rusoto_s3::{
     AbortMultipartUploadRequest, CompleteMultipartUploadRequest, CompletedMultipartUpload, CompletedPart,
     CreateMultipartUploadRequest, GetObjectError, GetObjectRequest, HeadObjectError, HeadObjectRequest,
     PutObjectRequest, S3Client, UploadPartRequest, S3,
 };
+use rusoto_signature::signature::SignedRequest;
+use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tokio_util::io::ReaderStream;
 
@@ -39,7 +38,51 @@ use traits::{StoreTrait, UploadSizeInfo};
 const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
 
 // Size for the large vector pool if not specified.
-const DEFAULT_BUFFER_POOL_SIZE: usize = 50;
+// NOTE: If this value is changed also change comment in backends.rs.
+const DEFAULT_ADDITIONAL_MAX_CONCURRENT_REQUESTS: usize = 20;
+
+struct InnerThrottledDispatcher {
+    client: HttpClient,
+    active_request_semaphore: Semaphore,
+}
+
+struct ThrottledDispatcher {
+    inner: Arc<InnerThrottledDispatcher>,
+}
+
+impl ThrottledDispatcher {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(InnerThrottledDispatcher {
+                client: HttpClient::new().expect("failed to create request dispatcher"),
+                active_request_semaphore: Semaphore::new(0), // We will fill this later.
+            }),
+        }
+    }
+
+    fn add_permits(&self, count: usize) {
+        self.inner.active_request_semaphore.add_permits(count);
+    }
+}
+
+impl DispatchSignedRequest for ThrottledDispatcher {
+    fn dispatch(&self, request: SignedRequest, timeout: Option<Duration>) -> DispatchSignedRequestFuture {
+        let inner = self.inner.clone();
+        Box::pin(async move {
+            // This will limit the number of concurrent requests permitted at once.
+            let _permit = inner
+                .active_request_semaphore
+                .acquire()
+                .await
+                .map_err(|_| HttpDispatchError::new("Semaphore closed".into()))?;
+            inner.client.dispatch(request, timeout).await
+        })
+    }
+}
+
+lazy_static! {
+    static ref SHARED_CLIENT: Mutex<Arc<ThrottledDispatcher>> = Mutex::new(Arc::new(ThrottledDispatcher::new()));
+}
 
 fn should_retry<T, E>(result: Result<T, RusotoError<E>>) -> RetryResult<T>
 where
@@ -70,39 +113,6 @@ where
     }
 }
 
-type GenericByteStream = Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin>;
-
-/// This wrapper will take a Leased stream and make it fully available as a normal stream.
-/// When this stream is dropped it will drop the Leased stream too, but keep the Lease.
-/// This is useful to limit the number of allowed streams at any given time.
-struct StreamWrapper {
-    lease: Lease<Option<GenericByteStream>>,
-}
-
-impl StreamWrapper {
-    fn new(lease: Lease<Option<GenericByteStream>>) -> Self {
-        assert!(
-            lease.is_some(),
-            "Lease value must be set when constructing StreamWrapper"
-        );
-        Self { lease }
-    }
-}
-
-impl Drop for StreamWrapper {
-    fn drop(&mut self) {
-        *self.lease.deref_mut() = None;
-    }
-}
-
-impl Stream for StreamWrapper {
-    type Item = Result<Bytes, std::io::Error>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(self.lease.as_deref_mut().unwrap()).poll_next(cx)
-    }
-}
-
 pub struct S3Store {
     s3_client: Arc<S3Client>,
     bucket: String,
@@ -110,20 +120,29 @@ pub struct S3Store {
     jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     retry: config::backends::Retry,
     retrier: Retrier,
-    stream_pool: ObjectPool<Option<GenericByteStream>>,
 }
 
 impl S3Store {
     pub fn new(config: &config::backends::S3Store) -> Result<Self, Error> {
+        let mut additional_max_concurrent_requests = config.additional_max_concurrent_requests;
+        if additional_max_concurrent_requests == 0 {
+            additional_max_concurrent_requests = DEFAULT_ADDITIONAL_MAX_CONCURRENT_REQUESTS;
+        }
+        let s3_client = {
+            let dispatcher = SHARED_CLIENT.lock().unwrap().clone();
+            dispatcher.add_permits(additional_max_concurrent_requests);
+            let credentials_provider =
+                DefaultCredentialsProvider::new().expect("failed to create credentials provider");
+            let region = config
+                .region
+                .parse::<Region>()
+                .map_err(|e| make_input_err!("{}", e.to_string()))?;
+            S3Client::new_with(dispatcher, credentials_provider, region)
+        };
         let jitter_amt = config.retry.jitter;
         S3Store::new_with_client_and_jitter(
             config,
-            S3Client::new(
-                config
-                    .region
-                    .parse::<Region>()
-                    .map_err(|e| make_input_err!("{}", e.to_string()))?,
-            ),
+            s3_client,
             Box::new(move |delay: Duration| {
                 if jitter_amt == 0. {
                     return delay;
@@ -140,10 +159,6 @@ impl S3Store {
         s3_client: S3Client,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
-        let mut buffer_pool_size = config.buffer_pool_size;
-        if buffer_pool_size == 0 {
-            buffer_pool_size = DEFAULT_BUFFER_POOL_SIZE;
-        }
         Ok(S3Store {
             s3_client: Arc::new(s3_client),
             bucket: config.bucket.to_owned(),
@@ -151,14 +166,7 @@ impl S3Store {
             jitter_fn: jitter_fn,
             retry: config.retry.to_owned(),
             retrier: Retrier::new(Box::new(|duration| Box::pin(sleep(duration)))),
-            stream_pool: ObjectPool::new(buffer_pool_size, || None),
         })
-    }
-
-    async fn lease_stream(&self, stream: GenericByteStream) -> StreamWrapper {
-        let mut lease = self.stream_pool.get_async().await;
-        *lease.deref_mut() = Some(stream);
-        StreamWrapper::new(lease)
     }
 
     fn make_s3_path(&self, digest: &DigestInfo) -> String {
@@ -295,6 +303,9 @@ impl StoreTrait for S3Store {
             // We might end up with +1 capacity units than needed, but that is the worst case.
             let mut completed_part_futs = Vec::with_capacity((max_size / bytes_per_upload_part) + 1);
             loop {
+                // TODO(blaise.bruer) We should limit the number of bytes or requests active
+                // at a time here. Otherwise a client that has very high upload speed but
+                // s3 has slow download speeds, we might end up using an insane amount of ram.
                 let write_buf = reader
                     .take(bytes_per_upload_part as usize)
                     .await
@@ -304,17 +315,13 @@ impl StoreTrait for S3Store {
                 }
 
                 let write_buf_len = write_buf.len() as i64;
-                // This will wait until a stream is available before continuing. This is how
-                // we restrict the number of allowed active requests.
-                let leased_stream = self
-                    .lease_stream(Box::new(ReaderStream::new(Cursor::new(write_buf))))
-                    .await;
+                let body = Some(ByteStream::new(ReaderStream::new(Cursor::new(write_buf))));
 
                 let request = UploadPartRequest {
                     bucket: self.bucket.to_owned(),
                     key: s3_path.to_owned(),
                     content_length: Some(write_buf_len),
-                    body: Some(ByteStream::new(leased_stream)),
+                    body,
                     part_number,
                     upload_id: upload_id.clone(),
                     ..Default::default()
@@ -329,8 +336,6 @@ impl StoreTrait for S3Store {
                             .await
                             .map_err(|e| make_err!(Code::Unknown, "Failed to upload part: {:?}", e))?;
                         let e_tag = response.e_tag.take();
-                        // Double down to ensure our Bytestream Lease is freed up and returned to pool.
-                        drop(response);
                         Result::<CompletedPart, Error>::Ok(CompletedPart {
                             e_tag,
                             part_number: Some(part_number),
