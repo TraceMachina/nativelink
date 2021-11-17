@@ -56,6 +56,7 @@ rust_library(
         "//cas/store",
         "//config",
         "//proto",
+        "//third_party:fast_async_mutex",
         "//third_party:futures",
         "//third_party:tokio",
         "//third_party:tonic",
