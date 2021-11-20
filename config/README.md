@@ -44,7 +44,9 @@ A very basic configuration that is a pure in-memory store is:
           "ac_store": "AC_MAIN_STORE"
         }
       },
-      "capabilities": {},
+      "capabilities": {
+        "main": {}
+      },
       "execution": {},
       "bytestream": {
         "cas_stores": {
