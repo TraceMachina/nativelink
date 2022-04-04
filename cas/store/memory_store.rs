@@ -1,5 +1,6 @@
 // Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::time::SystemTime;
 
@@ -15,6 +16,12 @@ use traits::{StoreTrait, UploadSizeInfo};
 
 #[derive(Clone)]
 pub struct BytesWrapper(Bytes);
+
+impl Debug for BytesWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BytesWrapper { -- Binary data -- }")
+    }
+}
 
 impl LenEntry for BytesWrapper {
     #[inline]

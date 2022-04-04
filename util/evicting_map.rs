@@ -1,5 +1,6 @@
 // Copyright 2021 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::fmt::Debug;
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -40,7 +41,8 @@ impl InstantWrapper for SystemTime {
     }
 }
 
-struct EvictionItem<T: LenEntry> {
+#[derive(Debug)]
+struct EvictionItem<T: LenEntry + Debug> {
     seconds_since_anchor: i32,
     data: T,
 }
@@ -85,12 +87,12 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
-struct State<T: LenEntry> {
+struct State<T: LenEntry + Debug> {
     lru: LruCache<DigestInfo, EvictionItem<T>>,
     sum_store_size: u64,
 }
 
-pub struct EvictingMap<T: LenEntry, I: InstantWrapper> {
+pub struct EvictingMap<T: LenEntry + Debug, I: InstantWrapper> {
     state: Mutex<State<T>>,
     anchor_time: I,
     max_bytes: u64,
@@ -100,7 +102,7 @@ pub struct EvictingMap<T: LenEntry, I: InstantWrapper> {
 
 impl<T, I> EvictingMap<T, I>
 where
-    T: LenEntry + Clone + Send + Sync,
+    T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
 {
     pub fn new(config: &EvictionPolicy, anchor_time: I) -> Self {
@@ -158,9 +160,8 @@ where
     fn should_evict(&self, lru_len: usize, peek_entry: &EvictionItem<T>, sum_store_size: u64) -> bool {
         let is_over_size = self.max_bytes != 0 && sum_store_size >= self.max_bytes;
 
-        let evict_before_seconds =
-            (self.anchor_time.elapsed().as_secs() as i32).max(self.max_seconds) - self.max_seconds;
-        let old_item_exists = self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_before_seconds;
+        let evict_older_than_seconds = (self.anchor_time.elapsed().as_secs() as i32) - self.max_seconds;
+        let old_item_exists = self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
 
         let is_over_count = self.max_count != 0 && (lru_len as u64) > self.max_count;
 
@@ -227,7 +228,12 @@ where
         let mut state = self.state.lock().await;
         if let Some(old_item) = state.lru.put(digest.into(), eviction_item) {
             state.sum_store_size -= old_item.data.len() as u64;
-            old_item.data.unref().await;
+            // We do not want to unref here because if we are on a filesystem-backed
+            // store (or similar) the name of the newly inserted item will be the same
+            // as the name of the old item. If we were to unref might trigger updated
+            // file to be deleted. Unref is purely unnecessary here since we will always
+            // be updating the underlying data at this point instead of evicting/deleting
+            // it.
         }
         state.sum_store_size += new_item_size;
         self.evict_items(state.deref_mut()).await;
