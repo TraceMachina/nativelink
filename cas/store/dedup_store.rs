@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use tokio_util::codec::FramedRead;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
-use common::{DigestInfo, JoinHandleDropGuard, SerializableDigestInfo};
+use common::{log, DigestInfo, JoinHandleDropGuard, SerializableDigestInfo};
 use config;
 use error::{make_err, Code, Error, ResultExt};
 use fastcdc::FastCDC;
@@ -82,10 +82,6 @@ impl DedupStore {
         }
     }
 
-    fn is_small_object(&self, digest: &DigestInfo) -> bool {
-        return digest.size_bytes as usize <= self.upload_normal_size;
-    }
-
     fn pin_index_store<'a>(&'a self) -> Pin<&'a dyn StoreTrait> {
         Pin::new(self.index_store.as_ref())
     }
@@ -94,7 +90,54 @@ impl DedupStore {
 #[async_trait]
 impl StoreTrait for DedupStore {
     async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        Pin::new(self.content_store.as_ref()).has(digest).await
+        // First we need to load the index that contains where the individual parts actually
+        // can be fetched from.
+        let index_entries = {
+            let data = self
+                .pin_index_store()
+                .get_part_unchunked(digest.clone(), 0, None, Some(self.upload_normal_size))
+                .await
+                .err_tip(|| "Failed to read index store in dedup store")?;
+
+            match self.bincode_options.deserialize::<DedupIndex>(&data) {
+                Err(e) => {
+                    log::warn!(
+                        "Failed to deserialize index in dedup store : {} - {:?}",
+                        digest.str(),
+                        e
+                    );
+                    // We return the equivalent of NotFound here so the client is happy.
+                    return Ok(None);
+                }
+                Ok(v) => v,
+            }
+        };
+
+        let mut stream = stream::iter(index_entries.entries)
+            .map(move |index_entry| {
+                let content_store = self.content_store.clone();
+                async move {
+                    let digest = DigestInfo::new(index_entry.hash, index_entry.size_bytes as i64);
+                    Pin::new(content_store.as_ref())
+                        .has(digest)
+                        .await
+                        .err_tip(|| "Failed to check .has() on content_store in dedup store")
+                }
+            })
+            .buffer_unordered(self.max_concurrent_fetch_per_get);
+
+        let mut sum = 0;
+        while let Some(result) = stream.next().await {
+            let maybe_size = result?;
+            if let Some(size) = maybe_size {
+                sum += size;
+                continue;
+            }
+            // A part is missing so return None meaning not-found.
+            // This will abort all in-flight queries related to this request.
+            return Ok(None);
+        }
+        Ok(Some(sum))
     }
 
     async fn update(
@@ -103,12 +146,6 @@ impl StoreTrait for DedupStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        if self.is_small_object(&digest) {
-            return Pin::new(self.content_store.as_ref())
-                .update(digest, reader, size_info)
-                .await
-                .err_tip(|| "Failed to insert small object in dedup store");
-        }
         let input_max_size = match size_info {
             UploadSizeInfo::ExactSize(sz) => sz,
             UploadSizeInfo::MaxSize(sz) => sz,
@@ -173,12 +210,6 @@ impl StoreTrait for DedupStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        if self.is_small_object(&digest) {
-            return Pin::new(self.content_store.as_ref())
-                .get_part(digest, writer, offset, length)
-                .await
-                .err_tip(|| "Failed to get_part small object in dedup store");
-        }
         // First we need to download the index that contains where the individual parts actually
         // can be fetched from.
         let index_entries = {
