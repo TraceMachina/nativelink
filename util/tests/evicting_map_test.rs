@@ -1,7 +1,10 @@
 // Copyright 2021 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use mock_instant::{Instant as MockInstant, MockClock};
 
@@ -224,7 +227,7 @@ mod evicting_map_tests {
         MockClock::advance(Duration::from_secs(2));
         evicting_map
             .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
-            .await;
+            .await; // This will trigger an eviction.
 
         assert_eq!(
             evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
@@ -241,6 +244,70 @@ mod evicting_map_tests {
             Some(DATA.len()),
             "Expected map to have item 3"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unref_not_called_on_replace() -> Result<(), Error> {
+        #[derive(Debug)]
+        struct MockEntry {
+            data: Bytes,
+            unref_called: AtomicBool,
+        }
+
+        #[async_trait]
+        impl LenEntry for MockEntry {
+            fn len(&self) -> usize {
+                // Note: We are not testing this functionality.
+                return 0;
+            }
+
+            async fn touch(&self) {
+                // Do nothing. We are not testing this functionality.
+            }
+
+            async fn unref(&self) {
+                self.unref_called.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let evicting_map = EvictingMap::<Arc<MockEntry>, MockInstantWrapped>::new(
+            &EvictionPolicy {
+                max_count: 1,
+                max_seconds: 0,
+                max_bytes: 0,
+            },
+            MockInstantWrapped(MockInstant::now()),
+        );
+
+        const DATA1: &str = "12345678";
+        const DATA2: &str = "87654321";
+
+        let (entry1, entry2) = {
+            let entry1 = Arc::new(MockEntry {
+                data: Bytes::from(DATA1),
+                unref_called: AtomicBool::new(false),
+            });
+            evicting_map
+                .insert(DigestInfo::try_new(HASH1, 0)?, entry1.clone())
+                .await;
+
+            let entry2 = Arc::new(MockEntry {
+                data: Bytes::from(DATA2),
+                unref_called: AtomicBool::new(false),
+            });
+            evicting_map
+                .insert(DigestInfo::try_new(HASH1, 0)?, entry2.clone())
+                .await;
+            (entry1, entry2)
+        };
+
+        let existing_entry = evicting_map.get(&DigestInfo::try_new(HASH1, 0)?).await.unwrap();
+        assert_eq!(existing_entry.data, DATA2);
+
+        assert_eq!(entry1.unref_called.load(Ordering::Relaxed), false);
+        assert_eq!(entry2.unref_called.load(Ordering::Relaxed), false);
 
         Ok(())
     }
@@ -269,7 +336,7 @@ mod evicting_map_tests {
         MockClock::advance(Duration::from_secs(2));
         evicting_map
             .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
-            .await;
+            .await; // This will trigger an eviction.
 
         assert_eq!(
             evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,

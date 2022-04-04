@@ -143,6 +143,7 @@ rust_test(
         ":error",
         ":evicting_map",
     ],
+    proc_macro_deps = ["//third_party:async_trait"],
 )
 
 rust_test(

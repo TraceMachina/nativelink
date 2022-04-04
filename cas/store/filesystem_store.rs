@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use filetime::{set_file_atime, FileTime};
-use futures::stream::StreamExt;
+use futures::stream::{StreamExt, TryStreamExt};
 use rand::{thread_rng, Rng};
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom, Take};
@@ -25,6 +25,7 @@ use traits::{StoreTrait, UploadSizeInfo};
 // Default size to allocate memory of the buffer when reading files.
 const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 
+#[derive(Debug)]
 struct FileEntry {
     digest: DigestInfo,
     file_size: u64,
@@ -58,9 +59,16 @@ impl LenEntry for FileEntry {
     #[inline]
     async fn touch(&self) {
         let full_content_path = to_full_path_from_digest(&self.content_path, &self.digest);
-        let res = match spawn_blocking(move || set_file_atime(&full_content_path, FileTime::now())).await {
-            Ok(res) => res.err_tip(|| "Failed to touch file in filesystem store"),
-            Err(_) => Err(make_err!(Code::Internal, "Failed to change atime of file")),
+        let set_atime_fut = spawn_blocking(move || {
+            set_file_atime(&full_content_path, FileTime::now())
+                .err_tip(|| format!("Failed to touch file in filesystem store {}", full_content_path))
+        });
+        let res = match set_atime_fut.await {
+            Ok(res) => res,
+            Err(_) => Err(make_err!(
+                Code::Internal,
+                "Failed to change atime of file due to spawn failing"
+            )),
         };
         if let Err(err) = res {
             log::error!("{:?}", err);
@@ -73,6 +81,7 @@ impl LenEntry for FileEntry {
             .store(thread_rng().gen::<u64>(), Ordering::Relaxed);
         let from_path = to_full_path_from_digest(&self.content_path, &self.digest);
         let to_path = to_full_path(&self.temp_path, &self.temp_path.to_string());
+        log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Store evicting: {}", &from_path);
         // It is possible (although extremely unlikely) that another thread is reading
         // this file while we want to delete it here. To prevent errors in either case
         // we rename the file (since that other thread would have an open file handle)
@@ -95,8 +104,9 @@ impl Drop for FileEntry {
         }
         let full_temp_path = to_full_path(&self.temp_path, &pending_delete_file_name.to_string());
         tokio::spawn(async move {
+            log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Store deleting: {}", &full_temp_path);
             if let Err(err) = fs::remove_file(&full_temp_path).await {
-                log::info!(
+                log::warn!(
                     "\x1b[0;31mFilesystem Store\x1b[0m: Failed to remove file {} {:?}",
                     full_temp_path,
                     err
@@ -131,37 +141,23 @@ async fn add_files_to_cache(
     async fn process_entry(
         evicting_map: &EvictingMap<Arc<FileEntry>, SystemTime>,
         file_name: &str,
-        dir_entry: &fs::DirEntry,
+        atime: SystemTime,
+        file_size: u64,
         anchor_time: &SystemTime,
         temp_path: &Arc<String>,
         content_path: &Arc<String>,
     ) -> Result<(), Error> {
         let digest = make_digest(&file_name)?;
 
-        let metadata = dir_entry.metadata().await.err_tip(|| "Failed to get metadata")?;
-        let atime = match metadata.accessed() {
-            Ok(atime) => atime,
-            Err(err) => {
-                panic!(
-                    "{}{}{} : {} {:?}",
-                    "It appears this filesystem does not support access time. ",
-                    "Please configure this program to run on a drive that supports ",
-                    "atime",
-                    file_name,
-                    err
-                );
-            }
-        };
-
         let file_entry = FileEntry {
             digest: digest.clone(),
-            file_size: metadata.len(),
+            file_size,
             temp_path: temp_path.clone(),
             content_path: content_path.clone(),
             pending_delete_file_name: AtomicU64::new(0),
         };
         let time_since_anchor = anchor_time
-            .duration_since(atime.clone())
+            .duration_since(atime)
             .map_err(|_| make_input_err!("File access time newer than now"))?;
         evicting_map
             .insert_with_time(digest, Arc::new(file_entry), time_since_anchor.as_secs() as i32)
@@ -173,14 +169,38 @@ async fn add_files_to_cache(
         .await
         .err_tip(|| "Failed opening content directory for iterating in filesystem store")?;
 
-    let mut read_dir_stream = ReadDirStream::new(dir_handle);
-    while let Some(dir_entry) = read_dir_stream.next().await {
-        let dir_entry = dir_entry.unwrap();
-        let file_name = dir_entry.file_name().into_string().unwrap();
+    let mut file_infos: Vec<(String, SystemTime, u64)> = ReadDirStream::new(dir_handle)
+        .then(|dir_entry| async move {
+            let dir_entry = dir_entry.unwrap();
+            let file_name = dir_entry.file_name().into_string().unwrap();
+            let metadata = dir_entry
+                .metadata()
+                .await
+                .err_tip(|| "Failed to get metadata in filesystem store")?;
+            let atime = match metadata.accessed() {
+                Ok(atime) => atime,
+                Err(err) => {
+                    panic!(
+                        "{}{}{} : {} {:?}",
+                        "It appears this filesystem does not support access time. ",
+                        "Please configure this program to run on a drive that supports ",
+                        "atime",
+                        file_name,
+                        err
+                    );
+                }
+            };
+            Result::<(String, SystemTime, u64), Error>::Ok((file_name, atime, metadata.len()))
+        })
+        .try_collect()
+        .await?;
+    file_infos.sort_by(|a, b| a.1.cmp(&b.1));
+    for (file_name, atime, file_size) in file_infos {
         let result = process_entry(
             &evicting_map,
             &file_name,
-            &dir_entry,
+            atime,
+            file_size,
             &anchor_time,
             &temp_path,
             &content_path,
@@ -192,7 +212,8 @@ async fn add_files_to_cache(
                 file_name,
                 err
             );
-            let _ = fs::remove_file(dir_entry.path()).await; // Ignore result.
+            // Ignore result.
+            let _ = fs::remove_file(format!("{}/{}", &content_path, &file_name)).await;
         }
     }
     Ok(())
