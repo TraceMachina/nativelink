@@ -35,6 +35,7 @@ mod dedup_store_tests {
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
     const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
+    const VALID_HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
     const MEGABYTE_SZ: usize = 1024 * 1024;
 
     #[tokio::test]
@@ -134,6 +135,61 @@ mod dedup_store_tests {
             original_data[ONE_THIRD_SZ..(ONE_THIRD_SZ * 2)],
             "Expected round trip data to match"
         );
+        Ok(())
+    }
+
+    /// Ensure that when we run a `.has()` on a dedup store it will check to ensure all indexed
+    /// content items exist instead of just checking the entry in the index store.
+    #[tokio::test]
+    async fn has_checks_content_store() -> Result<(), Error> {
+        let index_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let content_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore {
+            eviction_policy: Some(config::backends::EvictionPolicy {
+                max_count: 10,
+                ..Default::default()
+            }),
+        }));
+
+        let store = DedupStore::new(&make_default_config(), index_store.clone(), content_store.clone());
+        let store_pin = Pin::new(&store);
+
+        const DATA_SIZE: usize = MEGABYTE_SZ / 4;
+        let original_data = make_random_data(DATA_SIZE);
+        let digest1 = DigestInfo::try_new(&VALID_HASH1, DATA_SIZE).unwrap();
+
+        store_pin
+            .update_oneshot(digest1.clone(), original_data.clone().into())
+            .await
+            .err_tip(|| "Failed to write data to dedup store")?;
+
+        {
+            // Check to ensure we our baseline `.has()` succeeds.
+            let size_info = store_pin.has(digest1.clone()).await.err_tip(|| "Failed to run .has")?;
+            assert_eq!(size_info, Some(DATA_SIZE), "Expected sizes to match");
+        }
+        {
+            // There will be exactly 10 entries in our content_store based on our random seed data.
+            // If we add one more it will evict a single item from that will still be indexed.
+            // By doing this, we now check that it returns false when we call `.has()`.
+            const DATA2: &str = "1234";
+            let digest2 = DigestInfo::try_new(&VALID_HASH2, DATA2.len()).unwrap();
+            store_pin
+                .update_oneshot(digest2.clone(), DATA2.into())
+                .await
+                .err_tip(|| "Failed to write data to dedup store")?;
+
+            {
+                // Check our recently added entry is still valid.
+                let size_info = store_pin.has(digest2).await.err_tip(|| "Failed to run .has")?;
+                assert_eq!(size_info, Some(DATA2.len()), "Expected sizes to match");
+            }
+            {
+                // Check our first added entry is now invalid (because part of it was evicted).
+                let size_info = store_pin.has(digest1).await.err_tip(|| "Failed to run .has")?;
+                assert_eq!(size_info, None, "Expected .has() to return None (not found)");
+            }
+        }
+
         Ok(())
     }
 }
