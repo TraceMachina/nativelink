@@ -81,11 +81,13 @@ pub enum StoreConfig {
     /// the previous state, meaning anything uploaded will be persistent
     /// as long as the filesystem integrity holds. This store uses the
     /// filesystem's `atime` (access time) to hold the last touched time
-    /// of the file(s). Only filesystems that support `atime` are supported.
+    /// of the file(s). We also use the RENAME_EXCHANGE flag to atomically
+    /// swap files if a file is being replaced. Only filesystems that
+    /// support `atime` and the RENAME_EXCHANGE flag are supported.
     filesystem(FilesystemStore),
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct FilesystemStore {
     /// Path on the system where to store the actual content. This is where
     /// the bulk of the data will be placed.
@@ -100,6 +102,11 @@ pub struct FilesystemStore {
     /// `content_path` so atomic moves can happen (ie: move without copy).
     /// All files in this folder will be deleted on every startup.
     pub temp_path: String,
+
+    /// Buffer size to use when reading files. Generally this should be left
+    /// to the default value except for testing.
+    /// Default: 32k.
+    pub read_buffer_size: u32,
 
     /// Policy used to evict items out of the store. Failure to set this
     /// value will cause items to never be removed from the store causing
