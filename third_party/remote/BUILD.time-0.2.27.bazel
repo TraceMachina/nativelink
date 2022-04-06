@@ -63,7 +63,7 @@ cargo_build_script(
     version = "0.2.27",
     visibility = ["//visibility:private"],
     deps = [
-        "@raze__version_check__0_9_3//:version_check",
+        "@raze__version_check__0_9_4//:version_check",
     ] + selects.with_or({
         # cfg(unix)
         (
@@ -91,7 +91,7 @@ rust_library(
     data = [],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__const_fn__0_4_8//:const_fn",
+        "@raze__const_fn__0_4_9//:const_fn",
     ],
     rustc_flags = [
         "--cap-lints=allow",
@@ -111,7 +111,7 @@ rust_library(
         (
             "@rules_rust//rust/platform:x86_64-unknown-linux-gnu",
         ): [
-            "@raze__libc__0_2_107//:libc",
+            "@raze__libc__0_2_121//:libc",
         ],
         "//conditions:default": [],
     }),

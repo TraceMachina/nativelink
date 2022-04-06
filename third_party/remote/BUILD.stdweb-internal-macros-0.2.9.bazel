@@ -40,7 +40,7 @@ rust_proc_macro(
     data = [],
     edition = "2015",
     proc_macro_deps = [
-        "@raze__serde_derive__1_0_130//:serde_derive",
+        "@raze__serde_derive__1_0_136//:serde_derive",
     ],
     rustc_flags = [
         "--cap-lints=allow",
@@ -53,11 +53,11 @@ rust_proc_macro(
     # buildifier: leave-alone
     deps = [
         "@raze__base_x__0_2_8//:base_x",
-        "@raze__proc_macro2__1_0_32//:proc_macro2",
-        "@raze__quote__1_0_10//:quote",
-        "@raze__serde__1_0_130//:serde",
-        "@raze__serde_json__1_0_71//:serde_json",
-        "@raze__sha1__0_6_0//:sha1",
-        "@raze__syn__1_0_81//:syn",
+        "@raze__proc_macro2__1_0_36//:proc_macro2",
+        "@raze__quote__1_0_17//:quote",
+        "@raze__serde__1_0_136//:serde",
+        "@raze__serde_json__1_0_79//:serde_json",
+        "@raze__sha1__0_6_1//:sha1",
+        "@raze__syn__1_0_91//:syn",
     ],
 )
