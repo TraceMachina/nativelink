@@ -1,24 +1,24 @@
-use clap::{App, Arg};
+use clap::{Arg, Command};
 use prost_build::Config;
 use std::path::PathBuf;
 use std::vec::Vec;
 use tonic_build;
 
 fn main() -> std::io::Result<()> {
-    let matches = App::new("Rust gRPC Codegen")
+    let matches = Command::new("Rust gRPC Codegen")
         .about("Codegen grpc/protobuf bindings for rust")
         .arg(
-            Arg::with_name("input")
-                .short("i")
+            Arg::new("input")
+                .short('i')
                 .long("input")
                 .required(true)
-                .multiple(true)
+                .multiple_occurrences(true)
                 .takes_value(true)
                 .help("Input proto file"),
         )
         .arg(
-            Arg::with_name("output_dir")
-                .short("o")
+            Arg::new("output_dir")
+                .short('o')
                 .required(true)
                 .long("output_dir")
                 .takes_value(true)

@@ -39,9 +39,9 @@ byteorder = "1.4.3"
 lazy_static = "1.4.0"
 filetime = "0.2.15"
 nix = "0.23.1"
+clap = { version = "3.1.8", features = ["derive"] }
 
 [dev-dependencies]
-clap = "2.33.3"
 stdext = "0.2.1"
 prost-build = "0.9.0"
 tonic-build = "0.6.0"
@@ -59,6 +59,11 @@ rusoto_signature = { git = "https://github.com/allada/rusoto.git", rev = "cc9acc
 
 [package.metadata.raze.crates.json5.'*']
 data_attr = "['src/json5.pest']"
+
+[package.metadata.raze.crates.clap_derive.'*']
+compile_data_attr = "['README.md']"
+[package.metadata.raze.crates.clap.'*']
+compile_data_attr = "['README.md']"
 
 [package.metadata.raze.crates.prost-build.'*']
 gen_buildrs = true

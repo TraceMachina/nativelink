@@ -2,7 +2,11 @@
 
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
-exports_files(["examples/basic_cas.json"])
+exports_files([
+    "examples/basic_cas.json",
+    "examples/filesystem_cas.json",
+    "examples/s3_backend_with_local_fast_cas.json",
+])
 
 rust_library(
     name = "config",
