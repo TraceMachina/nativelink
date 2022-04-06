@@ -214,19 +214,22 @@ where
         None
     }
 
-    pub async fn insert(&self, digest: DigestInfo, data: T) {
+    /// Returns the replaced item if any.
+    pub async fn insert(&self, digest: DigestInfo, data: T) -> Option<T> {
         self.insert_with_time(digest, data, self.anchor_time.elapsed().as_secs() as i32)
             .await
     }
 
-    pub async fn insert_with_time(&self, digest: DigestInfo, data: T, seconds_since_anchor: i32) {
+    /// Returns the replaced item if any.
+    pub async fn insert_with_time(&self, digest: DigestInfo, data: T, seconds_since_anchor: i32) -> Option<T> {
         let new_item_size = data.len() as u64;
         let eviction_item = EvictionItem {
             seconds_since_anchor,
             data,
         };
         let mut state = self.state.lock().await;
-        if let Some(old_item) = state.lru.put(digest.into(), eviction_item) {
+
+        let maybe_old_item = if let Some(old_item) = state.lru.put(digest.into(), eviction_item) {
             state.sum_store_size -= old_item.data.len() as u64;
             // We do not want to unref here because if we are on a filesystem-backed
             // store (or similar) the name of the newly inserted item will be the same
@@ -234,9 +237,13 @@ where
             // file to be deleted. Unref is purely unnecessary here since we will always
             // be updating the underlying data at this point instead of evicting/deleting
             // it.
-        }
+            Some(old_item.data)
+        } else {
+            None
+        };
         state.sum_store_size += new_item_size;
         self.evict_items(state.deref_mut()).await;
+        maybe_old_item
     }
 
     pub async fn remove(&self, digest: &DigestInfo) -> bool {

@@ -198,6 +198,20 @@ impl DropCloserReadHalf {
         }
     }
 
+    pub async fn peek<'a>(&'a mut self) -> &'a Result<Bytes, Error> {
+        assert!(
+            self.close_after_size == u64::MAX,
+            "Can't call peek() when take() was called"
+        );
+        if self.partial.is_none() {
+            self.partial = Some(self.recv().await);
+        }
+        if let Some(result) = &self.partial {
+            return &result;
+        }
+        unreachable!();
+    }
+
     /// Sets the number of bytes before the stream will be considered closed.
     pub fn set_close_after_size(&mut self, size: u64) {
         self.close_after_size = size;
