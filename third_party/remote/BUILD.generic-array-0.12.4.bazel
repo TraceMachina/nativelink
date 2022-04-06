@@ -49,7 +49,7 @@ rust_library(
     version = "0.12.4",
     # buildifier: leave-alone
     deps = [
-        "@raze__typenum__1_14_0//:typenum",
+        "@raze__typenum__1_15_0//:typenum",
     ],
 )
 
