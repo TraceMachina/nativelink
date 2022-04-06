@@ -1,18 +1,49 @@
 {
   "stores": {
     "CAS_MAIN_STORE": {
-      "memory": {
-        "eviction_policy": {
-          // 100mb.
-          "max_bytes": 100000000,
-        }
+      "verify": {
+        "backend": {
+          "dedup": {
+            "index_store": {
+              "filesystem": {
+                "content_path": "/tmp/rust_cas_data/content_path-index",
+                "temp_path": "/tmp/rust_cas_data/tmp_path-index",
+                "eviction_policy": {
+                  // 500mb.
+                  "max_bytes": 500000000,
+                }
+              }
+            },
+            "content_store": {
+              "compression": {
+                "compression_algorithm": {
+                  "LZ4": {}
+                },
+                "backend": {
+                  "filesystem": {
+                    "content_path": "/tmp/rust_cas_data/content_path-content",
+                    "temp_path": "/tmp/rust_cas_data/tmp_path-content",
+                    "eviction_policy": {
+                      // 2gb.
+                      "max_bytes": 2000000000,
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "verify_size": true,
+        "verify_hash": true
       }
     },
     "AC_MAIN_STORE": {
-      "memory": {
+      "filesystem": {
+        "content_path": "/tmp/rust_cas_data/content_path-ac",
+        "temp_path": "/tmp/rust_cas_data/tmp_path-ac",
         "eviction_policy": {
-          // 10mb.
-          "max_bytes": 10000000,
+          // 500mb.
+          "max_bytes": 500000000,
         }
       }
     }

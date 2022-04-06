@@ -14,6 +14,7 @@ rust_binary(
         "//cas/grpc_service:execution_server",
         "//cas/store",
         "//config",
+        "//third_party:clap",
         "//third_party:env_logger",
         "//third_party:futures",
         "//third_party:json5",
