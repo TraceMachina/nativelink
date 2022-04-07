@@ -62,8 +62,15 @@ impl CasServer {
             futures.push(tokio::spawn(async move {
                 let store = Pin::new(store_owned.as_ref());
                 store.has(digest.clone()).await.map_or_else(
-                    |_| None,
-                    |maybe_sz| if maybe_sz.is_some() { None } else { Some(digest) },
+                    |e| {
+                        log::error!(
+                            "Error during .has() call in .find_missing_blobs() : {:?} - {}",
+                            e,
+                            digest.str()
+                        );
+                        Some(digest.clone())
+                    },
+                    |maybe_sz| if maybe_sz.is_some() { None } else { Some(digest.clone()) },
                 )
             }));
         }

@@ -93,11 +93,20 @@ impl StoreTrait for DedupStore {
         // First we need to load the index that contains where the individual parts actually
         // can be fetched from.
         let index_entries = {
-            let data = self
+            let maybe_data = self
                 .pin_index_store()
                 .get_part_unchunked(digest.clone(), 0, None, Some(self.upload_normal_size))
                 .await
-                .err_tip(|| "Failed to read index store in dedup store")?;
+                .err_tip(|| "Failed to read index store in dedup store");
+            let data = match maybe_data {
+                Err(e) => {
+                    if e.code == Code::NotFound {
+                        return Ok(None);
+                    }
+                    return Err(e);
+                }
+                Ok(data) => data,
+            };
 
             match self.bincode_options.deserialize::<DedupIndex>(&data) {
                 Err(e) => {

@@ -111,6 +111,7 @@ impl ByteStreamServer {
                         return Some((Err(err.into()), None));
                     }
                     let response = ReadResponse { data: bytes };
+                    log::debug!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: {:?}", response);
                     Some((Ok(response), Some(state)))
                 }
                 Err(mut e) => {
@@ -127,6 +128,7 @@ impl ByteStreamServer {
                         // message as it will be the most relevant.
                         e.messages.resize_with(1, || "".to_string());
                     }
+                    log::debug!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: Error {:?}", e);
                     Some((Err(e.into()), None))
                 }
             }

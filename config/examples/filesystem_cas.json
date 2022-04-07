@@ -21,8 +21,8 @@
                 },
                 "backend": {
                   "filesystem": {
-                    "content_path": "/tmp/rust_cas_data/content_path-content",
-                    "temp_path": "/tmp/rust_cas_data/tmp_path-content",
+                    "content_path": "/tmp/rust_cas_data/content_path-cas",
+                    "temp_path": "/tmp/rust_cas_data/tmp_path-cas",
                     "eviction_policy": {
                       // 2gb.
                       "max_bytes": 2000000000,
