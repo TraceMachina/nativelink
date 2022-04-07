@@ -106,6 +106,7 @@ pub struct FilesystemStore {
     /// Buffer size to use when reading files. Generally this should be left
     /// to the default value except for testing.
     /// Default: 32k.
+    #[serde(default)]
     pub read_buffer_size: u32,
 
     /// Policy used to evict items out of the store. Failure to set this

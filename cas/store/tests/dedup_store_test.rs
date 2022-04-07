@@ -192,4 +192,29 @@ mod dedup_store_tests {
 
         Ok(())
     }
+
+    /// Ensure that when we run a `.has()` on a dedup store and the index does not exist it will
+    /// properly return None.
+    #[tokio::test]
+    async fn has_with_no_existing_index_returns_none_test() -> Result<(), Error> {
+        let index_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let content_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore {
+            eviction_policy: Some(config::backends::EvictionPolicy {
+                max_count: 10,
+                ..Default::default()
+            }),
+        }));
+
+        let store = DedupStore::new(&make_default_config(), index_store.clone(), content_store.clone());
+        let store_pin = Pin::new(&store);
+
+        const DATA_SIZE: usize = 10;
+        let digest = DigestInfo::try_new(&VALID_HASH1, DATA_SIZE).unwrap();
+
+        {
+            let size_info = store_pin.has(digest.clone()).await.err_tip(|| "Failed to run .has")?;
+            assert_eq!(size_info, None, "Expected None to be returned, got {:?}", size_info);
+        }
+        Ok(())
+    }
 }
