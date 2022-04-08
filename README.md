@@ -1,4 +1,4 @@
-# Rust CAS
+# Turbo Cache
 
 An extremely fast and efficient bazel cache service (CAS) written in rust.
 
@@ -10,7 +10,7 @@ The goals of this project are:
 
 ## Overview
 
-Rust CAS is a project that implements the [Bazel Remote Execution protocol](https://github.com/bazelbuild/remote-apis) (the CAS/cache portion).
+Turbo Cache is a project that implements the [Bazel Remote Execution protocol](https://github.com/bazelbuild/remote-apis) (the CAS/cache portion).
 
 When properly configured this project will provide extremely fast and efficient build cache for any systems that communicate using the [BRE protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto).
 
@@ -53,4 +53,4 @@ $ cargo raze  # This will code-gen the bazel rules.
 
 # License
 
-Copyright 2021 Nathan (Blaise) Bruer
+Copyright 2020-2022 Nathan (Blaise) Bruer
