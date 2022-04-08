@@ -2,7 +2,7 @@
 
 syntax = "proto3";
 
-package com.github.allada.rust_cas.remote_execution;
+package com.github.allada.turbo_cache.remote_execution;
 
 import "build/bazel/remote/execution/v2/remote_execution.proto";
 import "google/protobuf/empty.proto";
@@ -66,7 +66,7 @@ message RegisterSupportedProperties {
     /// the unsupported properties.
     ///
     /// The details on how to use this property can be found here:
-    /// https://github.com/allada/rust_cas/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs
+    /// https://github.com/allada/turbo-cache/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs
     repeated build.bazel.remote.execution.v2.Platform.Property properties = 1;
 }
 

@@ -10,7 +10,7 @@ use common::DigestInfo;
 use error::Error;
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
 use proto::build::bazel::remote::execution::v2::ExecuteRequest;
-use proto::com::github::allada::rust_cas::remote_execution::{update_for_worker, StartExecute, UpdateForWorker};
+use proto::com::github::allada::turbo_cache::remote_execution::{update_for_worker, StartExecute, UpdateForWorker};
 use scheduler::Scheduler;
 use worker::Worker;
 

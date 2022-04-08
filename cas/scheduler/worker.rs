@@ -6,7 +6,7 @@ use std::sync::Arc;
 use action_messages::ActionInfo;
 use error::{make_err, Code, Error};
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
-use proto::com::github::allada::rust_cas::remote_execution::{update_for_worker, StartExecute, UpdateForWorker};
+use proto::com::github::allada::turbo_cache::remote_execution::{update_for_worker, StartExecute, UpdateForWorker};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Unique id of worker.

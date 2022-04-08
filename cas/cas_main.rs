@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config_file.eq(DEFAULT_CONFIG_FILE) {
         let r = Runfiles::create().err_tip(|| "Failed to create runfiles lookup object")?;
         config_file = r
-            .rlocation("rust_cas/config/examples/basic_cas.json")
+            .rlocation("turbo_cache/config/examples/basic_cas.json")
             .into_os_string()
             .into_string()
             .unwrap();

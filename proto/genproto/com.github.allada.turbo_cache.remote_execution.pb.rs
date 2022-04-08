@@ -52,7 +52,7 @@ pub struct RegisterSupportedProperties {
     //// the unsupported properties.
     ////
     //// The details on how to use this property can be found here:
-    //// <https://github.com/allada/rust_cas/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs>
+    //// <https://github.com/allada/turbo-cache/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs>
     #[prost(message, repeated, tag = "1")]
     pub properties: ::prost::alloc::vec::Vec<
         super::super::super::super::super::build::bazel::remote::execution::v2::platform::Property,
@@ -184,7 +184,7 @@ pub mod worker_api_client {
             })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/com.github.allada.rust_cas.remote_execution.WorkerApi/ConnectWorker",
+                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ConnectWorker",
             );
             self.inner
                 .streaming(request.into_streaming_request(), path, codec)
@@ -257,7 +257,7 @@ pub mod worker_api_server {
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             let inner = self.inner.clone();
             match req.uri().path() {
-                "/com.github.allada.rust_cas.remote_execution.WorkerApi/ConnectWorker" => {
+                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ConnectWorker" => {
                     #[allow(non_camel_case_types)]
                     struct ConnectWorkerSvc<T: WorkerApi>(pub Arc<T>);
                     impl<T: WorkerApi> tonic::server::StreamingService<super::UpdateFromWorker>
@@ -324,6 +324,6 @@ pub mod worker_api_server {
         }
     }
     impl<T: WorkerApi> tonic::transport::NamedService for WorkerApiServer<T> {
-        const NAME: &'static str = "com.github.allada.rust_cas.remote_execution.WorkerApi";
+        const NAME: &'static str = "com.github.allada.turbo_cache.remote_execution.WorkerApi";
     }
 }
