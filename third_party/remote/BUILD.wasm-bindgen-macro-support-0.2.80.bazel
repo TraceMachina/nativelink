@@ -32,11 +32,10 @@ licenses([
 # Generated Targets
 
 rust_library(
-    name = "quote",
+    name = "wasm_bindgen_macro_support",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "default",
-        "proc-macro",
+        "spans",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -48,13 +47,13 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "1.0.17",
+    version = "0.2.80",
     # buildifier: leave-alone
     deps = [
         "@raze__proc_macro2__1_0_37//:proc_macro2",
+        "@raze__quote__1_0_18//:quote",
+        "@raze__syn__1_0_91//:syn",
+        "@raze__wasm_bindgen_backend__0_2_80//:wasm_bindgen_backend",
+        "@raze__wasm_bindgen_shared__0_2_80//:wasm_bindgen_shared",
     ],
 )
-
-# Unsupported target "compiletest" with type "test" omitted
-
-# Unsupported target "test" with type "test" omitted

@@ -38,18 +38,16 @@ load(
 )
 
 cargo_build_script(
-    name = "wasm_bindgen_build_script",
+    name = "wasm_bindgen_shared_build_script",
     srcs = glob(["**/*.rs"]),
     build_script_env = {
     },
     crate_features = [
-        "default",
-        "spans",
-        "std",
     ],
     crate_root = "build.rs",
     data = glob(["**"]),
     edition = "2018",
+    links = "wasm_bindgen",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -57,26 +55,20 @@ cargo_build_script(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.79",
+    version = "0.2.80",
     visibility = ["//visibility:private"],
     deps = [
     ],
 )
 
 rust_library(
-    name = "wasm_bindgen",
+    name = "wasm_bindgen_shared",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "default",
-        "spans",
-        "std",
     ],
     crate_root = "src/lib.rs",
     data = [],
     edition = "2018",
-    proc_macro_deps = [
-        "@raze__wasm_bindgen_macro__0_2_79//:wasm_bindgen_macro",
-    ],
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -84,22 +76,9 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.79",
+    version = "0.2.80",
     # buildifier: leave-alone
     deps = [
-        ":wasm_bindgen_build_script",
-        "@raze__cfg_if__1_0_0//:cfg_if",
+        ":wasm_bindgen_shared_build_script",
     ],
 )
-
-# Unsupported target "headless" with type "test" omitted
-
-# Unsupported target "must_use" with type "test" omitted
-
-# Unsupported target "non_wasm" with type "test" omitted
-
-# Unsupported target "std-crate-no-std-dep" with type "test" omitted
-
-# Unsupported target "unwrap_throw" with type "test" omitted
-
-# Unsupported target "wasm" with type "test" omitted

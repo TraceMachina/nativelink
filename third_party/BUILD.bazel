@@ -381,6 +381,15 @@ alias(
     ],
 )
 
+alias(
+    name = "uuid",
+    actual = "@raze__uuid__0_8_2//:uuid",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
 # Export file for Stardoc support
 exports_files(
     [

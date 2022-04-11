@@ -60,7 +60,7 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.1.32",
+    version = "0.1.33",
     # buildifier: leave-alone
     deps = [
         "@raze__cfg_if__1_0_0//:cfg_if",
@@ -93,6 +93,8 @@ rust_library(
 # Unsupported target "max_level_hint" with type "test" omitted
 
 # Unsupported target "multiple_max_level_hints" with type "test" omitted
+
+# Unsupported target "no_subscriber" with type "test" omitted
 
 # Unsupported target "span" with type "test" omitted
 

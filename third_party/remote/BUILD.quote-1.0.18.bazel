@@ -31,11 +31,12 @@ licenses([
 
 # Generated Targets
 
-rust_proc_macro(
-    name = "wasm_bindgen_macro",
+rust_library(
+    name = "quote",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "spans",
+        "default",
+        "proc-macro",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -47,12 +48,13 @@ rust_proc_macro(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.79",
+    version = "1.0.18",
     # buildifier: leave-alone
     deps = [
-        "@raze__quote__1_0_17//:quote",
-        "@raze__wasm_bindgen_macro_support__0_2_79//:wasm_bindgen_macro_support",
+        "@raze__proc_macro2__1_0_37//:proc_macro2",
     ],
 )
 
-# Unsupported target "ui" with type "test" omitted
+# Unsupported target "compiletest" with type "test" omitted
+
+# Unsupported target "test" with type "test" omitted
