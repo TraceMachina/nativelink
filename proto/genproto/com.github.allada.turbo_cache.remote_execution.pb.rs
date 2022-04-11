@@ -1,48 +1,8 @@
 // Copyright 2020 Nathan (Blaise) Bruer.  All rights reserved.
-//// Communication from the worker to the scheduler.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct UpdateFromWorker {
-    #[prost(oneof = "update_from_worker::Update", tags = "1, 2, 3, 4")]
-    pub update: ::core::option::Option<update_from_worker::Update>,
-}
-/// Nested message and enum types in `UpdateFromWorker`.
-pub mod update_from_worker {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Update {
-        //// Message used to let the scheduler know that it is still alive as
-        //// well as check to see if the scheduler is still alive. The scheduler
-        //// may close the connection if the worker has not sent any messages
-        //// after some amount of time (configured in the scheduler's
-        //// configuration).
-        #[prost(message, tag = "1")]
-        KeepAlive(()),
-        //// Registers this worker and informs the scheduler what properties
-        //// this worker supports. This command MUST be sent before issuing
-        //// any other commands. Failing to do so is undefined behavior.
-        #[prost(message, tag = "2")]
-        RegisterSupportedProperties(super::RegisterSupportedProperties),
-        //// Informs the scheduler about the result of an execution request.
-        #[prost(message, tag = "3")]
-        ExecuteResult(super::ExecuteResult),
-        //// Informs the scheduler that the service is going offline and
-        //// should stop issuing any new actions on this worker.
-        ////
-        //// The worker may stay connected even after sending this command
-        //// and may even send an `ExecuteResult` after sending this command.
-        //// It is up to the scheduler implementation to decide how to handle
-        //// this case.
-        ////
-        //// Any job that was running on this instance likely needs to be
-        //// executed again, but up to the scheduler on how or when to handle
-        //// this case.
-        #[prost(message, tag = "4")]
-        GoingAway(super::GoingAway),
-    }
-}
 //// Represents the initial request sent to the scheduler informing the
 //// scheduler about this worker's capabilities.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RegisterSupportedProperties {
+pub struct SupportedProperties {
     //// The list of properties this worker can support. The exact
     //// implementation is driven by the configuration matrix between the
     //// worker and scheduler.
@@ -68,29 +28,37 @@ pub struct ExecuteResult {
         super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteResponse,
     >,
 }
-//// Informs the scheduler that the node is going offline.
+//// Result sent back from the server when a node connects.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GoingAway {}
+pub struct ConnectionResult {
+    //// The internal ID given to the newly connected node.
+    #[prost(string, tag = "1")]
+    pub worker_id: ::prost::alloc::string::String,
+}
 //// Communication from the scheduler to the worker.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateForWorker {
-    #[prost(oneof = "update_for_worker::Update", tags = "1, 2")]
+    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3")]
     pub update: ::core::option::Option<update_for_worker::Update>,
 }
 /// Nested message and enum types in `UpdateForWorker`.
 pub mod update_for_worker {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Update {
+        //// This will be sent only as the first item in the stream after the node
+        //// has connected.
+        #[prost(message, tag = "1")]
+        ConnectionResult(super::ConnectionResult),
         //// Message used to let the worker know that it is still alive as well
         //// as check to see if the worker is still alive. The worker
         //// may close the connection if the scheduler has not sent any messages
         //// after some amount of time (configured in the scheduler's
         //// configuration).
-        #[prost(message, tag = "1")]
+        #[prost(message, tag = "2")]
         KeepAlive(()),
         //// Informs the worker about some work it should begin performing the
         //// requested action.
-        #[prost(message, tag = "2")]
+        #[prost(message, tag = "3")]
         StartAction(super::StartExecute),
     }
 }
@@ -168,12 +136,12 @@ pub mod worker_api_client {
             self.inner = self.inner.accept_gzip();
             self
         }
-        #[doc = "/ The worker will run this connect command which will initiate the"]
-        #[doc = "/ bi-directional stream. The worker must first run"]
-        #[doc = "/ `RegisterSupportedProperties` before issuing any other commands."]
+        #[doc = "/ Registers this worker and informs the scheduler what properties"]
+        #[doc = "/ this worker supports. The response must be listened on the client"]
+        #[doc = "/ side for updates from the server."]
         pub async fn connect_worker(
             &mut self,
-            request: impl tonic::IntoStreamingRequest<Message = super::UpdateFromWorker>,
+            request: impl tonic::IntoRequest<super::SupportedProperties>,
         ) -> Result<tonic::Response<tonic::codec::Streaming<super::UpdateForWorker>>, tonic::Status>
         {
             self.inner.ready().await.map_err(|e| {
@@ -187,8 +155,73 @@ pub mod worker_api_client {
                 "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ConnectWorker",
             );
             self.inner
-                .streaming(request.into_streaming_request(), path, codec)
+                .server_streaming(request.into_request(), path, codec)
                 .await
+        }
+        #[doc = "/ Message used to let the scheduler know that it is still alive as"]
+        #[doc = "/ well as check to see if the scheduler is still alive. The scheduler"]
+        #[doc = "/ may close the connection if the worker has not sent any messages"]
+        #[doc = "/ after some amount of time (configured in the scheduler's"]
+        #[doc = "/ configuration)."]
+        pub async fn keep_alive(
+            &mut self,
+            request: impl tonic::IntoRequest<()>,
+        ) -> Result<tonic::Response<()>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/KeepAlive",
+            );
+            self.inner.unary(request.into_request(), path, codec).await
+        }
+        #[doc = "/ Informs the scheduler that the service is going offline and"]
+        #[doc = "/ should stop issuing any new actions on this worker."]
+        #[doc = "/"]
+        #[doc = "/ The worker may stay connected even after sending this command"]
+        #[doc = "/ and may even send an `ExecuteResult` after sending this command."]
+        #[doc = "/ It is up to the scheduler implementation to decide how to handle"]
+        #[doc = "/ this case."]
+        #[doc = "/"]
+        #[doc = "/ Any job that was running on this instance likely needs to be"]
+        #[doc = "/ executed again, but up to the scheduler on how or when to handle"]
+        #[doc = "/ this case."]
+        pub async fn going_away(
+            &mut self,
+            request: impl tonic::IntoRequest<()>,
+        ) -> Result<tonic::Response<()>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/GoingAway",
+            );
+            self.inner.unary(request.into_request(), path, codec).await
+        }
+        #[doc = "/ Informs the scheduler about the result of an execution request."]
+        pub async fn execution_response(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ExecuteResult>,
+        ) -> Result<tonic::Response<()>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ExecutionResponse",
+            );
+            self.inner.unary(request.into_request(), path, codec).await
         }
     }
 }
@@ -203,13 +236,42 @@ pub mod worker_api_server {
         type ConnectWorkerStream: futures_core::Stream<Item = Result<super::UpdateForWorker, tonic::Status>>
             + Send
             + 'static;
-        #[doc = "/ The worker will run this connect command which will initiate the"]
-        #[doc = "/ bi-directional stream. The worker must first run"]
-        #[doc = "/ `RegisterSupportedProperties` before issuing any other commands."]
+        #[doc = "/ Registers this worker and informs the scheduler what properties"]
+        #[doc = "/ this worker supports. The response must be listened on the client"]
+        #[doc = "/ side for updates from the server."]
         async fn connect_worker(
             &self,
-            request: tonic::Request<tonic::Streaming<super::UpdateFromWorker>>,
+            request: tonic::Request<super::SupportedProperties>,
         ) -> Result<tonic::Response<Self::ConnectWorkerStream>, tonic::Status>;
+        #[doc = "/ Message used to let the scheduler know that it is still alive as"]
+        #[doc = "/ well as check to see if the scheduler is still alive. The scheduler"]
+        #[doc = "/ may close the connection if the worker has not sent any messages"]
+        #[doc = "/ after some amount of time (configured in the scheduler's"]
+        #[doc = "/ configuration)."]
+        async fn keep_alive(
+            &self,
+            request: tonic::Request<()>,
+        ) -> Result<tonic::Response<()>, tonic::Status>;
+        #[doc = "/ Informs the scheduler that the service is going offline and"]
+        #[doc = "/ should stop issuing any new actions on this worker."]
+        #[doc = "/"]
+        #[doc = "/ The worker may stay connected even after sending this command"]
+        #[doc = "/ and may even send an `ExecuteResult` after sending this command."]
+        #[doc = "/ It is up to the scheduler implementation to decide how to handle"]
+        #[doc = "/ this case."]
+        #[doc = "/"]
+        #[doc = "/ Any job that was running on this instance likely needs to be"]
+        #[doc = "/ executed again, but up to the scheduler on how or when to handle"]
+        #[doc = "/ this case."]
+        async fn going_away(
+            &self,
+            request: tonic::Request<()>,
+        ) -> Result<tonic::Response<()>, tonic::Status>;
+        #[doc = "/ Informs the scheduler about the result of an execution request."]
+        async fn execution_response(
+            &self,
+            request: tonic::Request<super::ExecuteResult>,
+        ) -> Result<tonic::Response<()>, tonic::Status>;
     }
     #[doc = "/ This API describes how schedulers communicate with Worker nodes."]
     #[doc = "/"]
@@ -260,7 +322,8 @@ pub mod worker_api_server {
                 "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ConnectWorker" => {
                     #[allow(non_camel_case_types)]
                     struct ConnectWorkerSvc<T: WorkerApi>(pub Arc<T>);
-                    impl<T: WorkerApi> tonic::server::StreamingService<super::UpdateFromWorker>
+                    impl<T: WorkerApi>
+                        tonic::server::ServerStreamingService<super::SupportedProperties>
                         for ConnectWorkerSvc<T>
                     {
                         type Response = super::UpdateForWorker;
@@ -269,7 +332,7 @@ pub mod worker_api_server {
                             BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<tonic::Streaming<super::UpdateFromWorker>>,
+                            request: tonic::Request<super::SupportedProperties>,
                         ) -> Self::Future {
                             let inner = self.0.clone();
                             let fut = async move { (*inner).connect_worker(request).await };
@@ -287,7 +350,94 @@ pub mod worker_api_server {
                             accept_compression_encodings,
                             send_compression_encodings,
                         );
-                        let res = grpc.streaming(method, req).await;
+                        let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/KeepAlive" => {
+                    #[allow(non_camel_case_types)]
+                    struct KeepAliveSvc<T: WorkerApi>(pub Arc<T>);
+                    impl<T: WorkerApi> tonic::server::UnaryService<()> for KeepAliveSvc<T> {
+                        type Response = ();
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(&mut self, request: tonic::Request<()>) -> Self::Future {
+                            let inner = self.0.clone();
+                            let fut = async move { (*inner).keep_alive(request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = KeepAliveSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/GoingAway" => {
+                    #[allow(non_camel_case_types)]
+                    struct GoingAwaySvc<T: WorkerApi>(pub Arc<T>);
+                    impl<T: WorkerApi> tonic::server::UnaryService<()> for GoingAwaySvc<T> {
+                        type Response = ();
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(&mut self, request: tonic::Request<()>) -> Self::Future {
+                            let inner = self.0.clone();
+                            let fut = async move { (*inner).going_away(request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = GoingAwaySvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ExecutionResponse" => {
+                    #[allow(non_camel_case_types)]
+                    struct ExecutionResponseSvc<T: WorkerApi>(pub Arc<T>);
+                    impl<T: WorkerApi> tonic::server::UnaryService<super::ExecuteResult> for ExecutionResponseSvc<T> {
+                        type Response = ();
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ExecuteResult>,
+                        ) -> Self::Future {
+                            let inner = self.0.clone();
+                            let fut = async move { (*inner).execution_response(request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = ExecutionResponseSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
+                        let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)
