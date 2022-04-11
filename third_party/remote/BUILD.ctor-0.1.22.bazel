@@ -51,7 +51,7 @@ rust_proc_macro(
     version = "0.1.22",
     # buildifier: leave-alone
     deps = [
-        "@raze__quote__1_0_17//:quote",
+        "@raze__quote__1_0_18//:quote",
         "@raze__syn__1_0_91//:syn",
     ],
 )

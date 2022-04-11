@@ -26,16 +26,29 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT OR Apache-2.0"
+    "notice",  # Apache-2.0 from expression "Apache-2.0 OR MIT"
 ])
 
 # Generated Targets
 
+# Unsupported target "format_str" with type "bench" omitted
+
+# Unsupported target "invalid_parse_str" with type "bench" omitted
+
+# Unsupported target "mod" with type "bench" omitted
+
+# Unsupported target "serde_support" with type "bench" omitted
+
+# Unsupported target "valid_parse_str" with type "bench" omitted
+
 rust_library(
-    name = "wasm_bindgen_backend",
+    name = "uuid",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "spans",
+        "default",
+        "getrandom",
+        "std",
+        "v4",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -47,15 +60,9 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.79",
+    version = "0.8.2",
     # buildifier: leave-alone
     deps = [
-        "@raze__bumpalo__3_9_1//:bumpalo",
-        "@raze__lazy_static__1_4_0//:lazy_static",
-        "@raze__log__0_4_16//:log",
-        "@raze__proc_macro2__1_0_37//:proc_macro2",
-        "@raze__quote__1_0_17//:quote",
-        "@raze__syn__1_0_91//:syn",
-        "@raze__wasm_bindgen_shared__0_2_79//:wasm_bindgen_shared",
+        "@raze__getrandom__0_2_6//:getrandom",
     ],
 )

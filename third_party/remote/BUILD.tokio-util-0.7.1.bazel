@@ -57,7 +57,7 @@ rust_library(
         "@raze__futures_sink__0_3_21//:futures_sink",
         "@raze__pin_project_lite__0_2_8//:pin_project_lite",
         "@raze__tokio__1_17_0//:tokio",
-        "@raze__tracing__0_1_32//:tracing",
+        "@raze__tracing__0_1_33//:tracing",
     ],
 )
 
