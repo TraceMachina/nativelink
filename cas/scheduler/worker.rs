@@ -2,15 +2,49 @@
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use action_messages::ActionInfo;
-use error::{make_err, Code, Error};
+use error::{make_err, make_input_err, Code, Error, ResultExt};
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
-use proto::com::github::allada::turbo_cache::remote_execution::{update_for_worker, StartExecute, UpdateForWorker};
+use proto::com::github::allada::turbo_cache::remote_execution::{
+    update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Unique id of worker.
-pub type WorkerId = String;
+#[derive(Eq, PartialEq, Hash, Copy, Clone)]
+pub struct WorkerId(pub u128);
+
+impl std::fmt::Display for WorkerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Uuid::encode_buffer();
+        let worker_id_str = Uuid::from_u128(self.0).to_hyphenated().encode_lower(&mut buf);
+        write!(f, "{}", worker_id_str)
+    }
+}
+
+impl std::fmt::Debug for WorkerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Uuid::encode_buffer();
+        let worker_id_str = Uuid::from_u128(self.0).to_hyphenated().encode_lower(&mut buf);
+        f.write_str(worker_id_str)
+    }
+}
+
+impl TryFrom<String> for WorkerId {
+    type Error = Error;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        match Uuid::parse_str(&s) {
+            Err(e) => Err(make_input_err!(
+                "Failed to convert string to WorkerId : {} : {:?}",
+                s,
+                e
+            )),
+            Ok(my_uuid) => Ok(WorkerId(my_uuid.as_u128())),
+        }
+    }
+}
 
 /// Notifications to send worker about a requested state change.
 pub enum WorkerUpdate {
@@ -38,6 +72,15 @@ impl Worker {
             platform_properties,
             tx,
         }
+    }
+
+    /// Sends the initial connection information to the worker. This generally is just meta info.
+    /// This should only be sent once and should always be the first item in the stream.
+    pub fn send_initial_connection_result(&mut self) -> Result<(), Error> {
+        self.send_msg_to_worker(update_for_worker::Update::ConnectionResult(ConnectionResult {
+            worker_id: self.id.to_string(),
+        }))
+        .err_tip(|| format!("Failed to send ConnectionResult to worker : {}", self.id))
     }
 
     /// Notifies the worker of a requested state change.

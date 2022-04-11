@@ -33,6 +33,7 @@ rust_library(
     deps = [
         "//proto",
         "//third_party:tokio",
+        "//third_party:uuid",
         "//util:error",
         ":action_messages",
         ":platform_property_manager",

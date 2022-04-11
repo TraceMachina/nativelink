@@ -39,8 +39,25 @@ impl Workers {
 
     /// Adds a worker to the pool.
     /// Note: This function will not do any task matching.
-    fn add_worker(&mut self, worker: Worker) {
-        self.workers.insert(worker.id.clone(), worker);
+    fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
+        let worker_id = worker.id;
+        self.workers.insert(worker_id, worker);
+
+        // Worker is not cloneable, and we do not want to send the initial connection results until
+        // we have added it to the map, or we might get some strange race conditions due to the way
+        // the multi-threaded runtime works.
+        let worker = self.workers.get_mut(&worker_id).unwrap();
+        let res = worker
+            .send_initial_connection_result()
+            .err_tip(|| "Failed to send initial connection result to worker");
+        if let Err(e) = &res {
+            self.remove_worker(&worker_id);
+            log::error!(
+                "Worker connection appears to have been closed while adding to pool. Removing from queue : {:?}",
+                e
+            );
+        }
+        res
     }
 
     /// Removes worker from pool.
@@ -224,15 +241,21 @@ impl Scheduler {
     }
 
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
-    pub async fn add_worker(&self, worker: Worker) {
+    pub async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
-        inner.workers.add_worker(worker);
+        inner.workers.add_worker(worker)?;
         inner.do_try_match();
+        Ok(())
     }
 
     /// Adds an action to the scheduler for remote execution.
     pub async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let mut inner = self.inner.lock().await;
         inner.add_action(action_info)
+    }
+
+    pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
+        let inner = self.inner.lock().await;
+        inner.workers.workers.contains_key(worker_id)
     }
 }
