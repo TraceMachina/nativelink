@@ -91,6 +91,24 @@ rust_library(
 )
 
 rust_library(
+    name = "worker_api_server",
+    srcs = ["worker_api_server.rs"],
+    deps = [
+        "//cas/scheduler",
+        "//cas/scheduler:platform_property_manager",
+        "//cas/scheduler:worker",
+        "//proto",
+        "//third_party:futures",
+        "//third_party:tokio",
+        "//third_party:tonic",
+        "//third_party:uuid",
+        "//util:common",
+        "//util:error",
+    ],
+    visibility = ["//cas:__pkg__"]
+)
+
+rust_library(
     name = "ac_utils",
     srcs = ["ac_utils.rs"],
     deps = [
@@ -100,6 +118,22 @@ rust_library(
         "//util:error",
     ],
     visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "worker_api_server_test",
+    srcs = ["tests/worker_api_server_test.rs"],
+    deps = [
+        "//cas/scheduler",
+        "//cas/scheduler:platform_property_manager",
+        "//proto",
+        "//third_party:pretty_assertions",
+        "//third_party:tokio",
+        "//third_party:tokio_stream",
+        "//third_party:tonic",
+        "//util:error",
+        ":worker_api_server",
+    ],
 )
 
 rust_test(

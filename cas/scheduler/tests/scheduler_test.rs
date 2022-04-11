@@ -7,12 +7,14 @@ use tokio::sync::mpsc;
 
 use action_messages::{ActionInfo, ActionStage, ActionState};
 use common::DigestInfo;
-use error::Error;
+use error::{Error, ResultExt};
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
 use proto::build::bazel::remote::execution::v2::ExecuteRequest;
-use proto::com::github::allada::turbo_cache::remote_execution::{update_for_worker, StartExecute, UpdateForWorker};
+use proto::com::github::allada::turbo_cache::remote_execution::{
+    update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
+};
 use scheduler::Scheduler;
-use worker::Worker;
+use worker::{Worker, WorkerId};
 
 const INSTANCE_NAME: &str = "foobar_instance_name";
 
@@ -32,6 +34,18 @@ fn make_base_action_info() -> ActionInfo {
     }
 }
 
+async fn verify_initial_connection_message(worker_id: WorkerId, rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>) {
+    use pretty_assertions::assert_eq;
+    // Worker should have been sent an execute command.
+    let expected_msg_for_worker = UpdateForWorker {
+        update: Some(update_for_worker::Update::ConnectionResult(ConnectionResult {
+            worker_id: worker_id.to_string(),
+        })),
+    };
+    let msg_for_worker = rx.recv().await.unwrap();
+    assert_eq!(msg_for_worker, expected_msg_for_worker);
+}
+
 #[cfg(test)]
 mod buf_channel_tests {
     use super::*;
@@ -39,7 +53,7 @@ mod buf_channel_tests {
 
     #[tokio::test]
     async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
-        const WORKER_ID: &str = "foobar_worker_id";
+        const WORKER_ID: WorkerId = WorkerId(0x123456789111);
 
         let scheduler = Scheduler::new();
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -47,10 +61,12 @@ mod buf_channel_tests {
         let mut rx_from_worker = {
             let (tx, rx) = mpsc::unbounded_channel();
             scheduler
-                .add_worker(Worker::new(WORKER_ID.to_string(), PlatformProperties::default(), tx))
-                .await;
+                .add_worker(Worker::new(WORKER_ID, PlatformProperties::default(), tx))
+                .await
+                .err_tip(|| "Failed to add worker")?;
             rx
         };
+        verify_initial_connection_message(WORKER_ID, &mut rx_from_worker).await;
 
         let mut client_rx = {
             let mut action_info = make_base_action_info();
@@ -101,13 +117,17 @@ mod buf_channel_tests {
             .properties
             .insert("prop".to_string(), PlatformPropertyValue::Exact("2".to_string()));
 
+        const WORKER_ID1: WorkerId = WorkerId(0x100001);
+        const WORKER_ID2: WorkerId = WorkerId(0x100002);
         let mut rx_from_worker1 = {
             let (tx, rx) = mpsc::unbounded_channel();
             scheduler
-                .add_worker(Worker::new("worker_id1".to_string(), platform_properties.clone(), tx))
-                .await;
+                .add_worker(Worker::new(WORKER_ID1, platform_properties.clone(), tx))
+                .await
+                .err_tip(|| "Failed to add worker")?;
             rx
         };
+        verify_initial_connection_message(WORKER_ID1, &mut rx_from_worker1).await;
 
         let mut client_rx = {
             let mut action_info = make_base_action_info();
@@ -131,10 +151,12 @@ mod buf_channel_tests {
         let mut rx_from_worker2 = {
             let (tx, rx) = mpsc::unbounded_channel();
             scheduler
-                .add_worker(Worker::new("worker_id2".to_string(), worker_properties, tx))
-                .await;
+                .add_worker(Worker::new(WORKER_ID2, worker_properties, tx))
+                .await
+                .err_tip(|| "Failed to add worker")?;
             rx
         };
+        verify_initial_connection_message(WORKER_ID2, &mut rx_from_worker2).await;
         {
             // Worker should have been sent an execute command.
             let expected_msg_for_worker = UpdateForWorker {
@@ -170,7 +192,7 @@ mod buf_channel_tests {
 
     #[tokio::test]
     async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
-        const WORKER_ID: &str = "foobar_worker_id";
+        const WORKER_ID: WorkerId = WorkerId(0x100009);
 
         let scheduler = Scheduler::new();
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -206,10 +228,12 @@ mod buf_channel_tests {
         let mut rx_from_worker = {
             let (tx, rx) = mpsc::unbounded_channel();
             scheduler
-                .add_worker(Worker::new(WORKER_ID.to_string(), PlatformProperties::default(), tx))
-                .await;
+                .add_worker(Worker::new(WORKER_ID, PlatformProperties::default(), tx))
+                .await
+                .err_tip(|| "Failed to add worker")?;
             rx
         };
+        verify_initial_connection_message(WORKER_ID, &mut rx_from_worker).await;
 
         {
             // Worker should have been sent an execute command.
@@ -250,6 +274,7 @@ mod buf_channel_tests {
 
     #[tokio::test]
     async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(), Error> {
+        const WORKER_ID: WorkerId = WorkerId(0x100010);
         let scheduler = Scheduler::new();
         let action_digest = DigestInfo::new([99u8; 32], 512);
         let platform_properties = PlatformProperties::default();
@@ -257,8 +282,9 @@ mod buf_channel_tests {
         let rx_from_worker = {
             let (tx, rx) = mpsc::unbounded_channel();
             scheduler
-                .add_worker(Worker::new("worker_id".to_string(), platform_properties.clone(), tx))
-                .await;
+                .add_worker(Worker::new(WORKER_ID, platform_properties.clone(), tx))
+                .await
+                .err_tip(|| "Failed to add worker")?;
             rx
         };
 

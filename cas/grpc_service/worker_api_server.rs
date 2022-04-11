@@ -1,0 +1,117 @@
+// Copyright 2022 Nathan (Blaise) Bruer.  All rights reserved.
+
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Instant;
+
+use futures::{stream::unfold, Stream};
+use tokio::sync::mpsc;
+use tonic::{Request, Response, Status};
+use uuid::Uuid;
+
+use common::log;
+use error::{Error, ResultExt};
+use platform_property_manager::{PlatformProperties, PlatformPropertyManager};
+use proto::com::github::allada::turbo_cache::remote_execution::{
+    worker_api_server::WorkerApi, ExecuteResult, SupportedProperties, UpdateForWorker,
+};
+use scheduler::Scheduler;
+use worker::{Worker, WorkerId};
+
+type ConnectWorkerStream = Pin<Box<dyn Stream<Item = Result<UpdateForWorker, Status>> + Send + Sync + 'static>>;
+
+pub struct WorkerApiServer {
+    platform_property_manager: Arc<PlatformPropertyManager>,
+    scheduler: Arc<Scheduler>,
+}
+
+impl WorkerApiServer {
+    pub fn new(platform_property_manager: Arc<PlatformPropertyManager>, scheduler: Arc<Scheduler>) -> Self {
+        Self {
+            platform_property_manager,
+            scheduler,
+        }
+    }
+
+    async fn inner_connect_worker(
+        &self,
+        supported_properties: SupportedProperties,
+    ) -> Result<Response<ConnectWorkerStream>, Error> {
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        // First convert our proto platform properties into one our scheduler understands.
+        let platform_properties = {
+            let mut platform_properties = PlatformProperties::default();
+            for property in supported_properties.properties {
+                let platform_property_value = self
+                    .platform_property_manager
+                    .make_prop_value(&property.name, &property.value)
+                    .err_tip(|| "Bad Property during connect_worker()")?;
+                platform_properties
+                    .properties
+                    .insert(property.name.clone(), platform_property_value);
+            }
+            platform_properties
+        };
+
+        // Now register the worker with the scheduler.
+        let worker_id = {
+            let worker_id = Uuid::new_v4().as_u128();
+            let worker = Worker::new(WorkerId(worker_id), platform_properties, tx);
+            self.scheduler
+                .add_worker(worker)
+                .await
+                .err_tip(|| "Failed to add worker in inner_connect_worker()")?;
+            worker_id
+        };
+
+        Ok(Response::new(Box::pin(unfold(
+            (rx, worker_id),
+            move |state| async move {
+                let (mut rx, worker_id) = state;
+                if let Some(update_for_worker) = rx.recv().await {
+                    return Some((Ok(update_for_worker), (rx, worker_id)));
+                }
+                log::warn!(
+                    "UpdateForWorker channel was closed, thus closing connection to worker node : {}",
+                    worker_id
+                );
+
+                None
+            },
+        ))))
+    }
+}
+
+#[tonic::async_trait]
+impl WorkerApi for WorkerApiServer {
+    type ConnectWorkerStream = ConnectWorkerStream;
+    async fn connect_worker(
+        &self,
+        grpc_request: Request<SupportedProperties>,
+    ) -> Result<Response<Self::ConnectWorkerStream>, Status> {
+        let now = Instant::now();
+        log::info!("\x1b[0;31mconnect_worker Req\x1b[0m: {:?}", grpc_request.get_ref());
+        let supported_properties = grpc_request.into_inner();
+        let resp = self.inner_connect_worker(supported_properties).await;
+        let d = now.elapsed().as_secs_f32();
+        if let Err(err) = resp.as_ref() {
+            log::error!("\x1b[0;31mconnect_worker Resp\x1b[0m: {} {:?}", d, err);
+        } else {
+            log::info!("\x1b[0;31mconnect_worker Resp\x1b[0m: {}", d);
+        }
+        return resp.map_err(|e| e.into());
+    }
+
+    async fn keep_alive(&self, _grpc_request: Request<()>) -> Result<Response<()>, Status> {
+        unimplemented!();
+    }
+
+    async fn going_away(&self, _grpc_request: Request<()>) -> Result<Response<()>, Status> {
+        unimplemented!();
+    }
+
+    async fn execution_response(&self, _grpc_request: Request<ExecuteResult>) -> Result<Response<()>, Status> {
+        unimplemented!();
+    }
+}
