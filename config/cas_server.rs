@@ -121,6 +121,12 @@ pub struct ByteStreamConfig {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct WorkerApiConfig {
+    /// The scheduler name referenced in the `schedulers` map in the main config.
+    pub scheduler: SchedulerRefName,
+}
+
+#[derive(Deserialize, Debug)]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
     /// The key is the instance_name used in the protocol and the
@@ -146,6 +152,15 @@ pub struct ServicesConfig {
     /// Bazel's protocol strongly encourages users to use this streaming
     /// interface to interact with the CAS when the data is large.
     pub bytestream: Option<ByteStreamConfig>,
+
+    /// This is the service used for workers to connect and communicate
+    /// through.
+    /// NOTE: This service should be served on a different, non-public port.
+    /// In other words, `worker_api` configuration should not have any other
+    /// services that are served on the same port. Doing so is a security
+    /// risk, as workers have a different permission set than a client
+    /// that makes the remote execution/cache requests.
+    pub worker_api: Option<WorkerApiConfig>,
 }
 
 #[derive(Deserialize, Debug)]

@@ -90,6 +90,27 @@
       }
     }
   },
+  "schedulers": {
+    "MAIN_SCHEDULER": {
+      "supported_platform_properties": {
+        "cpu_count": "Minimum",
+        "memory_kb": "Minimum",
+        "network_kbps": "Minimum",
+        "disk_read_iops": "Minimum",
+        "disk_read_bps": "Minimum",
+        "disk_write_iops": "Minimum",
+        "disk_write_bps": "Minimum",
+        "shm_size": "Minimum",
+        "gpu_count": "Minimum",
+        "gpu_model": "Exact",
+        "cpu_vendor": "Exact",
+        "cpu_arch": "Exact",
+        "cpu_model": "Exact",
+        "kernel_version": "Exact",
+        "docker_image": "Metadata",
+      }
+    }
+  },
   "servers": [{
     "listen_address": "0.0.0.0:50051",
     "services": {
@@ -103,8 +124,18 @@
           "ac_store": "AC_MAIN_STORE"
         }
       },
+      "execution": {
+        "main": {
+          "cas_store": "CAS_MAIN_STORE",
+          "scheduler": "MAIN_SCHEDULER",
+        }
+      },
       "capabilities": {
-        "main": {},
+        "main": {
+          "remote_execution": {
+            "scheduler": "MAIN_SCHEDULER",
+          }
+        }
       },
       "bytestream": {
         "cas_stores": {
@@ -112,6 +143,17 @@
         },
         // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
         "max_bytes_per_stream": 64000, // 64kb.
+      }
+    }
+  }, {
+    "listen_address": "0.0.0.0:50061",
+    "services": {
+      // Note: This should be served on a different port, because it has
+      // a different permission set than the other services.
+      // In other words, this service is a backend api. The ones above
+      // are a frontend api.
+      "worker_api": {
+        "scheduler": "MAIN_SCHEDULER",
       }
     }
   }]

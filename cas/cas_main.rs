@@ -19,6 +19,7 @@ use error::ResultExt;
 use execution_server::ExecutionServer;
 use scheduler::Scheduler;
 use store::StoreManager;
+use worker_api_server::WorkerApiServer;
 
 const DEFAULT_CONFIG_FILE: &str = "<built-in example in config/examples/basic_cas.json>";
 
@@ -31,7 +32,7 @@ const DEFAULT_CONFIG_FILE: &str = "<built-in example in config/examples/basic_ca
     long_about = None
 )]
 struct Args {
-    /// Config file to use
+    /// Config file to use.
     #[clap(default_value = DEFAULT_CONFIG_FILE)]
     config_file: String,
 }
@@ -79,8 +80,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut server = Server::builder();
         let services = server_cfg.services.ok_or_else(|| "'services' must be configured")?;
 
-        let capabilities_config = services.capabilities.unwrap_or(HashMap::new());
-
         let server = server
             .add_optional_service(
                 services
@@ -115,7 +114,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .err_tip(|| "Could not create ByteStream service")?,
             )
             .add_optional_service(
-                CapabilitiesServer::new(&capabilities_config, &schedulers).and_then(|v| Ok(Some(v.into_service())))?,
+                services
+                    .capabilities
+                    .map_or(Ok(None), |cfg| {
+                        CapabilitiesServer::new(&cfg, &schedulers).and_then(|v| Ok(Some(v.into_service())))
+                    })
+                    .err_tip(|| "Could not create Capabilities service")?,
+            )
+            .add_optional_service(
+                services
+                    .worker_api
+                    .map_or(Ok(None), |cfg| {
+                        WorkerApiServer::new(&cfg, &schedulers).and_then(|v| Ok(Some(v.into_service())))
+                    })
+                    .err_tip(|| "Could not create WorkerApi service")?,
             );
 
         let addr = server_cfg.listen_address.parse()?;

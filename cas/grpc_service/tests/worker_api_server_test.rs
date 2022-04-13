@@ -7,9 +7,8 @@ use std::time::Duration;
 use tokio_stream::StreamExt;
 use tonic::Request;
 
-use config::cas_server::SchedulerConfig;
+use config::cas_server::{SchedulerConfig, WorkerApiConfig};
 use error::{Error, ResultExt};
-use platform_property_manager::PlatformPropertyManager;
 use proto::com::github::allada::turbo_cache::remote_execution::{
     update_for_worker, worker_api_server::WorkerApi, KeepAliveRequest, SupportedProperties,
 };
@@ -32,16 +31,23 @@ fn static_now_fn() -> Result<Duration, Error> {
 }
 
 async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestContext, Error> {
-    let platform_properties = HashMap::new();
+    const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
+
     let scheduler = Arc::new(Scheduler::new(&SchedulerConfig {
         worker_timeout_s: worker_timeout,
         ..Default::default()
     }));
+
+    let mut schedulers = HashMap::new();
+    schedulers.insert(SCHEDULER_NAME.to_string(), scheduler.clone());
     let worker_api_server = WorkerApiServer::new_with_now_fn(
-        Arc::new(PlatformPropertyManager::new(platform_properties)),
-        scheduler.clone(),
+        &WorkerApiConfig {
+            scheduler: SCHEDULER_NAME.to_string(),
+        },
+        &schedulers,
         now_fn,
-    );
+    )
+    .err_tip(|| "Error creating WorkerApiServer")?;
 
     let supported_properties = SupportedProperties::default();
     let mut connection_worker_stream = worker_api_server

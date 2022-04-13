@@ -1,5 +1,6 @@
 // Copyright 2022 Nathan (Blaise) Bruer.  All rights reserved.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -10,11 +11,12 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use common::log;
+use config::cas_server::WorkerApiConfig;
 use error::{make_err, Code, Error, ResultExt};
-use platform_property_manager::{PlatformProperties, PlatformPropertyManager};
+use platform_property_manager::PlatformProperties;
 use proto::com::github::allada::turbo_cache::remote_execution::{
-    worker_api_server::WorkerApi, ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties,
-    UpdateForWorker,
+    worker_api_server::WorkerApi, worker_api_server::WorkerApiServer as Server, ExecuteResult, GoingAwayRequest,
+    KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
 use scheduler::Scheduler;
 use worker::{Worker, WorkerId};
@@ -24,16 +26,15 @@ pub type ConnectWorkerStream = Pin<Box<dyn Stream<Item = Result<UpdateForWorker,
 pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
 pub struct WorkerApiServer {
-    platform_property_manager: Arc<PlatformPropertyManager>,
     scheduler: Arc<Scheduler>,
     now_fn: NowFn,
 }
 
 impl WorkerApiServer {
-    pub fn new(platform_property_manager: Arc<PlatformPropertyManager>, scheduler: Arc<Scheduler>) -> Self {
+    pub fn new(config: &WorkerApiConfig, schedulers: &HashMap<String, Arc<Scheduler>>) -> Result<Self, Error> {
         Self::new_with_now_fn(
-            platform_property_manager,
-            scheduler,
+            config,
+            schedulers,
             Box::new(move || {
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -45,15 +46,24 @@ impl WorkerApiServer {
     /// Same as new(), but you can pass a custom `now_fn`, that returns a Duration since UNIX_EPOCH
     /// representing the current time. Used mostly in  unit tests.
     pub fn new_with_now_fn(
-        platform_property_manager: Arc<PlatformPropertyManager>,
-        scheduler: Arc<Scheduler>,
+        config: &WorkerApiConfig,
+        schedulers: &HashMap<String, Arc<Scheduler>>,
         now_fn: NowFn,
-    ) -> Self {
-        Self {
-            platform_property_manager,
-            scheduler,
-            now_fn,
-        }
+    ) -> Result<Self, Error> {
+        let scheduler = schedulers
+            .get(&config.scheduler)
+            .err_tip(|| {
+                format!(
+                    "Scheduler needs config for '{}' because it exists in worker_api",
+                    config.scheduler
+                )
+            })?
+            .clone();
+        Ok(Self { scheduler, now_fn })
+    }
+
+    pub fn into_service(self) -> Server<WorkerApiServer> {
+        Server::new(self)
     }
 
     async fn inner_connect_worker(
@@ -67,7 +77,8 @@ impl WorkerApiServer {
             let mut platform_properties = PlatformProperties::default();
             for property in supported_properties.properties {
                 let platform_property_value = self
-                    .platform_property_manager
+                    .scheduler
+                    .get_platform_property_manager()
                     .make_prop_value(&property.name, &property.value)
                     .err_tip(|| "Bad Property during connect_worker()")?;
                 platform_properties
