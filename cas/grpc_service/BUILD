@@ -99,6 +99,7 @@ rust_library(
         "//cas/scheduler",
         "//cas/scheduler:platform_property_manager",
         "//cas/scheduler:worker",
+        "//config",
         "//proto",
         "//third_party:futures",
         "//third_party:tokio",
@@ -127,7 +128,6 @@ rust_test(
     srcs = ["tests/worker_api_server_test.rs"],
     deps = [
         "//cas/scheduler",
-        "//cas/scheduler:platform_property_manager",
         "//cas/scheduler:worker",
         "//config",
         "//proto",

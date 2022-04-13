@@ -72,5 +72,16 @@
         "max_bytes_per_stream": 64000, // 64kb.
       }
     }
+  }, {
+    "listen_address": "0.0.0.0:50061",
+    "services": {
+      // Note: This should be served on a different port, because it has
+      // a different permission set than the other services.
+      // In other words, this service is a backend api. The ones above
+      // are a frontend api.
+      "worker_api": {
+        "scheduler": "MAIN_SCHEDULER",
+      }
+    }
   }]
 }
