@@ -97,6 +97,7 @@ rust_library(
     srcs = ["worker_api_server.rs"],
     deps = [
         "//cas/scheduler",
+        "//cas/scheduler:action_messages",
         "//cas/scheduler:platform_property_manager",
         "//cas/scheduler:worker",
         "//config",
@@ -128,6 +129,8 @@ rust_test(
     srcs = ["tests/worker_api_server_test.rs"],
     deps = [
         "//cas/scheduler",
+        "//cas/scheduler:action_messages",
+        "//cas/scheduler:platform_property_manager",
         "//cas/scheduler:worker",
         "//config",
         "//proto",
@@ -135,6 +138,7 @@ rust_test(
         "//third_party:tokio",
         "//third_party:tokio_stream",
         "//third_party:tonic",
+        "//util:common",
         "//util:error",
         ":worker_api_server",
     ],
