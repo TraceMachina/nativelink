@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::Parser;
-use futures::future::{select_all, BoxFuture};
+use futures::future::{select_all, BoxFuture, TryFutureExt};
 use json5;
 use runfiles::Runfiles;
 use tonic::transport::Server;
@@ -15,7 +15,7 @@ use capabilities_server::CapabilitiesServer;
 use cas_server::CasServer;
 use config::cas_server::CasConfig;
 use default_store_factory::store_factory;
-use error::ResultExt;
+use error::{make_err, Code, Error, ResultExt};
 use execution_server::ExecutionServer;
 use scheduler::Scheduler;
 use store::StoreManager;
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut servers: Vec<BoxFuture<Result<(), tonic::transport::Error>>> = Vec::new();
+    let mut futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
     for server_cfg in cfg.servers {
         let mut server = Server::builder();
         let services = server_cfg.services.ok_or_else(|| "'services' must be configured")?;
@@ -131,11 +131,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
 
         let addr = server_cfg.listen_address.parse()?;
-        servers.push(Box::pin(server.serve(addr)));
+        futures.push(Box::pin(
+            tokio::spawn(
+                server
+                    .serve(addr)
+                    .map_err(|e| make_err!(Code::Internal, "Failed running service : {:?}", e)),
+            )
+            .map_ok_or_else(|e| Err(e.into()), |v| v),
+        ));
     }
 
-    if let Err(e) = select_all(servers).await.0 {
+    if let Err(e) = select_all(futures).await.0 {
         panic!("{:?}", e);
     }
-    panic!("No servers should ever resolve their future");
+    unreachable!("None of the futures should resolve in main()");
 }
