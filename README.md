@@ -1,5 +1,7 @@
 # Turbo Cache
 
+[![CI](https://github.com/allada/turbo-cache/actions/workflows/main.yml/badge.svg)](https://github.com/allada/turbo-cache/actions/workflows/main.yml)
+
 An extremely fast and efficient bazel cache service (CAS) written in rust.
 
 The goals of this project are:
