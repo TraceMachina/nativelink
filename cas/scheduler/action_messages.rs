@@ -50,7 +50,7 @@ pub struct ActionInfo {
     /// The properties rules that must be applied when finding a worker that can run this action.
     pub platform_properties: PlatformProperties,
     /// The priority of the action. Higher value means it should execute faster.
-    pub priority: i64,
+    pub priority: i32,
     /// When this action was created.
     pub insert_timestamp: SystemTime,
 

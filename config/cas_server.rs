@@ -189,10 +189,21 @@ pub enum WrokerProperty {
     query_cmd(String),
 }
 
+/// Generic config for an endpoint and associated configs.
 #[derive(Deserialize, Debug)]
-pub struct LocalWorker {
+pub struct EndpointConfig {
+    /// URI of the endpoint.
+    pub uri: String,
+
+    /// Timeout in seconds that a request should take.
+    /// Default: 5 (seconds)
+    pub timeout: Option<f32>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct LocalWorkerConfig {
     /// Endpoint which the worker will connect to the scheduler's WorkerApiService.
-    pub worker_api_endpoint: String,
+    pub worker_api_endpoint: EndpointConfig,
 
     /// The command to execute on every execution request. This will be parsed as
     /// a command + arguments (not shell).
@@ -237,7 +248,7 @@ pub struct LocalWorker {
 #[derive(Deserialize, Debug)]
 pub enum WorkerConfig {
     /// A worker type that executes jobs locally on this machine.
-    local(LocalWorker),
+    local(LocalWorkerConfig),
 }
 
 #[derive(Deserialize, Debug)]

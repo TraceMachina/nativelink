@@ -60,7 +60,7 @@ impl AcServer {
                 .as_ref(),
         );
         Ok(Response::new(
-            get_and_decode_digest::<ActionResult>(&store, &digest).await?,
+            get_and_decode_digest::<ActionResult>(store, &digest).await?,
         ))
     }
 

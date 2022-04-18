@@ -51,6 +51,19 @@ rust_library(
 )
 
 rust_library(
+    name = "ac_utils",
+    srcs = ["ac_utils.rs"],
+    deps = [
+        "//third_party:prost",
+        "//util:common",
+        "//util:error",
+        ":store",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+
+rust_library(
     name = "size_partitioning_store",
     srcs = ["size_partitioning_store.rs"],
     deps = [

@@ -26,7 +26,7 @@ use scheduler::Scheduler;
 use store::{Store, StoreManager};
 
 /// Default priority remote execution jobs will get when not provided.
-const DEFAULT_EXECUTION_PRIORITY: i64 = 0;
+const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
 struct InstanceInfo {
     scheduler: Arc<Scheduler>,
@@ -43,7 +43,7 @@ impl InstanceInfo {
         instance_name: String,
         action_digest: DigestInfo,
         action: &Action,
-        priority: i64,
+        priority: i32,
     ) -> Result<ActionInfo, Error> {
         let command_digest = DigestInfo::try_from(
             action
@@ -173,9 +173,9 @@ impl ExecutionServer {
 
         let priority = execute_req
             .execution_policy
-            .map_or(DEFAULT_EXECUTION_PRIORITY, |p| p.priority as i64);
+            .map_or(DEFAULT_EXECUTION_PRIORITY, |p| p.priority);
 
-        let action = get_and_decode_digest::<Action>(&instance_info.cas_pin(), &digest).await?;
+        let action = get_and_decode_digest::<Action>(instance_info.cas_pin(), &digest).await?;
         let action_info = instance_info
             .build_action_info(instance_name, digest, &action, priority)
             .await?;
