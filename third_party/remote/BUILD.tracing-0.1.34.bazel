@@ -60,13 +60,13 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.1.33",
+    version = "0.1.34",
     # buildifier: leave-alone
     deps = [
         "@raze__cfg_if__1_0_0//:cfg_if",
         "@raze__log__0_4_16//:log",
         "@raze__pin_project_lite__0_2_8//:pin_project_lite",
-        "@raze__tracing_core__0_1_24//:tracing_core",
+        "@raze__tracing_core__0_1_26//:tracing_core",
     ],
 )
 
@@ -82,6 +82,8 @@ rust_library(
 
 # Unsupported target "filters_dont_leak" with type "test" omitted
 
+# Unsupported target "future_send" with type "test" omitted
+
 # Unsupported target "macro_imports" with type "test" omitted
 
 # Unsupported target "macros" with type "test" omitted
@@ -95,6 +97,8 @@ rust_library(
 # Unsupported target "multiple_max_level_hints" with type "test" omitted
 
 # Unsupported target "no_subscriber" with type "test" omitted
+
+# Unsupported target "scoped_clobbers_default" with type "test" omitted
 
 # Unsupported target "span" with type "test" omitted
 
