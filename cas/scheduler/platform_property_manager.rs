@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use config::cas_server::PropertyType;
 use error::{make_input_err, Code, Error, ResultExt};
+use proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
 
 /// `PlatformProperties` helps manage the configuration of platform properties to
 /// keys and types. The scheduler uses these properties to decide what jobs
@@ -37,6 +38,16 @@ impl PlatformProperties {
     }
 }
 
+impl From<ProtoPlatform> for PlatformProperties {
+    fn from(platform: ProtoPlatform) -> Self {
+        let mut properties = HashMap::with_capacity(platform.properties.len());
+        for property in platform.properties.into_iter() {
+            properties.insert(property.name, PlatformPropertyValue::Unknown(property.value));
+        }
+        Self { properties }
+    }
+}
+
 /// Holds the associated value of the key and type.
 ///
 /// Exact    - Means the worker must have this exact value.
@@ -54,6 +65,7 @@ pub enum PlatformPropertyValue {
     Exact(String),
     Minimum(u64),
     Priority(String),
+    Unknown(String),
 }
 
 impl PlatformPropertyValue {
@@ -75,6 +87,8 @@ impl PlatformPropertyValue {
             PlatformPropertyValue::Priority(_) => true,
             // Success exact case is handled above.
             PlatformPropertyValue::Exact(_) => false,
+            // Used mostly for transporting data. This should not be relied upon when this value.
+            PlatformPropertyValue::Unknown(_) => false,
         }
     }
 }

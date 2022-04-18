@@ -12,13 +12,23 @@ use store::Store;
 // 1.2k. Giving a bit more just in case to reduce allocs.
 pub const ESTIMATED_DIGEST_SIZE: usize = 2048;
 
+/// This is more of a safety check. We are going to collect this entire message
+/// into memory. If we don't bound the max size of the object we enable users
+/// to use up all the memory on this machine.
+const MAX_ACTION_MSG_SIZE: usize = 10 << 20; // 10mb.
+
 /// Attempts to fetch the digest contents from a store into the associated proto.
 pub async fn get_and_decode_digest<T: Message + Default>(
-    store: &Pin<&dyn Store>,
+    store: Pin<&dyn Store>,
     digest: &DigestInfo,
 ) -> Result<T, Error> {
     let mut store_data_resp = store
-        .get_part_unchunked(digest.clone(), 0, None, Some(ESTIMATED_DIGEST_SIZE))
+        .get_part_unchunked(
+            digest.clone(),
+            0,
+            Some(MAX_ACTION_MSG_SIZE),
+            Some(ESTIMATED_DIGEST_SIZE),
+        )
         .await;
     if let Err(err) = &mut store_data_resp {
         if err.code == Code::NotFound {

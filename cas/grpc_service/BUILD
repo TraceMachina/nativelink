@@ -25,6 +25,7 @@ rust_library(
     srcs = ["ac_server.rs"],
     deps = [
         "//cas/store",
+        "//cas/store:ac_utils",
         "//config",
         "//proto",
         "//third_party:bytes",
@@ -32,7 +33,6 @@ rust_library(
         "//third_party:tonic",
         "//util:common",
         "//util:error",
-        ":ac_utils",
     ],
     visibility = ["//cas:__pkg__"]
 )
@@ -77,6 +77,7 @@ rust_library(
         "//cas/scheduler:platform_property_manager",
         "//cas/scheduler:scheduler",
         "//cas/store",
+        "//cas/store:ac_utils",
         "//config",
         "//proto",
         "//third_party:futures",
@@ -87,7 +88,6 @@ rust_library(
         "//third_party:tonic",
         "//util:common",
         "//util:error",
-        ":ac_utils",
     ],
     visibility = ["//cas:__pkg__"]
 )
@@ -110,18 +110,6 @@ rust_library(
         "//util:error",
     ],
     visibility = ["//cas:__pkg__"]
-)
-
-rust_library(
-    name = "ac_utils",
-    srcs = ["ac_utils.rs"],
-    deps = [
-        "//cas/store",
-        "//third_party:prost",
-        "//util:common",
-        "//util:error",
-    ],
-    visibility = ["//visibility:public"],
 )
 
 rust_test(

@@ -7,6 +7,7 @@ rust_library(
     srcs = ["platform_property_manager.rs"],
     deps = [
         "//config",
+        "//proto",
         "//util:error",
     ],
     visibility = ["//cas:__pkg__", "//cas:__subpackages__"]
