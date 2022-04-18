@@ -32,9 +32,29 @@ pub struct SupportedProperties {
         super::super::super::super::super::build::bazel::remote::execution::v2::platform::Property,
     >,
 }
-//// Represents the result of an execution.
+//// The result of an ExecutionRequest.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteResult {
+    #[prost(oneof = "execute_result::Response", tags = "1, 2")]
+    pub response: ::core::option::Option<execute_result::Response>,
+}
+/// Nested message and enum types in `ExecuteResult`.
+pub mod execute_result {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Response {
+        //// Result of an execution request if there were not detectable internal errors.
+        #[prost(message, tag = "1")]
+        Result(super::ExecuteFinishedResult),
+        //// An internal error. This is only present when an internal error happened that
+        //// was not recoverable. If the execution job failed but at no fault of the worker
+        //// it should not use this field and should send the error via ExecuteFinishedResult.
+        #[prost(message, tag = "2")]
+        InternalError(super::super::super::super::super::super::google::rpc::Status),
+    }
+}
+//// Represents the result of an execution.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteFinishedResult {
     //// ID of the worker making the request.
     #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
@@ -102,7 +122,7 @@ pub struct StartExecute {
     pub execute_request: ::core::option::Option<
         super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteRequest,
     >,
-    //// See documentation in ExecuteResult::salt.
+    //// See documentation in ExecuteFinishedResult::salt.
     #[prost(uint64, tag = "2")]
     pub salt: u64,
 }
@@ -175,7 +195,8 @@ pub mod worker_api_client {
         }
         #[doc = "/ Registers this worker and informs the scheduler what properties"]
         #[doc = "/ this worker supports. The response must be listened on the client"]
-        #[doc = "/ side for updates from the server."]
+        #[doc = "/ side for updates from the server. The first item sent will always be"]
+        #[doc = "/ a ConnectionResult, after that it is undefined."]
         pub async fn connect_worker(
             &mut self,
             request: impl tonic::IntoRequest<super::SupportedProperties>,
@@ -275,7 +296,8 @@ pub mod worker_api_server {
             + 'static;
         #[doc = "/ Registers this worker and informs the scheduler what properties"]
         #[doc = "/ this worker supports. The response must be listened on the client"]
-        #[doc = "/ side for updates from the server."]
+        #[doc = "/ side for updates from the server. The first item sent will always be"]
+        #[doc = "/ a ConnectionResult, after that it is undefined."]
         async fn connect_worker(
             &self,
             request: tonic::Request<super::SupportedProperties>,
