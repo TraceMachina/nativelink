@@ -172,14 +172,14 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "3.1.8",
+    version = "3.1.9",
     # buildifier: leave-alone
     deps = [
         "@raze__atty__0_2_14//:atty",
         "@raze__bitflags__1_3_2//:bitflags",
+        "@raze__clap_lex__0_1_1//:clap_lex",
         "@raze__indexmap__1_8_1//:indexmap",
         "@raze__lazy_static__1_4_0//:lazy_static",
-        "@raze__os_str_bytes__6_0_0//:os_str_bytes",
         "@raze__strsim__0_10_0//:strsim",
         "@raze__termcolor__1_1_3//:termcolor",
         "@raze__textwrap__0_15_0//:textwrap",

@@ -41,6 +41,7 @@ filetime = "0.2.15"
 nix = "0.23.1"
 clap = { version = "3.1.8", features = ["derive"] }
 uuid = { version = "0.8.2", features = ["v4"] }
+shlex = "1.1.0"
 
 [dev-dependencies]
 stdext = "0.2.1"

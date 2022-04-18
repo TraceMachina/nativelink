@@ -35,8 +35,6 @@ rust_library(
     name = "os_str_bytes",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "default",
-        "memchr",
         "raw_os_str",
     ],
     crate_root = "src/lib.rs",
@@ -52,6 +50,5 @@ rust_library(
     version = "6.0.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__memchr__2_4_1//:memchr",
     ],
 )

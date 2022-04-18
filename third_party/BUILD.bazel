@@ -50,7 +50,7 @@ alias(
 
 alias(
     name = "clap",
-    actual = "@raze__clap__3_1_8//:clap",
+    actual = "@raze__clap__3_1_9//:clap",
     tags = [
         "cargo-raze",
         "manual",
@@ -77,7 +77,7 @@ alias(
 
 alias(
     name = "filetime",
-    actual = "@raze__filetime__0_2_15//:filetime",
+    actual = "@raze__filetime__0_2_16//:filetime",
     tags = [
         "cargo-raze",
         "manual",
@@ -321,6 +321,15 @@ alias(
 alias(
     name = "sha2",
     actual = "@raze__sha2__0_9_9//:sha2",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "shlex",
+    actual = "@raze__shlex__1_1_0//:shlex",
     tags = [
         "cargo-raze",
         "manual",

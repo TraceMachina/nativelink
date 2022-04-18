@@ -53,7 +53,7 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.5.8",
+    version = "0.5.9",
     # buildifier: leave-alone
     deps = [
         "@raze__serde__1_0_136//:serde",

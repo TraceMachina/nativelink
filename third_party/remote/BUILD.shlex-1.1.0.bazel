@@ -32,15 +32,15 @@ licenses([
 # Generated Targets
 
 rust_library(
-    name = "filetime",
+    name = "shlex",
     srcs = glob(["**/*.rs"]),
-    aliases = {
-    },
     crate_features = [
+        "default",
+        "std",
     ],
     crate_root = "src/lib.rs",
     data = [],
-    edition = "2018",
+    edition = "2015",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -48,17 +48,8 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.15",
+    version = "1.1.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__cfg_if__1_0_0//:cfg_if",
-    ] + selects.with_or({
-        # cfg(unix)
-        (
-            "@rules_rust//rust/platform:x86_64-unknown-linux-gnu",
-        ): [
-            "@raze__libc__0_2_122//:libc",
-        ],
-        "//conditions:default": [],
-    }),
+    ],
 )
