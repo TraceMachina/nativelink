@@ -17,8 +17,8 @@ use config::cas_server::WorkerApiConfig;
 use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformProperties;
 use proto::com::github::allada::turbo_cache::remote_execution::{
-    worker_api_server::WorkerApi, worker_api_server::WorkerApiServer as Server, ExecuteResult, GoingAwayRequest,
-    KeepAliveRequest, SupportedProperties, UpdateForWorker,
+    execute_result, worker_api_server::WorkerApi, worker_api_server::WorkerApiServer as Server, ExecuteResult,
+    GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
 use scheduler::Scheduler;
 use worker::{Worker, WorkerId};
@@ -134,16 +134,23 @@ impl WorkerApiServer {
     }
 
     async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<Response<()>, Error> {
-        let worker_id: WorkerId = execute_result.worker_id.try_into()?;
-        let action_digest: DigestInfo = execute_result
+        let finished_result = match execute_result
+            .response
+            .err_tip(|| "Expected result to exist in ExecuteResult")?
+        {
+            execute_result::Response::Result(finished_result) => finished_result,
+            execute_result::Response::InternalError(e) => return Err(e.into()),
+        };
+        let worker_id: WorkerId = finished_result.worker_id.try_into()?;
+        let action_digest: DigestInfo = finished_result
             .action_digest
             .err_tip(|| "Expected action_digest to exist")?
             .try_into()?;
         let action_info_hash_key = ActionInfoHashKey {
             digest: action_digest.clone(),
-            salt: execute_result.salt,
+            salt: finished_result.salt,
         };
-        let action_stage = execute_result
+        let action_stage = finished_result
             .execute_response
             .err_tip(|| "Expected execute_response to exist in ExecuteResult")?
             .try_into()
