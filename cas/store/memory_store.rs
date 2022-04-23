@@ -2,6 +2,7 @@
 
 use std::fmt::Debug;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -109,5 +110,9 @@ impl StoreTrait for MemoryStore {
             .await
             .err_tip(|| "Failed to write EOF in memory store get_part")?;
         Ok(())
+    }
+
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any> {
+        self
     }
 }

@@ -482,4 +482,8 @@ impl StoreTrait for S3Store {
             )
             .await
     }
+
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any> {
+        self
+    }
 }

@@ -181,4 +181,8 @@ impl StoreTrait for FastSlowStore {
         data_stream_res.merge(fast_res).merge(slow_res)?;
         Ok(())
     }
+
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any> {
+        self
+    }
 }

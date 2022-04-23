@@ -104,4 +104,8 @@ impl StoreTrait for RefStore {
         let store = self.get_store()?;
         Pin::new(store.as_ref()).get_part(digest, writer, offset, length).await
     }
+
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any> {
+        self
+    }
 }

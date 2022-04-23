@@ -2,6 +2,7 @@
 
 use std::marker::Send;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{join, try_join};
@@ -93,4 +94,6 @@ pub trait StoreTrait: Sync + Send + Unpin {
             .err_tip(|| "Failed to get_part in get_part_unchunked")
             .merge(data_res.err_tip(|| "Failed to read stream to completion in get_part_unchunked"))
     }
+
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any>;
 }

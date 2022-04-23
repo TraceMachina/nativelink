@@ -431,4 +431,8 @@ impl StoreTrait for FilesystemStore {
 
         Ok(())
     }
+
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any> {
+        self
+    }
 }
