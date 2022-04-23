@@ -8,7 +8,7 @@ use futures::{task::Context, Future, Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 pub use tokio_util::io::StreamReader;
 
-use error::{make_err, Code, Error, ResultExt};
+use error::{error_if, make_err, Code, Error, ResultExt};
 
 /// Create a channel pair that can be used to transport buffer objects around to
 /// different components. This wrapper is used because the streams give some
@@ -54,7 +54,7 @@ impl DropCloserWriteHalf {
             .as_ref()
             .ok_or_else(|| make_err!(Code::Internal, "Tried to send while stream is closed"))?;
         let buf_len = buf.len() as u64;
-        assert!(buf_len != 0, "Cannot send EOF in send(). Instead use send_eof()");
+        error_if!(buf_len == 0, "Cannot send EOF in send(). Instead use send_eof()");
         let result = tx
             .send(Ok(buf))
             .await
@@ -70,7 +70,7 @@ impl DropCloserWriteHalf {
     /// Sends an EOF (End of File) message to the receiver which will gracefully let the
     /// stream know it has no more data. This will close the stream.
     pub async fn send_eof(&mut self) -> Result<(), Error> {
-        assert!(self.tx.is_some(), "Tried to send an EOF when pipe is broken");
+        error_if!(self.tx.is_none(), "Tried to send an EOF when pipe is broken");
         self.tx = None;
 
         // The final result will be provided in this oneshot channel.
@@ -168,14 +168,14 @@ impl DropCloserReadHalf {
         match maybe_chunk {
             Some(Ok(chunk)) => {
                 let chunk_len = chunk.len() as u64;
-                assert!(chunk_len != 0, "Chunk should never be EOF, expected None in this case");
-                assert!(
-                    self.close_after_size >= chunk_len,
+                error_if!(chunk_len == 0, "Chunk should never be EOF, expected None in this case");
+                error_if!(
+                    self.close_after_size < chunk_len,
                     "Received too much data. This only happens when `close_after_size` is set."
                 );
                 self.close_after_size -= chunk_len;
                 if self.close_after_size == 0 {
-                    assert!(self.close_tx.is_some(), "Expected stream to not be closed");
+                    error_if!(self.close_tx.is_none(), "Expected stream to not be closed");
                     self.close_tx.take().unwrap().send(Ok(())).map_err(|_| {
                         make_err!(Code::Internal, "Failed to send closing ok message to write with size")
                     })?;
