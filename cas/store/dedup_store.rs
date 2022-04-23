@@ -324,4 +324,8 @@ impl StoreTrait for DedupStore {
             .err_tip(|| "Failed to write EOF out from get_part dedup")?;
         Ok(())
     }
+
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any> {
+        self
+    }
 }
