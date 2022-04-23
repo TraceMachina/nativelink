@@ -82,6 +82,28 @@ mod memory_store_tests {
         Ok(())
     }
 
+    // A bug was found where reading an empty value from memory store would result in an error
+    // due to internal EOF handling. This is an edge case test.
+    #[tokio::test]
+    async fn read_zero_size_item_test() -> Result<(), Error> {
+        let store_owned = MemoryStore::new(&config::backends::MemoryStore::default());
+        let store = Pin::new(&store_owned);
+
+        // Insert dummy value into store.
+        const VALUE: &str = "";
+        store
+            .update_oneshot(DigestInfo::try_new(&VALID_HASH1, VALUE.len())?, VALUE.into())
+            .await?;
+        assert_eq!(
+            store
+                .get_part_unchunked(DigestInfo::try_new(&VALID_HASH1, VALUE.len())?, 0, None, None)
+                .await,
+            Ok("".into()),
+            "Expected memory store to have empty value"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn errors_with_invalid_inputs() -> Result<(), Error> {
         let store_owned = MemoryStore::new(&config::backends::MemoryStore::default());

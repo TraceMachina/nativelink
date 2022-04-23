@@ -98,10 +98,12 @@ impl StoreTrait for MemoryStore {
 
         let default_len = value.len() - offset;
         let length = length.unwrap_or(default_len).min(default_len);
-        writer
-            .send(value.0.slice(offset..(offset + length)))
-            .await
-            .err_tip(|| "Failed to write data in memory store")?;
+        if length > 0 {
+            writer
+                .send(value.0.slice(offset..(offset + length)))
+                .await
+                .err_tip(|| "Failed to write data in memory store")?;
+        }
         writer
             .send_eof()
             .await
