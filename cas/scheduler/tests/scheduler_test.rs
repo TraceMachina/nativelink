@@ -472,8 +472,6 @@ mod scheduler_tests {
                 name_or_path: NameOrPath::Name("hello".to_string()),
                 digest: DigestInfo::new([5u8; 32], 18),
                 is_executable: true,
-                mtime: make_system_time(111),
-                permissions: 55,
             }],
             output_folders: vec![DirectoryInfo {
                 path: "123".to_string(),
@@ -482,8 +480,6 @@ mod scheduler_tests {
             output_symlinks: vec![SymlinkInfo {
                 name_or_path: NameOrPath::Name("foo".to_string()),
                 target: "bar".to_string(),
-                mtime: make_system_time(99),
-                permissions: 445,
             }],
             exit_code: 0,
             stdout_digest: DigestInfo::new([6u8; 32], 19),

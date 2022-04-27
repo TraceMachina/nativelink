@@ -123,10 +123,11 @@ impl Worker {
     }
 
     fn run_action(&mut self, action_info: Arc<ActionInfo>) -> Result<(), Error> {
+        let action_info_clone = action_info.as_ref().clone();
         self.running_action_info = Some(action_info.clone());
         self.reduce_platform_properties(&action_info.platform_properties);
         self.send_msg_to_worker(update_for_worker::Update::StartAction(StartExecute {
-            execute_request: Some(self.running_action_info.as_ref().unwrap().as_ref().into()),
+            execute_request: Some(action_info_clone.into()),
             salt: *action_info.salt(),
         }))
     }

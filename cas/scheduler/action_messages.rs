@@ -16,8 +16,8 @@ use prost::Message;
 use prost_types::Any;
 use proto::build::bazel::remote::execution::v2::{
     execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
-    ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, NodeProperties, OutputDirectory, OutputFile,
-    OutputSymlink, SymlinkNode,
+    ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile, OutputSymlink,
+    SymlinkNode,
 };
 use proto::google::longrunning::{operation::Result as LongRunningResult, Operation};
 
@@ -135,11 +135,12 @@ impl ActionInfo {
     }
 }
 
-impl Into<ExecuteRequest> for &ActionInfo {
+impl Into<ExecuteRequest> for ActionInfo {
     fn into(self) -> ExecuteRequest {
+        let digest = self.digest().into();
         ExecuteRequest {
-            instance_name: self.instance_name.clone(),
-            action_digest: Some(self.digest().into()),
+            instance_name: self.instance_name,
+            action_digest: Some(digest),
             skip_cache_lookup: true,    // The worker should never cache lookup.
             execution_policy: None,     // Not used in the worker.
             results_cache_policy: None, // Not used in the worker.
@@ -236,14 +237,12 @@ pub struct FileInfo {
     pub name_or_path: NameOrPath,
     pub digest: DigestInfo,
     pub is_executable: bool,
-    pub mtime: SystemTime,
-    pub permissions: u32,
 }
 
-impl Into<FileNode> for &FileInfo {
+impl Into<FileNode> for FileInfo {
     fn into(self) -> FileNode {
-        let name = if let NameOrPath::Name(name) = &self.name_or_path {
-            name.clone()
+        let name = if let NameOrPath::Name(name) = self.name_or_path {
+            name
         } else {
             panic!("Cannot return a FileInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
         };
@@ -251,11 +250,7 @@ impl Into<FileNode> for &FileInfo {
             name,
             digest: Some((&self.digest).into()),
             is_executable: self.is_executable,
-            node_properties: Some(NodeProperties {
-                properties: Default::default(),
-                mtime: Some(self.mtime.into()),
-                unix_mode: Some(self.permissions),
-            }),
+            node_properties: Default::default(), // Not supported.
         }
     }
 }
@@ -264,9 +259,6 @@ impl TryFrom<OutputFile> for FileInfo {
     type Error = Error;
 
     fn try_from(output_file: OutputFile) -> Result<Self, Error> {
-        let node_properties = output_file
-            .node_properties
-            .err_tip(|| "Expected node_properties to exist on OutputFile")?;
         Ok(FileInfo {
             name_or_path: NameOrPath::Path(output_file.path),
             digest: output_file
@@ -274,22 +266,14 @@ impl TryFrom<OutputFile> for FileInfo {
                 .err_tip(|| "Expected digest to exist on OutputFile")?
                 .try_into()?,
             is_executable: output_file.is_executable,
-            mtime: node_properties
-                .mtime
-                .err_tip(|| "Expected mtime to exist in OutputFile")?
-                .try_into()?,
-            permissions: node_properties
-                .unix_mode
-                .err_tip(|| "Expected unix_mode to exist in OutputFile")?
-                .try_into()?,
         })
     }
 }
 
-impl Into<OutputFile> for &FileInfo {
+impl Into<OutputFile> for FileInfo {
     fn into(self) -> OutputFile {
-        let path = if let NameOrPath::Path(path) = &self.name_or_path {
-            path.clone()
+        let path = if let NameOrPath::Path(path) = self.name_or_path {
+            path
         } else {
             panic!("Cannot return a FileInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()");
         };
@@ -298,11 +282,7 @@ impl Into<OutputFile> for &FileInfo {
             digest: Some((&self.digest).into()),
             is_executable: self.is_executable,
             contents: Default::default(),
-            node_properties: Some(NodeProperties {
-                properties: Default::default(),
-                mtime: Some(self.mtime.into()),
-                unix_mode: Some(self.permissions),
-            }),
+            node_properties: Default::default(), // Not supported.
         }
     }
 }
@@ -313,47 +293,30 @@ impl Into<OutputFile> for &FileInfo {
 pub struct SymlinkInfo {
     pub name_or_path: NameOrPath,
     pub target: String,
-    pub mtime: SystemTime,
-    pub permissions: u32,
 }
 
 impl TryFrom<SymlinkNode> for SymlinkInfo {
     type Error = Error;
 
     fn try_from(symlink_node: SymlinkNode) -> Result<Self, Error> {
-        let node_properties = symlink_node
-            .node_properties
-            .err_tip(|| "Expected node_properties to exist on SymlinkNode")?;
         Ok(SymlinkInfo {
             name_or_path: NameOrPath::Name(symlink_node.name),
             target: symlink_node.target,
-            mtime: node_properties
-                .mtime
-                .err_tip(|| "Expected mtime to exist in SymlinkNode")?
-                .try_into()?,
-            permissions: node_properties
-                .unix_mode
-                .err_tip(|| "Expected unix_mode to exist in SymlinkNode")?
-                .try_into()?,
         })
     }
 }
 
-impl Into<SymlinkNode> for &SymlinkInfo {
+impl Into<SymlinkNode> for SymlinkInfo {
     fn into(self) -> SymlinkNode {
-        let name = if let NameOrPath::Name(name) = &self.name_or_path {
-            name.clone()
+        let name = if let NameOrPath::Name(name) = self.name_or_path {
+            name
         } else {
             panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
         };
         SymlinkNode {
             name,
-            target: self.target.clone(),
-            node_properties: Some(NodeProperties {
-                properties: Default::default(),
-                mtime: Some(self.mtime.into()),
-                unix_mode: Some(self.permissions),
-            }),
+            target: self.target,
+            node_properties: Default::default(), // Not supported.
         }
     }
 }
@@ -362,39 +325,24 @@ impl TryFrom<OutputSymlink> for SymlinkInfo {
     type Error = Error;
 
     fn try_from(output_symlink: OutputSymlink) -> Result<Self, Error> {
-        let node_properties = output_symlink
-            .node_properties
-            .err_tip(|| "Expected node_properties to exist on OutputSymlink")?;
         Ok(SymlinkInfo {
             name_or_path: NameOrPath::Path(output_symlink.path),
             target: output_symlink.target,
-            mtime: node_properties
-                .mtime
-                .err_tip(|| "Expected mtime to exist in OutputSymlink")?
-                .try_into()?,
-            permissions: node_properties
-                .unix_mode
-                .err_tip(|| "Expected unix_mode to exist in OutputSymlink")?
-                .try_into()?,
         })
     }
 }
 
-impl Into<OutputSymlink> for &SymlinkInfo {
+impl Into<OutputSymlink> for SymlinkInfo {
     fn into(self) -> OutputSymlink {
-        let path = if let NameOrPath::Path(path) = &self.name_or_path {
-            path.clone()
+        let path = if let NameOrPath::Path(path) = self.name_or_path {
+            path
         } else {
             panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
         };
         OutputSymlink {
             path,
-            target: self.target.clone(),
-            node_properties: Some(NodeProperties {
-                properties: Default::default(),
-                mtime: Some(self.mtime.into()),
-                unix_mode: Some(self.permissions),
-            }),
+            target: self.target,
+            node_properties: Default::default(), // Not supported.
         }
     }
 }
@@ -421,11 +369,11 @@ impl TryFrom<OutputDirectory> for DirectoryInfo {
     }
 }
 
-impl Into<OutputDirectory> for &DirectoryInfo {
+impl Into<OutputDirectory> for DirectoryInfo {
     fn into(self) -> OutputDirectory {
         OutputDirectory {
-            path: self.path.clone(),
-            tree_digest: Some((&self.tree_digest).into()),
+            path: self.path,
+            tree_digest: Some(self.tree_digest.into()),
         }
     }
 }
@@ -446,10 +394,10 @@ pub struct ExecutionMetadata {
     pub output_upload_completed_timestamp: SystemTime,
 }
 
-impl Into<ExecutedActionMetadata> for &ExecutionMetadata {
+impl Into<ExecutedActionMetadata> for ExecutionMetadata {
     fn into(self) -> ExecutedActionMetadata {
         ExecutedActionMetadata {
-            worker: self.worker.clone(),
+            worker: self.worker,
             queued_timestamp: Some(self.queued_timestamp.into()),
             worker_start_timestamp: Some(self.worker_start_timestamp.into()),
             worker_completed_timestamp: Some(self.worker_completed_timestamp.into()),
@@ -576,7 +524,7 @@ impl Into<execution_stage::Value> for &ActionStage {
     }
 }
 
-impl Into<ExecuteResponse> for &ActionStage {
+impl Into<ExecuteResponse> for ActionStage {
     fn into(self) -> ExecuteResponse {
         let (error, action_result, was_from_cache) = match self {
             // We don't have an execute response if we don't have the results. It is defined
@@ -588,12 +536,12 @@ impl Into<ExecuteResponse> for &ActionStage {
 
             ActionStage::Completed(action_result) => (None, action_result, false),
             ActionStage::CompletedFromCache(action_result) => (None, action_result, true),
-            ActionStage::Error((error, action_result)) => (Some(error.clone()), action_result, false),
+            ActionStage::Error((error, action_result)) => (Some(error), action_result, false),
         };
         let mut server_logs = HashMap::with_capacity(action_result.server_logs.len());
-        for (k, v) in &action_result.server_logs {
+        for (k, v) in action_result.server_logs {
             server_logs.insert(
-                k.clone(),
+                k,
                 LogFile {
                     digest: Some(v.into()),
                     human_readable: false,
@@ -603,13 +551,13 @@ impl Into<ExecuteResponse> for &ActionStage {
 
         ExecuteResponse {
             result: Some(ProtoActionResult {
-                output_files: action_result.output_files.iter().map(|v| v.into()).collect(),
-                output_symlinks: action_result.output_symlinks.iter().map(|v| v.into()).collect(),
-                output_directories: action_result.output_folders.iter().map(|v| v.into()).collect(),
+                output_files: action_result.output_files.into_iter().map(|v| v.into()).collect(),
+                output_symlinks: action_result.output_symlinks.into_iter().map(|v| v.into()).collect(),
+                output_directories: action_result.output_folders.into_iter().map(|v| v.into()).collect(),
                 exit_code: action_result.exit_code,
-                stdout_digest: Some((&action_result.stdout_digest).into()),
-                stderr_digest: Some((&action_result.stderr_digest).into()),
-                execution_metadata: Some((&action_result.execution_metadata).into()),
+                stdout_digest: Some(action_result.stdout_digest.into()),
+                stderr_digest: Some(action_result.stderr_digest.into()),
+                execution_metadata: Some(action_result.execution_metadata.into()),
                 output_directory_symlinks: Default::default(),
                 output_file_symlinks: Default::default(),
                 stdout_raw: Default::default(),
@@ -678,10 +626,11 @@ pub struct ActionState {
     pub stage: ActionStage,
 }
 
-impl Into<Operation> for &ActionState {
+impl Into<Operation> for ActionState {
     fn into(self) -> Operation {
         let has_action_result = self.stage.has_action_result();
-        let execute_response: ExecuteResponse = (&self.stage).into();
+        let stage = Into::<execution_stage::Value>::into(&self.stage) as i32;
+        let execute_response: ExecuteResponse = self.stage.into();
 
         let serialized_response = if has_action_result {
             execute_response.encode_to_vec()
@@ -690,7 +639,7 @@ impl Into<Operation> for &ActionState {
         };
 
         let metadata = ExecuteOperationMetadata {
-            stage: Into::<execution_stage::Value>::into(&self.stage) as i32,
+            stage,
             action_digest: Some((&self.action_digest).into()),
             // TODO(blaise.bruer) We should support stderr/stdout streaming.
             stdout_stream_name: Default::default(),
@@ -698,7 +647,7 @@ impl Into<Operation> for &ActionState {
         };
 
         Operation {
-            name: self.name.clone(),
+            name: self.name,
             metadata: Some(Any {
                 type_url: "build.bazel.remote.execution.v2.ExecuteOperationMetadata".to_string(),
                 value: metadata.encode_to_vec(),
