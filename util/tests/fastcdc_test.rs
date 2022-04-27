@@ -10,10 +10,11 @@ use bytes::Bytes;
 use futures::stream::StreamExt;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use sha2::{Digest, Sha256};
-use tokio::fs::File;
+
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::codec::{Decoder, FramedRead};
 
+use common::fs;
 use fastcdc::FastCDC;
 
 const MEGABYTE_SZ: usize = 1024 * 1024;
@@ -52,8 +53,8 @@ mod fastcdc_tests {
     }
 
     #[tokio::test]
-    async fn test_sekien_16k_chunks() -> Result<(), std::io::Error> {
-        let mut file = File::open("util/tests/data/SekienAkashita.jpg").await?;
+    async fn test_sekien_16k_chunks() -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = fs::open_file("util/tests/data/SekienAkashita.jpg").await?;
         let mut contents = vec![];
         file.read_to_end(&mut contents).await?;
         let mut cursor = Cursor::new(&contents);
