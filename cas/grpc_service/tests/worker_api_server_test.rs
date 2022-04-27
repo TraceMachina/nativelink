@@ -13,8 +13,8 @@ use config::cas_server::{SchedulerConfig, WorkerApiConfig};
 use error::{Error, ResultExt};
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::{
-    ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile, NodeProperties,
-    OutputDirectory, OutputFile, OutputSymlink,
+    ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile, OutputDirectory, OutputFile,
+    OutputSymlink,
 };
 use proto::com::github::allada::turbo_cache::remote_execution::{
     execute_result, update_for_worker, worker_api_server::WorkerApi, ExecuteFinishedResult, ExecuteResult,
@@ -298,21 +298,13 @@ pub mod execution_response_tests {
                             digest: Some(DigestInfo::new([8u8; 32], 124).into()),
                             is_executable: true,
                             contents: Default::default(), // We don't implement this.
-                            node_properties: Some(NodeProperties {
-                                properties: Default::default(), // We don't implement this.
-                                mtime: Some(make_system_time(99).into()),
-                                unix_mode: Some(12),
-                            }),
+                            node_properties: None,
                         }],
                         output_file_symlinks: Default::default(), // Bazel deprecated this.
                         output_symlinks: vec![OutputSymlink {
                             path: "some path3".to_string(),
                             target: "some target3".to_string(),
-                            node_properties: Some(NodeProperties {
-                                properties: Default::default(), // We don't implement this.
-                                mtime: Some(make_system_time(97).into()),
-                                unix_mode: Some(10),
-                            }),
+                            node_properties: None,
                         }],
                         output_directories: vec![OutputDirectory {
                             path: "some path4".to_string(),
@@ -376,7 +368,7 @@ pub mod execution_response_tests {
 
             // We just checked if conversion from ExecuteResponse into ActionStage was an exact mach.
             // Now check if we cast the ActionStage into an ExecuteResponse we get the exact same struct.
-            assert_eq!(execute_response, (&client_given_state.stage).into());
+            assert_eq!(execute_response, client_given_state.stage.clone().into());
         }
         Ok(())
     }

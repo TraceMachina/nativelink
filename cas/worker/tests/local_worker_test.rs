@@ -150,7 +150,7 @@ mod local_worker_tests {
             tx_stream
                 .send_data(encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
-                        execute_request: Some((&action_info).into()),
+                        execute_request: Some(action_info.into()),
                         salt: SALT,
                     })),
                 })?)
