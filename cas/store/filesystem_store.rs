@@ -317,6 +317,12 @@ impl FilesystemStore {
             file_size += data_len as u64;
         }
 
+        temp_file
+            .as_ref()
+            .sync_data()
+            .await
+            .err_tip(|| format!("Failed to sync_data in filesystem store {}", temp_loc))?;
+
         let entry = Arc::new(FileEntry {
             digest: digest.clone(),
             file_size,
@@ -437,7 +443,7 @@ impl StoreTrait for FilesystemStore {
         Ok(())
     }
 
-    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any> {
-        self
+    fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any> {
+        Box::new(self)
     }
 }
