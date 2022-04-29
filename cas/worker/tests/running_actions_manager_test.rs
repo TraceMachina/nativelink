@@ -155,7 +155,8 @@ mod running_actions_manager_tests {
             assert_eq!(std::str::from_utf8(&file2_content)?, FILE2_CONTENT);
 
             let file2_metadata = fs::metadata(&file2_path).await?;
-            assert_eq!(file2_metadata.mode() & 0o777, FILE2_MODE);
+            // Note: We sent 0o710, but because is_executable was set it turns into 0o711.
+            assert_eq!(file2_metadata.mode() & 0o777, FILE2_MODE | 0o111);
 
             assert_eq!(file2_metadata.mtime() as u64, FILE2_MTIME);
         }
