@@ -81,6 +81,7 @@ pub fn download_to_directory<'a>(
                 mtime = properties.mtime;
                 unix_mode = properties.unix_mode;
             }
+            let is_executable = file.is_executable;
             futures.push(
                 cas_store
                     .populate_fast_store(digest.clone())
@@ -88,6 +89,9 @@ pub fn download_to_directory<'a>(
                         fs::hard_link(src, &dest)
                             .await
                             .map_err(|e| make_err!(Code::Internal, "Could not make hardlink, {:?} : {}", e, dest))?;
+                        if is_executable {
+                            unix_mode = Some(unix_mode.unwrap_or(0o444) | 0o111);
+                        }
                         if let Some(unix_mode) = unix_mode {
                             fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
                                 .await
