@@ -612,4 +612,101 @@ mod scheduler_tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Error> {
+        const WORKER_ID: WorkerId = WorkerId(0x10000f);
+
+        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let action_digest = DigestInfo::new([99u8; 32], 512);
+
+        let mut expected_action_state = ActionState {
+            name: "".to_string(), // Will be filled later.
+            action_digest: action_digest.clone(),
+            stage: ActionStage::Executing,
+        };
+
+        let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
+
+        {
+            // Worker should have been sent an execute command.
+            let expected_msg_for_worker = UpdateForWorker {
+                update: Some(update_for_worker::Update::StartAction(StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        instance_name: INSTANCE_NAME.to_string(),
+                        skip_cache_lookup: true,
+                        action_digest: Some(action_digest.clone().into()),
+                        ..Default::default()
+                    }),
+                    salt: 0,
+                })),
+            };
+            let msg_for_worker = rx_from_worker.recv().await.unwrap();
+            assert_eq!(msg_for_worker, expected_msg_for_worker);
+        }
+
+        {
+            // Client should get notification saying it's being executed.
+            let action_state = client_rx.borrow_and_update();
+            // We now know the name of the action so populate it.
+            expected_action_state.name = action_state.name.clone();
+            assert_eq!(action_state.as_ref(), &expected_action_state);
+        }
+
+        let action_result = ActionResult {
+            output_files: Default::default(),
+            output_folders: Default::default(),
+            output_directory_symlinks: Default::default(),
+            output_file_symlinks: Default::default(),
+            exit_code: Default::default(),
+            stdout_digest: DigestInfo::new([1u8; 32], 512),
+            stderr_digest: DigestInfo::new([2u8; 32], 512),
+            execution_metadata: ExecutionMetadata {
+                worker: "".to_string(),
+                queued_timestamp: SystemTime::UNIX_EPOCH,
+                worker_start_timestamp: SystemTime::UNIX_EPOCH,
+                worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+                input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+                input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+                execution_start_timestamp: SystemTime::UNIX_EPOCH,
+                execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+                output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+                output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+            },
+            server_logs: Default::default(),
+        };
+
+        scheduler
+            .update_action(
+                &WORKER_ID,
+                &ActionInfoHashKey {
+                    digest: action_digest.clone(),
+                    salt: 0,
+                },
+                ActionStage::Completed(action_result.clone()),
+            )
+            .await?;
+
+        {
+            // Action should now be executing.
+            expected_action_state.stage = ActionStage::Completed(action_result.clone());
+            assert_eq!(client_rx.borrow_and_update().as_ref(), &expected_action_state);
+        }
+
+        // Now we need to ensure that if we schedule another execution of the same job it doesn't
+        // fail.
+
+        {
+            let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+            // We didn't disconnect our worker, so it will have scheduled it to the worker.
+            expected_action_state.stage = ActionStage::Executing;
+            let action_state = client_rx.borrow_and_update();
+            // The name of the action changed (since it's a new action), so update it.
+            expected_action_state.name = action_state.name.clone();
+            assert_eq!(action_state.as_ref(), &expected_action_state);
+        }
+
+        Ok(())
+    }
 }
