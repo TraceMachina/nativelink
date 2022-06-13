@@ -137,7 +137,7 @@ pub mod byte_stream_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Default + Body<Data = Bytes> + Send + 'static,
+        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + Send,
     {
         pub fn new(inner: T) -> Self {
@@ -150,6 +150,7 @@ pub mod byte_stream_client {
         ) -> ByteStreamClient<InterceptedService<T, F>>
         where
             F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
             T: tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
@@ -184,9 +185,9 @@ pub mod byte_stream_client {
             &mut self,
             request: impl tonic::IntoRequest<super::ReadRequest>,
         ) -> Result<
-                tonic::Response<tonic::codec::Streaming<super::ReadResponse>>,
-                tonic::Status,
-            > {
+            tonic::Response<tonic::codec::Streaming<super::ReadResponse>>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await

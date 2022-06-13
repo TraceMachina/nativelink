@@ -14,7 +14,7 @@ licenses([
 # Aliased targets
 alias(
     name = "async_trait",
-    actual = "@raze__async_trait__0_1_53//:async_trait",
+    actual = "@raze__async_trait__0_1_56//:async_trait",
     tags = [
         "cargo-raze",
         "manual",
@@ -50,7 +50,7 @@ alias(
 
 alias(
     name = "clap",
-    actual = "@raze__clap__3_1_12//:clap",
+    actual = "@raze__clap__3_2_1//:clap",
     tags = [
         "cargo-raze",
         "manual",
@@ -122,7 +122,7 @@ alias(
 
 alias(
     name = "http",
-    actual = "@raze__http__0_2_6//:http",
+    actual = "@raze__http__0_2_8//:http",
     tags = [
         "cargo-raze",
         "manual",
@@ -131,7 +131,7 @@ alias(
 
 alias(
     name = "hyper",
-    actual = "@raze__hyper__0_14_18//:hyper",
+    actual = "@raze__hyper__0_14_19//:hyper",
     tags = [
         "cargo-raze",
         "manual",
@@ -167,7 +167,7 @@ alias(
 
 alias(
     name = "log",
-    actual = "@raze__log__0_4_16//:log",
+    actual = "@raze__log__0_4_17//:log",
     tags = [
         "cargo-raze",
         "manual",
@@ -176,7 +176,7 @@ alias(
 
 alias(
     name = "lru",
-    actual = "@raze__lru__0_6_6//:lru",
+    actual = "@raze__lru__0_7_6//:lru",
     tags = [
         "cargo-raze",
         "manual",
@@ -239,7 +239,7 @@ alias(
 
 alias(
     name = "prost",
-    actual = "@raze__prost__0_10_1//:prost",
+    actual = "@raze__prost__0_10_4//:prost",
     tags = [
         "cargo-raze",
         "manual",
@@ -248,7 +248,7 @@ alias(
 
 alias(
     name = "prost_build",
-    actual = "@raze__prost_build__0_10_1//:prost_build",
+    actual = "@raze__prost_build__0_10_4//:prost_build",
     tags = [
         "cargo-raze",
         "manual",
@@ -338,7 +338,7 @@ alias(
 
 alias(
     name = "serde",
-    actual = "@raze__serde__1_0_136//:serde",
+    actual = "@raze__serde__1_0_137//:serde",
     tags = [
         "cargo-raze",
         "manual",
@@ -374,7 +374,7 @@ alias(
 
 alias(
     name = "tokio",
-    actual = "@raze__tokio__1_18_0//:tokio",
+    actual = "@raze__tokio__1_19_2//:tokio",
     tags = [
         "cargo-raze",
         "manual",
@@ -383,7 +383,7 @@ alias(
 
 alias(
     name = "tokio_stream",
-    actual = "@raze__tokio_stream__0_1_8//:tokio_stream",
+    actual = "@raze__tokio_stream__0_1_9//:tokio_stream",
     tags = [
         "cargo-raze",
         "manual",
@@ -392,7 +392,7 @@ alias(
 
 alias(
     name = "tokio_util",
-    actual = "@raze__tokio_util__0_6_9//:tokio_util",
+    actual = "@raze__tokio_util__0_6_10//:tokio_util",
     tags = [
         "cargo-raze",
         "manual",
@@ -401,7 +401,7 @@ alias(
 
 alias(
     name = "tonic",
-    actual = "@raze__tonic__0_7_1//:tonic",
+    actual = "@raze__tonic__0_7_2//:tonic",
     tags = [
         "cargo-raze",
         "manual",
@@ -410,7 +410,7 @@ alias(
 
 alias(
     name = "tonic_build",
-    actual = "@raze__tonic_build__0_7_0//:tonic_build",
+    actual = "@raze__tonic_build__0_7_2//:tonic_build",
     tags = [
         "cargo-raze",
         "manual",

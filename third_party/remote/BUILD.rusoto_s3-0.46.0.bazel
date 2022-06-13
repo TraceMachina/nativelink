@@ -42,7 +42,7 @@ rust_library(
     data = [],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__async_trait__0_1_53//:async_trait",
+        "@raze__async_trait__0_1_56//:async_trait",
     ],
     rustc_flags = [
         "--cap-lints=allow",
