@@ -52,11 +52,11 @@ rust_library(
     # buildifier: leave-alone
     deps = [
         "@raze__crossbeam_utils__0_8_8//:crossbeam_utils",
-        "@raze__globset__0_4_8//:globset",
+        "@raze__globset__0_4_9//:globset",
         "@raze__lazy_static__1_4_0//:lazy_static",
-        "@raze__log__0_4_16//:log",
-        "@raze__memchr__2_4_1//:memchr",
-        "@raze__regex__1_5_5//:regex",
+        "@raze__log__0_4_17//:log",
+        "@raze__memchr__2_5_0//:memchr",
+        "@raze__regex__1_5_6//:regex",
         "@raze__same_file__1_0_6//:same_file",
         "@raze__thread_local__1_1_4//:thread_local",
         "@raze__walkdir__2_3_2//:walkdir",

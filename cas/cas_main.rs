@@ -35,7 +35,7 @@ const DEFAULT_CONFIG_FILE: &str = "<built-in example in config/examples/basic_ca
 )]
 struct Args {
     /// Config file to use.
-    #[clap(default_value = DEFAULT_CONFIG_FILE)]
+    #[clap(value_parser, default_value = DEFAULT_CONFIG_FILE)]
     config_file: String,
 }
 

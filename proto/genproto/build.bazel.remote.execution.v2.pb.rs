@@ -1396,7 +1396,7 @@ pub mod execution_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Default + Body<Data = Bytes> + Send + 'static,
+        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + Send,
     {
         pub fn new(inner: T) -> Self {
@@ -1409,6 +1409,7 @@ pub mod execution_client {
         ) -> ExecutionClient<InterceptedService<T, F>>
         where
             F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
             T: tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
@@ -1508,13 +1509,13 @@ pub mod execution_client {
             &mut self,
             request: impl tonic::IntoRequest<super::ExecuteRequest>,
         ) -> Result<
-                tonic::Response<
-                    tonic::codec::Streaming<
-                        super::super::super::super::super::super::google::longrunning::Operation,
-                    >,
+            tonic::Response<
+                tonic::codec::Streaming<
+                    super::super::super::super::super::super::google::longrunning::Operation,
                 >,
-                tonic::Status,
-            > {
+            >,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1540,13 +1541,13 @@ pub mod execution_client {
             &mut self,
             request: impl tonic::IntoRequest<super::WaitExecutionRequest>,
         ) -> Result<
-                tonic::Response<
-                    tonic::codec::Streaming<
-                        super::super::super::super::super::super::google::longrunning::Operation,
-                    >,
+            tonic::Response<
+                tonic::codec::Streaming<
+                    super::super::super::super::super::super::google::longrunning::Operation,
                 >,
-                tonic::Status,
-            > {
+            >,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1603,7 +1604,7 @@ pub mod action_cache_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Default + Body<Data = Bytes> + Send + 'static,
+        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + Send,
     {
         pub fn new(inner: T) -> Self {
@@ -1616,6 +1617,7 @@ pub mod action_cache_client {
         ) -> ActionCacheClient<InterceptedService<T, F>>
         where
             F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
             T: tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
@@ -1809,7 +1811,7 @@ pub mod content_addressable_storage_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Default + Body<Data = Bytes> + Send + 'static,
+        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + Send,
     {
         pub fn new(inner: T) -> Self {
@@ -1822,6 +1824,7 @@ pub mod content_addressable_storage_client {
         ) -> ContentAddressableStorageClient<InterceptedService<T, F>>
         where
             F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
             T: tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
@@ -1988,9 +1991,9 @@ pub mod content_addressable_storage_client {
             &mut self,
             request: impl tonic::IntoRequest<super::GetTreeRequest>,
         ) -> Result<
-                tonic::Response<tonic::codec::Streaming<super::GetTreeResponse>>,
-                tonic::Status,
-            > {
+            tonic::Response<tonic::codec::Streaming<super::GetTreeResponse>>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -2037,7 +2040,7 @@ pub mod capabilities_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Default + Body<Data = Bytes> + Send + 'static,
+        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + Send,
     {
         pub fn new(inner: T) -> Self {
@@ -2050,6 +2053,7 @@ pub mod capabilities_client {
         ) -> CapabilitiesClient<InterceptedService<T, F>>
         where
             F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
             T: tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
                 Response = http::Response<
