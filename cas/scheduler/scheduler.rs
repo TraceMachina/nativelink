@@ -109,13 +109,16 @@ impl Workers {
 type ShouldRunAgain = bool;
 
 struct SchedulerImpl {
-    // We cannot use the special hash function we use for ActionInfo with BTreeMap because
-    // we need to be able to get an exact match when we look for `ActionInfo` structs that
-    // have `digest` and `salt` matches and nothing else. This is because we want to sort
-    // the `queued_actions` entries in order of `priority`, but if a new entry matches
-    // we want to ignore the priority and join them together then use the higher priority
-    // of the two, so we use a `HashSet` to find the original `ActionInfo` when trying to
-    // merge actions together.
+    // BTreeMap uses `cmp` to do it's comparisons, this is a problem because we want to sort our
+    // actions based on priority and insert timestamp but also want to find and join new actions
+    // onto already executing (or queued) actions. We don't know the insert timestamp of queued
+    // actions, so we won't be able to find it in a BTreeMap without iterating the entire map. To
+    // get around this issue, we use two containers, one that will search using `Eq` which will
+    // only match on the `unique_qualifier` field, which ignores fields that would prevent
+    // multiplexing, and another which uses `Ord` for sorting.
+    //
+    // Important: These two fields must be kept in-sync, so if you modify one, you likely need to
+    // modify the other.
     queued_actions_set: HashSet<Arc<ActionInfo>>,
     queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction>,
     workers: Workers,
@@ -150,10 +153,12 @@ impl SchedulerImpl {
                 .remove_entry(&arc_action_info)
                 .err_tip(|| "Internal error queued_actions and queued_actions_set should match")?;
 
+            let new_priority = cmp::max(original_action_info.priority, action_info.priority);
+            drop(original_action_info); // This increases the chance Arc::make_mut won't copy.
+
             // In the event our task is higher priority than the one already scheduled, increase
             // the priority of the scheduled one.
-            Arc::make_mut(&mut arc_action_info).priority =
-                cmp::max(original_action_info.priority, action_info.priority);
+            Arc::make_mut(&mut arc_action_info).priority = new_priority;
 
             let rx = queued_action.notify_channel.subscribe();
             queued_action
@@ -270,6 +275,10 @@ impl SchedulerImpl {
 
                 // At this point everything looks good, so remove it from the queue and add it to active actions.
                 let (action_info, mut awaited_action) = self.queued_actions.remove_entry(action_info.as_ref()).unwrap();
+                assert!(
+                    self.queued_actions_set.remove(&action_info),
+                    "queued_actions_set should always have same keys as queued_actions"
+                );
                 Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
                 let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
                 if send_result.is_err() {
