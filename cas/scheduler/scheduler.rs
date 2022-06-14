@@ -355,6 +355,13 @@ impl SchedulerImpl {
             );
         }
 
+        let worker = self
+            .workers
+            .workers
+            .get_mut(worker_id)
+            .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
+        worker.restore_platform_properties(&action_info.platform_properties);
+
         // TODO(allada) We should probably hold a small queue of recent actions for debugging.
         // Right now it will drop the action which also disconnects listeners here.
         Ok(())
@@ -469,11 +476,13 @@ impl Scheduler {
                 }
             })
             .collect();
-        for worker_id in worker_ids_to_remove {
+        for worker_id in worker_ids_to_remove.as_slice() {
             log::warn!("Worker {} timed out, removing from pool", worker_id);
             inner.immediate_evict_worker(&worker_id);
         }
-        inner.do_try_match();
+        if !worker_ids_to_remove.is_empty() {
+            inner.do_try_match();
+        }
         Ok(())
     }
 

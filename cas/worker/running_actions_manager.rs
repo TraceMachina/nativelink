@@ -441,7 +441,6 @@ impl RunningAction for RunningActionImpl {
             let (command, _) = try_join(command_fut, download_to_directory_fut).await?;
             command
         };
-        log::info!("\x1b[0;31mWorker Received Command\x1b[0m: {:?}", command);
         {
             // Create all directories needed for our output paths. This is required by the bazel spec.
             let prepare_output_directories = |output_file| {
@@ -456,8 +455,10 @@ impl RunningAction for RunningActionImpl {
                     Result::<(), Error>::Ok(())
                 }
             };
+            try_join_all(command.output_files.iter().map(prepare_output_directories)).await?;
             try_join_all(command.output_paths.iter().map(prepare_output_directories)).await?;
         }
+        log::info!("\x1b[0;31mWorker Received Command\x1b[0m: {:?}", command);
         {
             let mut state = self.state.lock().await;
             state.command_proto = Some(command);
@@ -483,6 +484,7 @@ impl RunningAction for RunningActionImpl {
         if args.len() < 1 {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
+        log::info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
         let mut command_builder = process::Command::new(&args[0]);
         command_builder
             .args(&args[1..])
@@ -555,6 +557,7 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        log::info!("\x1b[0;31mWorker Uploading Results\x1b[0m");
         let (mut command_proto, execution_result) = {
             let mut state = self.state.lock().await;
             (
@@ -739,6 +742,7 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        log::info!("\x1b[0;31mWorker Cleanup\x1b[0m");
         // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
         let remove_dir_result = fs::remove_dir_all(&self.work_directory)
             .await

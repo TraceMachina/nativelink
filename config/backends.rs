@@ -101,6 +101,16 @@ pub enum StoreConfig {
     /// safely use VerifyStore.verify_size = true, this store should be safe
     /// to use (ie: CAS stores).
     size_partitioning(Box<SizePartitioningStore>),
+
+    /// This is a special store that can only be used at top-level services
+    /// and cannot be referenced as a child of another store.
+    ///
+    /// This is because there are APIs on the store interface that cannot be
+    /// satisfied by the BRE API. In addition, it would be significantly less
+    /// efficient, so to make things simpler we only allow this store to be
+    /// at the top-level and calls are almost directly passed to another GRPC
+    /// service.
+    grpc(GrpcStore),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -346,6 +356,17 @@ pub struct S3Store {
     /// Default: 20.
     #[serde(default)]
     pub additional_max_concurrent_requests: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+pub struct GrpcStore {
+    /// Instance name for GRPC calls. Proxy calls will have the instance_name changed to this.
+    #[serde(default)]
+    pub instance_name: String,
+
+    /// The endpoint of the grpc connection.
+    #[serde(default)]
+    pub endpoints: Vec<String>,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
