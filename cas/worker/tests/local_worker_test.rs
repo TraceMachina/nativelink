@@ -1,17 +1,23 @@
 // Copyright 2022 Nathan (Blaise) Bruer.  All rights reserved.
 
 use std::collections::HashMap;
+use std::env;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use prost::Message;
+use rand::{thread_rng, Rng};
 use tonic::Response;
 
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata};
-use common::{encode_stream_proto, DigestInfo};
-use config::cas_server::WrokerProperty;
+use common::{encode_stream_proto, fs, DigestInfo};
+use config::cas_server::{LocalWorkerConfig, WrokerProperty};
 use error::{make_input_err, Error};
+use fast_slow_store::FastSlowStore;
+use filesystem_store::FilesystemStore;
+use local_worker::new_local_worker;
 use local_worker_test_utils::{setup_grpc_stream, setup_local_worker};
+use memory_store::MemoryStore;
 use mock_running_actions_manager::MockRunningAction;
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::platform::Property;
@@ -19,6 +25,17 @@ use proto::com::github::allada::turbo_cache::remote_execution::{
     execute_result, update_for_worker::Update, ConnectionResult, ExecuteFinishedResult, ExecuteResult, StartExecute,
     SupportedProperties, UpdateForWorker,
 };
+
+/// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
+/// not set.
+fn make_temp_path(data: &str) -> String {
+    format!(
+        "{}/{}/{}",
+        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        thread_rng().gen::<u64>(),
+        data
+    )
+}
 
 #[cfg(test)]
 mod local_worker_tests {
@@ -211,6 +228,42 @@ mod local_worker_tests {
                     execute_response: Some(ActionStage::Completed(action_result).into()),
                 }))
             }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn std::error::Error>> {
+        let cas_store = Arc::new(FastSlowStore::new(
+            &config::backends::FastSlowStore {
+                // Note: These are not needed for this test, so we put dummy memory stores here.
+                fast: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+                slow: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+            },
+            Arc::new(
+                FilesystemStore::new(&config::backends::FilesystemStore {
+                    content_path: make_temp_path("content_path"),
+                    temp_path: make_temp_path("temp_path"),
+                    ..Default::default()
+                })
+                .await?,
+            ),
+            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())),
+        ));
+        let work_directory = make_temp_path("foo");
+        new_local_worker(
+            Arc::new(LocalWorkerConfig {
+                work_directory: work_directory.clone(),
+                ..Default::default()
+            }),
+            cas_store,
+        )
+        .await?;
+
+        assert!(
+            fs::metadata(work_directory).await.is_ok(),
+            "Expected work_directory to be created"
         );
 
         Ok(())

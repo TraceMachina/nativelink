@@ -105,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         )
                     })?;
                 let local_worker = new_local_worker(Arc::new(local_worker_cfg), fast_slow_store.clone())
+                    .await
                     .err_tip(|| "Could not make LocalWorker")?;
                 tokio::spawn(local_worker.run())
             }
