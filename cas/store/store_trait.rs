@@ -96,5 +96,5 @@ pub trait StoreTrait: Sync + Send + Unpin {
     }
 
     /// Expect the returned Any to be `Arc<Self>`.
-    fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any>;
+    fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send>;
 }
