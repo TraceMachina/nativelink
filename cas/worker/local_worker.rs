@@ -11,7 +11,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::{transport::Channel as TonicChannel, Streaming};
 
 use action_messages::{ActionResult, ActionStage};
-use common::log;
+use common::{fs, log};
 use config::cas_server::LocalWorkerConfig;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
@@ -203,7 +203,7 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
 
 /// Creates a new LocalWorker. The `cas_store` must be an instance of FastSlowStore and will be
 /// checked at runtime.
-pub fn new_local_worker(
+pub async fn new_local_worker(
     config: Arc<LocalWorkerConfig>,
     cas_store: Arc<dyn Store>,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
@@ -212,6 +212,11 @@ pub fn new_local_worker(
         .downcast_ref::<Arc<FastSlowStore>>()
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
         .clone();
+
+    fs::create_dir_all(&config.work_directory)
+        .await
+        .err_tip(|| format!("Could not make work_directory : {}", config.work_directory))?;
+
     let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
         config.work_directory.clone(),
         fast_slow_store,
