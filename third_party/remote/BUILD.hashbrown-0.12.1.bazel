@@ -31,15 +31,19 @@ licenses([
 
 # Generated Targets
 
+# Unsupported target "bench" with type "bench" omitted
+
+# Unsupported target "insert_unique_unchecked" with type "bench" omitted
+
 rust_library(
-    name = "wasm_bindgen_backend",
+    name = "hashbrown",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "spans",
+        "raw",
     ],
     crate_root = "src/lib.rs",
     data = [],
-    edition = "2018",
+    edition = "2021",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -47,15 +51,16 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.80",
+    version = "0.12.1",
     # buildifier: leave-alone
     deps = [
-        "@raze__bumpalo__3_10_0//:bumpalo",
-        "@raze__lazy_static__1_4_0//:lazy_static",
-        "@raze__log__0_4_17//:log",
-        "@raze__proc_macro2__1_0_39//:proc_macro2",
-        "@raze__quote__1_0_18//:quote",
-        "@raze__syn__1_0_96//:syn",
-        "@raze__wasm_bindgen_shared__0_2_80//:wasm_bindgen_shared",
     ],
 )
+
+# Unsupported target "hasher" with type "test" omitted
+
+# Unsupported target "rayon" with type "test" omitted
+
+# Unsupported target "serde" with type "test" omitted
+
+# Unsupported target "set" with type "test" omitted

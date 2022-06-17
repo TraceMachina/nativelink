@@ -26,7 +26,7 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT OR Apache-2.0"
+    "notice",  # Apache-2.0 from expression "Apache-2.0 OR MIT"
 ])
 
 # Generated Targets
@@ -38,18 +38,16 @@ load(
 )
 
 cargo_build_script(
-    name = "wasm_bindgen_build_script",
+    name = "indexmap_build_script",
     srcs = glob(["**/*.rs"]),
     build_script_env = {
     },
     crate_features = [
-        "default",
-        "spans",
         "std",
     ],
     crate_root = "build.rs",
     data = glob(["**"]),
-    edition = "2018",
+    edition = "2021",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -57,26 +55,26 @@ cargo_build_script(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.80",
+    version = "1.9.0",
     visibility = ["//visibility:private"],
     deps = [
+        "@raze__autocfg__1_1_0//:autocfg",
     ],
 )
 
+# Unsupported target "bench" with type "bench" omitted
+
+# Unsupported target "faststring" with type "bench" omitted
+
 rust_library(
-    name = "wasm_bindgen",
+    name = "indexmap",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "default",
-        "spans",
         "std",
     ],
     crate_root = "src/lib.rs",
     data = [],
-    edition = "2018",
-    proc_macro_deps = [
-        "@raze__wasm_bindgen_macro__0_2_80//:wasm_bindgen_macro",
-    ],
+    edition = "2021",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -84,22 +82,18 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.80",
+    version = "1.9.0",
     # buildifier: leave-alone
     deps = [
-        ":wasm_bindgen_build_script",
-        "@raze__cfg_if__1_0_0//:cfg_if",
+        ":indexmap_build_script",
+        "@raze__hashbrown__0_12_1//:hashbrown",
     ],
 )
 
-# Unsupported target "headless" with type "test" omitted
+# Unsupported target "equivalent_trait" with type "test" omitted
 
-# Unsupported target "must_use" with type "test" omitted
+# Unsupported target "macros_full_path" with type "test" omitted
 
-# Unsupported target "non_wasm" with type "test" omitted
+# Unsupported target "quick" with type "test" omitted
 
-# Unsupported target "std-crate-no-std-dep" with type "test" omitted
-
-# Unsupported target "unwrap_throw" with type "test" omitted
-
-# Unsupported target "wasm" with type "test" omitted
+# Unsupported target "tests" with type "test" omitted

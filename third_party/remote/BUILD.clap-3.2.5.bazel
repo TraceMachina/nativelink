@@ -42,7 +42,7 @@ rust_binary(
         "color",
         "default",
         "derive",
-        "lazy_static",
+        "once_cell",
         "std",
         "strsim",
         "suggestions",
@@ -53,7 +53,7 @@ rust_binary(
     compile_data = ['README.md'],
     edition = "2021",
     proc_macro_deps = [
-        "@raze__clap_derive__3_2_1//:clap_derive",
+        "@raze__clap_derive__3_2_5//:clap_derive",
     ],
     rustc_flags = [
         "--cap-lints=allow",
@@ -62,15 +62,15 @@ rust_binary(
         "cargo-raze",
         "manual",
     ],
-    version = "3.2.1",
+    version = "3.2.5",
     # buildifier: leave-alone
     deps = [
         ":clap",
         "@raze__atty__0_2_14//:atty",
         "@raze__bitflags__1_3_2//:bitflags",
         "@raze__clap_lex__0_2_2//:clap_lex",
-        "@raze__indexmap__1_8_2//:indexmap",
-        "@raze__lazy_static__1_4_0//:lazy_static",
+        "@raze__indexmap__1_9_0//:indexmap",
+        "@raze__once_cell__1_12_0//:once_cell",
         "@raze__strsim__0_10_0//:strsim",
         "@raze__termcolor__1_1_3//:termcolor",
         "@raze__textwrap__0_15_0//:textwrap",
@@ -188,7 +188,7 @@ rust_library(
         "color",
         "default",
         "derive",
-        "lazy_static",
+        "once_cell",
         "std",
         "strsim",
         "suggestions",
@@ -199,7 +199,7 @@ rust_library(
     compile_data = ['README.md'],
     edition = "2021",
     proc_macro_deps = [
-        "@raze__clap_derive__3_2_1//:clap_derive",
+        "@raze__clap_derive__3_2_5//:clap_derive",
     ],
     rustc_flags = [
         "--cap-lints=allow",
@@ -208,14 +208,14 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "3.2.1",
+    version = "3.2.5",
     # buildifier: leave-alone
     deps = [
         "@raze__atty__0_2_14//:atty",
         "@raze__bitflags__1_3_2//:bitflags",
         "@raze__clap_lex__0_2_2//:clap_lex",
-        "@raze__indexmap__1_8_2//:indexmap",
-        "@raze__lazy_static__1_4_0//:lazy_static",
+        "@raze__indexmap__1_9_0//:indexmap",
+        "@raze__once_cell__1_12_0//:once_cell",
         "@raze__strsim__0_10_0//:strsim",
         "@raze__termcolor__1_1_3//:termcolor",
         "@raze__textwrap__0_15_0//:textwrap",

@@ -31,11 +31,15 @@ licenses([
 
 # Generated Targets
 
+# Unsupported target "mod" with type "bench" omitted
+
 rust_library(
-    name = "wasm_bindgen_macro_support",
+    name = "getrandom",
     srcs = glob(["**/*.rs"]),
+    aliases = {
+    },
     crate_features = [
-        "spans",
+        "std",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -47,13 +51,23 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.2.80",
+    version = "0.2.7",
     # buildifier: leave-alone
     deps = [
-        "@raze__proc_macro2__1_0_39//:proc_macro2",
-        "@raze__quote__1_0_18//:quote",
-        "@raze__syn__1_0_96//:syn",
-        "@raze__wasm_bindgen_backend__0_2_80//:wasm_bindgen_backend",
-        "@raze__wasm_bindgen_shared__0_2_80//:wasm_bindgen_shared",
-    ],
+        "@raze__cfg_if__1_0_0//:cfg_if",
+    ] + selects.with_or({
+        # cfg(unix)
+        (
+            "@rules_rust//rust/platform:x86_64-unknown-linux-gnu",
+        ): [
+            "@raze__libc__0_2_126//:libc",
+        ],
+        "//conditions:default": [],
+    }),
 )
+
+# Unsupported target "custom" with type "test" omitted
+
+# Unsupported target "normal" with type "test" omitted
+
+# Unsupported target "rdrand" with type "test" omitted

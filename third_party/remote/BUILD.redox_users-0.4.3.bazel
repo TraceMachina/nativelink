@@ -49,7 +49,7 @@ rust_library(
     version = "0.4.3",
     # buildifier: leave-alone
     deps = [
-        "@raze__getrandom__0_2_6//:getrandom",
+        "@raze__getrandom__0_2_7//:getrandom",
         "@raze__redox_syscall__0_2_13//:redox_syscall",
         "@raze__thiserror__1_0_31//:thiserror",
     ],

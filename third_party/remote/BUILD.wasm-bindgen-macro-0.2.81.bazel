@@ -26,17 +26,16 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # Apache-2.0 from expression "Apache-2.0 OR (Apache-2.0 OR MIT)"
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
 ])
 
 # Generated Targets
 
-rust_library(
-    name = "wasi",
+rust_proc_macro(
+    name = "wasm_bindgen_macro",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "default",
-        "std",
+        "spans",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -48,8 +47,12 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.10.2+wasi-snapshot-preview1",
+    version = "0.2.81",
     # buildifier: leave-alone
     deps = [
+        "@raze__quote__1_0_18//:quote",
+        "@raze__wasm_bindgen_macro_support__0_2_81//:wasm_bindgen_macro_support",
     ],
 )
+
+# Unsupported target "ui" with type "test" omitted
