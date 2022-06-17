@@ -6,13 +6,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use fast_async_mutex::mutex::Mutex;
 use futures::{stream::unfold, Stream};
+use shellexpand;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
 use uuid::Uuid;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::{log, DigestInfo};
 use config;
-use error::{error_if, Error, ResultExt};
+use error::{error_if, make_input_err, Error, ResultExt};
 use proto::build::bazel::remote::execution::v2::{
     action_cache_client::ActionCacheClient, content_addressable_storage_client::ContentAddressableStorageClient,
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
@@ -41,6 +42,11 @@ impl GrpcStore {
         error_if!(config.endpoints.len() == 0, "Expected at least 1 endpoint in GrpcStore");
         let mut endpoints = Vec::with_capacity(config.endpoints.len());
         for endpoint in &config.endpoints {
+            let endpoint = shellexpand::env(&endpoint)
+                .map_err(|e| make_input_err!("{}", e))
+                .err_tip(|| "Could expand endpoint in GrpcStore")?
+                .to_string();
+
             endpoints.push(
                 transport::Endpoint::new(endpoint.clone())
                     .err_tip(|| format!("Could not connect to {} in GrpcStore", endpoint))?,
