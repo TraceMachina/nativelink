@@ -75,7 +75,7 @@ rust_library(
     deps = [
         "@raze__futures_core__0_3_21//:futures_core",
         "@raze__futures_util__0_3_21//:futures_util",
-        "@raze__indexmap__1_8_2//:indexmap",
+        "@raze__indexmap__1_9_0//:indexmap",
         "@raze__pin_project__1_0_10//:pin_project",
         "@raze__pin_project_lite__0_2_9//:pin_project_lite",
         "@raze__rand__0_8_5//:rand",

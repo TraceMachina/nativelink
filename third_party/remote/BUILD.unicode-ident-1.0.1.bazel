@@ -31,16 +31,16 @@ licenses([
 
 # Generated Targets
 
-rust_proc_macro(
-    name = "clap_derive",
+# Unsupported target "xid" with type "bench" omitted
+
+rust_library(
+    name = "unicode_ident",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "default",
     ],
     crate_root = "src/lib.rs",
     data = [],
-    compile_data = ['README.md'],
-    edition = "2021",
+    edition = "2018",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -48,13 +48,12 @@ rust_proc_macro(
         "cargo-raze",
         "manual",
     ],
-    version = "3.2.1",
+    version = "1.0.1",
     # buildifier: leave-alone
     deps = [
-        "@raze__heck__0_4_0//:heck",
-        "@raze__proc_macro2__1_0_39//:proc_macro2",
-        "@raze__proc_macro_error__1_0_4//:proc_macro_error",
-        "@raze__quote__1_0_18//:quote",
-        "@raze__syn__1_0_96//:syn",
     ],
 )
+
+# Unsupported target "compare" with type "test" omitted
+
+# Unsupported target "static_size" with type "test" omitted

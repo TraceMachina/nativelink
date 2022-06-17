@@ -50,7 +50,7 @@ alias(
 
 alias(
     name = "clap",
-    actual = "@raze__clap__3_2_1//:clap",
+    actual = "@raze__clap__3_2_5//:clap",
     tags = [
         "cargo-raze",
         "manual",
@@ -176,7 +176,7 @@ alias(
 
 alias(
     name = "lru",
-    actual = "@raze__lru__0_7_6//:lru",
+    actual = "@raze__lru__0_7_7//:lru",
     tags = [
         "cargo-raze",
         "manual",

@@ -32,13 +32,13 @@ licenses([
 # Generated Targets
 
 rust_library(
-    name = "prettyplease",
+    name = "time",
     srcs = glob(["**/*.rs"]),
     crate_features = [
     ],
     crate_root = "src/lib.rs",
     data = [],
-    edition = "2021",
+    edition = "2015",
     rustc_flags = [
         "--cap-lints=allow",
     ],
@@ -46,10 +46,9 @@ rust_library(
         "cargo-raze",
         "manual",
     ],
-    version = "0.1.11",
+    version = "0.1.44",
     # buildifier: leave-alone
     deps = [
-        "@raze__proc_macro2__1_0_39//:proc_macro2",
-        "@raze__syn__1_0_96//:syn",
+        "@raze__libc__0_2_126//:libc",
     ],
 )
