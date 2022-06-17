@@ -57,7 +57,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .format_timestamp_millis()
         .init();
 
-    let json_contents = String::from_utf8(tokio::fs::read(config_file).await?)?;
+    let json_contents = String::from_utf8(
+        tokio::fs::read(&config_file)
+            .await
+            .err_tip(|| format!("Could not open config file {}", config_file))?,
+    )?;
     let cfg: CasConfig = json5::from_str(&json_contents)?;
 
     // Note: If the default changes make sure you update the documentation in

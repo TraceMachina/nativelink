@@ -4,7 +4,7 @@
       // Note: This file is used to test GRPC store.
       "grpc": {
         "instance_name": "main",
-        "endpoints": ["grpc://turbo_cache_local_cas:50051"]
+        "endpoints": ["grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"]
       }
     }
   },

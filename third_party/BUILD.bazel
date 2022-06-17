@@ -355,6 +355,15 @@ alias(
 )
 
 alias(
+    name = "shellexpand",
+    actual = "@raze__shellexpand__2_1_0//:shellexpand",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "shlex",
     actual = "@raze__shlex__1_1_0//:shlex",
     tags = [

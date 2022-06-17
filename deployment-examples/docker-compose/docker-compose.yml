@@ -27,6 +27,7 @@ services:
         target: /root
     environment:
       RUST_LOG: ${RUST_LOG:-}
+      CAS_ENDPOINT: turbo_cache_local_cas
     ports: [ "50052:50052/tcp" ]
     command: |
       cas /root/scheduler.json
@@ -40,5 +41,7 @@ services:
         target: /root
     environment:
       RUST_LOG: ${RUST_LOG:-}
+      CAS_ENDPOINT: turbo_cache_local_cas
+      SCHEDULER_ENDPOINT: turbo_cache_scheduler
     command: |
       cas /root/worker.json

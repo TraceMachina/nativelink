@@ -1947,6 +1947,16 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
+        name = "raze__shellexpand__2_1_0",
+        url = "https://crates.io/api/v1/crates/shellexpand/2.1.0/download",
+        type = "tar.gz",
+        sha256 = "83bdb7831b2d85ddf4a7b148aa19d0587eddbe8671a436b7bd1182eaad0f2829",
+        strip_prefix = "shellexpand-2.1.0",
+        build_file = Label("//third_party/remote:BUILD.shellexpand-2.1.0.bazel"),
+    )
+
+    maybe(
+        http_archive,
         name = "raze__shlex__0_1_1",
         url = "https://crates.io/api/v1/crates/shlex/0.1.1/download",
         type = "tar.gz",
