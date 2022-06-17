@@ -277,4 +277,8 @@ impl RunningAction for MockRunningAction {
             ),
         }
     }
+
+    fn get_work_directory(&self) -> &String {
+        unreachable!();
+    }
 }
