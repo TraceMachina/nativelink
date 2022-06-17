@@ -326,6 +326,76 @@ mod running_actions_manager_tests {
     }
 
     #[tokio::test]
+    async fn ensure_output_files_full_directories_are_created_test() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, _, cas_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+            root_work_directory,
+            Pin::into_inner(cas_store.clone()),
+        )?);
+        const WORKER_ID: &str = "foo_worker_id";
+        {
+            const SALT: u64 = 55;
+            let command = Command {
+                arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
+                output_files: vec!["some/path/test.txt".to_string()],
+                working_directory: "some_cwd".to_string(),
+                ..Default::default()
+            };
+            let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory {
+                    directories: vec![DirectoryNode {
+                        name: "some_cwd".to_string(),
+                        digest: Some(
+                            serialize_and_upload_message(&Directory::default(), cas_store.as_ref())
+                                .await?
+                                .into(),
+                        ),
+                    }],
+                    ..Default::default()
+                },
+                cas_store.as_ref(),
+            )
+            .await?;
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+            let running_action = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            ..Default::default()
+                        }),
+                        salt: SALT,
+                    },
+                )
+                .await?;
+
+            let running_action = running_action.clone().prepare_action().await?;
+
+            // The folder should have been created for our output file.
+            assert_eq!(
+                fs::metadata(format!("{}/{}", running_action.get_work_directory(), "some/path"))
+                    .await
+                    .is_ok(),
+                true,
+                "Expected path to exist"
+            );
+
+            running_action.cleanup().await?;
+        };
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Error>> {
         let (_, slow_store, cas_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
