@@ -102,6 +102,11 @@ package_aliases_dir = "third_party"
 
 # The set of targets to generate BUILD rules for.
 targets = [
+    "aarch64-unknown-linux-gnu",
+    "arm-unknown-linux-gnueabi",
+    "armv7-unknown-linux-gnueabi",
+    "powerpc-unknown-linux-gnu",
+    "s390x-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
 ]
 
