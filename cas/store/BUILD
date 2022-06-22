@@ -201,6 +201,7 @@ rust_library(
         "//third_party:rusoto_core",
         "//third_party:rusoto_s3",
         "//third_party:rusoto_signature",
+        "//third_party:shellexpand",
         "//third_party:tokio",
         "//third_party:tokio_util",
         "//util:buf_channel",
