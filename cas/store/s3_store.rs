@@ -22,6 +22,7 @@ use rusoto_s3::{
     PutObjectRequest, S3Client, UploadPartRequest, S3,
 };
 use rusoto_signature::signature::SignedRequest;
+use shellexpand;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tokio_util::io::ReaderStream;
@@ -133,8 +134,10 @@ impl S3Store {
             dispatcher.add_permits(additional_max_concurrent_requests);
             let credentials_provider =
                 DefaultCredentialsProvider::new().expect("failed to create credentials provider");
-            let region = config
-                .region
+
+            let region = shellexpand::env(&config.region)
+                .map_err(|e| make_input_err!("{}", e))
+                .err_tip(|| "Could expand region in S3Store")?
                 .parse::<Region>()
                 .map_err(|e| make_input_err!("{}", e.to_string()))?;
             S3Client::new_with(dispatcher, credentials_provider, region)
@@ -159,9 +162,12 @@ impl S3Store {
         s3_client: S3Client,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
+        let bucket = shellexpand::env(&config.bucket)
+            .map_err(|e| make_input_err!("{}", e))
+            .err_tip(|| "Could expand bucket in S3Store")?;
         Ok(S3Store {
             s3_client: Arc::new(s3_client),
-            bucket: config.bucket.to_owned(),
+            bucket: bucket.to_string(),
             key_prefix: config.key_prefix.as_ref().unwrap_or(&"".to_string()).to_owned(),
             jitter_fn: jitter_fn,
             retry: config.retry.to_owned(),
