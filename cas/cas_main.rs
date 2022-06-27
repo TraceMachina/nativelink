@@ -126,7 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .ac
                     .map_or(Ok(None), |cfg| {
-                        AcServer::new(&cfg, &store_manager).and_then(|v| Ok(Some(v.into_service())))
+                        AcServer::new(&cfg, &store_manager)
+                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
                     })
                     .err_tip(|| "Could not create AC service")?,
             )
@@ -134,7 +135,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .cas
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(&cfg, &store_manager).and_then(|v| Ok(Some(v.into_service())))
+                        CasServer::new(&cfg, &store_manager)
+                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
                     })
                     .err_tip(|| "Could not create CAS service")?,
             )
@@ -142,7 +144,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .execution
                     .map_or(Ok(None), |cfg| {
-                        ExecutionServer::new(&cfg, &schedulers, &store_manager).and_then(|v| Ok(Some(v.into_service())))
+                        ExecutionServer::new(&cfg, &schedulers, &store_manager)
+                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
                     })
                     .err_tip(|| "Could not create Execution service")?,
             )
@@ -150,7 +153,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .bytestream
                     .map_or(Ok(None), |cfg| {
-                        ByteStreamServer::new(&cfg, &store_manager).and_then(|v| Ok(Some(v.into_service())))
+                        ByteStreamServer::new(&cfg, &store_manager)
+                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
                     })
                     .err_tip(|| "Could not create ByteStream service")?,
             )
@@ -158,7 +162,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .capabilities
                     .map_or(Ok(None), |cfg| {
-                        CapabilitiesServer::new(&cfg, &schedulers).and_then(|v| Ok(Some(v.into_service())))
+                        CapabilitiesServer::new(&cfg, &schedulers)
+                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
                     })
                     .err_tip(|| "Could not create Capabilities service")?,
             )
@@ -166,7 +171,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
-                        WorkerApiServer::new(&cfg, &schedulers).and_then(|v| Ok(Some(v.into_service())))
+                        WorkerApiServer::new(&cfg, &schedulers)
+                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
                     })
                     .err_tip(|| "Could not create WorkerApi service")?,
             );
