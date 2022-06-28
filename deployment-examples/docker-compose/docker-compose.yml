@@ -17,7 +17,7 @@ services:
       RUST_LOG: ${RUST_LOG:-}
     ports: [ "50051:50051/tcp" ]
     command: |
-      cas /root/local-storage-cas.json
+      turbo-cache /root/local-storage-cas.json
 
   turbo_cache_scheduler:
     image: allada/turbo-cache:latest
@@ -30,7 +30,7 @@ services:
       CAS_ENDPOINT: turbo_cache_local_cas
     ports: [ "50052:50052/tcp" ]
     command: |
-      cas /root/scheduler.json
+      turbo-cache /root/scheduler.json
 
   turbo_cache_executor:
     image: allada/turbo-cache:latest
@@ -44,4 +44,4 @@ services:
       CAS_ENDPOINT: turbo_cache_local_cas
       SCHEDULER_ENDPOINT: turbo_cache_scheduler
     command: |
-      cas /root/worker.json
+      turbo-cache /root/worker.json
