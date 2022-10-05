@@ -40,7 +40,7 @@ byteorder = "1.4.3"
 lazy_static = "1.4.0"
 filetime = "0.2.15"
 nix = "0.23.1"
-clap = { version = "3.1.8", features = ["derive"] }
+clap = { version = "4.0.9", features = ["derive"] }
 uuid = { version = "0.8.2", features = ["v4"] }
 shlex = "1.1.0"
 relative-path = "1.7.0"

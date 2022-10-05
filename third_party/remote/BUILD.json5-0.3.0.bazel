@@ -40,7 +40,7 @@ rust_library(
     data = [] + ['src/json5.pest'],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__pest_derive__2_1_0//:pest_derive",
+        "@raze__pest_derive__2_4_0//:pest_derive",
     ],
     rustc_flags = [
         "--cap-lints=allow",
@@ -52,8 +52,8 @@ rust_library(
     version = "0.3.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__pest__2_1_3//:pest",
-        "@raze__serde__1_0_140//:serde",
+        "@raze__pest__2_4_0//:pest",
+        "@raze__serde__1_0_145//:serde",
     ],
 )
 

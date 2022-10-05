@@ -70,7 +70,7 @@ impl CasServer {
         for digest in inner_request.blob_digests.into_iter() {
             let digest: DigestInfo = digest.try_into()?;
             let store_clone = store.clone();
-            futures.push(tokio::spawn(async move {
+            futures.push_back(tokio::spawn(async move {
                 let store = Pin::new(store_clone.as_ref());
                 store.has(digest.clone()).await.map_or_else(
                     |e| {
@@ -129,7 +129,7 @@ impl CasServer {
             let digest: DigestInfo = request.digest.err_tip(|| "Digest not found in request")?.try_into()?;
             let digest_copy = digest.clone();
             let request_data = request.data;
-            futures.push(tokio::spawn(
+            futures.push_back(tokio::spawn(
                 async move {
                     let size_bytes = usize::try_from(digest_copy.size_bytes)
                         .err_tip(|| "Digest size_bytes was not convertible to usize")?;
@@ -183,7 +183,7 @@ impl CasServer {
             let digest_copy = digest.clone();
             let store_clone = store.clone();
 
-            futures.push(tokio::spawn(
+            futures.push_back(tokio::spawn(
                 async move {
                     let size_bytes = usize::try_from(digest_copy.size_bytes)
                         .err_tip(|| "Digest size_bytes was not convertible to usize")?;
