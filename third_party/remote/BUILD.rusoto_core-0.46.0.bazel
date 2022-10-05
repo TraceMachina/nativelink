@@ -74,7 +74,7 @@ rust_library(
     data = [],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__async_trait__0_1_56//:async_trait",
+        "@raze__async_trait__0_1_57//:async_trait",
     ],
     rustc_flags = [
         "--cap-lints=allow",
@@ -88,9 +88,9 @@ rust_library(
     deps = [
         ":rusoto_core_build_script",
         "@raze__base64__0_13_0//:base64",
-        "@raze__bytes__1_2_0//:bytes",
+        "@raze__bytes__1_2_1//:bytes",
         "@raze__crc32fast__1_3_2//:crc32fast",
-        "@raze__futures__0_3_21//:futures",
+        "@raze__futures__0_3_24//:futures",
         "@raze__http__0_2_8//:http",
         "@raze__hyper__0_14_20//:hyper",
         "@raze__hyper_tls__0_5_0//:hyper_tls",
@@ -98,9 +98,9 @@ rust_library(
         "@raze__log__0_4_17//:log",
         "@raze__rusoto_credential__0_46_0//:rusoto_credential",
         "@raze__rusoto_signature__0_46_0//:rusoto_signature",
-        "@raze__serde__1_0_140//:serde",
-        "@raze__serde_json__1_0_82//:serde_json",
-        "@raze__tokio__1_20_0//:tokio",
+        "@raze__serde__1_0_145//:serde",
+        "@raze__serde_json__1_0_85//:serde_json",
+        "@raze__tokio__1_21_2//:tokio",
         "@raze__xml_rs__0_8_4//:xml_rs",
     ],
 )

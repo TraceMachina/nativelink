@@ -1,7 +1,5 @@
 // Copyright 2021 Nathan (Blaise) Bruer.  All rights reserved.
 
-// #![feature(stmt_expr_attributes)]
-
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::marker::Unpin;

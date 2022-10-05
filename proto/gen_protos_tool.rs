@@ -1,4 +1,4 @@
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use prost_build::Config;
 use std::path::PathBuf;
 use std::vec::Vec;
@@ -12,8 +12,7 @@ fn main() -> std::io::Result<()> {
                 .short('i')
                 .long("input")
                 .required(true)
-                .multiple_occurrences(true)
-                .takes_value(true)
+                .action(ArgAction::Append)
                 .help("Input proto file"),
         )
         .arg(
@@ -21,12 +20,11 @@ fn main() -> std::io::Result<()> {
                 .short('o')
                 .required(true)
                 .long("output_dir")
-                .takes_value(true)
                 .help("Output directory"),
         )
         .get_matches();
-    let paths = matches.values_of("input").unwrap().collect::<Vec<&str>>();
-    let output_dir = PathBuf::from(matches.value_of("output_dir").unwrap());
+    let paths = matches.get_many::<String>("input").unwrap().collect::<Vec<&String>>();
+    let output_dir = PathBuf::from(matches.get_one::<String>("output_dir").unwrap());
 
     let mut config = Config::new();
     config.bytes(&["."]);

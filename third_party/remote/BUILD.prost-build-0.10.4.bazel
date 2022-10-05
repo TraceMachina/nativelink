@@ -62,7 +62,7 @@ cargo_build_script(
     deps = [
         "@raze__cfg_if__1_0_0//:cfg_if",
         "@raze__cmake__0_1_48//:cmake",
-        "@raze__which__4_2_5//:which",
+        "@raze__which__4_3_0//:which",
     ],
 )
 
@@ -90,9 +90,9 @@ rust_library(
     deps = [
         ":prost_build_build_script",
         "@com_google_protobuf//:protoc",
-        "@raze__bytes__1_2_0//:bytes",
+        "@raze__bytes__1_2_1//:bytes",
         "@raze__heck__0_4_0//:heck",
-        "@raze__itertools__0_10_3//:itertools",
+        "@raze__itertools__0_10_5//:itertools",
         "@raze__lazy_static__1_4_0//:lazy_static",
         "@raze__log__0_4_17//:log",
         "@raze__multimap__0_8_3//:multimap",

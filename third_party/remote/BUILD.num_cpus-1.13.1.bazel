@@ -62,7 +62,7 @@ rust_library(
             "@rules_rust//rust/platform:powerpc-unknown-linux-gnu",
             "@rules_rust//rust/platform:s390x-unknown-linux-gnu",
         ): [
-            "@raze__libc__0_2_126//:libc",
+            "@raze__libc__0_2_134//:libc",
         ],
         "//conditions:default": [],
     }),
