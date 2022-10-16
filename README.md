@@ -26,10 +26,7 @@ The terraform deployment is very easy to setup and configure, all you need is a 
 
 ## Status
 
-This project is still under active development, but has passed into the "Alpha" stage of development. All major components do work as expected and no major API changes are expected.
-
-As of July 21st, 2022 the following things are in need of fixing or should be noted by any users:
-* More testing is needed in a production system.
+This project is still under active development, but all major components do work as expected and no major API changes are expected. Using with production systems are welcome and would be happy to work closely to hammer out any issues that might arise.
 
 ## History
 
@@ -62,4 +59,4 @@ $ cargo raze  # This will code-gen the bazel rules.
 
 # License
 
-Copyright 2020-2022 Nathan (Blaise) Bruer
+Software is licensed under the Apache 2.0 License. Copyright 2020-2022 Nathan (Blaise) Bruer
