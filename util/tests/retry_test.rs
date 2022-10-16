@@ -1,4 +1,17 @@
-// Copyright 2021 Nathan (Blaise) Bruer.  All rights reserved.
+// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -109,7 +122,6 @@ mod retry_tests {
         Ok(())
     }
 
-    // test-prefix/987cc59b2d364596f94bd82f250d02aebb716c3a100163ca784b54a50e0dfde2-142
     #[tokio::test]
     async fn retry_calls_sleep_fn() -> Result<(), Error> {
         const EXPECTED_MS: u64 = 71;
@@ -126,7 +138,6 @@ mod retry_tests {
             })
         }));
 
-        // s3://blaisebruer-cas-store/test-prefix/987cc59b2d364596f94bd82f250d02aebb716c3a100163ca784b54a50e0dfde2-142
         {
             // Try with retry limit hit.
             let retry_config = MockDurationIterator::new(Duration::from_millis(EXPECTED_MS)).take(5);

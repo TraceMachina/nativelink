@@ -1,5 +1,3 @@
-# Copyright 2020-2021 Nathan (Blaise) Bruer.  All rights reserved.
-
 workspace(name = "turbo-cache")
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")

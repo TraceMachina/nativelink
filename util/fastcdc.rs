@@ -1,5 +1,5 @@
-// Copyright 2020-2021 Nathan Fiedler, Nathan (Blaise) Bruer.  Some rights reserved.
-// This file differs in copyright and is available under the MIT license.
+// Copyright 2022 Nathan Fiedler, Nathan (Blaise) Bruer.  Some rights reserved.
+// Originally licensed under MIT license.
 //
 // This implementation is heavily based on:
 // https://github.com/nlfiedler/fastcdc-rs/blob/1e804fe27444e37b2c4f93d540f861d170c8a257/src/lib.rs
