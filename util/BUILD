@@ -144,6 +144,16 @@ rust_library(
 )
 
 rust_test(
+    name = "resource_info_test",
+    srcs = ["tests/resource_info_test.rs"],
+    deps = [
+        "//third_party:pretty_assertions",
+        "//third_party:tokio",
+        ":resource_info",
+    ],
+)
+
+rust_test(
     name = "fastcdc_test",
     srcs = ["tests/fastcdc_test.rs"],
     data = ["tests/data/SekienAkashita.jpg"],
