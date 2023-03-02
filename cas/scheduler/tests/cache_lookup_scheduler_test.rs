@@ -161,4 +161,30 @@ mod cache_lookup_scheduler_tests {
         );
         Ok(())
     }
+
+    #[tokio::test]
+    async fn find_existing_action_call_passed() -> Result<(), Error> {
+        let context = make_cache_scheduler()?;
+        let action_name = "action";
+        let (actual_result, actual_action_name) = join!(
+            context.cache_scheduler.find_existing_action(&action_name),
+            context.mock_scheduler.expect_find_existing_action(None),
+        );
+        assert_eq!(true, actual_result.is_none());
+        assert_eq!(action_name, actual_action_name);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_existing_action_call_passed() -> Result<(), Error> {
+        let context = make_cache_scheduler()?;
+        let action_name = "action";
+        let (actual_result, actual_action_name) = join!(
+            context.cache_scheduler.cancel_existing_action(&action_name),
+            context.mock_scheduler.expect_cancel_existing_action(true),
+        );
+        assert_eq!(true, actual_result);
+        assert_eq!(action_name, actual_action_name);
+        Ok(())
+    }
 }
