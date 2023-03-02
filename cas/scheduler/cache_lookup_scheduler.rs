@@ -180,4 +180,12 @@ impl ActionScheduler for CacheLookupScheduler {
         });
         Ok(rx)
     }
+
+    async fn find_existing_action(&self, name: &str) -> Option<watch::Receiver<Arc<ActionState>>> {
+        self.action_scheduler.find_existing_action(name).await
+    }
+
+    async fn cancel_existing_action(&self, name: &str) -> bool {
+        self.action_scheduler.cancel_existing_action(name).await
+    }
 }
