@@ -156,6 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let server = Server::builder();
         let services = server_cfg.services.ok_or("'services' must be configured")?;
 
+        let mut outer_operations_service = None;
         let server = server
             // TODO(allada) This is only used so we can get 200 status codes to know if our service
             // is running.
@@ -213,10 +214,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .execution
                     .map_or(Ok(None), |cfg| {
                         ExecutionServer::new(&cfg, &action_schedulers, &store_manager).map(|v| {
-                            let mut service = v.into_service();
+                            let (mut execution_service, mut operations_service) = v.into_services();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
-                                service = service.send_compressed(encoding);
+                                execution_service = execution_service.send_compressed(encoding);
+                                operations_service = operations_service.send_compressed(encoding);
                             }
                             for encoding in server_cfg
                                 .compression
@@ -225,13 +227,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // Filter None values.
                                 .filter_map(into_encoding)
                             {
-                                service = service.accept_compressed(encoding);
+                                execution_service = execution_service.accept_compressed(encoding);
+                                operations_service = operations_service.accept_compressed(encoding);
                             }
-                            Some(service)
+                            outer_operations_service = Some(operations_service);
+                            Some(execution_service)
                         })
                     })
                     .err_tip(|| "Could not create Execution service")?,
             )
+            .add_optional_service(outer_operations_service)
             .add_optional_service(
                 services
                     .bytestream

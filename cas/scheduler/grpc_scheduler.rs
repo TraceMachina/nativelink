@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::watch;
-use tonic::{transport, Request};
+use tonic::{transport, Request, Streaming};
 
 use action_messages::{ActionInfo, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use common::log;
@@ -27,8 +27,9 @@ use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
 use proto::build::bazel::remote::execution::v2::{
     capabilities_client::CapabilitiesClient, execution_client::ExecutionClient, ExecuteRequest, ExecutionPolicy,
-    GetCapabilitiesRequest,
+    GetCapabilitiesRequest, WaitExecutionRequest,
 };
+use proto::google::longrunning::{operations_client::OperationsClient, CancelOperationRequest, Operation};
 use scheduler::ActionScheduler;
 
 pub struct GrpcScheduler {
@@ -48,6 +49,31 @@ impl GrpcScheduler {
             endpoint,
             platform_property_managers: Mutex::new(HashMap::new()),
         })
+    }
+
+    async fn stream_state(mut result_stream: Streaming<Operation>) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+        if let Some(initial_response) = result_stream
+            .message()
+            .await
+            .err_tip(|| "Recieving response from upstream scheduler")?
+        {
+            let (tx, rx) = watch::channel(Arc::new(initial_response.try_into()?));
+            tokio::spawn(async move {
+                while let Ok(Some(response)) = result_stream.message().await {
+                    match response.try_into() {
+                        Ok(response) => {
+                            if let Err(err) = tx.send(Arc::new(response)) {
+                                log::info!("Client disconnected in GrpcScheduler: {}", err);
+                                return;
+                            }
+                        }
+                        Err(err) => log::error!("Error converting response to watch in GrpcScheduler: {}", err),
+                    }
+                }
+            });
+            return Ok(rx);
+        }
+        Err(make_err!(Code::Internal, "Upstream scheduler didn't accept action."))
     }
 }
 
@@ -102,32 +128,30 @@ impl ActionScheduler for GrpcScheduler {
             // TODO: Get me from the original request, not very important as we ignore it.
             results_cache_policy: None,
         };
-        let mut result_stream = ExecutionClient::new(self.endpoint.clone())
+        let result_stream = ExecutionClient::new(self.endpoint.clone())
             .execute(Request::new(request))
             .await
             .err_tip(|| "Sending action to upstream scheduler")?
             .into_inner();
-        if let Some(initial_response) = result_stream
-            .message()
-            .await
-            .err_tip(|| "Recieving response from upstream scheduler")?
-        {
-            let (tx, rx) = watch::channel(Arc::new(initial_response.try_into()?));
-            tokio::spawn(async move {
-                while let Ok(Some(response)) = result_stream.message().await {
-                    match response.try_into() {
-                        Ok(response) => {
-                            if let Err(err) = tx.send(Arc::new(response)) {
-                                log::info!("Client disconnected in GrpcScheduler: {}", err);
-                                return;
-                            }
-                        }
-                        Err(err) => log::error!("Error converting response to watch in GrpcScheduler: {}", err),
-                    }
-                }
-            });
-            return Ok(rx);
+        Self::stream_state(result_stream).await
+    }
+
+    async fn find_existing_action(&self, name: &str) -> Option<watch::Receiver<Arc<ActionState>>> {
+        let request = WaitExecutionRequest { name: name.to_string() };
+        let result_stream = ExecutionClient::new(self.endpoint.clone())
+            .wait_execution(Request::new(request))
+            .await;
+        if result_stream.is_err() {
+            return None;
         }
-        Err(make_err!(Code::Internal, "Upstream scheduler didn't accept action."))
+        Self::stream_state(result_stream.unwrap().into_inner()).await.ok()
+    }
+
+    async fn cancel_existing_action(&self, name: &str) -> bool {
+        let request = CancelOperationRequest { name: name.to_string() };
+        OperationsClient::new(self.endpoint.clone())
+            .cancel_operation(Request::new(request))
+            .await
+            .is_ok()
     }
 }

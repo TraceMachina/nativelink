@@ -17,13 +17,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use futures::{Stream, StreamExt};
+use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
 use rand::{thread_rng, Rng};
+use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
 
 use ac_utils::get_and_decode_digest;
-use action_messages::{ActionInfo, ActionInfoHashKey, DEFAULT_EXECUTION_PRIORITY};
+use action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use common::{log, DigestInfo};
 use config::cas_server::{ExecutionConfig, InstanceName};
 use error::{make_input_err, Error, ResultExt};
@@ -32,7 +33,10 @@ use proto::build::bazel::remote::execution::v2::{
     execution_server::Execution, execution_server::ExecutionServer as Server, Action, Command, ExecuteRequest,
     WaitExecutionRequest,
 };
-use proto::google::longrunning::Operation;
+use proto::google::longrunning::{
+    operations_server::Operations, operations_server::OperationsServer, CancelOperationRequest, DeleteOperationRequest,
+    GetOperationRequest, ListOperationsRequest, ListOperationsResponse, Operation, WaitOperationRequest,
+};
 use scheduler::ActionScheduler;
 use store::{Store, StoreManager};
 
@@ -159,8 +163,17 @@ impl ExecutionServer {
         Ok(Self { instance_infos })
     }
 
-    pub fn into_service(self) -> Server<ExecutionServer> {
-        Server::new(self)
+    pub fn into_services(self) -> (Server<ExecutionServer>, OperationsServer<ExecutionServer>) {
+        let arc_self = Arc::new(self);
+        (Server::from_arc(arc_self.clone()), OperationsServer::from_arc(arc_self))
+    }
+
+    fn to_execute_stream(receiver: watch::Receiver<Arc<ActionState>>) -> Response<ExecuteStream> {
+        let receiver_stream = Box::pin(WatchStream::new(receiver).map(|action_update| {
+            log::info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
+            Ok(action_update.as_ref().clone().into())
+        }));
+        tonic::Response::new(receiver_stream)
     }
 
     async fn inner_execute(&self, request: Request<ExecuteRequest>) -> Result<Response<ExecuteStream>, Error> {
@@ -197,11 +210,47 @@ impl ExecutionServer {
             .await
             .err_tip(|| "Failed to schedule task")?;
 
-        let receiver_stream = Box::pin(WatchStream::new(rx).map(|action_update| {
-            log::info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
-            Ok(action_update.as_ref().clone().into())
-        }));
-        Ok(tonic::Response::new(receiver_stream))
+        Ok(Self::to_execute_stream(rx))
+    }
+
+    async fn lookup_action<'a, Fut, F, G, R, S>(&'a self, mut operation: F, mut filter: G) -> Result<S, Status>
+    where
+        F: FnMut(&'a InstanceInfo) -> Fut,
+        G: FnMut(R) -> Option<S>,
+        Fut: Future<Output = R>,
+    {
+        // Very innefficient having to search through all instances, however
+        // the protobuf spec doesn't state that the instance_name can be
+        // retrieved from the path.
+        self.instance_infos
+            .iter()
+            .map(|(_instance_name, instance_info)| operation(instance_info))
+            .collect::<FuturesUnordered<_>>()
+            .filter_map(|result| futures::future::ready(filter(result)))
+            .next()
+            .await
+            .ok_or_else(|| Status::not_found("Failed to find existing task"))
+    }
+
+    async fn inner_wait_execution(
+        &self,
+        request: Request<WaitExecutionRequest>,
+    ) -> Result<Response<ExecuteStream>, Status> {
+        let name = request.into_inner().name;
+        self.lookup_action(
+            |instance_info| instance_info.scheduler.find_existing_action(&name),
+            |result| result.map(|result| Self::to_execute_stream(result)),
+        )
+        .await
+    }
+
+    async fn inner_cancel_operation(&self, request: Request<CancelOperationRequest>) -> Result<Response<()>, Status> {
+        let name = request.into_inner().name;
+        self.lookup_action(
+            |instance_info| instance_info.scheduler.cancel_existing_action(&name),
+            |result| if result { Some(tonic::Response::new(())) } else { None },
+        )
+        .await
     }
 }
 
@@ -227,14 +276,46 @@ impl Execution for ExecutionServer {
         resp
     }
 
-    type WaitExecutionStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + Sync + 'static>>;
-    async fn wait_execution(
+    type WaitExecutionStream = ExecuteStream;
+    async fn wait_execution(&self, request: Request<WaitExecutionRequest>) -> Result<Response<ExecuteStream>, Status> {
+        let resp = self
+            .inner_wait_execution(request)
+            .await
+            .err_tip(|| "Failed on wait_execution() command")
+            .map_err(|e| e.into());
+        resp
+    }
+}
+
+#[tonic::async_trait]
+impl Operations for ExecutionServer {
+    async fn list_operations(
         &self,
-        request: Request<WaitExecutionRequest>,
-    ) -> Result<Response<Self::WaitExecutionStream>, Status> {
-        use stdext::function_name;
-        let output = format!("{} not yet implemented", function_name!());
-        println!("{:?}", request);
-        Err(Status::unimplemented(output))
+        _request: Request<ListOperationsRequest>,
+    ) -> Result<Response<ListOperationsResponse>, Status> {
+        log::info!("Unimplemented call to list_operations");
+        Err(Status::unimplemented(""))
+    }
+
+    async fn get_operation(&self, _request: Request<GetOperationRequest>) -> Result<Response<Operation>, Status> {
+        log::info!("Unimplemented call to get_operation");
+        Err(Status::unimplemented(""))
+    }
+
+    async fn delete_operation(&self, _request: Request<DeleteOperationRequest>) -> Result<Response<()>, Status> {
+        log::info!("Unimplemented call to delete_operation");
+        Err(Status::unimplemented(""))
+    }
+
+    async fn cancel_operation(&self, request: Request<CancelOperationRequest>) -> Result<Response<()>, Status> {
+        self.inner_cancel_operation(request)
+            .await
+            .err_tip(|| "Failed on cancel_operation() command")
+            .map_err(|e| e.into())
+    }
+
+    async fn wait_operation(&self, _request: Request<WaitOperationRequest>) -> Result<Response<Operation>, Status> {
+        log::info!("Unimplemented call to wait_operation");
+        Err(Status::unimplemented(""))
     }
 }

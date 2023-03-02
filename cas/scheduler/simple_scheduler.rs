@@ -15,6 +15,7 @@
 use std::cmp;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
@@ -160,6 +161,10 @@ struct SimpleSchedulerImpl {
     queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction>,
     workers: Workers,
     active_actions: HashMap<Arc<ActionInfo>, RunningAction>,
+    // These actions completed recently but had no listener, they might have
+    // completed while the caller was thinking about calling wait_execution, so
+    // keep their completion state around for a while to send back.
+    recently_completed_actions: Vec<Arc<ActionState>>,
     /// Timeout of how long to evict workers if no response in this given amount of time in seconds.
     worker_timeout_s: u64,
     /// Default times a job can retry before failing.
@@ -169,6 +174,15 @@ struct SimpleSchedulerImpl {
 }
 
 impl SimpleSchedulerImpl {
+    fn subscribe_to_channel(awaited_action: &AwaitedAction) -> watch::Receiver<Arc<ActionState>> {
+        let rx = awaited_action.notify_channel.subscribe();
+        awaited_action
+            .notify_channel
+            .send(awaited_action.current_state.clone())
+            .unwrap();
+        rx
+    }
+
     /// Attempts to find a worker to execute an action and begins executing it.
     /// If an action is already running that is cacheable it may merge this action
     /// with the results and state changes of the already running action.
@@ -182,13 +196,7 @@ impl SimpleSchedulerImpl {
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         // Check to see if the action is running, if it is and cacheable, merge the actions.
         if let Some(running_action) = self.active_actions.get_mut(&action_info) {
-            let rx = running_action.action.notify_channel.subscribe();
-            running_action
-                .action
-                .notify_channel
-                .send(running_action.action.current_state.clone())
-                .unwrap();
-            return Ok(rx);
+            return Ok(Self::subscribe_to_channel(&running_action.action));
         }
 
         // Check to see if the action is queued, if it is and cacheable, merge the actions.
@@ -206,10 +214,7 @@ impl SimpleSchedulerImpl {
             Arc::make_mut(&mut arc_action_info).priority = new_priority;
 
             let rx = queued_action.notify_channel.subscribe();
-            queued_action
-                .notify_channel
-                .send(queued_action.current_state.clone())
-                .unwrap();
+            let _ = queued_action.notify_channel.send(queued_action.current_state.clone());
 
             // Even if we fail to send our action to the client, we need to add this action back to the
             // queue because it was remove earlier.
@@ -247,6 +252,92 @@ impl SimpleSchedulerImpl {
 
         self.tasks_or_workers_change_notify.notify_one();
         Ok(rx)
+    }
+
+    fn clean_recently_completed_actions(&mut self) {
+        // Keep for a minute maximum.
+        let expiry_time = SystemTime::now().checked_sub(Duration::new(60, 0)).unwrap();
+        self.recently_completed_actions.retain(|action| match &action.stage {
+            ActionStage::Completed(state) => {
+                if state.execution_metadata.worker_completed_timestamp > expiry_time {
+                    true
+                } else {
+                    log::warn!(
+                        "Action {} has no more listeners during update_action()",
+                        action.action_digest.str()
+                    );
+                    false
+                }
+            }
+            _ => false,
+        });
+    }
+
+    fn find_recently_completed_action(&mut self, name: &str) -> Option<watch::Receiver<Arc<ActionState>>> {
+        let rx = self
+            .recently_completed_actions
+            .iter()
+            .position(|state| state.name == name)
+            .map_or(None, |index| Some(self.recently_completed_actions.swap_remove(index)))
+            .map(|completed_action| watch::channel(completed_action).1);
+
+        // Clean up the actions list.
+        self.clean_recently_completed_actions();
+
+        rx
+    }
+
+    // Gets an existing action by its name, very noddy implementation that just searches for it everywhere.
+    fn find_existing_action(&self, name: &str) -> Option<watch::Receiver<Arc<ActionState>>> {
+        self.queued_actions
+            .values()
+            .chain(
+                self.active_actions
+                    .values()
+                    .map(|running_action| &running_action.action),
+            )
+            .find_map(|awaited_action| {
+                if awaited_action.current_state.name == name {
+                    Some(Self::subscribe_to_channel(&awaited_action))
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn notify_cancelled(awaited_action: &mut AwaitedAction) {
+        Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Error((
+            make_err!(Code::Cancelled, "Job cancelled by request"),
+            ActionResult::default(),
+        ));
+        match awaited_action.notify_channel.send(awaited_action.current_state.clone()) {
+            Err(_) => log::info!("Error notifying channel of cancelled job"),
+            _ => (),
+        }
+    }
+
+    // Cancels an existing action by its name, very noddy implementation that just searches for it everywhere.
+    fn cancel_existing_action(&mut self, name: &str) -> bool {
+        // If it's a queued action, then we can simply remove it.
+        let mut found_action = false;
+        self.queued_actions.retain(|action_info, awaited_action| {
+            if &awaited_action.current_state.name != name {
+                self.queued_actions_set.take(&*action_info);
+                // Need to notify listeners that it's been cancelled.
+                log::info!(
+                    "Cancelled action {} by request",
+                    awaited_action.current_state.action_digest.str()
+                );
+                Self::notify_cancelled(awaited_action);
+                found_action = true;
+                false
+            } else {
+                true
+            }
+        });
+        // If it's queued on a worker, then don't attempt to cancel it, it's
+        // not worth the effort.
+        found_action
     }
 
     fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId) {
@@ -477,12 +568,20 @@ impl SimpleSchedulerImpl {
         let send_result = running_action
             .action
             .notify_channel
-            .send(running_action.action.current_state);
+            .send(running_action.action.current_state.clone());
         if send_result.is_err() {
-            log::warn!(
-                "Action {} has no more listeners during update_action()",
-                action_info.digest().str()
-            );
+            if did_complete {
+                // Keep in case this is asked for soon.
+                self.recently_completed_actions
+                    .push(running_action.action.current_state);
+                // Clean up any old actions.
+                self.clean_recently_completed_actions();
+            } else {
+                log::warn!(
+                    "Action {} has no more listeners during update_action()",
+                    action_info.digest().str()
+                );
+            }
         }
 
         if did_complete {
@@ -495,8 +594,6 @@ impl SimpleSchedulerImpl {
             self.tasks_or_workers_change_notify.notify_one();
         }
 
-        // TODO(allada) We should probably hold a small queue of recent actions for debugging.
-        // Right now it will drop the action which also disconnects listeners here.
         Ok(())
     }
 }
@@ -553,6 +650,7 @@ impl SimpleScheduler {
             queued_actions: BTreeMap::new(),
             workers: Workers::new(scheduler_cfg.allocation_strategy.clone()),
             active_actions: HashMap::new(),
+            recently_completed_actions: Vec::new(),
             worker_timeout_s,
             max_job_retries,
             tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
@@ -616,6 +714,18 @@ impl ActionScheduler for SimpleScheduler {
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let mut inner = self.inner.lock();
         inner.add_action(name, action_info)
+    }
+
+    async fn find_existing_action(&self, name: &str) -> Option<watch::Receiver<Arc<ActionState>>> {
+        let mut inner = self.inner.lock();
+        inner
+            .find_existing_action(name)
+            .or_else(|| inner.find_recently_completed_action(name))
+    }
+
+    async fn cancel_existing_action(&self, name: &str) -> bool {
+        let mut inner = self.inner.lock();
+        inner.cancel_existing_action(name)
     }
 }
 
