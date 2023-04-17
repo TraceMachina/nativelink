@@ -4,13 +4,12 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
     name = "rules_rust",
-    sha256 = "0cc7e6b39e492710b819e00d48f2210ae626b717a3ab96e048c43ab57e61d204",
+    sha256 = "950a3ad4166ae60c8ccd628d1a8e64396106e7f98361ebe91b0bcfe60d8e4b60",
     urls = [
-        "https://github.com/bazelbuild/rules_rust/releases/download/0.10.0/rules_rust-v0.10.0.tar.gz",
+        "https://github.com/bazelbuild/rules_rust/releases/download/0.20.0/rules_rust-v0.20.0.tar.gz",
     ],
 )
 
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 http_archive(
     name = "rules_python",
     url = "https://github.com/bazelbuild/rules_python/releases/download/0.5.0/rules_python-0.5.0.tar.gz",
@@ -19,7 +18,7 @@ http_archive(
 
 load("@rules_rust//rust:repositories.bzl", "rules_rust_dependencies", "rust_register_toolchains")
 rules_rust_dependencies()
-rust_register_toolchains(version = "1.62.1", edition="2021")
+rust_register_toolchains(edition="2021", versions = ["1.62.1"])
 
 load("//third_party:crates.bzl", "raze_fetch_remote_crates")
 raze_fetch_remote_crates()
