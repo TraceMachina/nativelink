@@ -111,6 +111,7 @@ pub struct EvictingMap<T: LenEntry + Debug, I: InstantWrapper> {
     state: Mutex<State<T>>,
     anchor_time: I,
     max_bytes: u64,
+    evict_bytes: u64,
     max_seconds: i32,
     max_count: u64,
 }
@@ -130,6 +131,7 @@ where
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
+            evict_bytes: config.evict_bytes as u64,
             max_seconds: config.max_seconds as i32,
             max_count: config.max_count,
         }
@@ -172,8 +174,13 @@ where
         self.evict_items(state.deref_mut()).await;
     }
 
-    fn should_evict(&self, lru_len: usize, peek_entry: &EvictionItem<T>, sum_store_size: u64) -> bool {
-        let is_over_size = self.max_bytes != 0 && sum_store_size >= self.max_bytes;
+    fn should_evict(&self, lru_len: usize, peek_entry: &EvictionItem<T>, sum_store_size: u64, evicting: bool) -> bool {
+        let max_bytes = if evicting {
+            self.max_bytes - self.evict_bytes
+        } else {
+            self.max_bytes
+        };
+        let is_over_size = self.max_bytes != 0 && sum_store_size >= max_bytes;
 
         let evict_older_than_seconds = (self.anchor_time.elapsed().as_secs() as i32) - self.max_seconds;
         let old_item_exists = self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
@@ -192,7 +199,9 @@ where
         } else {
             return;
         };
-        while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size) {
+        let mut evicting = false;
+        while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, evicting) {
+            evicting = true;
             let (key, eviction_item) = state.lru.pop_lru().expect("Tried to peek() then pop() but failed");
             state.sum_store_size -= eviction_item.data.len() as u64;
             // Note: See comment in `unref()` requring global lock of insert/remove.

@@ -579,6 +579,7 @@ mod filesystem_store_tests {
                     max_bytes: 0,
                     max_seconds: 0,
                     max_count: 1,
+                    evict_bytes: 0,
                 }),
                 ..Default::default()
             })

@@ -75,6 +75,7 @@ mod evicting_map_tests {
                 max_count: 3,
                 max_seconds: 0,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -122,6 +123,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 0,
                 max_bytes: 17,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -170,6 +172,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 5,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -222,6 +225,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 3,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -289,6 +293,7 @@ mod evicting_map_tests {
                 max_count: 1,
                 max_seconds: 0,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -331,6 +336,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 3,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -376,6 +382,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 0,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -412,6 +419,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 0,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
