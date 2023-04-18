@@ -333,6 +333,13 @@ pub struct EvictionPolicy {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_bytes: usize,
 
+    /// When eviction starts based on hitting max_bytes, continue until
+    /// max_bytes - evict_bytes is met to create a low watermark.  This stops
+    /// operations from thrashing when the store is close to the limit.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub evict_bytes: usize,
+
     /// Maximum number of seconds for an entry to live before an eviction.
     /// Default: 0. Zero means never evict based on time.
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]

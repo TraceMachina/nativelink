@@ -80,6 +80,7 @@ mod evicting_map_tests {
                 max_count: 3,
                 max_seconds: 0,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -127,6 +128,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 0,
                 max_bytes: 17,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -169,12 +171,62 @@ mod evicting_map_tests {
     }
 
     #[tokio::test]
+    async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
+        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+            &EvictionPolicy {
+                max_count: 0,
+                max_seconds: 0,
+                max_bytes: 17,
+                evict_bytes: 9,
+            },
+            MockInstantWrapped(MockInstant::now()),
+        );
+        const DATA: &str = "12345678";
+        evicting_map
+            .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::from(DATA).into())
+            .await;
+        evicting_map
+            .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
+            .await;
+        evicting_map
+            .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
+            .await;
+        evicting_map
+            .insert(DigestInfo::try_new(HASH4, 0)?, Bytes::from(DATA).into())
+            .await;
+
+        assert_eq!(
+            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+            None,
+            "Expected map to not have item 1"
+        );
+        assert_eq!(
+            evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 0)?).await,
+            None,
+            "Expected map to not have item 2"
+        );
+        assert_eq!(
+            evicting_map.size_for_key(&DigestInfo::try_new(HASH3, 0)?).await,
+            None,
+            "Expected map to not have item 3"
+        );
+        assert_eq!(
+            evicting_map.size_for_key(&DigestInfo::try_new(HASH4, 0)?).await,
+            Some(DATA.len()),
+            "Expected map to have item 4"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn insert_purges_at_max_seconds() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 5,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -227,6 +279,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 3,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -298,6 +351,7 @@ mod evicting_map_tests {
                 max_count: 1,
                 max_seconds: 0,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -340,6 +394,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 3,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -385,6 +440,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 0,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
@@ -421,6 +477,7 @@ mod evicting_map_tests {
                 max_count: 0,
                 max_seconds: 0,
                 max_bytes: 0,
+                evict_bytes: 0,
             },
             MockInstantWrapped(MockInstant::now()),
         );
