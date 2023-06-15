@@ -41,19 +41,10 @@ pub fn setup_grpc_stream() -> (HyperSender, Response<Streaming<UpdateForWorker>>
     (tx, Response::new(stream))
 }
 
-pub async fn setup_local_worker(platform_properties: HashMap<String, WrokerProperty>) -> TestContext {
+pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConfig) -> TestContext {
     let mock_worker_api_client = MockWorkerApiClient::new();
     let mock_worker_api_client_clone = mock_worker_api_client.clone();
     let actions_manager = Arc::new(MockRunningActionsManager::new());
-    const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
-    let local_worker_config = LocalWorkerConfig {
-        platform_properties,
-        worker_api_endpoint: EndpointConfig {
-            timeout: Some(ARBITRARY_LARGE_TIMEOUT),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
     let worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         Arc::new(local_worker_config),
         actions_manager.clone(),
@@ -75,6 +66,19 @@ pub async fn setup_local_worker(platform_properties: HashMap<String, WrokerPrope
 
         _drop_guard: drop_guard,
     }
+}
+
+pub async fn setup_local_worker(platform_properties: HashMap<String, WrokerProperty>) -> TestContext {
+    const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
+    let local_worker_config = LocalWorkerConfig {
+        platform_properties,
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(ARBITRARY_LARGE_TIMEOUT),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    setup_local_worker_with_config(local_worker_config).await
 }
 
 pub struct TestContext {

@@ -89,6 +89,9 @@ pub struct Worker {
     // Warning: Do not update this timestamp without updating the placement of the worker in
     // the LRUCache in the Workers struct.
     pub last_update_timestamp: WorkerTimestamp,
+
+    /// Whether the worker rejected the last action due to back pressure.
+    pub is_paused: bool,
 }
 
 impl Worker {
@@ -104,6 +107,7 @@ impl Worker {
             tx,
             running_action_infos: HashSet::new(),
             last_update_timestamp: timestamp,
+            is_paused: false,
         }
     }
 
@@ -148,7 +152,11 @@ impl Worker {
 
     pub fn complete_action(&mut self, action_info: &Arc<ActionInfo>) {
         self.running_action_infos.remove(action_info);
-        self.restore_platform_properties(&action_info.platform_properties)
+        self.restore_platform_properties(&action_info.platform_properties);
+    }
+
+    pub fn has_actions(&self) -> bool {
+        !self.running_action_infos.is_empty()
     }
 
     /// Reduces the platform properties available on the worker based on the platform properties provided.
