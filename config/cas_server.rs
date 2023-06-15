@@ -265,6 +265,16 @@ pub struct LocalWorkerConfig {
     /// and used to tell the scheduler to restrict what should be executed on this
     /// worker.
     pub platform_properties: HashMap<String, WrokerProperty>,
+
+    /// An optional script to run before every action is processed on the worker.
+    /// The value should be the full path to the script to execute and will pause
+    /// all actions on the worker if it returns an exit code other than 0.
+    /// If not set, then the worker will never pause and will continue to accept
+    /// jobs according to the scheduler configuration.
+    /// This is useful, for example, if the worker should not take any more
+    /// actions until there is enough resource available on the machine to
+    /// handle them.
+    pub precondition_script: Option<String>,
 }
 
 #[allow(non_camel_case_types)]
