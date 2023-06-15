@@ -211,8 +211,8 @@ alias(
 )
 
 alias(
-    name = "nix",
-    actual = "@raze__nix__0_23_2//:nix",
+    name = "parking_lot",
+    actual = "@raze__parking_lot__0_12_1//:parking_lot",
     tags = [
         "cargo-raze",
         "manual",

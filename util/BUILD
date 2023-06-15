@@ -39,6 +39,7 @@ rust_library(
     deps = [
         "//third_party:log",
         "//third_party:tokio",
+        "//third_party:parking_lot",
         ":error",
     ],
 )
@@ -81,6 +82,7 @@ rust_library(
         "//third_party:async_lock",
         "//third_party:lru",
         "//third_party:serde",
+        "//third_party:tokio",
         "//util:common",
     ],
     proc_macro_deps = ["//third_party:async_trait"],
