@@ -127,16 +127,15 @@ impl Workers {
         assert!(matches!(awaited_action.current_state.stage, ActionStage::Queued));
         let action_properties = &awaited_action.action_info.platform_properties;
         let mut workers_iter = self.workers.iter_mut();
-        let workers_iter = match self.allocation_strategy {
-            // Use rfind to get the least recently used that satisfies the properties.
-            config::schedulers::WorkerAllocationStrategy::LeastRecentlyUsed => {
-                workers_iter.rfind(|(_, w)| action_properties.is_satisfied_by(&w.platform_properties))
-            }
-            // Use find to get the most recently used that satisfies the properties.
-            config::schedulers::WorkerAllocationStrategy::MostRecentlyUsed => {
-                workers_iter.find(|(_, w)| action_properties.is_satisfied_by(&w.platform_properties))
-            }
-        };
+        let workers_iter =
+            match self.allocation_strategy {
+                // Use rfind to get the least recently used that satisfies the properties.
+                config::schedulers::WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
+                    .rfind(|(_, w)| !w.is_paused && action_properties.is_satisfied_by(&w.platform_properties)),
+                // Use find to get the most recently used that satisfies the properties.
+                config::schedulers::WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
+                    .find(|(_, w)| !w.is_paused && action_properties.is_satisfied_by(&w.platform_properties)),
+            };
         let worker_id = workers_iter.map(|(_, w)| &w.id);
         // We need to "touch" the worker to ensure it gets re-ordered in the LRUCache, since it was selected.
         if let Some(&worker_id) = worker_id {
@@ -247,10 +246,14 @@ impl SimpleSchedulerImpl {
         Ok(rx)
     }
 
-    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId) {
+    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, due_to_backpressure: bool) {
         match self.active_actions.remove(action_info) {
             Some(running_action) => {
                 let mut awaited_action = running_action.action;
+                // Don't count a backpressure failure as an attempt for an action
+                if due_to_backpressure {
+                    awaited_action.attempts -= 1;
+                }
                 let send_result = if awaited_action.attempts >= self.max_job_retries {
                     let mut default_action_result = ActionResult::default();
                     default_action_result.execution_metadata.worker = format!("{}", worker_id);
@@ -298,7 +301,7 @@ impl SimpleSchedulerImpl {
             // We create a temporary Vec to avoid doubt about a possible code
             // path touching the worker.running_action_infos elsewhere.
             for action_info in worker.running_action_infos.drain() {
-                self.retry_action(&action_info, &worker_id);
+                self.retry_action(&action_info, &worker_id, false);
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
@@ -390,6 +393,8 @@ impl SimpleSchedulerImpl {
             }
         };
 
+        let due_to_backpressure = err.code == Code::ResourceExhausted;
+
         if running_action.worker_id != *worker_id {
             log::error!(
                 "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {}",
@@ -407,10 +412,16 @@ impl SimpleSchedulerImpl {
         // Clear this action from the current worker.
         if let Some(worker) = self.workers.workers.get_mut(worker_id) {
             worker.complete_action(&action_info);
+            // Only pause if there's an action still waiting that will unpause.
+            if due_to_backpressure && worker.has_actions() {
+                worker.is_paused = true;
+            } else {
+                worker.is_paused = false;
+            }
         }
 
         // Re-queue the action or fail on max attempts.
-        self.retry_action(&action_info, &worker_id);
+        self.retry_action(&action_info, &worker_id, due_to_backpressure);
     }
 
     fn update_action(

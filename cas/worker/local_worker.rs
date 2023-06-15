@@ -91,6 +91,24 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
         }
     }
 
+    fn preconditions_met(&self) -> Result<(), Error> {
+        if let Some(requirements) = &self.config.backpressure_requirements {
+            if let Some(minimum_memory) = &requirements.minimum_memory {
+                if let Ok(mem_info) = sys_info::mem_info() {
+                    if mem_info.free < *minimum_memory {
+                        return Err(make_err!(
+                            Code::ResourceExhausted,
+                            "Minimum memory requirement not met {} < {}",
+                            mem_info.free,
+                            *minimum_memory
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn run(&mut self, update_for_worker_stream: Streaming<UpdateForWorker>) -> Result<(), Error> {
         // This big block of logic is designed to help simplify upstream components. Upstream
         // components can write standard futures that return a `Result<(), Error>` and this block
@@ -130,6 +148,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         // TODO(allada) We should possibly do something with this notification.
                         Update::Disconnect(()) => { /* Do nothing */ }
                         Update::StartAction(start_execute) => {
+                            self.preconditions_met()?;
                             let add_future_channel = add_future_channel.clone();
                             let mut grpc_client = self.grpc_client.clone();
                             let salt = start_execute.salt.clone();

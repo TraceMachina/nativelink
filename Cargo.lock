@@ -511,6 +511,7 @@ dependencies = [
  "shellexpand",
  "shlex",
  "stdext",
+ "sys-info",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -1914,6 +1915,16 @@ name = "sync_wrapper"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2047c6ded9c721764247e62cd3b03c09ffc529b2ba5b10ec482ae507a4a70160"
+
+[[package]]
+name = "sys-info"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b3a0d0aba8bf96a0e1ddfdc352fc53b3df7f39318c71854910c3c4b024ae52c"
+dependencies = [
+ "cc",
+ "libc",
+]
 
 [[package]]
 name = "tempfile"

@@ -222,6 +222,12 @@ pub enum UploadCacheResultsStrategy {
 }
 
 #[derive(Deserialize, Debug, Default)]
+pub struct BackpressureConfig {
+    /// The minimum amount of RAM required on the system to accept new jobs.
+    pub minimum_memory: Option<u64>,
+}
+
+#[derive(Deserialize, Debug, Default)]
 pub struct LocalWorkerConfig {
     /// Endpoint which the worker will connect to the scheduler's WorkerApiService.
     pub worker_api_endpoint: EndpointConfig,
@@ -267,6 +273,10 @@ pub struct LocalWorkerConfig {
     /// and used to tell the scheduler to restrict what should be executed on this
     /// worker.
     pub platform_properties: HashMap<String, WrokerProperty>,
+
+    /// Backpressure configuration.  This is optional, but allows the worker to
+    /// reject new jobs based on current system load.
+    pub backpressure_requirements: Option<BackpressureConfig>,
 }
 
 #[allow(non_camel_case_types)]

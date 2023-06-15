@@ -57,6 +57,7 @@ uuid = { version = "1.4.0", features = ["v4"] }
 shlex = "1.1.0"
 relative-path = "1.8.0"
 parking_lot = "0.12.1"
+sys-info = "0.9.1"
 
 [dev-dependencies]
 stdext = "0.3.1"

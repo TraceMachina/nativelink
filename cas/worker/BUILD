@@ -16,6 +16,7 @@ rust_library(
         "//util:common",
         "//util:error",
         "@crate_index//:futures",
+        "@crate_index//:sys-info",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
         "@crate_index//:tonic",

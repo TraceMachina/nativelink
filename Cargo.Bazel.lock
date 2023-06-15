@@ -1,5 +1,5 @@
 {
-  "checksum": "ec1aaea79db6c8962a1718248f7b28b82eb70a7dee255529ea671dfed22e58a2",
+  "checksum": "fc4f222f829b8ef8b8834cf3176d1e4732c482b292ebc1731869d79286936ae1",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -2575,6 +2575,10 @@
             {
               "id": "shlex 1.1.0",
               "target": "shlex"
+            },
+            {
+              "id": "sys-info 0.9.1",
+              "target": "sys_info"
             },
             {
               "id": "tokio 1.29.1",
@@ -10339,6 +10343,73 @@
         "version": "0.1.2"
       },
       "license": "Apache-2.0"
+    },
+    "sys-info 0.9.1": {
+      "name": "sys-info",
+      "version": "0.9.1",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/sys-info/0.9.1/download",
+          "sha256": "0b3a0d0aba8bf96a0e1ddfdc352fc53b3df7f39318c71854910c3c4b024ae52c"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "sys_info",
+            "crate_root": "lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "sys_info",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "libc 0.2.147",
+              "target": "libc"
+            },
+            {
+              "id": "sys-info 0.9.1",
+              "target": "build_script_build"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2015",
+        "version": "0.9.1"
+      },
+      "build_script_attrs": {
+        "data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "cc 1.0.79",
+              "target": "cc"
+            }
+          ],
+          "selects": {}
+        },
+        "links": "info"
+      },
+      "license": "MIT"
     },
     "tempfile 3.6.0": {
       "name": "tempfile",
