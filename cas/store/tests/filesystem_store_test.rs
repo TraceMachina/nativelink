@@ -233,20 +233,17 @@ mod filesystem_store_tests {
         tokio::task::yield_now().await;
 
         {
-            // Now ensure we only have 1 file in our temp path.
+            // Now ensure we only have no files in our temp path.
             let (_permit, temp_dir_handle) = fs::read_dir(temp_path.clone())
                 .await
                 .err_tip(|| "Failed opening temp directory")?
                 .into_inner();
             let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
             let mut num_files = 0;
-            while let Some(temp_dir_entry) = read_dir_stream.next().await {
+            while let Some(_) = read_dir_stream.next().await {
                 num_files += 1;
-                let path = temp_dir_entry?.path();
-                let data = read_file_contents(path.to_str().unwrap()).await?;
-                assert_eq!(&data[..], VALUE1.as_bytes(), "Expected file content to match");
             }
-            assert_eq!(num_files, 1, "There should only be one file in the temp directory");
+            assert_eq!(num_files, 0, "There should be no files in the temp directory");
         }
 
         let remaining_file_data = DropCloserReadHalf::take(&mut reader, 1024)

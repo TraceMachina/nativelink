@@ -98,7 +98,7 @@ pub fn download_to_directory<'a>(
                 cas_store
                     .populate_fast_store(digest.clone())
                     .and_then(move |_| async move {
-                        fs::hard_link(src, &dest)
+                        fs::hard_link_src_locked(src, &dest)
                             .await
                             .map_err(|e| make_err!(Code::Internal, "Could not make hardlink, {:?} : {}", e, dest))?;
                         if is_executable {

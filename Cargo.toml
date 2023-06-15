@@ -26,7 +26,7 @@ hex = "0.4.3"
 async-trait = "0.1.51"
 fixed-buffer = "0.2.3"
 futures = "0.3.17"
-tokio = { version = "1.26.0", features = ["macros", "io-util", "fs", "rt-multi-thread", "parking_lot"] }
+tokio = { version = "1.26.0", features = ["macros", "io-util", "fs", "rt-multi-thread", "parking_lot", "sync"] }
 tokio-stream = { version = "0.1.8", features = ["fs", "sync"] }
 tokio-util = { version = "0.6.9", features = ["io", "io-util", "codec"] }
 tonic = { version = "0.8.3", features = ["gzip"] }
@@ -51,11 +51,11 @@ shellexpand = "2.1.0"
 byteorder = "1.4.3"
 lazy_static = "1.4.0"
 filetime = "0.2.15"
-nix = "0.23.1"
 clap = { version = "4.1.8", features = ["derive"] }
 uuid = { version = "0.8.2", features = ["v4"] }
 shlex = "1.1.0"
 relative-path = "1.7.0"
+parking_lot = "0.12.1"
 
 [dev-dependencies]
 stdext = "0.2.1"
