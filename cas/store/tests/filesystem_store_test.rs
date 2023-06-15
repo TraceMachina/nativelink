@@ -240,13 +240,10 @@ mod filesystem_store_tests {
                 .into_inner();
             let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
             let mut num_files = 0;
-            while let Some(temp_dir_entry) = read_dir_stream.next().await {
+            while let Some(_) = read_dir_stream.next().await {
                 num_files += 1;
-                let path = temp_dir_entry?.path();
-                let data = read_file_contents(path.to_str().unwrap()).await?;
-                assert_eq!(&data[..], VALUE1.as_bytes(), "Expected file content to match");
             }
-            assert_eq!(num_files, 1, "There should only be one file in the temp directory");
+            assert_eq!(num_files, 0, "There should be no files in the temp directory");
         }
 
         let remaining_file_data = DropCloserReadHalf::take(&mut reader, 1024)
@@ -347,13 +344,10 @@ mod filesystem_store_tests {
                 .into_inner();
             let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
             let mut num_files = 0;
-            while let Some(temp_dir_entry) = read_dir_stream.next().await {
+            while let Some(_) = read_dir_stream.next().await {
                 num_files += 1;
-                let path = temp_dir_entry?.path();
-                let data = read_file_contents(path.to_str().unwrap()).await?;
-                assert_eq!(&data[..], VALUE1.as_bytes(), "Expected file content to match");
             }
-            assert_eq!(num_files, 1, "There should only be one file in the temp directory");
+            assert_eq!(num_files, 0, "There should be no files in the temp directory");
         }
 
         let reader_data = DropCloserReadHalf::take(&mut reader, 1024)

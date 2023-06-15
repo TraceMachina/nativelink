@@ -211,15 +211,6 @@ alias(
 )
 
 alias(
-    name = "nix",
-    actual = "@raze__nix__0_23_2//:nix",
-    tags = [
-        "cargo-raze",
-        "manual",
-    ],
-)
-
-alias(
     name = "pin_project_lite",
     actual = "@raze__pin_project_lite__0_2_9//:pin_project_lite",
     tags = [
