@@ -14,6 +14,8 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -26,11 +28,11 @@ use tonic::Response;
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata};
 use common::{encode_stream_proto, fs, DigestInfo};
 use config::cas_server::{LocalWorkerConfig, WrokerProperty};
-use error::{make_input_err, Error};
+use error::{make_err, make_input_err, Code, Error};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
 use local_worker::new_local_worker;
-use local_worker_test_utils::{setup_grpc_stream, setup_local_worker};
+use local_worker_test_utils::{setup_grpc_stream, setup_local_worker, setup_local_worker_with_config};
 use memory_store::MemoryStore;
 use mock_running_actions_manager::MockRunningAction;
 use platform_property_manager::PlatformProperties;
@@ -363,6 +365,103 @@ mod local_worker_tests {
         assert!(
             work_directory_path_buf.read_dir()?.next().is_none(),
             "Expected work_directory to have removed all files and to be empty"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn precondition_script_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_path = make_temp_path("scripts");
+        fs::create_dir_all(temp_path.clone()).await?;
+        let precondition_script = format!("{}/precondition.sh", temp_path);
+        {
+            let mut file = fs::create_file(precondition_script.clone()).await?;
+            file.write_all(b"#!/bin/sh\nexit 1\n").await?;
+        }
+        fs::set_permissions(&precondition_script, Permissions::from_mode(0o777)).await?;
+        let local_worker_config = LocalWorkerConfig {
+            precondition_script: Some(precondition_script),
+            ..Default::default()
+        };
+
+        let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+        let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+        {
+            // Ensure our worker connects and properties were sent.
+            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            assert_eq!(props, SupportedProperties::default());
+        }
+
+        let expected_worker_id = "foobar".to_string();
+
+        let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+        {
+            // First initialize our worker by sending the response to the connection request.
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+
+        const SALT: u64 = 1000;
+        let action_digest = DigestInfo::new([3u8; 32], 10);
+        let action_info = ActionInfo {
+            instance_name: "foo".to_string(),
+            command_digest: DigestInfo::new([1u8; 32], 10),
+            input_root_digest: DigestInfo::new([2u8; 32], 10),
+            timeout: Duration::from_secs(1),
+            platform_properties: PlatformProperties::default(),
+            priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::UNIX_EPOCH,
+            unique_qualifier: ActionInfoHashKey {
+                digest: action_digest,
+                salt: SALT,
+            },
+            skip_cache_lookup: true,
+        };
+
+        {
+            // Send execution request.
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some(action_info.into()),
+                        salt: SALT,
+                        queued_timestamp: None,
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+
+        // Now our client should be notified that our runner finished.
+        let execution_response = test_context
+            .client
+            .expect_execution_response(Ok(Response::new(())))
+            .await;
+
+        // Now ensure the final results match our expectations.
+        assert_eq!(
+            execution_response,
+            ExecuteResult {
+                worker_id: expected_worker_id,
+                action_digest: Some(action_digest.into()),
+                salt: SALT,
+                result: Some(execute_result::Result::InternalError(
+                    make_err!(
+                        Code::ResourceExhausted,
+                        "Preconditions script returned status exit status: 1 - "
+                    )
+                    .into()
+                )),
+            }
         );
 
         Ok(())

@@ -13,10 +13,13 @@
 // limitations under the License.
 
 use std::pin::Pin;
+use std::process::Stdio;
+use std::str;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{future::BoxFuture, select, stream::FuturesUnordered, FutureExt, StreamExt, TryFutureExt};
+use tokio::process;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -50,6 +53,38 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
     grpc_client: T,
     worker_id: String,
     running_actions_manager: Arc<U>,
+}
+
+async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Error> {
+    let Some(precondition_script) = &precondition_script else {
+        // No script means we are always ok to proceed.
+        return Ok(());
+    };
+    // TODO: Might want to pass some information about the command to the
+    //       script, but at this point it's not even been downloaded yet,
+    //       so that's not currently possible.  Perhaps we'll move this in
+    //       future to pass useful information through?  Or perhaps we'll
+    //       have a pre-condition and a pre-execute script instead, although
+    //       arguably entrypoint_cmd already gives us that.
+    let precondition_process = process::Command::new(precondition_script)
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_clear()
+        .spawn()
+        .err_tip(|| format!("Could not execute command {:?}", precondition_script))?;
+    let output = precondition_process.wait_with_output().await?;
+    if output.status.code() == Some(0) {
+        Ok(())
+    } else {
+        Err(make_err!(
+            Code::ResourceExhausted,
+            "Preconditions script returned status {} - {}",
+            output.status,
+            str::from_utf8(&output.stdout).unwrap_or("")
+        ))
+    }
 }
 
 impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, T, U> {
@@ -134,10 +169,12 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let salt = start_execute.salt;
                             let worker_id = self.worker_id.clone();
                             let action_digest = start_execute.execute_request.as_ref().and_then(|v| v.action_digest.clone());
-                            let start_action_fut = self
-                                .running_actions_manager
-                                .clone()
-                                .create_and_add_action(worker_id.clone(), start_execute)
+                            let running_actions_manager = self.running_actions_manager.clone();
+                            let worker_id_clone = worker_id.clone();
+                            let start_action_fut = preconditions_met(self.config.precondition_script.clone())
+                                .and_then(|_| async move {
+                                    running_actions_manager.create_and_add_action(worker_id_clone, start_execute).await
+                                })
                                 .and_then(|action|
                                     action
                                         .clone()
