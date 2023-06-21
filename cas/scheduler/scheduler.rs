@@ -233,72 +233,78 @@ impl SchedulerImpl {
         Ok(rx)
     }
 
+    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId) {
+        match self.active_actions.remove(action_info) {
+            Some(running_action) => {
+                let mut awaited_action = running_action.action;
+                let send_result = if awaited_action.attempts >= self.max_job_retries {
+                    Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Error((
+                        awaited_action.last_error.unwrap_or_else(|| {
+                            make_err!(
+                                Code::Internal,
+                                "Job cancelled because it attempted to execute too many times and failed"
+                            )
+                        }),
+                        ActionResult {
+                            output_files: Default::default(),
+                            output_folders: Default::default(),
+                            output_directory_symlinks: Default::default(),
+                            output_file_symlinks: Default::default(),
+                            exit_code: INTERNAL_ERROR_EXIT_CODE,
+                            stdout_digest: DigestInfo::empty_digest(),
+                            stderr_digest: DigestInfo::empty_digest(),
+                            execution_metadata: ExecutionMetadata {
+                                worker: format!("{}", worker_id),
+                                queued_timestamp: SystemTime::UNIX_EPOCH,
+                                worker_start_timestamp: SystemTime::UNIX_EPOCH,
+                                worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+                                input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+                                input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+                                execution_start_timestamp: SystemTime::UNIX_EPOCH,
+                                execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+                                output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+                                output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+                            },
+                            server_logs: Default::default(),
+                        },
+                    ));
+                    awaited_action.notify_channel.send(awaited_action.current_state.clone())
+                    // Do not put the action back in the queue here, as this action attempted to run too many
+                    // times.
+                } else {
+                    Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Queued;
+                    let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
+                    self.queued_actions_set.insert(action_info.clone());
+                    self.queued_actions.insert(action_info.clone(), awaited_action);
+                    send_result
+                };
+
+                if send_result.is_err() {
+                    // Don't remove this task, instead we keep them around for a bit just in case
+                    // the client disconnected and will reconnect and ask for same job to be executed
+                    // again.
+                    log::warn!(
+                        "Action {} has no more listeners during evict_worker()",
+                        action_info.digest().str()
+                    );
+                }
+            }
+            None => {
+                log::error!("Worker stated it was running an action, but it was not in the active_actions : Worker: {:?}, ActionInfo: {:?}", worker_id, action_info);
+            }
+        }
+    }
+
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
     /// Note: This will not call .do_try_match().
     fn immediate_evict_worker(&mut self, worker_id: &WorkerId) {
         if let Some(mut worker) = self.workers.remove_worker(&worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
-            if let Some(action_info) = worker.running_action_info {
-                match self.active_actions.remove(&action_info) {
-                    Some(running_action) => {
-                        let mut awaited_action = running_action.action;
-                        let send_result = if awaited_action.attempts >= self.max_job_retries {
-                            Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Error((
-                                awaited_action.last_error.unwrap_or_else(|| {
-                                    make_err!(
-                                        Code::Internal,
-                                        "Job cancelled because it attempted to execute too many times and failed"
-                                    )
-                                }),
-                                ActionResult {
-                                    output_files: Default::default(),
-                                    output_folders: Default::default(),
-                                    output_directory_symlinks: Default::default(),
-                                    output_file_symlinks: Default::default(),
-                                    exit_code: INTERNAL_ERROR_EXIT_CODE,
-                                    stdout_digest: DigestInfo::empty_digest(),
-                                    stderr_digest: DigestInfo::empty_digest(),
-                                    execution_metadata: ExecutionMetadata {
-                                        worker: format!("{}", worker_id),
-                                        queued_timestamp: SystemTime::UNIX_EPOCH,
-                                        worker_start_timestamp: SystemTime::UNIX_EPOCH,
-                                        worker_completed_timestamp: SystemTime::UNIX_EPOCH,
-                                        input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
-                                        input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
-                                        execution_start_timestamp: SystemTime::UNIX_EPOCH,
-                                        execution_completed_timestamp: SystemTime::UNIX_EPOCH,
-                                        output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
-                                        output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
-                                    },
-                                    server_logs: Default::default(),
-                                },
-                            ));
-                            awaited_action.notify_channel.send(awaited_action.current_state.clone())
-                            // Do not put the action back in the queue here, as this action attempted to run too many
-                            // times.
-                        } else {
-                            Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Queued;
-                            let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
-                            self.queued_actions_set.insert(action_info.clone());
-                            self.queued_actions.insert(action_info.clone(), awaited_action);
-                            send_result
-                        };
-
-                        if send_result.is_err() {
-                            // Don't remove this task, instead we keep them around for a bit just in case
-                            // the client disconnected and will reconnect and ask for same job to be executed
-                            // again.
-                            log::warn!(
-                                "Action {} has no more listeners during evict_worker()",
-                                action_info.digest().str()
-                            );
-                        }
-                    }
-                    None => {
-                        log::error!("Worker stated it was running an action, but it was not in the active_actions : Worker: {:?}, ActionInfo: {:?}", worker.id, action_info);
-                    }
-                }
+            // We create a temporary Vec to avoid doubt about a possible code
+            // path touching the worker.running_action_infos elsewhere.
+            for action_info in worker.running_action_infos.drain().collect::<Vec<Arc<ActionInfo>>>() {
+                self.retry_action(&action_info, &worker_id);
             }
         }
     }
@@ -313,7 +319,6 @@ impl SchedulerImpl {
     // of capabilities of each worker and then try and match the actions to the worker using
     // the map lookup (ie. map reduce).
     fn inner_do_try_match(&mut self) -> ShouldRunAgain {
-        let mut should_run_again = false;
         // TODO(blaise.bruer) This is a bit difficult because of how rust's borrow checker gets in
         // the way. We need to conditionally remove items from the `queued_action`. Rust is working
         // to add `drain_filter`, which would in theory solve this problem, but because we need
@@ -321,59 +326,67 @@ impl SchedulerImpl {
         // unstable feature [see: https://github.com/rust-lang/rust/issues/70530]).
         let action_infos: Vec<Arc<ActionInfo>> = self.queued_actions.keys().rev().cloned().collect();
         for action_info in action_infos {
-            let mut worker_received_msg = false;
-            while worker_received_msg == false {
-                let awaited_action = self.queued_actions.get(action_info.as_ref()).unwrap();
-                let worker = if let Some(worker) = self.workers.find_worker_for_action_mut(&awaited_action) {
-                    worker
-                } else {
-                    // No worker found, break out of our loop.
-                    break;
-                };
-                let worker_id = worker.id.clone();
-
-                // Try to notify our worker of the new action to run, if it fails remove the worker from the
-                // pool and try to find another worker.
-                let notify_worker_result = worker.notify_update(WorkerUpdate::RunAction(action_info.clone()));
-                if notify_worker_result.is_err() {
-                    // Remove worker, as it is no longer receiving messages and let it try to find another worker.
-                    self.immediate_evict_worker(&worker_id);
-                    should_run_again = true;
+            let awaited_action = match self.queued_actions.get(action_info.as_ref()) {
+                Some(awaited_action) => awaited_action,
+                _ => {
+                    log::warn!(
+                        "queued_actions out of sync with itself for action {}",
+                        action_info.digest().str()
+                    );
                     continue;
                 }
+            };
+            let worker = if let Some(worker) = self.workers.find_worker_for_action_mut(&awaited_action) {
+                worker
+            } else {
+                // No worker found, check the next action to see if there's a
+                // matching one for that.
+                continue;
+            };
+            let worker_id = worker.id.clone();
 
-                // At this point everything looks good, so remove it from the queue and add it to active actions.
-                let (action_info, mut awaited_action) = self.queued_actions.remove_entry(action_info.as_ref()).unwrap();
-                assert!(
-                    self.queued_actions_set.remove(&action_info),
-                    "queued_actions_set should always have same keys as queued_actions"
-                );
-                Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
-                let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
-                if send_result.is_err() {
-                    // Don't remove this task, instead we keep them around for a bit just in case
-                    // the client disconnected and will reconnect and ask for same job to be executed
-                    // again.
-                    log::warn!(
-                        "Action {} has no more listeners",
-                        awaited_action.action_info.digest().str()
-                    );
-                }
-                awaited_action.attempts += 1;
-                self.active_actions.insert(
-                    action_info.clone(),
-                    RunningAction {
-                        worker_id: worker_id,
-                        action: awaited_action,
-                    },
-                );
-                worker_received_msg = true;
+            // Try to notify our worker of the new action to run, if it fails remove the worker from the
+            // pool and try to find another worker.
+            let notify_worker_result = worker.notify_update(WorkerUpdate::RunAction(action_info.clone()));
+            if notify_worker_result.is_err() {
+                // Remove worker, as it is no longer receiving messages and let it try to find another worker.
+                log::warn!("Worker command failed, removing worker {}", worker_id);
+                self.immediate_evict_worker(&worker_id);
+                // After evicting the worker, all running actions have been
+                // placed back in the queue, so start again now.
+                return true;
             }
+
+            // At this point everything looks good, so remove it from the queue and add it to active actions.
+            let (action_info, mut awaited_action) = self.queued_actions.remove_entry(action_info.as_ref()).unwrap();
+            assert!(
+                self.queued_actions_set.remove(&action_info),
+                "queued_actions_set should always have same keys as queued_actions"
+            );
+            Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
+            let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
+            if send_result.is_err() {
+                // Don't remove this task, instead we keep them around for a bit just in case
+                // the client disconnected and will reconnect and ask for same job to be executed
+                // again.
+                log::warn!(
+                    "Action {} has no more listeners",
+                    awaited_action.action_info.digest().str()
+                );
+            }
+            awaited_action.attempts += 1;
+            self.active_actions.insert(
+                action_info.clone(),
+                RunningAction {
+                    worker_id,
+                    action: awaited_action,
+                },
+            );
         }
-        should_run_again
+        false
     }
 
-    async fn update_worker_with_internal_error(
+    fn update_worker_with_internal_error(
         &mut self,
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
@@ -395,13 +408,22 @@ impl SchedulerImpl {
                 "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {}",
                     running_action.worker_id, worker_id
             );
+        } else {
+            // Don't set the error on an action that's running somewhere else
+            log::warn!("Internal error for worker {}: {}", worker_id, err);
+            running_action.action.last_error = Some(err);
         }
-        running_action.action.last_error = Some(err);
 
-        // Now put it back. immediate_evict_worker() needs it to be there to send errors properly.
-        self.active_actions.insert(action_info, running_action);
+        // Now put it back. retry_action() needs it to be there to send errors properly.
+        self.active_actions.insert(action_info.clone(), running_action);
 
-        self.immediate_evict_worker(worker_id);
+        // Clear this action from the current worker
+        if let Some(worker) = self.workers.workers.get_mut(worker_id) {
+            worker.complete_action(&action_info);
+        }
+
+        // Re-queue the action or fail on max attempts
+        self.retry_action(&action_info, &worker_id);
     }
 
     async fn update_action(
@@ -467,7 +489,7 @@ impl SchedulerImpl {
                 .workers
                 .get_mut(worker_id)
                 .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
-            worker.restore_platform_properties(&action_info.platform_properties);
+            worker.complete_action(&action_info);
             self.do_try_match();
         }
 
@@ -550,9 +572,7 @@ impl Scheduler {
         err: Error,
     ) {
         let mut inner = self.inner.lock().await;
-        inner
-            .update_worker_with_internal_error(worker_id, action_info_hash_key, err)
-            .await
+        inner.update_worker_with_internal_error(worker_id, action_info_hash_key, err)
     }
 
     /// Adds an action to the scheduler for remote execution.
