@@ -17,7 +17,7 @@ Turbo Cache is a project that implements the [Bazel Remote Execution protocol](h
 When properly configured this project will provide extremely fast and efficient build cache for any systems that communicate using the [BRE protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto).
 
 ## Example Deployments
-We currently have two example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
+We currently have three example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
 
 ### Terraform
 The [terraform deployment](https://github.com/allada/turbo-cache/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of AWS cloud resources to make everything much more robust.
