@@ -359,7 +359,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
 
         let read_dir_stream = ReadDirStream::new(dir_handle);
         read_dir_stream
-            .then(|dir_entry| async move {
+            .map(|dir_entry| async move {
                 let dir_entry = dir_entry.unwrap();
                 let file_name = dir_entry.file_name().into_string().unwrap();
                 let metadata = dir_entry
@@ -381,6 +381,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 };
                 Result::<(String, SystemTime, u64), Error>::Ok((file_name, atime, metadata.len()))
             })
+            .buffer_unordered(200)
             .try_collect()
             .await?
     };
