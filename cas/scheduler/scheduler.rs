@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use fast_async_mutex::mutex::Mutex;
+use async_lock::Mutex;
 use lru::LruCache;
 use rand::{thread_rng, Rng};
 use tokio::sync::watch;

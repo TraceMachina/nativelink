@@ -239,7 +239,7 @@ rust_library(
     deps = [
         "//config",
         "//proto",
-        "//third_party:fast_async_mutex",
+        "//third_party:async_lock",
         "//third_party:futures",
         "//third_party:shellexpand",
         "//third_party:tokio",

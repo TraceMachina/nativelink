@@ -17,8 +17,8 @@ use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_lock::Mutex;
 use async_trait::async_trait;
-use fast_async_mutex::mutex::Mutex;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 

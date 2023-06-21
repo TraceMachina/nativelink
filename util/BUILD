@@ -78,7 +78,7 @@ rust_library(
     srcs = ["evicting_map.rs"],
     deps = [
         "//config",
-        "//third_party:fast_async_mutex",
+        "//third_party:async_lock",
         "//third_party:lru",
         "//third_party:serde",
         "//util:common",
@@ -91,7 +91,7 @@ rust_library(
     name = "async_fixed_buffer",
     srcs = ["async_fixed_buffer.rs"],
     deps = [
-        "//third_party:fast_async_mutex",
+        "//third_party:async_lock",
         "//third_party:fixed_buffer",
         "//third_party:futures",
         "//third_party:pin_project_lite",

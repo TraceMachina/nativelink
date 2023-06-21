@@ -45,12 +45,12 @@ rust_proc_macro(
         "crate-name=tracing-attributes",
         "manual",
     ],
-    version = "0.1.25",
+    version = "0.1.26",
     # buildifier: leave-alone
     deps = [
-        "@raze__proc_macro2__1_0_60//:proc_macro2",
+        "@raze__proc_macro2__1_0_63//:proc_macro2",
         "@raze__quote__1_0_28//:quote",
-        "@raze__syn__2_0_18//:syn",
+        "@raze__syn__2_0_22//:syn",
     ],
 )
 

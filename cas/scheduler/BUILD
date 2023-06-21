@@ -16,7 +16,7 @@ rust_library(
     srcs = ["scheduler.rs"],
     deps = [
         "//config",
-        "//third_party:fast_async_mutex",
+        "//third_party:async_lock",
         "//third_party:lru",
         "//third_party:rand",
         "//third_party:tokio",

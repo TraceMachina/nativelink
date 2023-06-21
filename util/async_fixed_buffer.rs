@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-use fast_async_mutex::mutex::Mutex;
+use async_lock::Mutex;
 use fixed_buffer::FixedBuf;
 use futures::{ready, Future};
 use pin_project_lite::pin_project;

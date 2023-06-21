@@ -23,8 +23,8 @@ use std::process::Stdio;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Weak};
 use std::time::SystemTime;
 
+use async_lock::Mutex;
 use bytes::{BufMut, Bytes, BytesMut};
-use fast_async_mutex::mutex::Mutex;
 use filetime::{set_file_mtime, FileTime};
 use futures::future::{try_join, try_join3, try_join_all, BoxFuture, FutureExt, TryFutureExt};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};

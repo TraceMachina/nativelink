@@ -26,40 +26,41 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # MIT from expression "MIT"
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
 ])
 
 # Generated Targets
 
 rust_library(
-    name = "rusoto_mock",
+    name = "clap_builder",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "default",
-        "native-tls",
+        "color",
+        "error-context",
+        "help",
+        "std",
+        "suggestions",
+        "usage",
     ],
     crate_root = "src/lib.rs",
     data = [],
-    edition = "2018",
-    proc_macro_deps = [
-        "@raze__async_trait__0_1_68//:async_trait",
-    ],
+    compile_data = ['README.md'],
+    edition = "2021",
     rustc_flags = [
         "--cap-lints=allow",
     ],
     tags = [
         "cargo-raze",
-        "crate-name=rusoto_mock",
+        "crate-name=clap_builder",
         "manual",
     ],
-    version = "0.48.0",
+    version = "4.3.8",
     # buildifier: leave-alone
     deps = [
-        "@raze__chrono__0_4_26//:chrono",
-        "@raze__futures__0_3_28//:futures",
-        "@raze__http__0_2_9//:http",
-        "@raze__rusoto_core__0_48_0//:rusoto_core",
-        "@raze__serde__1_0_164//:serde",
-        "@raze__serde_json__1_0_99//:serde_json",
+        "@raze__anstream__0_3_2//:anstream",
+        "@raze__anstyle__1_0_1//:anstyle",
+        "@raze__bitflags__1_3_2//:bitflags",
+        "@raze__clap_lex__0_5_0//:clap_lex",
+        "@raze__strsim__0_10_0//:strsim",
     ],
 )

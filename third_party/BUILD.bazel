@@ -13,6 +13,15 @@ licenses([
 
 # Aliased targets
 alias(
+    name = "async_lock",
+    actual = "@raze__async_lock__2_7_0//:async_lock",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
     name = "async_trait",
     actual = "@raze__async_trait__0_1_68//:async_trait",
     tags = [
@@ -50,7 +59,7 @@ alias(
 
 alias(
     name = "clap",
-    actual = "@raze__clap__4_3_5//:clap",
+    actual = "@raze__clap__4_3_8//:clap",
     tags = [
         "cargo-raze",
         "manual",
@@ -69,15 +78,6 @@ alias(
 alias(
     name = "env_logger",
     actual = "@raze__env_logger__0_9_3//:env_logger",
-    tags = [
-        "cargo-raze",
-        "manual",
-    ],
-)
-
-alias(
-    name = "fast_async_mutex",
-    actual = "@raze__fast_async_mutex__0_6_7//:fast_async_mutex",
     tags = [
         "cargo-raze",
         "manual",
