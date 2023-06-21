@@ -4,3 +4,5 @@ target/
 */*/terraform.tfstate
 */*/.terraform
 .git
+deployment-examples
+bazel-*

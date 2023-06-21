@@ -42,7 +42,7 @@ bazel test //... \
 This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/allada/turbo-cache/tree/master/config) for configuration documentation and [here](https://github.com/allada/turbo-cache/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
 
 ## Example Deployments
-We currently have two example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
+We currently have three example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
 
 ### Terraform
 The [terraform deployment](https://github.com/allada/turbo-cache/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of AWS cloud resources to make everything much more robust.
