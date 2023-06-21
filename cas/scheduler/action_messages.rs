@@ -80,7 +80,7 @@ pub struct ActionInfo {
     pub platform_properties: PlatformProperties,
     /// The priority of the action. Higher value means it should execute faster.
     pub priority: i32,
-    /// When this action started to be loaded from the CAS
+    /// When this action started to be loaded from the CAS.
     pub load_timestamp: SystemTime,
     /// When this action was created.
     pub insert_timestamp: SystemTime,

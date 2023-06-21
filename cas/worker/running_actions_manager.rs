@@ -742,9 +742,9 @@ impl RunningAction for RunningActionImpl {
         output_folders.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         output_file_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_directory_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
-        execution_metadata.worker_completed_timestamp = (self.running_actions_manager.now_fn)();
         {
             let mut state = self.state.lock().await;
+            execution_metadata.worker_completed_timestamp = (self.running_actions_manager.now_fn)();
             state.action_result = Some(ActionResult {
                 output_files,
                 output_folders,
