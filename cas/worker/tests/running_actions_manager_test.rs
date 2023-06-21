@@ -17,8 +17,9 @@ use std::env;
 use std::os::unix::fs::MetadataExt;
 use std::pin::Pin;
 use std::str::from_utf8;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{FutureExt, TryFutureExt};
 use prost::Message;
@@ -76,6 +77,25 @@ async fn setup_stores() -> Result<
         Pin::into_inner(slow_store.clone()),
     )));
     Ok((fast_store, slow_store, cas_store))
+}
+
+const NOW_TIME: u64 = 10000;
+
+fn make_system_time(add_time: u64) -> SystemTime {
+    UNIX_EPOCH
+        .checked_add(Duration::from_secs(NOW_TIME + add_time))
+        .unwrap()
+}
+
+fn monotonic_clock(counter: &AtomicU64) -> SystemTime {
+    let count = counter.fetch_add(1, Ordering::Relaxed);
+    make_system_time(count)
+}
+
+fn increment_clock(time: &mut SystemTime) -> SystemTime {
+    let previous_time = time.clone();
+    *time = previous_time.checked_add(Duration::from_secs(1)).unwrap();
+    previous_time
 }
 
 #[cfg(test)]
@@ -342,9 +362,16 @@ mod running_actions_manager_tests {
         let (_, _, cas_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
             Pin::into_inner(cas_store.clone()),
+            test_monotonic_clock,
         )?);
         const WORKER_ID: &str = "foo_worker_id";
         {
@@ -387,6 +414,7 @@ mod running_actions_manager_tests {
                             ..Default::default()
                         }),
                         salt: SALT,
+                        queued_timestamp: None,
                     },
                 )
                 .await?;
@@ -412,9 +440,16 @@ mod running_actions_manager_tests {
         let (_, slow_store, cas_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
             Pin::into_inner(cas_store.clone()),
+            test_monotonic_clock,
         )?);
         const WORKER_ID: &str = "foo_worker_id";
         let action_result = {
@@ -461,6 +496,7 @@ mod running_actions_manager_tests {
                             ..Default::default()
                         }),
                         salt: SALT,
+                        queued_timestamp: None,
                     },
                 )
                 .await?;
@@ -492,6 +528,7 @@ mod running_actions_manager_tests {
             .get_part_unchunked(action_result.stderr_digest.clone(), 0, None, None)
             .await?;
         assert_eq!(from_utf8(&stderr_content)?, "bar-stderr");
+        let mut clock_time = make_system_time(0);
         assert_eq!(
             action_result,
             ActionResult {
@@ -516,14 +553,14 @@ mod running_actions_manager_tests {
                 execution_metadata: ExecutionMetadata {
                     worker: WORKER_ID.to_string(),
                     queued_timestamp: SystemTime::UNIX_EPOCH,
-                    worker_start_timestamp: SystemTime::UNIX_EPOCH,
-                    worker_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
-                    input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    execution_start_timestamp: SystemTime::UNIX_EPOCH,
-                    execution_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
-                    output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    worker_start_timestamp: increment_clock(&mut clock_time),
+                    input_fetch_start_timestamp: increment_clock(&mut clock_time),
+                    input_fetch_completed_timestamp: increment_clock(&mut clock_time),
+                    execution_start_timestamp: increment_clock(&mut clock_time),
+                    execution_completed_timestamp: increment_clock(&mut clock_time),
+                    output_upload_start_timestamp: increment_clock(&mut clock_time),
+                    output_upload_completed_timestamp: increment_clock(&mut clock_time),
+                    worker_completed_timestamp: increment_clock(&mut clock_time),
                 }
             }
         );
@@ -535,11 +572,19 @@ mod running_actions_manager_tests {
         let (_, slow_store, cas_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
             Pin::into_inner(cas_store.clone()),
+            test_monotonic_clock,
         )?);
         const WORKER_ID: &str = "foo_worker_id";
+        let queued_timestamp = make_system_time(1000);
         let action_result = {
             const SALT: u64 = 55;
             let command = Command {
@@ -577,6 +622,7 @@ mod running_actions_manager_tests {
                             ..Default::default()
                         }),
                         salt: SALT,
+                        queued_timestamp: Some(queued_timestamp.into()),
                     },
                 )
                 .await?;
@@ -640,6 +686,7 @@ mod running_actions_manager_tests {
                 ..Default::default()
             }
         );
+        let mut clock_time = make_system_time(0);
         assert_eq!(
             action_result,
             ActionResult {
@@ -668,15 +715,15 @@ mod running_actions_manager_tests {
                 server_logs: HashMap::new(),
                 execution_metadata: ExecutionMetadata {
                     worker: WORKER_ID.to_string(),
-                    queued_timestamp: SystemTime::UNIX_EPOCH,
-                    worker_start_timestamp: SystemTime::UNIX_EPOCH,
-                    worker_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
-                    input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    execution_start_timestamp: SystemTime::UNIX_EPOCH,
-                    execution_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
-                    output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    queued_timestamp: queued_timestamp,
+                    worker_start_timestamp: increment_clock(&mut clock_time),
+                    input_fetch_start_timestamp: increment_clock(&mut clock_time),
+                    input_fetch_completed_timestamp: increment_clock(&mut clock_time),
+                    execution_start_timestamp: increment_clock(&mut clock_time),
+                    execution_completed_timestamp: increment_clock(&mut clock_time),
+                    output_upload_start_timestamp: increment_clock(&mut clock_time),
+                    output_upload_completed_timestamp: increment_clock(&mut clock_time),
+                    worker_completed_timestamp: increment_clock(&mut clock_time),
                 }
             }
         );
@@ -688,11 +735,19 @@ mod running_actions_manager_tests {
         let (_, _, cas_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory.clone(),
             Pin::into_inner(cas_store.clone()),
+            test_monotonic_clock,
         )?);
         const WORKER_ID: &str = "foo_worker_id";
+        let queued_timestamp = make_system_time(1000);
         let action_result = {
             const SALT: u64 = 55;
             let command = Command {
@@ -719,6 +774,7 @@ mod running_actions_manager_tests {
                             ..Default::default()
                         }),
                         salt: SALT,
+                        queued_timestamp: Some(queued_timestamp.into()),
                     },
                 )
                 .await?;
@@ -735,6 +791,7 @@ mod running_actions_manager_tests {
                 })
                 .await?
         };
+        let mut clock_time = make_system_time(0);
         assert_eq!(
             action_result,
             ActionResult {
@@ -754,15 +811,15 @@ mod running_actions_manager_tests {
                 server_logs: HashMap::new(),
                 execution_metadata: ExecutionMetadata {
                     worker: WORKER_ID.to_string(),
-                    queued_timestamp: SystemTime::UNIX_EPOCH,
-                    worker_start_timestamp: SystemTime::UNIX_EPOCH,
-                    worker_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
-                    input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    execution_start_timestamp: SystemTime::UNIX_EPOCH,
-                    execution_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
-                    output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    queued_timestamp,
+                    worker_start_timestamp: increment_clock(&mut clock_time),
+                    input_fetch_start_timestamp: increment_clock(&mut clock_time),
+                    input_fetch_completed_timestamp: increment_clock(&mut clock_time),
+                    execution_start_timestamp: increment_clock(&mut clock_time),
+                    execution_completed_timestamp: increment_clock(&mut clock_time),
+                    output_upload_start_timestamp: increment_clock(&mut clock_time),
+                    output_upload_completed_timestamp: increment_clock(&mut clock_time),
+                    worker_completed_timestamp: increment_clock(&mut clock_time),
                 }
             }
         );

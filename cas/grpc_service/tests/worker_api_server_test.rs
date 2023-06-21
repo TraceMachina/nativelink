@@ -282,6 +282,7 @@ pub mod execution_response_tests {
                 properties: HashMap::new(),
             },
             priority: 0,
+            load_timestamp: make_system_time(0),
             insert_timestamp: make_system_time(0),
             unique_qualifier: ActionInfoHashKey {
                 digest: action_digest.clone(),

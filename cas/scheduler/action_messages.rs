@@ -80,6 +80,8 @@ pub struct ActionInfo {
     pub platform_properties: PlatformProperties,
     /// The priority of the action. Higher value means it should execute faster.
     pub priority: i32,
+    /// When this action started to be loaded from the CAS
+    pub load_timestamp: SystemTime,
     /// When this action was created.
     pub insert_timestamp: SystemTime,
 
@@ -112,6 +114,8 @@ impl ActionInfo {
         execute_request: ExecuteRequest,
         action: Action,
         salt: u64,
+        load_timestamp: SystemTime,
+        queued_timestamp: SystemTime,
     ) -> Result<Self, Error> {
         Ok(Self {
             instance_name: execute_request.instance_name,
@@ -133,7 +137,8 @@ impl ActionInfo {
                 .execution_policy
                 .unwrap_or(ExecutionPolicy::default())
                 .priority,
-            insert_timestamp: SystemTime::UNIX_EPOCH, // We can't know it at this point.
+            load_timestamp,
+            insert_timestamp: queued_timestamp,
             unique_qualifier: ActionInfoHashKey {
                 digest: execute_request
                     .action_digest

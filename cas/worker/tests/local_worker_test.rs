@@ -170,6 +170,7 @@ mod local_worker_tests {
             timeout: Duration::from_secs(1),
             platform_properties: PlatformProperties::default(),
             priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
                 digest: action_digest.clone(),
@@ -184,6 +185,7 @@ mod local_worker_tests {
                     update: Some(Update::StartAction(StartExecute {
                         execute_request: Some(action_info.into()),
                         salt: SALT,
+                        queued_timestamp: None,
                     })),
                 })?)
                 .await
