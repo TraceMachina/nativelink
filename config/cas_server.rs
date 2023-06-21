@@ -17,7 +17,9 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use backends;
-use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
+use serde_utils::{
+    convert_numeric_with_shellexpand, convert_string_with_shellexpand, optional_convert_string_with_shellexpand,
+};
 
 /// Name of the store. This type will be used when referencing a store
 /// in the `CasConfig::stores`'s map key.
@@ -177,6 +179,13 @@ pub struct ExecutionConfig {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cas_store: StoreRefName,
 
+    /// The store name referenced in the `stores` map in the main config.
+    /// This store name referenced here may be reused multiple times.
+    /// This value must be a AC store reference.
+    #[serde(default)]
+    #[serde(deserialize_with = "optional_convert_string_with_shellexpand")]
+    pub ac_store: Option<StoreRefName>,
+
     /// The scheduler name referenced in the `schedulers` map in the main config.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub scheduler: SchedulerRefName,
@@ -297,12 +306,6 @@ pub struct LocalWorkerConfig {
     /// same store the scheduler/client uses to send job requests.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cas_fast_slow_store: StoreRefName,
-
-    /// Underlying AC store that the worker will use to publish execution results
-    /// into. Objects placed in this store should be reachable from the
-    /// scheduler/client-cas after they have finished updating.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
-    pub ac_store: StoreRefName,
 
     /// The directory work jobs will be executed from. This directory will be fully
     /// managed by the worker service and will be purged on startup.

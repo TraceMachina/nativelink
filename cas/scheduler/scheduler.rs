@@ -14,6 +14,8 @@
 
 use std::cmp;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -40,6 +42,8 @@ const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 /// Exit code sent if there is an internal error.
 pub const INTERNAL_ERROR_EXIT_CODE: i32 = -178;
 
+pub type CompleteCallback = Box<dyn Fn(Arc<ActionState>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 /// An action that is being awaited on and last known state.
 struct AwaitedAction {
     action_info: Arc<ActionInfo>,
@@ -51,6 +55,9 @@ struct AwaitedAction {
     /// Possible last error set by the worker. If empty and attempts is set, it may be due to
     /// something like a worker timeout.
     last_error: Option<Error>,
+
+    /// Callback to excution_server to store result in AC store
+    complete_callback: Option<CompleteCallback>,
 }
 
 /// Holds the relationship of a worker that is executing a specific action.
@@ -163,7 +170,11 @@ impl SchedulerImpl {
     /// If the task cannot be executed immediately it will be queued for execution
     /// based on priority and other metrics.
     /// All further updates to the action will be provided through `listener`.
-    fn add_action(&mut self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    fn add_action(
+        &mut self,
+        action_info: ActionInfo,
+        complete_callback: Option<CompleteCallback>,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         // Check to see if the action is running, if it is and cacheable, merge the actions.
         if let Some(running_action) = self.active_actions.get_mut(&action_info) {
             let rx = running_action.action.notify_channel.subscribe();
@@ -226,6 +237,7 @@ impl SchedulerImpl {
                 notify_channel: tx,
                 attempts: 0,
                 last_error: None,
+                complete_callback,
             },
         );
 
@@ -426,12 +438,12 @@ impl SchedulerImpl {
         self.retry_action(&action_info, &worker_id);
     }
 
-    async fn update_action(
+    fn update_action(
         &mut self,
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
         action_stage: ActionStage,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<(CompleteCallback, Arc<ActionState>)>, Error> {
         if !action_stage.has_action_result() {
             let msg = format!(
                 "Worker '{}' set the action_stage of running action {:?} to {:?}. Removing worker.",
@@ -475,7 +487,7 @@ impl SchedulerImpl {
         let send_result = running_action
             .action
             .notify_channel
-            .send(running_action.action.current_state);
+            .send(running_action.action.current_state.clone());
         if send_result.is_err() {
             log::warn!(
                 "Action {} has no more listeners during update_action()",
@@ -483,7 +495,9 @@ impl SchedulerImpl {
             );
         }
 
-        if did_complete {
+        // TODO(allada) We should probably hold a small queue of recent actions for debugging.
+        // Right now it will drop the action which also disconnects listeners here.
+        Ok(if did_complete {
             let worker = self
                 .workers
                 .workers
@@ -491,11 +505,18 @@ impl SchedulerImpl {
                 .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
             worker.complete_action(&action_info);
             self.do_try_match();
-        }
 
-        // TODO(allada) We should probably hold a small queue of recent actions for debugging.
-        // Right now it will drop the action which also disconnects listeners here.
-        Ok(())
+            // It's important we don't execute the callback here and escape the
+            // scope of the mutex otherwise bad things happen.  This ends up
+            // being executed within worker_api_server
+            if let Some(complete_callback) = running_action.action.complete_callback {
+                Some((complete_callback, running_action.action.current_state))
+            } else {
+                None
+            }
+        } else {
+            None
+        })
     }
 }
 
@@ -560,9 +581,13 @@ impl Scheduler {
     }
 
     /// Adds an action to the scheduler for remote execution.
-    pub async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    pub async fn add_action(
+        &self,
+        action_info: ActionInfo,
+        complete_callback: Option<CompleteCallback>,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let mut inner = self.inner.lock().await;
-        inner.add_action(action_info)
+        inner.add_action(action_info, complete_callback)
     }
 
     pub async fn update_worker_with_internal_error(
@@ -581,9 +606,9 @@ impl Scheduler {
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
         action_stage: ActionStage,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<(CompleteCallback, Arc<ActionState>)>, Error> {
         let mut inner = self.inner.lock().await;
-        inner.update_action(worker_id, action_info_hash_key, action_stage).await
+        inner.update_action(worker_id, action_info_hash_key, action_stage)
     }
 
     /// Event for when the keep alive message was received from the worker.

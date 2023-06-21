@@ -64,3 +64,17 @@ pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(deserializer: 
     let value = String::deserialize(deserializer)?;
     Ok((*(shellexpand::env(&value).map_err(de::Error::custom)?)).to_string())
 }
+
+/// An internal wrapper around String to allow it to be embedded in an Optional
+#[derive(Debug, Deserialize)]
+struct WrappedString(#[serde(deserialize_with = "convert_string_with_shellexpand")] String);
+
+pub fn optional_convert_string_with_shellexpand<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<WrappedString>::deserialize(deserializer)
+        .map(|opt_wrapped: Option<WrappedString>| opt_wrapped.map(|wrapped: WrappedString| wrapped.0))
+}

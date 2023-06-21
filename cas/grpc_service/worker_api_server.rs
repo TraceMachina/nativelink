@@ -164,10 +164,14 @@ impl WorkerApiServer {
                 let action_stage = finished_result
                     .try_into()
                     .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
-                self.scheduler
+                if let Some((callback, action_info)) = self
+                    .scheduler
                     .update_action(&worker_id, &action_info_hash_key, action_stage)
                     .await
-                    .err_tip(|| format!("Failed to update_action {:?}", action_digest))?;
+                    .err_tip(|| format!("Failed to update_action {:?}", action_digest))?
+                {
+                    (*callback)(action_info).await;
+                }
             }
             execute_result::Result::InternalError(e) => {
                 self.scheduler

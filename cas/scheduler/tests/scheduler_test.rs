@@ -95,7 +95,7 @@ async fn setup_action(
     let mut action_info = make_base_action_info(insert_timestamp);
     action_info.platform_properties = platform_properties;
     action_info.unique_qualifier.digest = action_digest;
-    scheduler.add_action(action_info).await
+    scheduler.add_action(action_info, None).await
 }
 
 #[cfg(test)]
@@ -688,19 +688,16 @@ mod scheduler_tests {
 
         {
             // Our request should have sent an error back.
-            assert!(
-                update_action_result.is_err(),
-                "Expected error, got: {:?}",
-                &update_action_result
-            );
+            assert!(update_action_result.is_err(), "Expected error, got callback");
             const EXPECTED_ERR: &str = "Got a result from a worker that should not be running the action";
-            let err = update_action_result.unwrap_err();
-            assert!(
-                err.to_string().contains(EXPECTED_ERR),
-                "Error should contain '{}', got: {:?}",
-                EXPECTED_ERR,
-                err
-            );
+            if let Err(err) = update_action_result {
+                assert!(
+                    err.to_string().contains(EXPECTED_ERR),
+                    "Error should contain '{}', got: {:?}",
+                    EXPECTED_ERR,
+                    err
+                );
+            }
         }
         {
             // Ensure client did not get notified.

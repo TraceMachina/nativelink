@@ -14,27 +14,31 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use futures::{Stream, StreamExt};
+use bytes::BytesMut;
+use futures::{future::Either, Stream, StreamExt};
+use prost::Message;
 use rand::{thread_rng, Rng};
 use tokio::time::interval;
 use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
 
-use ac_utils::get_and_decode_digest;
-use action_messages::{ActionInfo, ActionInfoHashKey};
+use ac_utils::{get_and_decode_digest, ESTIMATED_DIGEST_SIZE};
+use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState};
 use common::{log, DigestInfo};
 use config::cas_server::{ExecutionConfig, InstanceName};
 use error::{make_input_err, Error, ResultExt};
+use grpc_store::GrpcStore;
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::{
-    execution_server::Execution, execution_server::ExecutionServer as Server, Action, ExecuteRequest,
-    WaitExecutionRequest,
+    execution_server::Execution, execution_server::ExecutionServer as Server, Action,
+    ActionResult as ProtoActionResult, ExecuteRequest, FindMissingBlobsRequest, GetActionResultRequest,
+    UpdateActionResultRequest, WaitExecutionRequest,
 };
 use proto::google::longrunning::Operation;
-use scheduler::Scheduler;
+use scheduler::{CompleteCallback, Scheduler};
 use store::{Store, StoreManager};
 
 /// Default priority remote execution jobs will get when not provided.
@@ -43,6 +47,7 @@ const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 struct InstanceInfo {
     scheduler: Arc<Scheduler>,
     cas_store: Arc<dyn Store>,
+    ac_store: Option<Arc<dyn Store>>,
 }
 
 impl InstanceInfo {
@@ -127,6 +132,14 @@ impl ExecutionServer {
             let cas_store = store_manager
                 .get_store(&exec_cfg.cas_store)
                 .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", exec_cfg.cas_store))?;
+            let ac_store = match &exec_cfg.ac_store {
+                Some(ac_store) => Some(
+                    store_manager
+                        .get_store(&ac_store)
+                        .ok_or_else(|| make_input_err!("'ac_store': '{}' does not exist", ac_store))?,
+                ),
+                None => None,
+            };
             let scheduler = scheduler_map
                 .get(&exec_cfg.scheduler)
                 .err_tip(|| {
@@ -141,7 +154,14 @@ impl ExecutionServer {
             // event our ExecutionServer dies. Our scheduler is a weak ref, so the spawn will
             // eventually see the Arc went away and return.
             let weak_scheduler = Arc::downgrade(&scheduler);
-            instance_infos.insert(instance_name.to_string(), InstanceInfo { scheduler, cas_store });
+            instance_infos.insert(
+                instance_name.to_string(),
+                InstanceInfo {
+                    scheduler,
+                    cas_store,
+                    ac_store,
+                },
+            );
             tokio::spawn(async move {
                 let mut ticker = interval(Duration::from_secs(1));
                 loop {
@@ -168,6 +188,41 @@ impl ExecutionServer {
         Server::new(self)
     }
 
+    fn send_cached_result(cached_result: ProtoActionResult, digest: DigestInfo) -> Response<ExecuteStream> {
+        let operation = ActionState {
+            name: format!("{:X}", thread_rng().gen::<u128>()),
+            action_digest: digest,
+            stage: ActionStage::CompletedFromCache(cached_result),
+        }
+        .into();
+        let result_stream = Box::pin(futures::stream::once(async { Ok(operation) }));
+        tonic::Response::new(result_stream)
+    }
+
+    fn create_action_save_callback(ac_store_weak: Weak<dyn Store>) -> CompleteCallback {
+        Box::new(
+            move |action_update: Arc<ActionState>| -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+                Box::pin(
+                    if let (ActionStage::Completed(action_result), Some(ac_store)) =
+                        (&action_update.stage, ac_store_weak.upgrade())
+                    {
+                        Either::Left(Self::save_action_in_store(
+                            ac_store,
+                            action_update.action_digest.clone(),
+                            action_result.clone(),
+                        ))
+                    } else {
+                        log::error!(
+                            "\x1b[0;31mInstance died before action cache\x1b[0m: {:?}",
+                            action_update
+                        );
+                        Either::Right(futures::future::ready(()))
+                    },
+                )
+            },
+        )
+    }
+
     async fn inner_execute(&self, request: Request<ExecuteRequest>) -> Result<Response<ExecuteStream>, Error> {
         let execute_req = request.into_inner();
         let instance_name = execute_req.instance_name;
@@ -188,14 +243,29 @@ impl ExecutionServer {
             .execution_policy
             .map_or(DEFAULT_EXECUTION_PRIORITY, |p| p.priority);
 
+        // Check to see if the store already has a result for this action.
+        if let Some(ac_store) = &instance_info.ac_store {
+            if let Some(cached_result) =
+                Self::get_action_from_store(ac_store.clone(), instance_info.cas_store.clone(), &digest).await
+            {
+                return Ok(Self::send_cached_result(cached_result, digest));
+            }
+        }
+
         let action = get_and_decode_digest::<Action>(instance_info.cas_pin(), &digest).await?;
         let action_info = instance_info
             .build_action_info(instance_name, digest, &action, priority)
             .await?;
 
+        // Create a callback that will cache the result if it completes.
+        let complete_callback = match &instance_info.ac_store {
+            Some(ac_store) => Some(Self::create_action_save_callback(Arc::downgrade(&ac_store))),
+            None => None,
+        };
+
         let rx = instance_info
             .scheduler
-            .add_action(action_info)
+            .add_action(action_info, complete_callback)
             .await
             .err_tip(|| "Failed to schedule task")?;
 
@@ -204,6 +274,110 @@ impl ExecutionServer {
             Ok(action_update.as_ref().clone().into())
         }));
         Ok(tonic::Response::new(receiver_stream))
+    }
+
+    async fn get_action_from_store(
+        ac_store: Arc<dyn Store>,
+        cas_store: Arc<dyn Store>,
+        action_digest: &DigestInfo,
+    ) -> Option<ProtoActionResult> {
+        // If we are a GrpcStore we shortcut here, as this is a special store.
+        let any_store = ac_store.clone().as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        let result = if let Some(grpc_store) = maybe_grpc_store {
+            let action_result_request = GetActionResultRequest {
+                instance_name: "".to_string(),
+                action_digest: Some(action_digest.into()),
+                inline_stdout: false,
+                inline_stderr: false,
+                inline_output_files: Vec::new(),
+            };
+            grpc_store
+                .get_action_result(Request::new(action_result_request))
+                .await
+                .map(|response| response.into_inner())
+        } else {
+            get_and_decode_digest::<ProtoActionResult>(Pin::new(ac_store.as_ref()), &action_digest).await
+        };
+        if result.is_err() {
+            return None;
+        }
+        let result = result.unwrap();
+
+        // Verify that output_files and output_directories are available in the cas.
+        let required_digests = result
+            .output_files
+            .iter()
+            .filter_map(|output_file| output_file.digest.clone())
+            .chain(
+                result
+                    .output_directories
+                    .iter()
+                    .filter_map(|output_directory| output_directory.tree_digest.clone()),
+            )
+            .collect();
+
+        // If the CAS is a GrpcStore store we can check all the digests in one message.
+        let any_store = cas_store.clone().as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
+            let find_result = grpc_store
+                .find_missing_blobs(Request::new(FindMissingBlobsRequest {
+                    instance_name: "".to_string(),
+                    blob_digests: required_digests,
+                }))
+                .await;
+            if find_result.is_err() || !find_result.unwrap().into_inner().missing_blob_digests.is_empty() {
+                return None;
+            }
+        } else {
+            let cas_pin = Pin::new(cas_store.as_ref());
+            for digest in required_digests
+                .iter()
+                .filter_map(|digest| DigestInfo::try_from(digest.clone()).ok())
+            {
+                if cas_pin.has(digest).await.is_err() {
+                    return None;
+                }
+            }
+        };
+
+        // All good, return the cached result.
+        Some(result)
+    }
+
+    async fn save_action_in_store(ac_store: Arc<dyn Store>, action_digest: DigestInfo, action_result: ActionResult) {
+        let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
+        let proto_action_result: ProtoActionResult = action_result.into();
+        match proto_action_result.encode(&mut store_data) {
+            Err(_) => {
+                log::error!("\x1b[0;31mError encoding action to save\x1b[0m: {:?}", action_digest);
+                return;
+            }
+            _ => (),
+        }
+        // If we are a GrpcStore we shortcut here, as this is a special store.
+        let any_store = ac_store.clone().as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        let result = if let Some(grpc_store) = maybe_grpc_store {
+            let update_action_request = UpdateActionResultRequest {
+                instance_name: "".to_string(),
+                action_digest: Some(action_digest.clone().into()),
+                action_result: Some(proto_action_result),
+                results_cache_policy: None,
+            };
+            grpc_store
+                .update_action_result(Request::new(update_action_request))
+                .await
+                .map(|_| ())
+        } else {
+            Pin::new(ac_store.as_ref())
+                .update_oneshot(action_digest.clone(), store_data.freeze())
+                .await
+        };
+        if result.is_err() {
+            log::error!("\x1b[0;31mError saving action in store\x1b[0m: {:?}", action_digest);
+        }
     }
 }
 
