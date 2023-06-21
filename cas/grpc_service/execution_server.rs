@@ -30,7 +30,7 @@ use config::cas_server::{ExecutionConfig, InstanceName};
 use error::{make_input_err, Error, ResultExt};
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::{
-    execution_server::Execution, execution_server::ExecutionServer as Server, Action, ExecuteRequest,
+    execution_server::Execution, execution_server::ExecutionServer as Server, Action, Command, ExecuteRequest,
     WaitExecutionRequest,
 };
 use proto::google::longrunning::Operation;
@@ -86,6 +86,21 @@ impl InstanceInfo {
                     .make_prop_value(&property.name, &property.value)
                     .err_tip(|| "Failed to convert platform property in queue_action")?;
                 platform_properties.insert(property.name.clone(), platform_property);
+            }
+        }
+
+        // Goma puts the properties in the Command.
+        if platform_properties.is_empty() {
+            let command = get_and_decode_digest::<Command>(self.cas_pin(), &command_digest).await?;
+            if let Some(platform) = &command.platform {
+                for property in &platform.properties {
+                    let platform_property = self
+                        .scheduler
+                        .get_platform_property_manager()
+                        .make_prop_value(&property.name, &property.value)
+                        .err_tip(|| "Failed to convert platform property in queue_action")?;
+                    platform_properties.insert(property.name.clone(), platform_property);
+                }
             }
         }
 
