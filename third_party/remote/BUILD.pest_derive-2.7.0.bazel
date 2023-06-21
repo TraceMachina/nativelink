@@ -31,15 +31,16 @@ licenses([
 
 # Generated Targets
 
-# Unsupported target "parens" with type "example" omitted
+# Unsupported target "calc" with type "example" omitted
 
-rust_library(
-    name = "pest",
+# Unsupported target "help-menu" with type "example" omitted
+
+rust_proc_macro(
+    name = "pest_derive",
     srcs = glob(["**/*.rs"]),
     crate_features = [
         "default",
         "std",
-        "thiserror",
     ],
     crate_root = "src/lib.rs",
     data = [],
@@ -49,17 +50,23 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
-        "crate-name=pest",
+        "crate-name=pest_derive",
         "manual",
     ],
-    version = "2.6.1",
+    version = "2.7.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__thiserror__1_0_40//:thiserror",
-        "@raze__ucd_trie__0_1_5//:ucd_trie",
+        "@raze__pest__2_7_0//:pest",
+        "@raze__pest_generator__2_7_0//:pest_generator",
     ],
 )
 
-# Unsupported target "calculator" with type "test" omitted
+# Unsupported target "grammar" with type "test" omitted
 
-# Unsupported target "json" with type "test" omitted
+# Unsupported target "grammar_inline" with type "test" omitted
+
+# Unsupported target "implicit" with type "test" omitted
+
+# Unsupported target "lists" with type "test" omitted
+
+# Unsupported target "reporting" with type "test" omitted

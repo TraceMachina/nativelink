@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
+use async_lock::Mutex;
 use async_trait::async_trait;
-use fast_async_mutex::mutex::Mutex;
 use tokio::sync::mpsc;
 use tonic::{Response, Status, Streaming};
 

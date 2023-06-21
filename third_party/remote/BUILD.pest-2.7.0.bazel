@@ -26,27 +26,39 @@ package(default_visibility = [
 ])
 
 licenses([
-    "notice",  # Apache-2.0 from expression "Apache-2.0 OR MIT"
+    "notice",  # MIT from expression "MIT OR Apache-2.0"
 ])
 
 # Generated Targets
 
+# Unsupported target "parens" with type "example" omitted
+
 rust_library(
-    name = "fast_async_mutex",
+    name = "pest",
     srcs = glob(["**/*.rs"]),
+    crate_features = [
+        "default",
+        "std",
+    ],
     crate_root = "src/lib.rs",
     data = [],
-    edition = "2018",
+    edition = "2021",
     rustc_flags = [
         "--cap-lints=allow",
     ],
     tags = [
         "cargo-raze",
-        "crate-name=fast-async-mutex",
+        "crate-name=pest",
         "manual",
     ],
-    version = "0.6.7",
+    version = "2.7.0",
     # buildifier: leave-alone
     deps = [
+        "@raze__thiserror__1_0_40//:thiserror",
+        "@raze__ucd_trie__0_1_5//:ucd_trie",
     ],
 )
+
+# Unsupported target "calculator" with type "test" omitted
+
+# Unsupported target "json" with type "test" omitted

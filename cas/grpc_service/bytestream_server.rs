@@ -18,7 +18,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use fast_async_mutex::mutex::Mutex;
+use async_lock::Mutex;
 use futures::{stream::unfold, Stream};
 use proto::google::bytestream::{
     byte_stream_server::ByteStream, byte_stream_server::ByteStreamServer as Server, QueryWriteStatusRequest,

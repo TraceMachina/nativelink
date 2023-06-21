@@ -61,11 +61,11 @@ rust_binary(
         "crate-name=stdio-fixture",
         "manual",
     ],
-    version = "4.3.5",
+    version = "4.3.8",
     # buildifier: leave-alone
     deps = [
         ":clap",
-        "@raze__clap_builder__4_3_5//:clap_builder",
+        "@raze__clap_builder__4_3_8//:clap_builder",
         "@raze__once_cell__1_18_0//:once_cell",
     ],
 )
@@ -208,10 +208,10 @@ rust_library(
         "crate-name=clap",
         "manual",
     ],
-    version = "4.3.5",
+    version = "4.3.8",
     # buildifier: leave-alone
     deps = [
-        "@raze__clap_builder__4_3_5//:clap_builder",
+        "@raze__clap_builder__4_3_8//:clap_builder",
         "@raze__once_cell__1_18_0//:once_cell",
     ],
 )

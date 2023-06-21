@@ -33,7 +33,7 @@ rust_library(
         "//cas/store:filesystem_store",
         "//proto",
         "//third_party:bytes",
-        "//third_party:fast_async_mutex",
+        "//third_party:async_lock",
         "//third_party:filetime",
         "//third_party:futures",
         "//third_party:hex",
@@ -98,7 +98,7 @@ rust_library(
     testonly = True,
     deps = [
         "//proto",
-        "//third_party:fast_async_mutex",
+        "//third_party:async_lock",
         "//third_party:tokio",
         "//third_party:tonic",
         ":worker_api_client_wrapper",
@@ -113,7 +113,7 @@ rust_library(
     deps = [
         "//cas/scheduler:action_messages",
         "//proto",
-        "//third_party:fast_async_mutex",
+        "//third_party:async_lock",
         "//third_party:tokio",
         "//util:error",
         ":running_actions_manager",

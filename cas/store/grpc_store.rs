@@ -15,8 +15,8 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use async_lock::Mutex;
 use async_trait::async_trait;
-use fast_async_mutex::mutex::Mutex;
 use futures::{stream::unfold, Stream};
 use shellexpand;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
