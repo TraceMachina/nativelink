@@ -1,0 +1,45 @@
+diff --git a/command/descriptor/relocate.go b/command/descriptor/relocate.go
+index 6daa7de..cf05068 100644
+--- a/command/descriptor/relocate.go
++++ b/command/descriptor/relocate.go
+@@ -93,7 +93,11 @@ func Relocate(setup *pb.CmdDescriptor_Setup, cmdpath string) (*pb.CmdDescriptor_
+ 	}
+ 	s := proto.Clone(setup).(*pb.CmdDescriptor_Setup)
+ 	origin := filepath.Dir(cmdpath)
+-	s.CmdFile.Path = cmdpath
++	progpath, e := AbsCmdPath(s)
++	if e != nil {
++		return nil, e
++	}
++	s.CmdFile.Path = progpath
+ 	for _, f := range s.Files {
+ 		if filepath.IsAbs(f.Path) {
+ 			continue
+diff --git a/remoteexec/exec.go b/remoteexec/exec.go
+index 251b5e9..5496d8d 100644
+--- a/remoteexec/exec.go
++++ b/remoteexec/exec.go
+@@ -603,7 +603,7 @@ func (r *request) newInputTree(ctx context.Context) *gomapb.ExecResp {
+ 		return nil
+ 	}
+ 
+-	symAbsOk := r.f.capabilities.GetCacheCapabilities().GetSymlinkAbsolutePathStrategy() == rpb.SymlinkAbsolutePathStrategy_ALLOWED
++	symAbsOk := true
+ 
+ 	cmdCleanCWD := cleanCWD
+ 	cmdCleanRootDir := cleanRootDir
+diff --git a/remoteexec/inputroot.go b/remoteexec/inputroot.go
+index 98223cd..355b8f3 100644
+--- a/remoteexec/inputroot.go
++++ b/remoteexec/inputroot.go
+@@ -39,7 +39,9 @@ func commonDir(filepath clientFilePath, paths []string) string {
+ 	}
+ 	path := filepath.SplitElem(paths[0])
+ 	for _, p := range paths[1:] {
+-		path = samePathElement(filepath, path, filepath.SplitElem(p))
++		if strings.HasPrefix(p, "/usr") == false {
++			path = samePathElement(filepath, path, filepath.SplitElem(p))
++		}
+ 	}
+ 	return filepath.Join(path...)
+ }
