@@ -187,9 +187,10 @@ impl Eq for ActionInfo {}
 
 impl Ord for ActionInfo {
     fn cmp(&self, other: &Self) -> Ordering {
+        // Want the highest priority on top, but the lowest insert_timestamp
         self.priority
             .cmp(&other.priority)
-            .then_with(|| self.insert_timestamp.cmp(&other.insert_timestamp))
+            .then_with(|| other.insert_timestamp.cmp(&self.insert_timestamp))
             .then_with(|| self.salt().cmp(&other.salt()))
             .then_with(|| self.digest().size_bytes.cmp(&other.digest().size_bytes))
             .then_with(|| self.digest().packed_hash.cmp(&other.digest().packed_hash))
@@ -201,7 +202,7 @@ impl PartialOrd for ActionInfo {
         let cmp = self
             .priority
             .cmp(&other.priority)
-            .then_with(|| self.insert_timestamp.cmp(&other.insert_timestamp))
+            .then_with(|| other.insert_timestamp.cmp(&self.insert_timestamp))
             .then_with(|| self.salt().cmp(&other.salt()));
         if cmp == Ordering::Equal {
             return None;
