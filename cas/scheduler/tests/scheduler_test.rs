@@ -898,6 +898,55 @@ mod scheduler_tests {
         Ok(())
     }
 
+    /// This tests that actions are performed in the order they were queued.
+    #[tokio::test]
+    async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
+        const WORKER_ID: WorkerId = WorkerId(0x123456789111);
+
+        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let action_digest1 = DigestInfo::new([11u8; 32], 512);
+        let action_digest2 = DigestInfo::new([99u8; 32], 512);
+
+        // Use property to restrict the worker to a single action at a time.
+        let mut properties = HashMap::new();
+        properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
+        let platform_properties = PlatformProperties { properties };
+        // This is queued after the next one (even though it's placed in the map
+        // first), so it should execute second.
+        let insert_timestamp2 = make_system_time(2);
+        let mut client2_rx = setup_action(
+            &scheduler,
+            action_digest2.clone(),
+            platform_properties.clone(),
+            insert_timestamp2,
+        )
+        .await?;
+        let insert_timestamp1 = make_system_time(1);
+        let mut client1_rx = setup_action(
+            &scheduler,
+            action_digest1.clone(),
+            platform_properties.clone(),
+            insert_timestamp1,
+        )
+        .await?;
+
+        // Add the worker after the queue has been set up.
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, platform_properties).await?;
+
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+            v => assert!(false, "Expected StartAction, got : {:?}", v),
+        }
+        {
+            // First client should be in an Executing state.
+            assert_eq!(client1_rx.borrow_and_update().stage, ActionStage::Executing);
+            // Second client should be in a queued state.
+            assert_eq!(client2_rx.borrow_and_update().stage, ActionStage::Queued);
+        }
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x123456789111);
