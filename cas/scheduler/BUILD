@@ -76,6 +76,7 @@ rust_test(
     srcs = ["tests/action_messages_test.rs"],
     deps = [
         ":action_messages",
+        ":platform_property_manager",
         "//proto",
         "//util:common",
         "//util:error",

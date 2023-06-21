@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::SystemTime;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
-use action_messages::{ActionResult, ActionStage, ActionState, ExecutionMetadata};
+use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata};
 use common::DigestInfo;
 use error::Error;
+use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::ExecuteResponse;
 use proto::google::longrunning::{operation, Operation};
 use proto::google::rpc::Status;
@@ -74,6 +77,102 @@ mod action_messages_tests {
 
         // This was once discovered to be None, which is why this test exists.
         assert_eq!(execute_response.status, Some(Status::default()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn highest_priority_action_first() -> Result<(), Error> {
+        const INSTANCE_NAME: &str = "foobar_instance_name";
+
+        let high_priority_action = Arc::new(ActionInfo {
+            instance_name: INSTANCE_NAME.to_string(),
+            command_digest: DigestInfo::new([0u8; 32], 0),
+            input_root_digest: DigestInfo::new([0u8; 32], 0),
+            timeout: Duration::MAX,
+            platform_properties: PlatformProperties {
+                properties: HashMap::new(),
+            },
+            priority: 1000,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::UNIX_EPOCH,
+            unique_qualifier: ActionInfoHashKey {
+                digest: DigestInfo::new([0u8; 32], 0),
+                salt: 0,
+            },
+        });
+        let lowest_priority_action = Arc::new(ActionInfo {
+            instance_name: INSTANCE_NAME.to_string(),
+            command_digest: DigestInfo::new([0u8; 32], 0),
+            input_root_digest: DigestInfo::new([0u8; 32], 0),
+            timeout: Duration::MAX,
+            platform_properties: PlatformProperties {
+                properties: HashMap::new(),
+            },
+            priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::UNIX_EPOCH,
+            unique_qualifier: ActionInfoHashKey {
+                digest: DigestInfo::new([0u8; 32], 0),
+                salt: 0,
+            },
+        });
+        let mut action_map = BTreeMap::<Arc<ActionInfo>, ()>::new();
+        action_map.insert(lowest_priority_action.clone(), ());
+        action_map.insert(high_priority_action.clone(), ());
+
+        assert_eq!(
+            vec![high_priority_action, lowest_priority_action],
+            action_map.keys().rev().cloned().collect::<Vec<Arc<ActionInfo>>>()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn equal_priority_earliest_first() -> Result<(), Error> {
+        const INSTANCE_NAME: &str = "foobar_instance_name";
+
+        let first_action = Arc::new(ActionInfo {
+            instance_name: INSTANCE_NAME.to_string(),
+            command_digest: DigestInfo::new([0u8; 32], 0),
+            input_root_digest: DigestInfo::new([0u8; 32], 0),
+            timeout: Duration::MAX,
+            platform_properties: PlatformProperties {
+                properties: HashMap::new(),
+            },
+            priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::UNIX_EPOCH,
+            unique_qualifier: ActionInfoHashKey {
+                digest: DigestInfo::new([0u8; 32], 0),
+                salt: 0,
+            },
+        });
+        let current_action = Arc::new(ActionInfo {
+            instance_name: INSTANCE_NAME.to_string(),
+            command_digest: DigestInfo::new([0u8; 32], 0),
+            input_root_digest: DigestInfo::new([0u8; 32], 0),
+            timeout: Duration::MAX,
+            platform_properties: PlatformProperties {
+                properties: HashMap::new(),
+            },
+            priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::now(),
+            unique_qualifier: ActionInfoHashKey {
+                digest: DigestInfo::new([0u8; 32], 0),
+                salt: 0,
+            },
+        });
+        let mut action_map = BTreeMap::<Arc<ActionInfo>, ()>::new();
+        action_map.insert(current_action.clone(), ());
+        action_map.insert(first_action.clone(), ());
+
+        assert_eq!(
+            vec![first_action, current_action],
+            action_map.keys().rev().cloned().collect::<Vec<Arc<ActionInfo>>>()
+        );
 
         Ok(())
     }
