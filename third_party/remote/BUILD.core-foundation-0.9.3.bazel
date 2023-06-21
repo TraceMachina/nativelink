@@ -34,8 +34,6 @@ licenses([
 rust_library(
     name = "core_foundation",
     srcs = glob(["**/*.rs"]),
-    crate_features = [
-    ],
     crate_root = "src/lib.rs",
     data = [],
     edition = "2015",
@@ -44,13 +42,14 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=core-foundation",
         "manual",
     ],
     version = "0.9.3",
     # buildifier: leave-alone
     deps = [
-        "@raze__core_foundation_sys__0_8_3//:core_foundation_sys",
-        "@raze__libc__0_2_134//:libc",
+        "@raze__core_foundation_sys__0_8_4//:core_foundation_sys",
+        "@raze__libc__0_2_146//:libc",
     ],
 )
 

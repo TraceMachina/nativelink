@@ -34,8 +34,6 @@ licenses([
 rust_library(
     name = "bincode",
     srcs = glob(["**/*.rs"]),
-    crate_features = [
-    ],
     crate_root = "src/lib.rs",
     data = [],
     edition = "2015",
@@ -44,12 +42,13 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=bincode",
         "manual",
     ],
     version = "1.3.3",
     # buildifier: leave-alone
     deps = [
-        "@raze__serde__1_0_145//:serde",
+        "@raze__serde__1_0_164//:serde",
     ],
 )
 

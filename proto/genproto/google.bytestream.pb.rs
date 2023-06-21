@@ -13,17 +13,18 @@
 // limitations under the License.
 
 /// Request object for ByteStream.Read.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReadRequest {
     /// The name of the resource to read.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub resource_name: ::prost::alloc::string::String,
     /// The offset for the first byte to return in the read, relative to the start
     /// of the resource.
     ///
     /// A `read_offset` that is negative or greater than the size of the resource
     /// will cause an `OUT_OF_RANGE` error.
-    #[prost(int64, tag="2")]
+    #[prost(int64, tag = "2")]
     pub read_offset: i64,
     /// The maximum number of `data` bytes the server is allowed to return in the
     /// sum of all `ReadResponse` messages. A `read_limit` of zero indicates that
@@ -32,26 +33,28 @@ pub struct ReadRequest {
     /// If the stream returns fewer bytes than allowed by the `read_limit` and no
     /// error occurred, the stream includes all data from the `read_offset` to the
     /// end of the resource.
-    #[prost(int64, tag="3")]
+    #[prost(int64, tag = "3")]
     pub read_limit: i64,
 }
 /// Response object for ByteStream.Read.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReadResponse {
     /// A portion of the data for the resource. The service **may** leave `data`
     /// empty for any given `ReadResponse`. This enables the service to inform the
     /// client that the request is still live while it is running an operation to
     /// generate more data.
-    #[prost(bytes="bytes", tag="10")]
+    #[prost(bytes = "bytes", tag = "10")]
     pub data: ::prost::bytes::Bytes,
 }
 /// Request object for ByteStream.Write.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WriteRequest {
     /// The name of the resource to write. This **must** be set on the first
     /// `WriteRequest` of each `Write()` action. If it is set on subsequent calls,
     /// it **must** match the value of the first request.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub resource_name: ::prost::alloc::string::String,
     /// The offset from the beginning of the resource at which the data should be
     /// written. It is required on all `WriteRequest`s.
@@ -65,49 +68,53 @@ pub struct WriteRequest {
     /// sent previously on this stream.
     ///
     /// An incorrect value will cause an error.
-    #[prost(int64, tag="2")]
+    #[prost(int64, tag = "2")]
     pub write_offset: i64,
     /// If `true`, this indicates that the write is complete. Sending any
     /// `WriteRequest`s subsequent to one in which `finish_write` is `true` will
     /// cause an error.
-    #[prost(bool, tag="3")]
+    #[prost(bool, tag = "3")]
     pub finish_write: bool,
     /// A portion of the data for the resource. The client **may** leave `data`
     /// empty for any given `WriteRequest`. This enables the client to inform the
     /// service that the request is still live while it is running an operation to
     /// generate more data.
-    #[prost(bytes="bytes", tag="10")]
+    #[prost(bytes = "bytes", tag = "10")]
     pub data: ::prost::bytes::Bytes,
 }
 /// Response object for ByteStream.Write.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WriteResponse {
     /// The number of bytes that have been processed for the given resource.
-    #[prost(int64, tag="1")]
+    #[prost(int64, tag = "1")]
     pub committed_size: i64,
 }
 /// Request object for ByteStream.QueryWriteStatus.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct QueryWriteStatusRequest {
     /// The name of the resource whose write status is being requested.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub resource_name: ::prost::alloc::string::String,
 }
 /// Response object for ByteStream.QueryWriteStatus.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct QueryWriteStatusResponse {
     /// The number of bytes that have been processed for the given resource.
-    #[prost(int64, tag="1")]
+    #[prost(int64, tag = "1")]
     pub committed_size: i64,
     /// `complete` is `true` only if the client has sent a `WriteRequest` with
     /// `finish_write` set to true, and the server has processed that request.
-    #[prost(bool, tag="2")]
+    #[prost(bool, tag = "2")]
     pub complete: bool,
 }
 /// Generated client implementations.
 pub mod byte_stream_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// #### Introduction
     ///
     /// The Byte Stream API enables a client to read and write a stream of bytes to
@@ -157,6 +164,10 @@ pub mod byte_stream_client {
             let inner = tonic::client::Grpc::new(inner);
             Self { inner }
         }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
         pub fn with_interceptor<F>(
             inner: T,
             interceptor: F,
@@ -176,19 +187,19 @@ pub mod byte_stream_client {
         {
             ByteStreamClient::new(InterceptedService::new(inner, interceptor))
         }
-        /// Compress requests with `gzip`.
+        /// Compress requests with the given encoding.
         ///
         /// This requires the server to support it otherwise it might respond with an
         /// error.
         #[must_use]
-        pub fn send_gzip(mut self) -> Self {
-            self.inner = self.inner.send_gzip();
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
             self
         }
-        /// Enable decompressing responses with `gzip`.
+        /// Enable decompressing responses.
         #[must_use]
-        pub fn accept_gzip(mut self) -> Self {
-            self.inner = self.inner.accept_gzip();
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
             self
         }
         /// `Read()` is used to retrieve the contents of a resource as a sequence
@@ -298,10 +309,10 @@ pub mod byte_stream_client {
 pub mod byte_stream_server {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
-    ///Generated trait containing gRPC methods that should be implemented for use with ByteStreamServer.
+    /// Generated trait containing gRPC methods that should be implemented for use with ByteStreamServer.
     #[async_trait]
     pub trait ByteStream: Send + Sync + 'static {
-        ///Server streaming response type for the Read method.
+        /// Server streaming response type for the Read method.
         type ReadStream: futures_core::Stream<
                 Item = Result<super::ReadResponse, tonic::Status>,
             >
@@ -410,16 +421,16 @@ pub mod byte_stream_server {
         {
             InterceptedService::new(Self::new(inner), interceptor)
         }
-        /// Enable decompressing requests with `gzip`.
+        /// Enable decompressing requests with the given encoding.
         #[must_use]
-        pub fn accept_gzip(mut self) -> Self {
-            self.accept_compression_encodings.enable_gzip();
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
             self
         }
-        /// Compress responses with `gzip`, if the client supports it.
+        /// Compress responses with the given encoding, if the client supports it.
         #[must_use]
-        pub fn send_gzip(mut self) -> Self {
-            self.send_compression_encodings.enable_gzip();
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
             self
         }
     }
@@ -595,7 +606,7 @@ pub mod byte_stream_server {
             write!(f, "{:?}", self.0)
         }
     }
-    impl<T: ByteStream> tonic::transport::NamedService for ByteStreamServer<T> {
+    impl<T: ByteStream> tonic::server::NamedService for ByteStreamServer<T> {
         const NAME: &'static str = "google.bytestream.ByteStream";
     }
 }

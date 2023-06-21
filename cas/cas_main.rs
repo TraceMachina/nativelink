@@ -19,6 +19,7 @@ use clap::Parser;
 use futures::future::{select_all, BoxFuture, TryFutureExt};
 use json5;
 use runfiles::Runfiles;
+use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
 
 use ac_server::AcServer;
@@ -141,8 +142,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .ac
                     .map_or(Ok(None), |cfg| {
-                        AcServer::new(&cfg, &store_manager)
-                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
+                        AcServer::new(&cfg, &store_manager).and_then(|v| {
+                            Ok(Some(
+                                v.into_service()
+                                    .send_compressed(CompressionEncoding::Gzip)
+                                    .accept_compressed(CompressionEncoding::Gzip),
+                            ))
+                        })
                     })
                     .err_tip(|| "Could not create AC service")?,
             )
@@ -150,8 +156,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .cas
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(&cfg, &store_manager)
-                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
+                        CasServer::new(&cfg, &store_manager).and_then(|v| {
+                            Ok(Some(
+                                v.into_service()
+                                    .send_compressed(CompressionEncoding::Gzip)
+                                    .accept_compressed(CompressionEncoding::Gzip),
+                            ))
+                        })
                     })
                     .err_tip(|| "Could not create CAS service")?,
             )
@@ -159,8 +170,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .execution
                     .map_or(Ok(None), |cfg| {
-                        ExecutionServer::new(&cfg, &schedulers, &store_manager)
-                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
+                        ExecutionServer::new(&cfg, &schedulers, &store_manager).and_then(|v| {
+                            Ok(Some(
+                                v.into_service()
+                                    .send_compressed(CompressionEncoding::Gzip)
+                                    .accept_compressed(CompressionEncoding::Gzip),
+                            ))
+                        })
                     })
                     .err_tip(|| "Could not create Execution service")?,
             )
@@ -168,8 +184,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .bytestream
                     .map_or(Ok(None), |cfg| {
-                        ByteStreamServer::new(&cfg, &store_manager)
-                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
+                        ByteStreamServer::new(&cfg, &store_manager).and_then(|v| {
+                            Ok(Some(
+                                v.into_service()
+                                    .send_compressed(CompressionEncoding::Gzip)
+                                    .accept_compressed(CompressionEncoding::Gzip),
+                            ))
+                        })
                     })
                     .err_tip(|| "Could not create ByteStream service")?,
             )
@@ -177,8 +198,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .capabilities
                     .map_or(Ok(None), |cfg| {
-                        CapabilitiesServer::new(&cfg, &schedulers)
-                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
+                        CapabilitiesServer::new(&cfg, &schedulers).and_then(|v| {
+                            Ok(Some(
+                                v.into_service()
+                                    .send_compressed(CompressionEncoding::Gzip)
+                                    .accept_compressed(CompressionEncoding::Gzip),
+                            ))
+                        })
                     })
                     .err_tip(|| "Could not create Capabilities service")?,
             )
@@ -186,8 +212,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
-                        WorkerApiServer::new(&cfg, &schedulers)
-                            .and_then(|v| Ok(Some(v.into_service().accept_gzip().send_gzip())))
+                        WorkerApiServer::new(&cfg, &schedulers).and_then(|v| {
+                            Ok(Some(
+                                v.into_service()
+                                    .send_compressed(CompressionEncoding::Gzip)
+                                    .accept_compressed(CompressionEncoding::Gzip),
+                            ))
+                        })
                     })
                     .err_tip(|| "Could not create WorkerApi service")?,
             );

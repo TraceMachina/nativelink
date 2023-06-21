@@ -36,8 +36,6 @@ licenses([
 rust_library(
     name = "android_system_properties",
     srcs = glob(["**/*.rs"]),
-    crate_features = [
-    ],
     crate_root = "src/lib.rs",
     data = [],
     edition = "2018",
@@ -46,11 +44,12 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=android_system_properties",
         "manual",
     ],
     version = "0.1.5",
     # buildifier: leave-alone
     deps = [
-        "@raze__libc__0_2_134//:libc",
+        "@raze__libc__0_2_146//:libc",
     ],
 )

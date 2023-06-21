@@ -36,8 +36,6 @@ rust_binary(
     # N.B.: The exact form of this is subject to change.
     name = "cargo_bin_hash_file",
     srcs = glob(["**/*.rs"]),
-    crate_features = [
-    ],
     crate_root = "src/bin/hash_file.rs",
     data = [],
     edition = "2018",
@@ -46,6 +44,7 @@ rust_binary(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=hash_file",
         "manual",
     ],
     version = "1.6.3",
@@ -60,8 +59,6 @@ rust_binary(
 rust_library(
     name = "twox_hash",
     srcs = glob(["**/*.rs"]),
-    crate_features = [
-    ],
     crate_root = "src/lib.rs",
     data = [],
     edition = "2018",
@@ -70,6 +67,7 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=twox-hash",
         "manual",
     ],
     version = "1.6.3",

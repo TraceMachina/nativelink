@@ -34,26 +34,25 @@ licenses([
 rust_library(
     name = "json5",
     srcs = glob(["**/*.rs"]),
-    crate_features = [
-    ],
     crate_root = "src/lib.rs",
     data = [] + ['src/json5.pest'],
     edition = "2018",
     proc_macro_deps = [
-        "@raze__pest_derive__2_4_0//:pest_derive",
+        "@raze__pest_derive__2_6_1//:pest_derive",
     ],
     rustc_flags = [
         "--cap-lints=allow",
     ],
     tags = [
         "cargo-raze",
+        "crate-name=json5",
         "manual",
     ],
     version = "0.3.0",
     # buildifier: leave-alone
     deps = [
-        "@raze__pest__2_4_0//:pest",
-        "@raze__serde__1_0_145//:serde",
+        "@raze__pest__2_6_1//:pest",
+        "@raze__serde__1_0_164//:serde",
     ],
 )
 

@@ -14,13 +14,10 @@
 
 use std::pin::Pin;
 use std::str::from_utf8;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::channel::mpsc;
 use futures::executor::block_on;
 use futures::future::ready;
-use futures::stream::StreamExt;
 use futures::FutureExt;
 use http::status::StatusCode;
 use rusoto_core::{
@@ -46,21 +43,17 @@ use traits::StoreTrait;
 // Should match constant in s3_store.
 const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
 
-// TODO(blaise.bruer) We should merge this functionality into StreamMockRequestDispatcher.
-fn receive_request(sender: mpsc::Sender<(SignedRequest, Vec<u8>)>) -> impl Fn(SignedRequest) {
-    move |mut request| {
-        let mut sender = sender.clone();
-        let mut raw_payload = Vec::new();
-        match request.payload.take() {
-            Some(SignedRequestPayload::Stream(stream)) => {
-                let mut async_reader = stream.into_async_read();
-                assert!(block_on(async_reader.read_to_end(&mut raw_payload)).is_ok());
-            }
-            Some(SignedRequestPayload::Buffer(buffer)) => raw_payload.extend_from_slice(&buffer[..]),
-            None => {}
+fn get_body(request: &mut SignedRequest) -> Vec<u8> {
+    let mut raw_payload = Vec::new();
+    match request.payload.take() {
+        Some(SignedRequestPayload::Stream(stream)) => {
+            let mut async_reader = stream.into_async_read();
+            assert!(block_on(async_reader.read_to_end(&mut raw_payload)).is_ok());
         }
-        sender.try_send((request, raw_payload)).expect("Failed to send payload");
+        Some(SignedRequestPayload::Buffer(buffer)) => raw_payload.extend_from_slice(&buffer[..]),
+        None => {}
     }
+    raw_payload
 }
 
 type RequestWithWriter = (SignedRequest, Box<dyn AsyncWrite + Send + Unpin + Sync + 'static>);
@@ -220,14 +213,9 @@ mod s3_store_tests {
 
     #[tokio::test]
     async fn simple_update_ac() -> Result<(), Error> {
-        let (sender, mut receiver) = mpsc::channel::<(SignedRequest, Vec<u8>)>(100);
+        let (request_tx, mut request_rx) = unbounded_channel::<RequestWithWriter>();
         let s3_client = S3Client::new_with(
-            MultipleMockRequestDispatcher::new(vec![
-                MockRequestDispatcher::with_status(StatusCode::OK.into())
-                    .with_request_checker(receive_request(sender.clone())),
-                MockRequestDispatcher::with_status(StatusCode::OK.into())
-                    .with_request_checker(receive_request(sender.clone())),
-            ]),
+            StreamMockRequestDispatcher::new(request_tx),
             MockCredentialsProvider,
             Region::UsEast1,
         );
@@ -238,25 +226,21 @@ mod s3_store_tests {
             send_data.push(((i * 3) % 256) as u8);
         }
 
-        {
-            // Send payload.
-            let store = S3Store::new_with_client_and_jitter(
-                &config::backends::S3Store {
-                    bucket: BUCKET_NAME.to_string(),
-                    ..Default::default()
-                },
-                s3_client,
-                Box::new(move |_delay| Duration::from_secs(0)),
-            )?;
-            let store_pin = Pin::new(&store);
-            store_pin
-                .update_oneshot(DigestInfo::try_new(&VALID_HASH1, 199)?, send_data.clone().into())
-                .await?;
-        }
+        // Send payload.
+        let store = S3Store::new_with_client_and_jitter(
+            &config::backends::S3Store {
+                bucket: BUCKET_NAME.to_string(),
+                ..Default::default()
+            },
+            s3_client,
+            Box::new(move |_delay| Duration::from_secs(0)),
+        )?;
+        let store_pin = Pin::new(&store);
+        let get_part_fut = store_pin.update_oneshot(DigestInfo::try_new(&VALID_HASH1, 199)?, send_data.clone().into());
 
         // Check requests.
-        {
-            let (request, rt_data) = receiver.next().await.err_tip(|| "Could not get next payload")?;
+        let send_data_fut = async move {
+            let (mut request, mut tx) = request_rx.recv().await.err_tip(|| "Could not get next payload")?;
 
             assert_eq!(request.method, "PUT");
             assert_eq!(
@@ -272,8 +256,15 @@ mod s3_store_tests {
                 request.canonical_uri,
                 "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-199"
             );
-            assert_eq!(send_data, rt_data, "Expected sizes to match",);
-        }
+            assert_eq!(send_data, get_body(&mut request), "Expected sizes to match",);
+
+            tx.write(&[]).await.err_tip(|| "Failed to write EOF")?; // Send EOF to finish stream.
+            Result::<(), Error>::Ok(())
+        };
+
+        let (get_part_result, send_data_result) = join!(get_part_fut, send_data_fut);
+        get_part_result?;
+        send_data_result?;
 
         Ok(())
     }
@@ -316,16 +307,13 @@ mod s3_store_tests {
     async fn smoke_test_get_part() -> Result<(), Error> {
         const AC_ENTRY_SIZE: u64 = 1000; // Any size that is not raw_send_data.len().
 
-        let (sender, mut receiver) = mpsc::channel::<SignedRequest>(100);
-        let sender = Arc::new(Mutex::new(sender));
-
         let s3_client = S3Client::new_with(
             MockRequestDispatcher::with_status(StatusCode::OK.into()).with_request_checker(move |request| {
-                sender
-                    .lock()
-                    .unwrap()
-                    .try_send(request)
-                    .expect("Failed to send payload");
+                let range = get_range_from_request(&request);
+                assert!(!range.is_err(), "Unable to get range from request");
+                let (start, end) = range.unwrap();
+                assert_eq!(start, OFFSET, "Expected start range to match");
+                assert_eq!(end, Some(OFFSET + LENGTH), "Expected end range to match");
             }),
             MockCredentialsProvider,
             Region::UsEast1,
@@ -351,10 +339,6 @@ mod s3_store_tests {
             )
             .await?;
 
-        let request = receiver.next().await.err_tip(|| "Could not get next SignedRequest")?;
-        let (start, end) = get_range_from_request(&request)?;
-        assert_eq!(start, OFFSET, "Expected start range to match");
-        assert_eq!(end, Some(OFFSET + LENGTH), "Expected end range to match");
         Ok(())
     }
 
@@ -470,26 +454,9 @@ mod s3_store_tests {
 
     #[tokio::test]
     async fn multipart_update_large_cas() -> Result<(), Error> {
-        let (sender, mut receiver) = mpsc::channel::<(SignedRequest, Vec<u8>)>(100);
+        let (request_tx, mut request_rx) = unbounded_channel::<RequestWithWriter>();
         let s3_client = S3Client::new_with(
-            MultipleMockRequestDispatcher::new(vec![
-                MockRequestDispatcher::with_status(StatusCode::OK.into())
-                    .with_request_checker(receive_request(sender.clone()))
-                    .with_body(
-                        r#"
-                    <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-                      <UploadId>Dummy-uploadid</UploadId>
-                    </InitiateMultipartUploadResult>"#,
-                    ),
-                MockRequestDispatcher::with_status(StatusCode::OK.into())
-                    .with_request_checker(receive_request(sender.clone())),
-                MockRequestDispatcher::with_status(StatusCode::OK.into())
-                    .with_request_checker(receive_request(sender.clone())),
-                MockRequestDispatcher::with_status(StatusCode::OK.into())
-                    .with_request_checker(receive_request(sender.clone())),
-                MockRequestDispatcher::with_status(StatusCode::OK.into())
-                    .with_request_checker(receive_request(sender.clone())),
-            ]),
+            StreamMockRequestDispatcher::new(request_tx),
             MockCredentialsProvider,
             Region::UsEast1,
         );
@@ -500,135 +467,155 @@ mod s3_store_tests {
             send_data.push(((i * 3) % 256) as u8);
         }
 
-        {
-            // Send payload.
-            let digest = DigestInfo::try_new(&VALID_HASH1, send_data.len())?;
-            let store = S3Store::new_with_client_and_jitter(
-                &config::backends::S3Store {
-                    bucket: BUCKET_NAME.to_string(),
-                    ..Default::default()
-                },
-                s3_client,
-                Box::new(move |_delay| Duration::from_secs(0)),
-            )?;
-            let store_pin = Pin::new(&store);
-            store_pin.update_oneshot(digest, send_data.clone().into()).await?;
-        }
+        // Send payload.
+        let digest = DigestInfo::try_new(&VALID_HASH1, send_data.len())?;
+        let store = S3Store::new_with_client_and_jitter(
+            &config::backends::S3Store {
+                bucket: BUCKET_NAME.to_string(),
+                ..Default::default()
+            },
+            s3_client,
+            Box::new(move |_delay| Duration::from_secs(0)),
+        )?;
+        let get_part_fut = Pin::new(&store).update_oneshot(digest, send_data.clone().into());
 
         // Check requests.
+        let send_data_fut = async move {
+            {
+                // First request is the create_multipart_upload request.
+                let (mut request, mut tx) = request_rx.recv().await.err_tip(|| "Could not get next payload")?;
 
-        {
-            // First request is the create_multipart_upload request.
-            let (request, rt_data) = receiver.next().await.err_tip(|| "Could not get next payload")?;
-            assert_eq!(rt_data.len(), 0, "Expected first request payload to be empty");
-            assert_eq!(request.method, "POST");
-            assert_eq!(
-                from_utf8(&request.headers["content-type"][0]).unwrap(),
-                "application/octet-stream"
-            );
-            assert_eq!(
-                from_utf8(&request.headers["host"][0]).unwrap(),
-                "s3.us-east-1.amazonaws.com"
-            );
-            assert_eq!(
-                from_utf8(&request.headers["content-length"][0]).unwrap(),
-                format!("{}", rt_data.len())
-            );
-            assert_eq!(request.canonical_query_string, "uploads=");
-            assert_eq!(
-                request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
-            );
-        }
-        {
-            // Further requests are the actual data.
-            let (request, rt_data) = receiver.next().await.err_tip(|| "Could not get next payload")?;
-            assert_eq!(&send_data[0..MIN_MULTIPART_SIZE], rt_data, "Expected data to match");
-            assert_eq!(request.method, "PUT");
-            assert_eq!(
-                from_utf8(&request.headers["content-type"][0]).unwrap(),
-                "application/octet-stream"
-            );
-            assert_eq!(
-                from_utf8(&request.headers["host"][0]).unwrap(),
-                "s3.us-east-1.amazonaws.com"
-            );
-            assert_eq!(
-                from_utf8(&request.headers["content-length"][0]).unwrap(),
-                format!("{}", rt_data.len())
-            );
-            assert_eq!(request.canonical_query_string, "partNumber=1&uploadId=Dummy-uploadid");
-            assert_eq!(
-                request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
-            );
-        }
-        {
-            let (request, rt_data) = receiver.next().await.err_tip(|| "Could not get next payload")?;
-            assert_eq!(
-                &send_data[MIN_MULTIPART_SIZE..MIN_MULTIPART_SIZE * 2],
-                rt_data,
-                "Expected data to match"
-            );
+                let rt_data = get_body(&mut request);
+                assert_eq!(rt_data.len(), 0, "Expected first request payload to be empty");
+                assert_eq!(request.method, "POST");
+                assert_eq!(
+                    from_utf8(&request.headers["content-type"][0]).unwrap(),
+                    "application/octet-stream"
+                );
+                assert_eq!(
+                    from_utf8(&request.headers["host"][0]).unwrap(),
+                    "s3.us-east-1.amazonaws.com"
+                );
+                assert_eq!(
+                    from_utf8(&request.headers["content-length"][0]).unwrap(),
+                    format!("{}", rt_data.len())
+                );
+                assert_eq!(request.canonical_query_string, "uploads=");
+                assert_eq!(
+                    request.canonical_uri,
+                    "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
+                );
+                tx.write_all(
+                    r#"
+                <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                  <UploadId>Dummy-uploadid</UploadId>
+                </InitiateMultipartUploadResult>"#
+                        .as_bytes(),
+                )
+                .await?;
+                tx.write(&[]).await.err_tip(|| "Failed to write EOF")?; // Send EOF to finish stream.
+            }
+            {
+                // Further requests are the actual data.
+                let (mut request, _) = request_rx.recv().await.err_tip(|| "Could not get next payload")?;
+                let rt_data = get_body(&mut request);
+                assert_eq!(&send_data[0..MIN_MULTIPART_SIZE], rt_data, "Expected data to match");
+                assert_eq!(request.method, "PUT");
+                assert_eq!(
+                    from_utf8(&request.headers["content-type"][0]).unwrap(),
+                    "application/octet-stream"
+                );
+                assert_eq!(
+                    from_utf8(&request.headers["host"][0]).unwrap(),
+                    "s3.us-east-1.amazonaws.com"
+                );
+                assert_eq!(
+                    from_utf8(&request.headers["content-length"][0]).unwrap(),
+                    format!("{}", rt_data.len())
+                );
+                assert_eq!(request.canonical_query_string, "partNumber=1&uploadId=Dummy-uploadid");
+                assert_eq!(
+                    request.canonical_uri,
+                    "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
+                );
+            }
+            {
+                let (mut request, _) = request_rx.recv().await.err_tip(|| "Could not get next payload")?;
+                let rt_data = get_body(&mut request);
+                assert_eq!(
+                    &send_data[MIN_MULTIPART_SIZE..MIN_MULTIPART_SIZE * 2],
+                    rt_data,
+                    "Expected data to match"
+                );
 
-            assert_eq!(
-                from_utf8(&request.headers["content-length"][0]).unwrap(),
-                format!("{}", rt_data.len())
-            );
-            assert_eq!(request.canonical_query_string, "partNumber=2&uploadId=Dummy-uploadid");
-            assert_eq!(
-                request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
-            );
-        }
-        {
-            let (request, rt_data) = receiver.next().await.err_tip(|| "Could not get next payload")?;
-            assert_eq!(
-                &send_data[MIN_MULTIPART_SIZE * 2..MIN_MULTIPART_SIZE * 2 + 50],
-                rt_data,
-                "Expected data to match"
-            );
-            assert_eq!(
-                from_utf8(&request.headers["content-length"][0]).unwrap(),
-                format!("{}", rt_data.len())
-            );
-            assert_eq!(request.canonical_query_string, "partNumber=3&uploadId=Dummy-uploadid");
-            assert_eq!(
-                request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
-            );
-        }
-        {
-            // Final payload is the complete_multipart_upload request.
-            let (request, rt_data) = receiver.next().await.err_tip(|| "Could not get next payload")?;
-            const COMPLETE_MULTIPART_PAYLOAD_DATA: &str = concat!(
-                r#"<?xml version="1.0" encoding="utf-8"?>"#,
-                "<CompleteMultipartUpload>",
-                "<Part><PartNumber>1</PartNumber></Part>",
-                "<Part><PartNumber>2</PartNumber></Part>",
-                "<Part><PartNumber>3</PartNumber></Part>",
-                "</CompleteMultipartUpload>",
-            );
-            assert_eq!(
-                from_utf8(&rt_data).unwrap(),
-                COMPLETE_MULTIPART_PAYLOAD_DATA,
-                "Expected last payload to be empty"
-            );
-            assert_eq!(request.method, "POST");
-            assert_eq!(
-                from_utf8(&request.headers["content-length"][0]).unwrap(),
-                format!("{}", COMPLETE_MULTIPART_PAYLOAD_DATA.len())
-            );
-            assert_eq!(
-                from_utf8(&request.headers["x-amz-content-sha256"][0]).unwrap(),
-                "730f96c9a87580c7930b5bd4fd0457fbe01b34f2261dcdde877d09b06d937b5e"
-            );
-            assert_eq!(request.canonical_query_string, "uploadId=Dummy-uploadid");
-            assert_eq!(
-                request.canonical_uri,
-                "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
-            );
-        }
+                assert_eq!(
+                    from_utf8(&request.headers["content-length"][0]).unwrap(),
+                    format!("{}", rt_data.len())
+                );
+                assert_eq!(request.canonical_query_string, "partNumber=2&uploadId=Dummy-uploadid");
+                assert_eq!(
+                    request.canonical_uri,
+                    "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
+                );
+            }
+            {
+                let (mut request, _) = request_rx.recv().await.err_tip(|| "Could not get next payload")?;
+                let rt_data = get_body(&mut request);
+                assert_eq!(
+                    &send_data[MIN_MULTIPART_SIZE * 2..MIN_MULTIPART_SIZE * 2 + 50],
+                    rt_data,
+                    "Expected data to match"
+                );
+                assert_eq!(
+                    from_utf8(&request.headers["content-length"][0]).unwrap(),
+                    format!("{}", rt_data.len())
+                );
+                assert_eq!(request.canonical_query_string, "partNumber=3&uploadId=Dummy-uploadid");
+                assert_eq!(
+                    request.canonical_uri,
+                    "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
+                );
+            }
+            {
+                // Final payload is the complete_multipart_upload request.
+                let (mut request, mut tx) = request_rx.recv().await.err_tip(|| "Could not get next payload")?;
+                let rt_data = get_body(&mut request);
+                const COMPLETE_MULTIPART_PAYLOAD_DATA: &str = concat!(
+                    r#"<?xml version="1.0" encoding="utf-8"?>"#,
+                    "<CompleteMultipartUpload>",
+                    "<Part><PartNumber>1</PartNumber></Part>",
+                    "<Part><PartNumber>2</PartNumber></Part>",
+                    "<Part><PartNumber>3</PartNumber></Part>",
+                    "</CompleteMultipartUpload>",
+                );
+                assert_eq!(
+                    from_utf8(&rt_data).unwrap(),
+                    COMPLETE_MULTIPART_PAYLOAD_DATA,
+                    "Expected last payload to be empty"
+                );
+                assert_eq!(request.method, "POST");
+                assert_eq!(
+                    from_utf8(&request.headers["content-length"][0]).unwrap(),
+                    format!("{}", COMPLETE_MULTIPART_PAYLOAD_DATA.len())
+                );
+                assert_eq!(
+                    from_utf8(&request.headers["x-amz-content-sha256"][0]).unwrap(),
+                    "730f96c9a87580c7930b5bd4fd0457fbe01b34f2261dcdde877d09b06d937b5e"
+                );
+                assert_eq!(request.canonical_query_string, "uploadId=Dummy-uploadid");
+                assert_eq!(
+                    request.canonical_uri,
+                    "/dummy-bucket-name/0123456789abcdef000000000000000000010000000000000123456789abcdef-10485810"
+                );
+                tx.write(&[]).await.err_tip(|| "Failed to write EOF")?; // Send EOF to finish stream.
+            }
+            Result::<(), Error>::Ok(())
+        };
+
+        // Now run our test.
+        let (get_part_result, send_data_result) = join!(get_part_fut, send_data_fut);
+        get_part_result?;
+        send_data_result?;
 
         Ok(())
     }

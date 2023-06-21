@@ -54,6 +54,7 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=rand",
         "manual",
     ],
     version = "0.8.5",
@@ -62,15 +63,12 @@ rust_library(
         "@raze__rand_chacha__0_3_1//:rand_chacha",
         "@raze__rand_core__0_6_4//:rand_core",
     ] + selects.with_or({
-        # cfg(unix)
         (
             "@rules_rust//rust/platform:x86_64-unknown-linux-gnu",
             "@rules_rust//rust/platform:aarch64-unknown-linux-gnu",
             "@rules_rust//rust/platform:arm-unknown-linux-gnueabi",
-            "@rules_rust//rust/platform:powerpc-unknown-linux-gnu",
-            "@rules_rust//rust/platform:s390x-unknown-linux-gnu",
         ): [
-            "@raze__libc__0_2_134//:libc",
+            "@raze__libc__0_2_146//:libc",
         ],
         "//conditions:default": [],
     }),

@@ -20,27 +20,27 @@ version = "0.0.0"
 path = "needed_only_to_make_cargo_tooling_happy.rs"
 
 [dependencies]
-prost = "0.10.1"
-prost-types = "0.10.1"
+prost = "0.11.8"
+prost-types = "0.11.8"
 hex = "0.4.3"
 async-trait = "0.1.51"
 fixed-buffer = "0.2.3"
 futures = "0.3.17"
-tokio = { version = "1.13.0", features = ["macros", "io-util", "fs", "rt-multi-thread", "parking_lot"] }
+tokio = { version = "1.26.0", features = ["macros", "io-util", "fs", "rt-multi-thread", "parking_lot"] }
 tokio-stream = { version = "0.1.8", features = ["fs", "sync"] }
 tokio-util = { version = "0.6.9", features = ["io", "io-util", "codec"] }
-tonic = { version = "0.7.1", features = ["compression"] }
+tonic = { version = "0.8.3", features = ["gzip"] }
 lazy-init = "0.5.0"
 log = "0.4.14"
 env_logger = "0.9.0"
 serde = "1.0.127"
 json5 = "0.3.0"
 sha2 = "0.9.5"
-lru = "0.7.6"
+lru = "0.9.0"
 rand = "0.8.4"
-rusoto_s3 = "0.46.0"
-rusoto_core = "0.46.0"
-rusoto_signature = "0.46.0"
+rusoto_s3 = "0.48.0"
+rusoto_core = "0.48.0"
+rusoto_signature = "0.48.0"
 http = "^0.2"
 pin-project-lite = "0.2.7"
 fast-async-mutex = "0.6.7"
@@ -52,34 +52,33 @@ byteorder = "1.4.3"
 lazy_static = "1.4.0"
 filetime = "0.2.15"
 nix = "0.23.1"
-clap = { version = "4.0.9", features = ["derive"] }
+clap = { version = "4.1.8", features = ["derive"] }
 uuid = { version = "0.8.2", features = ["v4"] }
 shlex = "1.1.0"
 relative-path = "1.7.0"
 
 [dev-dependencies]
 stdext = "0.2.1"
-prost-build = "0.10.1"
-tonic-build = { version = "0.7.0", features = ["compression"] }
+prost-build = "0.11.8"
+tonic-build = "0.8.3"
 pretty_assertions = "0.7.2"
 maplit = "1.0.2"
 mock_instant = "0.2.1"
-rusoto_mock = "=0.46.0"
-hyper = "0.14.18"
+rusoto_mock = "=0.48.0"
+hyper = "0.14.24"
 ctor = "0.1.22"
-
-[patch.crates-io]
-rusoto_mock = { git = "https://github.com/allada/rusoto.git", rev = "cc9acca00dbafa41a37d75faeaf2a4baba33d42e" }
-rusoto_credential = { git = "https://github.com/allada/rusoto.git", rev = "cc9acca00dbafa41a37d75faeaf2a4baba33d42e" }
-rusoto_signature = { git = "https://github.com/allada/rusoto.git", rev = "cc9acca00dbafa41a37d75faeaf2a4baba33d42e" }
 
 [package.metadata.raze.crates.json5.'*']
 data_attr = "['src/json5.pest']"
 
+[package.metadata.raze.crates.clap_builder.'*']
+compile_data_attr = "['README.md']"
 [package.metadata.raze.crates.clap_derive.'*']
 compile_data_attr = "['README.md']"
 [package.metadata.raze.crates.clap.'*']
 compile_data_attr = "['README.md', 'examples/demo.md']"
+[package.metadata.raze.crates.prost.'*']
+compile_data_attr = "['README.md']"
 
 [package.metadata.raze.crates.prost-build.'*']
 gen_buildrs = true
@@ -109,8 +108,9 @@ targets = [
     "aarch64-unknown-linux-gnu",
     "arm-unknown-linux-gnueabi",
     "armv7-unknown-linux-gnueabi",
-    "powerpc-unknown-linux-gnu",
-    "s390x-unknown-linux-gnu",
+    # These targets appear to have issues with rustix which is required by tempfile
+    #"powerpc-unknown-linux-gnu",
+    #"s390x-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
 ]
 

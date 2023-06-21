@@ -34,8 +34,6 @@ licenses([
 rust_library(
     name = "http_body",
     srcs = glob(["**/*.rs"]),
-    crate_features = [
-    ],
     crate_root = "src/lib.rs",
     data = [],
     edition = "2018",
@@ -44,13 +42,14 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=http-body",
         "manual",
     ],
     version = "0.4.5",
     # buildifier: leave-alone
     deps = [
-        "@raze__bytes__1_2_1//:bytes",
-        "@raze__http__0_2_8//:http",
+        "@raze__bytes__1_4_0//:bytes",
+        "@raze__http__0_2_9//:http",
         "@raze__pin_project_lite__0_2_9//:pin_project_lite",
     ],
 )

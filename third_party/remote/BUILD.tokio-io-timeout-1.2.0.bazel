@@ -34,8 +34,6 @@ licenses([
 rust_library(
     name = "tokio_io_timeout",
     srcs = glob(["**/*.rs"]),
-    crate_features = [
-    ],
     crate_root = "src/lib.rs",
     data = [],
     edition = "2018",
@@ -44,12 +42,13 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=tokio-io-timeout",
         "manual",
     ],
     version = "1.2.0",
     # buildifier: leave-alone
     deps = [
         "@raze__pin_project_lite__0_2_9//:pin_project_lite",
-        "@raze__tokio__1_21_2//:tokio",
+        "@raze__tokio__1_28_2//:tokio",
     ],
 )
