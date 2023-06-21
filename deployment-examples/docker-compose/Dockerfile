@@ -20,6 +20,10 @@ ARG OPT_LEVEL=opt
 ARG CC=clang
 # Additional bazel flags.
 ARG ADDITIONAL_BAZEL_FLAGS=
+# Additional packages to add to the final image.
+ARG ADDITIONAL_FINAL_PACKAGES=
+# Additional command to run in the final image before copying in turbo-cache.
+ARG ADDITIONAL_FINAL_CMD=true
 
 
 # Builder that contains the OS dependencies.
@@ -111,11 +115,18 @@ RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} //cas && \
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
 FROM ubuntu:${OS_VERSION}
-COPY --from=builder-final /root/turbo-cache-bin /usr/local/bin/turbo-cache
+
+ARG ADDITIONAL_FINAL_PACKAGES
+ARG ADDITIONAL_FINAL_CMD
+
 # Install runtime packages.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        libssl-dev
+        libssl-dev ${ADDITIONAL_FINAL_PACKAGES}
 RUN mkdir -p /root/.cache/turbo-cache
 EXPOSE 50051/tcp 50052/tcp
 CMD ["turbo-cache"]
+
+RUN /bin/sh -c "${ADDITIONAL_FINAL_CMD}"
+
+COPY --from=builder-final /root/turbo-cache-bin /usr/local/bin/turbo-cache

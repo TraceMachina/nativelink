@@ -1,0 +1,115 @@
+# Copyright 2023 The Turbo Cache Authors. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+version: '3.4'
+
+services:
+  turbo_cache_local_cas:
+    image: allada/turbo-cache:latest
+    build:
+      context: ../..
+      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      network: host
+    volumes:
+      - ${TURBO_CACHE_DIR:-~/.cache/turbo-cache}:/root/.cache/turbo-cache
+      - type: bind
+        source: .
+        target: /root
+    environment:
+      RUST_LOG: $${RUST_LOG:-}
+    ports: [ "50051:50051/tcp" ]
+    command: |
+      turbo-cache /root/local-storage-cas.json
+
+  turbo_cache_scheduler:
+    image: allada/turbo-cache:latest
+    volumes:
+      - type: bind
+        source: .
+        target: /root
+    environment:
+      RUST_LOG: $${RUST_LOG:-}
+      CAS_ENDPOINT: turbo_cache_local_cas
+    ports: [ "50052:50052/tcp" ]
+    command: |
+      turbo-cache /root/scheduler.json
+
+  turbo_cache_executor:
+    image: allada/turbo-cache-chromium-worker-2:latest
+    build:
+      context: ../..
+      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      network: host
+      args:
+        OS_VERSION: 20.04
+        ADDITIONAL_FINAL_PACKAGES: curl ca-certificates lsb-release sudo file python3 tzdata
+        ADDITIONAL_FINAL_CMD: >-
+          curl https://chromium.googlesource.com/chromium/src/+/refs/heads/main/build/install-build-deps.py?format=TEXT |
+            base64 -d > /tmp/install-build-deps.py &&
+          chmod +x /tmp/install-build-deps.py &&
+          /tmp/install-build-deps.py --no-prompt --no-arm --no-chromeos-fonts --no-nacl &&
+          rm -rf /var/lib/apt/lists/* /tmp/install-build-deps.py
+    volumes:
+      - ${TURBO_CACHE_DIR:-~/.cache/turbo-cache}:/root/.cache/turbo-cache
+      - type: bind
+        source: .
+        target: /root
+    environment:
+      RUST_LOG: $${RUST_LOG:-}
+      CAS_ENDPOINT: turbo_cache_local_cas
+      SCHEDULER_ENDPOINT: turbo_cache_scheduler
+    command: |
+      turbo-cache /root/worker.json
+
+  # Use Redis to keep DigestCache for Goma otherwise it will require all
+  # files to be uploaded every restart.
+  redis:
+    image: bitnami/redis:latest
+    volumes:
+      - file-digest-cache:/bitnami/redis/data:z
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+    restart: always
+
+  goma:
+    image: allada/turbo-cache-goma:latest
+    build:
+      context: ./turbo-cache-goma
+    depends_on:
+      - redis
+      - turbo_cache_scheduler
+    environment:
+      REDISHOST: "redis"
+      REDISPORT: "6379"
+    ports:
+      - "5051:5051/tcp"
+    restart: always
+    command: >
+      /remoteexec_proxy
+       --port 5051
+       --allowed-users *
+       --remoteexec-addr turbo_cache_scheduler:50052
+       --remote-instance-name main
+       --insecure-remoteexec
+       --exec-missing-input-limit 0
+       --exec-check-missing-timeout 60s
+       --exec-check-cache-timeout 10s
+       --exec-response-timeout 30s
+       --exec-upload-blobs-timeout 120s
+       --exec-execute-timeout 120s
+       --exec-input-tree-timeout 60s
+       --exec-setup-timeout 60s
+
+volumes:
+  file-digest-cache:
