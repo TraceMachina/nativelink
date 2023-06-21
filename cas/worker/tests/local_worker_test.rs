@@ -136,6 +136,39 @@ mod local_worker_tests {
     }
 
     #[tokio::test]
+    async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error>> {
+        let mut test_context = setup_local_worker(HashMap::new()).await;
+        let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+        {
+            // Ensure our worker connects and properties were sent.
+            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            assert_eq!(props, SupportedProperties::default());
+        }
+
+        // Handle registration (kill_all not called unless registered).
+        let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+        {
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: "foobar".to_string(),
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+
+        // Disconnect our grpc stream.
+        tx_stream.abort();
+
+        // Check that kill_all is called.
+        test_context.actions_manager.expect_kill_all().await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Error>> {
         let mut test_context = setup_local_worker(HashMap::new()).await;
         let streaming_response = test_context.maybe_streaming_response.take().unwrap();
