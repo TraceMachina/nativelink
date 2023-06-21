@@ -384,10 +384,10 @@ struct RunningActionImplState {
     kill_channel_rx: Option<oneshot::Receiver<()>>,
     execution_result: Option<RunningActionImplExecutionResult>,
     action_result: Option<ActionResult>,
+    execution_metadata: ExecutionMetadata,
 }
 
 pub struct RunningActionImpl {
-    worker_id: String,
     action_id: ActionId,
     work_directory: String,
     action_info: ActionInfo,
@@ -398,7 +398,7 @@ pub struct RunningActionImpl {
 
 impl RunningActionImpl {
     fn new(
-        worker_id: String,
+        execution_metadata: ExecutionMetadata,
         action_id: ActionId,
         work_directory: String,
         action_info: ActionInfo,
@@ -406,7 +406,6 @@ impl RunningActionImpl {
     ) -> Self {
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
         Self {
-            worker_id,
             action_id,
             work_directory,
             action_info,
@@ -417,6 +416,7 @@ impl RunningActionImpl {
                 _kill_channel_tx: Some(kill_channel_tx),
                 execution_result: None,
                 action_result: None,
+                execution_metadata,
             }),
             did_cleanup: AtomicBool::new(false),
         }
@@ -440,6 +440,10 @@ impl RunningAction for RunningActionImpl {
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        {
+            let mut state = self.state.lock().await;
+            state.execution_metadata.input_fetch_start_timestamp = (self.running_actions_manager.now_fn)();
+        }
         let command = {
             // Download and build out our input files/folders. Also fetch and decode our Command.
             let cas_store_pin = Pin::new(self.running_actions_manager.cas_store.as_ref());
@@ -482,6 +486,7 @@ impl RunningAction for RunningActionImpl {
         {
             let mut state = self.state.lock().await;
             state.command_proto = Some(command);
+            state.execution_metadata.input_fetch_completed_timestamp = (self.running_actions_manager.now_fn)();
         }
         Ok(self)
     }
@@ -489,6 +494,7 @@ impl RunningAction for RunningActionImpl {
     async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock().await;
+            state.execution_metadata.execution_start_timestamp = (self.running_actions_manager.now_fn)();
             (
                 state
                     .command_proto
@@ -563,6 +569,7 @@ impl RunningAction for RunningActionImpl {
                             stderr,
                             exit_code: exit_status.code().unwrap_or(EXIT_CODE_FOR_SIGNAL),
                         });
+                        state.execution_metadata.execution_completed_timestamp = (self.running_actions_manager.now_fn)();
                     }
                     return Ok(self);
                 },
@@ -578,8 +585,9 @@ impl RunningAction for RunningActionImpl {
 
     async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         log::info!("\x1b[0;31mWorker Uploading Results\x1b[0m");
-        let (mut command_proto, execution_result) = {
+        let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock().await;
+            state.execution_metadata.output_upload_start_timestamp = (self.running_actions_manager.now_fn)();
             (
                 state
                     .command_proto
@@ -589,6 +597,7 @@ impl RunningAction for RunningActionImpl {
                     .execution_result
                     .take()
                     .err_tip(|| "Execution result does not exist at upload_results stage")?,
+                state.execution_metadata.clone(),
             )
         };
         let cas_store = Pin::new(self.running_actions_manager.cas_store.as_ref());
@@ -728,10 +737,12 @@ impl RunningAction for RunningActionImpl {
             }
         }
         drop(output_path_futures);
+        execution_metadata.output_upload_completed_timestamp = (self.running_actions_manager.now_fn)();
         output_files.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_folders.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         output_file_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_directory_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
+        execution_metadata.worker_completed_timestamp = (self.running_actions_manager.now_fn)();
         {
             let mut state = self.state.lock().await;
             state.action_result = Some(ActionResult {
@@ -742,19 +753,7 @@ impl RunningAction for RunningActionImpl {
                 exit_code: execution_result.exit_code,
                 stdout_digest: stdout_digest.into(),
                 stderr_digest: stderr_digest.into(),
-                // TODO(allada) We should implement the timing info here.
-                execution_metadata: ExecutionMetadata {
-                    worker: self.worker_id.to_string(),
-                    queued_timestamp: SystemTime::UNIX_EPOCH,
-                    worker_start_timestamp: SystemTime::UNIX_EPOCH,
-                    worker_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
-                    input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    execution_start_timestamp: SystemTime::UNIX_EPOCH,
-                    execution_completed_timestamp: SystemTime::UNIX_EPOCH,
-                    output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
-                    output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
-                },
+                execution_metadata,
                 server_logs: Default::default(), // TODO(allada) Not implemented.
             });
         }
@@ -800,6 +799,9 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     async fn get_action(&self, action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error>;
 }
 
+/// A function to get the current system time, used to allow mocking for tests
+type NowFn = fn() -> SystemTime;
+
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
 pub struct RunningActionsManagerImpl {
@@ -807,10 +809,15 @@ pub struct RunningActionsManagerImpl {
     cas_store: Arc<FastSlowStore>,
     filesystem_store: Arc<FilesystemStore>,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
+    now_fn: NowFn,
 }
 
 impl RunningActionsManagerImpl {
-    pub fn new(root_work_directory: String, cas_store: Arc<FastSlowStore>) -> Result<Self, Error> {
+    pub fn new_with_now_fn(
+        root_work_directory: String,
+        cas_store: Arc<FastSlowStore>,
+        now_fn: NowFn,
+    ) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
         let filesystem_store = cas_store
             .fast_store()
@@ -824,7 +831,12 @@ impl RunningActionsManagerImpl {
             cas_store,
             filesystem_store,
             running_actions: Mutex::new(HashMap::new()),
+            now_fn,
         })
+    }
+
+    pub fn new(root_work_directory: String, cas_store: Arc<FastSlowStore>) -> Result<Self, Error> {
+        Self::new_with_now_fn(root_work_directory, cas_store, SystemTime::now)
     }
 
     async fn make_work_directory(&self, action_id: &ActionId) -> Result<String, Error> {
@@ -835,7 +847,11 @@ impl RunningActionsManagerImpl {
         Ok(work_directory)
     }
 
-    async fn create_action_info(&self, start_execute: StartExecute) -> Result<ActionInfo, Error> {
+    async fn create_action_info(
+        &self,
+        start_execute: StartExecute,
+        queued_timestamp: SystemTime,
+    ) -> Result<ActionInfo, Error> {
         let execute_request = start_execute
             .execute_request
             .err_tip(|| "Expected execute_request to exist in StartExecute")?;
@@ -844,13 +860,19 @@ impl RunningActionsManagerImpl {
             .clone()
             .err_tip(|| "Expected action_digest to exist on StartExecute")?
             .try_into()?;
+        let load_start_timestamp = (self.now_fn)();
         let action = get_and_decode_digest::<Action>(Pin::new(self.cas_store.as_ref()), &action_digest)
             .await
             .err_tip(|| "During start_action")?;
-        Ok(
-            ActionInfo::try_from_action_and_execute_request_with_salt(execute_request, action, start_execute.salt)
-                .err_tip(|| "Could not create ActionInfo in create_and_add_action()")?,
+        let action_info = ActionInfo::try_from_action_and_execute_request_with_salt(
+            execute_request,
+            action,
+            start_execute.salt,
+            load_start_timestamp,
+            queued_timestamp,
         )
+        .err_tip(|| "Could not create ActionInfo in create_and_add_action()")?;
+        Ok(action_info)
     }
 
     async fn cleanup_action(&self, action_id: &ActionId) -> Result<(), Error> {
@@ -874,12 +896,29 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         worker_id: String,
         start_execute: StartExecute,
     ) -> Result<Arc<RunningActionImpl>, Error> {
-        let action_info = self.create_action_info(start_execute).await?;
+        let queued_timestamp = start_execute
+            .queued_timestamp
+            .clone()
+            .and_then(|time| time.try_into().ok())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
         log::info!("\x1b[0;31mWorker Received Action\x1b[0m: {:?}", action_info);
         let action_id = action_info.unique_qualifier.get_hash();
         let work_directory = self.make_work_directory(&action_id).await?;
+        let execution_metadata = ExecutionMetadata {
+            worker: worker_id,
+            queued_timestamp: action_info.insert_timestamp.clone(),
+            worker_start_timestamp: action_info.load_timestamp.clone(),
+            worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+            input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+            input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+            execution_start_timestamp: SystemTime::UNIX_EPOCH,
+            execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+            output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+            output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+        };
         let running_action = Arc::new(RunningActionImpl::new(
-            worker_id,
+            execution_metadata,
             action_id,
             work_directory,
             action_info,

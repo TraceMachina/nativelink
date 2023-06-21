@@ -35,7 +35,7 @@ use worker::{Worker, WorkerId};
 
 const INSTANCE_NAME: &str = "foobar_instance_name";
 
-fn make_base_action_info() -> ActionInfo {
+fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
     ActionInfo {
         instance_name: INSTANCE_NAME.to_string(),
         command_digest: DigestInfo::new([0u8; 32], 0),
@@ -45,7 +45,8 @@ fn make_base_action_info() -> ActionInfo {
             properties: HashMap::new(),
         },
         priority: 0,
-        insert_timestamp: SystemTime::now(),
+        load_timestamp: UNIX_EPOCH,
+        insert_timestamp,
         unique_qualifier: ActionInfoHashKey {
             digest: DigestInfo::new([0u8; 32], 0),
             salt: 0,
@@ -89,8 +90,9 @@ async fn setup_action(
     scheduler: &Scheduler,
     action_digest: DigestInfo,
     platform_properties: PlatformProperties,
+    insert_timestamp: SystemTime,
 ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-    let mut action_info = make_base_action_info();
+    let mut action_info = make_base_action_info(insert_timestamp);
     action_info.platform_properties = platform_properties;
     action_info.unique_qualifier.digest = action_digest;
     scheduler.add_action(action_info).await
@@ -111,7 +113,9 @@ mod scheduler_tests {
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
-        let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
 
         {
             // Worker should have been sent an execute command.
@@ -124,6 +128,7 @@ mod scheduler_tests {
                         ..Default::default()
                     }),
                     salt: 0,
+                    queued_timestamp: Some(insert_timestamp.into()),
                 })),
             };
             let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -155,7 +160,9 @@ mod scheduler_tests {
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, Default::default()).await?;
-        let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
         let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, Default::default()).await?;
 
         let mut expected_action_state = ActionState {
@@ -174,6 +181,7 @@ mod scheduler_tests {
                     ..Default::default()
                 }),
                 salt: 0,
+                queued_timestamp: Some(insert_timestamp.into()),
             })),
         };
         {
@@ -234,7 +242,14 @@ mod scheduler_tests {
         const WORKER_ID1: WorkerId = WorkerId(0x100001);
         const WORKER_ID2: WorkerId = WorkerId(0x100002);
         let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, platform_properties.clone()).await?;
-        let mut client_rx = setup_action(&scheduler, action_digest.clone(), worker_properties.clone()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest.clone(),
+            worker_properties.clone(),
+            insert_timestamp,
+        )
+        .await?;
 
         {
             // Client should get notification saying it's been queued.
@@ -260,6 +275,7 @@ mod scheduler_tests {
                         ..Default::default()
                     }),
                     salt: 0,
+                    queued_timestamp: Some(insert_timestamp.into()),
                 })),
             };
             let msg_for_worker = rx_from_worker2.recv().await.unwrap();
@@ -296,8 +312,12 @@ mod scheduler_tests {
             stage: ActionStage::Queued,
         };
 
-        let mut client1_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
-        let mut client2_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let insert_timestamp1 = make_system_time(1);
+        let insert_timestamp2 = make_system_time(2);
+        let mut client1_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp1).await?;
+        let mut client2_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp2).await?;
 
         {
             // Clients should get notification saying it's been queued.
@@ -322,6 +342,7 @@ mod scheduler_tests {
                         ..Default::default()
                     }),
                     salt: 0,
+                    queued_timestamp: Some(insert_timestamp1.into()),
                 })),
             };
             let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -339,7 +360,9 @@ mod scheduler_tests {
 
         {
             // Now if another action is requested it should also join with executing action.
-            let mut client3_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+            let insert_timestamp3 = make_system_time(2);
+            let mut client3_rx =
+                setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp3).await?;
             assert_eq!(client3_rx.borrow_and_update().as_ref(), &expected_action_state);
         }
 
@@ -357,7 +380,9 @@ mod scheduler_tests {
         // Now act like the worker disconnected.
         drop(rx_from_worker);
 
-        let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
         {
             // Client should get notification saying it's being queued not executed.
             let action_state = client_rx.borrow_and_update();
@@ -385,7 +410,9 @@ mod scheduler_tests {
 
         // Note: This needs to stay in scope or a disconnect will trigger.
         let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, Default::default()).await?;
-        let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
 
         // Note: This needs to stay in scope or a disconnect will trigger.
         let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, Default::default()).await?;
@@ -406,6 +433,7 @@ mod scheduler_tests {
                     ..Default::default()
                 }),
                 salt: 0,
+                queued_timestamp: Some(insert_timestamp.into()),
             })),
         };
 
@@ -463,7 +491,9 @@ mod scheduler_tests {
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
-        let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
 
         {
             // Other tests check full data. We only care if we got StartAction.
@@ -551,7 +581,9 @@ mod scheduler_tests {
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut rx_from_worker = setup_new_worker(&scheduler, GOOD_WORKER_ID, Default::default()).await?;
-        let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
 
         {
             // Other tests check full data. We only care if we got StartAction.
@@ -638,7 +670,9 @@ mod scheduler_tests {
             stage: ActionStage::Executing,
         };
 
-        let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
         let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
 
         {
@@ -652,6 +686,7 @@ mod scheduler_tests {
                         ..Default::default()
                     }),
                     salt: 0,
+                    queued_timestamp: Some(insert_timestamp.into()),
                 })),
             };
             let msg_for_worker = rx_from_worker.recv().await.unwrap();
@@ -710,7 +745,9 @@ mod scheduler_tests {
         // fail.
 
         {
-            let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+            let insert_timestamp = make_system_time(1);
+            let mut client_rx =
+                setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
             // We didn't disconnect our worker, so it will have scheduled it to the worker.
             expected_action_state.stage = ActionStage::Executing;
             let action_state = client_rx.borrow_and_update();
@@ -736,8 +773,22 @@ mod scheduler_tests {
         properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
         let platform_properties = PlatformProperties { properties };
         let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, platform_properties.clone()).await?;
-        let mut client1_rx = setup_action(&scheduler, action_digest1.clone(), platform_properties.clone()).await?;
-        let mut client2_rx = setup_action(&scheduler, action_digest2.clone(), platform_properties).await?;
+        let insert_timestamp1 = make_system_time(1);
+        let mut client1_rx = setup_action(
+            &scheduler,
+            action_digest1.clone(),
+            platform_properties.clone(),
+            insert_timestamp1,
+        )
+        .await?;
+        let insert_timestamp2 = make_system_time(1);
+        let mut client2_rx = setup_action(
+            &scheduler,
+            action_digest2.clone(),
+            platform_properties,
+            insert_timestamp2,
+        )
+        .await?;
 
         match rx_from_worker.recv().await.unwrap().update {
             Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
@@ -858,7 +909,9 @@ mod scheduler_tests {
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
-        let mut client_rx = setup_action(&scheduler, action_digest.clone(), Default::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx =
+            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
 
         {
             // Other tests check full data. We only care if we got StartAction.

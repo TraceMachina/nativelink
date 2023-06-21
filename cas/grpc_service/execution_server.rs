@@ -96,6 +96,7 @@ impl InstanceInfo {
             timeout,
             platform_properties: PlatformProperties::new(platform_properties),
             priority,
+            load_timestamp: UNIX_EPOCH,
             insert_timestamp: SystemTime::now(),
             unique_qualifier: ActionInfoHashKey {
                 digest: action_digest,

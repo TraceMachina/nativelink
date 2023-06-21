@@ -18,6 +18,7 @@ package com.github.allada.turbo_cache.remote_execution;
 
 import "build/bazel/remote/execution/v2/remote_execution.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
 import "google/rpc/status.proto";
 
 /// This API describes how schedulers communicate with Worker nodes.
@@ -157,5 +158,10 @@ message StartExecute {
 
     /// See documentation in ExecuteResult::salt.
     uint64 salt = 2;
-    reserved 3; // NextId.
+
+    /// The time at which the command was added to the queue to allow population
+    /// of the ActionResult.
+    google.protobuf.Timestamp queued_timestamp = 3;
+
+    reserved 4; // NextId.
 }
