@@ -847,6 +847,11 @@ impl RunningActionsManagerImpl {
     async fn make_work_directory(&self, action_id: &ActionId) -> Result<String, Error> {
         let work_directory = format!("{}/{}", self.root_work_directory, hex::encode(action_id));
         fs::create_dir(&work_directory)
+            .or_else(|original_error| {
+                fs::remove_dir_all(&work_directory)
+                    .and_then(|_| fs::create_dir(&work_directory))
+                    .or_else(|_| async move { Err(original_error) })
+            })
             .await
             .err_tip(|| format!("Error creating work directory {}", work_directory))?;
         Ok(work_directory)

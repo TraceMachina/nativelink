@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{FutureExt, TryFutureExt};
+use hex;
 use prost::Message;
 use rand::{thread_rng, Rng};
 
@@ -448,6 +449,64 @@ mod running_actions_manager_tests {
 
             running_action.cleanup().await?;
         };
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn existing_work_directory_removed() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, _, cas_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+            root_work_directory.clone(),
+            Pin::into_inner(cas_store.clone()),
+        )?);
+        const SALT: u64 = 55;
+        let command = Command { ..Default::default() };
+        let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+        let input_root_digest =
+            serialize_and_upload_message(&Directory { ..Default::default() }, cas_store.as_ref()).await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+        let action_id = action_messages::ActionInfoHashKey {
+            digest: action_digest.clone().into(),
+            salt: SALT,
+        }
+        .get_hash();
+        let stale_directory = format!("{}/{}/other_directory", root_work_directory, hex::encode(action_id));
+        fs::create_dir_all(&stale_directory).await?;
+
+        let running_action = running_actions_manager
+            .create_and_add_action(
+                "WORKER_ID".to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: SALT,
+                    queued_timestamp: None,
+                },
+            )
+            .await?;
+
+        let running_action = running_action.clone().prepare_action().await?;
+
+        // The existing directory should have been deleted.
+        assert_eq!(
+            fs::metadata(stale_directory).await.is_ok(),
+            false,
+            "Expected old directory to have been cleaned up"
+        );
+
+        running_action.cleanup().await?;
+
         Ok(())
     }
 
