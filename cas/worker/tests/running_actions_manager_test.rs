@@ -83,6 +83,53 @@ mod running_actions_manager_tests {
     use super::*;
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
+    fn check_and_reset_timestamp(name: &str, timestamp: &mut SystemTime) {
+        let now = SystemTime::now();
+        assert!(
+            now.duration_since(timestamp.clone())
+                .expect("Time went backwards")
+                .as_millis()
+                < 500,
+            "{:?} timestamp is out of range : {:?} < {:?}",
+            name,
+            now,
+            timestamp
+        );
+        *timestamp = SystemTime::UNIX_EPOCH;
+    }
+
+    fn check_and_reset_timestamps(execution_metadata: &mut ExecutionMetadata) {
+        check_and_reset_timestamp("worker_start_timestamp", &mut execution_metadata.worker_start_timestamp);
+        check_and_reset_timestamp(
+            "worker_completed_timestamp",
+            &mut execution_metadata.worker_completed_timestamp,
+        );
+        check_and_reset_timestamp(
+            "input_fetch_start_timestamp",
+            &mut execution_metadata.input_fetch_start_timestamp,
+        );
+        check_and_reset_timestamp(
+            "input_fetch_completed_timestamp",
+            &mut execution_metadata.input_fetch_completed_timestamp,
+        );
+        check_and_reset_timestamp(
+            "execution_start_timestamp",
+            &mut execution_metadata.execution_start_timestamp,
+        );
+        check_and_reset_timestamp(
+            "execution_completed_timestamp",
+            &mut execution_metadata.execution_completed_timestamp,
+        );
+        check_and_reset_timestamp(
+            "output_upload_start_timestamp",
+            &mut execution_metadata.output_upload_start_timestamp,
+        );
+        check_and_reset_timestamp(
+            "output_upload_completed_timestamp",
+            &mut execution_metadata.output_upload_completed_timestamp,
+        );
+    }
+
     #[tokio::test]
     async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::error::Error>> {
         let (fast_store, slow_store, cas_store) = setup_stores().await?;
@@ -387,6 +434,7 @@ mod running_actions_manager_tests {
                             ..Default::default()
                         }),
                         salt: SALT,
+                        queued_timestamp: None,
                     },
                 )
                 .await?;
@@ -417,7 +465,7 @@ mod running_actions_manager_tests {
             Pin::into_inner(cas_store.clone()),
         )?);
         const WORKER_ID: &str = "foo_worker_id";
-        let action_result = {
+        let mut action_result = {
             const SALT: u64 = 55;
             let command = Command {
                 arguments: vec![
@@ -461,6 +509,7 @@ mod running_actions_manager_tests {
                             ..Default::default()
                         }),
                         salt: SALT,
+                        queued_timestamp: None,
                     },
                 )
                 .await?;
@@ -492,6 +541,7 @@ mod running_actions_manager_tests {
             .get_part_unchunked(action_result.stderr_digest.clone(), 0, None, None)
             .await?;
         assert_eq!(from_utf8(&stderr_content)?, "bar-stderr");
+        check_and_reset_timestamps(&mut action_result.execution_metadata);
         assert_eq!(
             action_result,
             ActionResult {
@@ -540,7 +590,7 @@ mod running_actions_manager_tests {
             Pin::into_inner(cas_store.clone()),
         )?);
         const WORKER_ID: &str = "foo_worker_id";
-        let action_result = {
+        let mut action_result = {
             const SALT: u64 = 55;
             let command = Command {
                 arguments: vec![
@@ -577,6 +627,7 @@ mod running_actions_manager_tests {
                             ..Default::default()
                         }),
                         salt: SALT,
+                        queued_timestamp: None,
                     },
                 )
                 .await?;
@@ -640,6 +691,7 @@ mod running_actions_manager_tests {
                 ..Default::default()
             }
         );
+        check_and_reset_timestamps(&mut action_result.execution_metadata);
         assert_eq!(
             action_result,
             ActionResult {
@@ -693,7 +745,7 @@ mod running_actions_manager_tests {
             Pin::into_inner(cas_store.clone()),
         )?);
         const WORKER_ID: &str = "foo_worker_id";
-        let action_result = {
+        let mut action_result = {
             const SALT: u64 = 55;
             let command = Command {
                 arguments: vec!["sh".to_string(), "-c".to_string(), "exit 33".to_string()],
@@ -719,6 +771,7 @@ mod running_actions_manager_tests {
                             ..Default::default()
                         }),
                         salt: SALT,
+                        queued_timestamp: None,
                     },
                 )
                 .await?;
@@ -735,6 +788,7 @@ mod running_actions_manager_tests {
                 })
                 .await?
         };
+        check_and_reset_timestamps(&mut action_result.execution_metadata);
         assert_eq!(
             action_result,
             ActionResult {

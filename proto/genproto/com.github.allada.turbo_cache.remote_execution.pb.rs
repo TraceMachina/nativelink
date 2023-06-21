@@ -142,6 +142,10 @@ pub struct StartExecute {
     /// / See documentation in ExecuteResult::salt.
     #[prost(uint64, tag = "2")]
     pub salt: u64,
+    /// / The time at which the command was added to the queue to allow population
+    /// / of the ActionResult
+    #[prost(message, optional, tag = "3")]
+    pub queued_timestamp: ::core::option::Option<::prost_types::Timestamp>,
 }
 /// Generated client implementations.
 pub mod worker_api_client {

@@ -103,6 +103,28 @@ mod scheduler_tests {
 
     const WORKER_TIMEOUT_S: u64 = 100;
 
+    fn check_and_reset_timestamp(msg_for_worker: &mut UpdateForWorker) {
+        match &mut msg_for_worker.update {
+            Some(update) => match update {
+                update_for_worker::Update::StartAction(start_execute) => {
+                    if let Some(timestamp) = &start_execute.queued_timestamp {
+                        assert!(
+                            SystemTime::now()
+                                .duration_since(SystemTime::try_from(timestamp.clone()).expect("Unknown time set"))
+                                .expect("Time went backwards")
+                                .as_millis()
+                                < 500,
+                            "Queued timestamp is out of range"
+                        );
+                    }
+                    start_execute.queued_timestamp = None;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
     #[tokio::test]
     async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x123456789111);
@@ -124,9 +146,11 @@ mod scheduler_tests {
                         ..Default::default()
                     }),
                     salt: 0,
+                    queued_timestamp: None,
                 })),
             };
-            let msg_for_worker = rx_from_worker.recv().await.unwrap();
+            let mut msg_for_worker = rx_from_worker.recv().await.unwrap();
+            check_and_reset_timestamp(&mut msg_for_worker);
             assert_eq!(msg_for_worker, expected_msg_for_worker);
         }
         {
@@ -174,11 +198,13 @@ mod scheduler_tests {
                     ..Default::default()
                 }),
                 salt: 0,
+                queued_timestamp: None,
             })),
         };
         {
             // Worker1 should now see execution request.
-            let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+            let mut msg_for_worker = rx_from_worker1.recv().await.unwrap();
+            check_and_reset_timestamp(&mut msg_for_worker);
             assert_eq!(msg_for_worker, execution_request_for_worker);
         }
 
@@ -211,7 +237,8 @@ mod scheduler_tests {
         }
         {
             // Worker2 should now see execution request.
-            let msg_for_worker = rx_from_worker2.recv().await.unwrap();
+            let mut msg_for_worker = rx_from_worker2.recv().await.unwrap();
+            check_and_reset_timestamp(&mut msg_for_worker);
             assert_eq!(msg_for_worker, execution_request_for_worker);
         }
 
@@ -260,9 +287,11 @@ mod scheduler_tests {
                         ..Default::default()
                     }),
                     salt: 0,
+                    queued_timestamp: None,
                 })),
             };
-            let msg_for_worker = rx_from_worker2.recv().await.unwrap();
+            let mut msg_for_worker = rx_from_worker2.recv().await.unwrap();
+            check_and_reset_timestamp(&mut msg_for_worker);
             assert_eq!(msg_for_worker, expected_msg_for_worker);
         }
         {
@@ -322,9 +351,11 @@ mod scheduler_tests {
                         ..Default::default()
                     }),
                     salt: 0,
+                    queued_timestamp: None,
                 })),
             };
-            let msg_for_worker = rx_from_worker.recv().await.unwrap();
+            let mut msg_for_worker = rx_from_worker.recv().await.unwrap();
+            check_and_reset_timestamp(&mut msg_for_worker);
             assert_eq!(msg_for_worker, expected_msg_for_worker);
         }
 
@@ -406,12 +437,14 @@ mod scheduler_tests {
                     ..Default::default()
                 }),
                 salt: 0,
+                queued_timestamp: None,
             })),
         };
 
         {
             // Worker1 should now see execution request.
-            let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+            let mut msg_for_worker = rx_from_worker1.recv().await.unwrap();
+            check_and_reset_timestamp(&mut msg_for_worker);
             assert_eq!(msg_for_worker, execution_request_for_worker);
         }
 
@@ -448,7 +481,8 @@ mod scheduler_tests {
         }
         {
             // Worker2 should now see execution request.
-            let msg_for_worker = rx_from_worker2.recv().await.unwrap();
+            let mut msg_for_worker = rx_from_worker2.recv().await.unwrap();
+            check_and_reset_timestamp(&mut msg_for_worker);
             assert_eq!(msg_for_worker, execution_request_for_worker);
         }
 
@@ -652,9 +686,11 @@ mod scheduler_tests {
                         ..Default::default()
                     }),
                     salt: 0,
+                    queued_timestamp: None,
                 })),
             };
-            let msg_for_worker = rx_from_worker.recv().await.unwrap();
+            let mut msg_for_worker = rx_from_worker.recv().await.unwrap();
+            check_and_reset_timestamp(&mut msg_for_worker);
             assert_eq!(msg_for_worker, expected_msg_for_worker);
         }
 

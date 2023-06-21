@@ -184,6 +184,7 @@ mod local_worker_tests {
                     update: Some(Update::StartAction(StartExecute {
                         execute_request: Some(action_info.into()),
                         salt: SALT,
+                        queued_timestamp: None,
                     })),
                 })?)
                 .await

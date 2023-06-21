@@ -141,6 +141,7 @@ impl Worker {
         self.send_msg_to_worker(update_for_worker::Update::StartAction(StartExecute {
             execute_request: Some(action_info_clone.into()),
             salt: *action_info.salt(),
+            queued_timestamp: Some(action_info.insert_timestamp.into()),
         }))
     }
 
