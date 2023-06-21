@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -81,8 +82,8 @@ pub struct Worker {
     /// Channel to send commands from scheduler to worker.
     pub tx: UnboundedSender<UpdateForWorker>,
 
-    /// The action info of the running action if worker is assigned one.
-    pub running_action_info: Option<Arc<ActionInfo>>,
+    /// The action info of the running actions on the worker
+    pub running_action_infos: HashSet<Arc<ActionInfo>>,
 
     /// Timestamp of last time this worker had been communicated with.
     // Warning: Do not update this timestamp without updating the placement of the worker in
@@ -101,7 +102,7 @@ impl Worker {
             id,
             platform_properties,
             tx,
-            running_action_info: None,
+            running_action_infos: HashSet::new(),
             last_update_timestamp: timestamp,
         }
     }
@@ -136,13 +137,18 @@ impl Worker {
 
     fn run_action(&mut self, action_info: Arc<ActionInfo>) -> Result<(), Error> {
         let action_info_clone = action_info.as_ref().clone();
-        self.running_action_info = Some(action_info.clone());
+        self.running_action_infos.insert(action_info.clone());
         self.reduce_platform_properties(&action_info.platform_properties);
         self.send_msg_to_worker(update_for_worker::Update::StartAction(StartExecute {
             execute_request: Some(action_info_clone.into()),
             salt: *action_info.salt(),
             queued_timestamp: Some(action_info.insert_timestamp.into()),
         }))
+    }
+
+    pub fn complete_action(&mut self, action_info: &Arc<ActionInfo>) {
+        self.running_action_infos.remove(action_info);
+        self.restore_platform_properties(&action_info.platform_properties)
     }
 
     /// Reduces the platform properties available on the worker based on the platform properties provided.
@@ -161,7 +167,7 @@ impl Worker {
         }
     }
 
-    pub fn restore_platform_properties(&mut self, props: &PlatformProperties) {
+    fn restore_platform_properties(&mut self, props: &PlatformProperties) {
         for (property, prop_value) in &props.properties {
             if let PlatformPropertyValue::Minimum(value) = prop_value {
                 let worker_props = &mut self.platform_properties.properties;

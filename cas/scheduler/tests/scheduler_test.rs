@@ -150,52 +150,98 @@ mod scheduler_tests {
     }
 
     #[tokio::test]
-    async fn remove_worker_reschedules_running_job_test() -> Result<(), Error> {
+    async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x111111);
         const WORKER_ID2: WorkerId = WorkerId(0x222222);
         let scheduler = Scheduler::new(&SchedulerConfig {
             worker_timeout_s: WORKER_TIMEOUT_S,
             ..Default::default()
         });
-        let action_digest = DigestInfo::new([99u8; 32], 512);
+        let action_digest1 = DigestInfo::new([99u8; 32], 512);
+        let action_digest2 = DigestInfo::new([88u8; 32], 512);
 
         let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, Default::default()).await?;
-        let insert_timestamp = make_system_time(1);
-        let mut client_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
-        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, Default::default()).await?;
+        let insert_timestamp1 = make_system_time(1);
+        let mut client_rx1 = setup_action(
+            &scheduler,
+            action_digest1.clone(),
+            Default::default(),
+            insert_timestamp1,
+        )
+        .await?;
+        let insert_timestamp2 = make_system_time(2);
+        let mut client_rx2 = setup_action(
+            &scheduler,
+            action_digest2.clone(),
+            Default::default(),
+            insert_timestamp2,
+        )
+        .await?;
 
-        let mut expected_action_state = ActionState {
+        let mut expected_action_state1 = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             name: "UNKNOWN_HERE".to_string(),
-            action_digest: action_digest.clone(),
+            action_digest: action_digest1.clone(),
+            stage: ActionStage::Executing,
+        };
+        let mut expected_action_state2 = ActionState {
+            // Name is a random string, so we ignore it and just make it the same.
+            name: "UNKNOWN_HERE".to_string(),
+            action_digest: action_digest2.clone(),
             stage: ActionStage::Executing,
         };
 
-        let execution_request_for_worker = UpdateForWorker {
+        let execution_request_for_worker1 = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     skip_cache_lookup: true,
-                    action_digest: Some(action_digest.clone().into()),
+                    action_digest: Some(action_digest1.clone().into()),
                     ..Default::default()
                 }),
                 salt: 0,
-                queued_timestamp: Some(insert_timestamp.into()),
+                queued_timestamp: Some(insert_timestamp1.into()),
             })),
         };
         {
             // Worker1 should now see execution request.
             let msg_for_worker = rx_from_worker1.recv().await.unwrap();
-            assert_eq!(msg_for_worker, execution_request_for_worker);
+            assert_eq!(msg_for_worker, execution_request_for_worker1);
         }
+        let execution_request_for_worker2 = UpdateForWorker {
+            update: Some(update_for_worker::Update::StartAction(StartExecute {
+                execute_request: Some(ExecuteRequest {
+                    instance_name: INSTANCE_NAME.to_string(),
+                    skip_cache_lookup: true,
+                    action_digest: Some(action_digest2.clone().into()),
+                    ..Default::default()
+                }),
+                salt: 0,
+                queued_timestamp: Some(insert_timestamp2.into()),
+            })),
+        };
+        {
+            // Worker1 should now see second execution request.
+            let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+            assert_eq!(msg_for_worker, execution_request_for_worker2);
+        }
+
+        // Add a second worker that can take jobs if the first dies.
+        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, Default::default()).await?;
 
         {
             // Client should get notification saying it's being executed.
-            let action_state = client_rx.borrow_and_update();
+            let action_state = client_rx1.borrow_and_update();
             // We now know the name of the action so populate it.
-            expected_action_state.name = action_state.name.clone();
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            expected_action_state1.name = action_state.name.clone();
+            assert_eq!(action_state.as_ref(), &expected_action_state1);
+        }
+        {
+            // Client should get notification saying it's being executed.
+            let action_state = client_rx2.borrow_and_update();
+            // We now know the name of the action so populate it.
+            expected_action_state2.name = action_state.name.clone();
+            assert_eq!(action_state.as_ref(), &expected_action_state2);
         }
 
         // Now remove worker.
@@ -213,14 +259,25 @@ mod scheduler_tests {
         }
         {
             // Client should get notification saying it's being executed.
-            let action_state = client_rx.borrow_and_update();
-            expected_action_state.stage = ActionStage::Executing;
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            let action_state = client_rx1.borrow_and_update();
+            expected_action_state1.stage = ActionStage::Executing;
+            assert_eq!(action_state.as_ref(), &expected_action_state1);
+        }
+        {
+            // Client should get notification saying it's being executed.
+            let action_state = client_rx2.borrow_and_update();
+            expected_action_state2.stage = ActionStage::Executing;
+            assert_eq!(action_state.as_ref(), &expected_action_state2);
         }
         {
             // Worker2 should now see execution request.
             let msg_for_worker = rx_from_worker2.recv().await.unwrap();
-            assert_eq!(msg_for_worker, execution_request_for_worker);
+            assert_eq!(msg_for_worker, execution_request_for_worker1);
+        }
+        {
+            // Worker2 should now see execution request.
+            let msg_for_worker = rx_from_worker2.recv().await.unwrap();
+            assert_eq!(msg_for_worker, execution_request_for_worker2);
         }
 
         Ok(())
