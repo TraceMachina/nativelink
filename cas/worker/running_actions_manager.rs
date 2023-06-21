@@ -380,7 +380,8 @@ struct RunningActionImplExecutionResult {
 struct RunningActionImplState {
     command_proto: Option<ProtoCommand>,
     // TODO(allada) Kill is not implemented yet, but is instrumented.
-    _kill_channel_tx: Option<oneshot::Sender<()>>,
+    // However, it is used if the worker disconnects to destroy current jobs.
+    kill_channel_tx: Option<oneshot::Sender<()>>,
     kill_channel_rx: Option<oneshot::Receiver<()>>,
     execution_result: Option<RunningActionImplExecutionResult>,
     action_result: Option<ActionResult>,
@@ -413,7 +414,7 @@ impl RunningActionImpl {
             state: Mutex::new(RunningActionImplState {
                 command_proto: None,
                 kill_channel_rx: Some(kill_channel_rx),
-                _kill_channel_tx: Some(kill_channel_tx),
+                kill_channel_tx: Some(kill_channel_tx),
                 execution_result: None,
                 action_result: None,
                 execution_metadata,
@@ -503,7 +504,9 @@ impl RunningAction for RunningActionImpl {
                 state
                     .kill_channel_rx
                     .take()
-                    .err_tip(|| "Expected state to have kill_channel_rx in execute()")?,
+                    .err_tip(|| "Expected state to have kill_channel_rx in execute()")?
+                    // This is important as we may be killed at any point.
+                    .fuse(),
             )
         };
         let args = &command_proto.arguments[..];
@@ -575,7 +578,7 @@ impl RunningAction for RunningActionImpl {
                 },
                 _ = &mut kill_channel_rx => {
                     if let Err(e) = child_process.start_kill() {
-                        log::error!("Could kill process in RunningActionsManager : {:?}", e);
+                        log::error!("Could not kill process in RunningActionsManager : {:?}", e);
                     }
                 },
             }
@@ -797,6 +800,8 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     ) -> Result<Arc<Self::RunningAction>, Error>;
 
     async fn get_action(&self, action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error>;
+
+    async fn kill_all(&self);
 }
 
 /// A function to get the current system time, used to allow mocking for tests
@@ -885,6 +890,16 @@ impl RunningActionsManagerImpl {
         })?;
         Ok(())
     }
+
+    async fn kill_action(action: Arc<RunningActionImpl>) {
+        let mut action_state = action.state.lock().await;
+        if let Some(kill_channel_tx) = action_state.kill_channel_tx.take() {
+            match kill_channel_tx.send(()) {
+                Err(_) => log::error!("Error sending kill to running action"),
+                _ => (),
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -938,5 +953,14 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .err_tip(|| format!("Action '{:?}' not found", action_id))?
             .upgrade()
             .err_tip(|| "Could not upgrade RunningAction Arc")?)
+    }
+
+    async fn kill_all(&self) {
+        let running_actions = self.running_actions.lock().await;
+        let kill_actions = running_actions
+            .iter()
+            .filter_map(|(_action_id, action)| action.upgrade())
+            .map(|action| Box::pin(Self::kill_action(action)));
+        futures::future::join_all(kill_actions).await;
     }
 }

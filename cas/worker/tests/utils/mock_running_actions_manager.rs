@@ -38,17 +38,23 @@ pub struct MockRunningActionsManager {
 
     rx_resp: Mutex<mpsc::UnboundedReceiver<RunningActionManagerReturns>>,
     tx_resp: mpsc::UnboundedSender<RunningActionManagerReturns>,
+
+    rx_kill_all: Mutex<mpsc::UnboundedReceiver<()>>,
+    tx_kill_all: mpsc::UnboundedSender<()>,
 }
 
 impl MockRunningActionsManager {
     pub fn new() -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
+        let (tx_kill_all, rx_kill_all) = mpsc::unbounded_channel();
         Self {
             rx_call: Mutex::new(rx_call),
             tx_call,
             rx_resp: Mutex::new(rx_resp),
             tx_resp,
+            rx_kill_all: Mutex::new(rx_kill_all),
+            tx_kill_all,
         }
     }
 }
@@ -67,6 +73,11 @@ impl MockRunningActionsManager {
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
             .unwrap();
         req
+    }
+
+    pub async fn expect_kill_all(&self) {
+        let mut rx_kill_all_lock = self.rx_kill_all.lock().await;
+        rx_kill_all_lock.recv().await.expect("Could not receive msg in mpsc");
     }
 }
 
@@ -93,6 +104,10 @@ impl RunningActionsManager for MockRunningActionsManager {
 
     async fn get_action(&self, _action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error> {
         unimplemented!("get_action not implemented");
+    }
+
+    async fn kill_all(&self) {
+        self.tx_kill_all.send(()).expect("Could not send request to mpsc");
     }
 }
 

@@ -37,7 +37,9 @@ use proto::build::bazel::remote::execution::v2::{
     Action, Command, Directory, DirectoryNode, ExecuteRequest, FileNode, NodeProperties, SymlinkNode, Tree,
 };
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
-use running_actions_manager::{download_to_directory, RunningAction, RunningActionsManager, RunningActionsManagerImpl};
+use running_actions_manager::{
+    download_to_directory, RunningAction, RunningActionImpl, RunningActionsManager, RunningActionsManagerImpl,
+};
 use store::Store;
 
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
@@ -77,6 +79,20 @@ async fn setup_stores() -> Result<
         Pin::into_inner(slow_store.clone()),
     )));
     Ok((fast_store, slow_store, cas_store))
+}
+
+async fn run_action(action: Arc<RunningActionImpl>) -> Result<ActionResult, Error> {
+    action
+        .clone()
+        .prepare_action()
+        .and_then(|action| action.execute())
+        .and_then(|action| action.upload_results())
+        .and_then(|action| action.get_finished_result())
+        .then(|result| async move {
+            action.cleanup().await?;
+            result
+        })
+        .await
 }
 
 const NOW_TIME: u64 = 10000;
@@ -501,17 +517,7 @@ mod running_actions_manager_tests {
                 )
                 .await?;
 
-            running_action_impl
-                .clone()
-                .prepare_action()
-                .and_then(|action| action.execute())
-                .and_then(|action| action.upload_results())
-                .and_then(|action| action.get_finished_result())
-                .then(|result| async move {
-                    running_action_impl.cleanup().await?;
-                    result
-                })
-                .await?
+            run_action(running_action_impl.clone()).await?
         };
         let file_content = slow_store
             .as_ref()
@@ -627,17 +633,7 @@ mod running_actions_manager_tests {
                 )
                 .await?;
 
-            running_action_impl
-                .clone()
-                .prepare_action()
-                .and_then(|action| action.execute())
-                .and_then(|action| action.upload_results())
-                .and_then(|action| action.get_finished_result())
-                .then(|result| async move {
-                    running_action_impl.cleanup().await?;
-                    result
-                })
-                .await?
+            run_action(running_action_impl.clone()).await?
         };
         let tree =
             get_and_decode_digest::<Tree>(slow_store.as_ref(), &action_result.output_folders[0].tree_digest).await?;
@@ -779,17 +775,7 @@ mod running_actions_manager_tests {
                 )
                 .await?;
 
-            running_action_impl
-                .clone()
-                .prepare_action()
-                .and_then(|action| action.execute())
-                .and_then(|action| action.upload_results())
-                .and_then(|action| action.get_finished_result())
-                .then(|result| async move {
-                    running_action_impl.cleanup().await?;
-                    result
-                })
-                .await?
+            run_action(running_action_impl.clone()).await?
         };
         let mut clock_time = make_system_time(0);
         assert_eq!(
@@ -829,6 +815,57 @@ mod running_actions_manager_tests {
             "Expected empty directory at {}",
             root_work_directory
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, _, cas_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+            root_work_directory.clone(),
+            Pin::into_inner(cas_store.clone()),
+        )?);
+        const WORKER_ID: &str = "foo_worker_id";
+        const SALT: u64 = 55;
+        let command = Command {
+            arguments: vec!["sh".to_string(), "-c".to_string(), "exit 33".to_string()],
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+        let input_root_digest = serialize_and_upload_message(&Directory::default(), cas_store.as_ref()).await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+        let running_action_impl = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: SALT,
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                },
+            )
+            .await?;
+
+        // Start the action and kill it at the same time.
+        let result = futures::join!(run_action(running_action_impl), running_actions_manager.kill_all()).0?;
+
+        // Check that the action was killed.
+        assert_eq!(9, result.exit_code);
+
         Ok(())
     }
 }
