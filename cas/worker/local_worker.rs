@@ -351,6 +351,10 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
 
             // Now listen for connections and run all other services.
             if let Err(e) = inner.run(update_for_worker_stream).await {
+                // Kill off any existing actions because if we re-connect, we'll
+                // get some more and it might resource lock us.
+                self.running_actions_manager.kill_all().await;
+
                 (error_handler)(e).await;
                 continue; // Try to connect again.
             }
