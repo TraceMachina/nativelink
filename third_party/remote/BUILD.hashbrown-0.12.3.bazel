@@ -39,9 +39,6 @@ rust_library(
     name = "hashbrown",
     srcs = glob(["**/*.rs"]),
     crate_features = [
-        "ahash",
-        "default",
-        "inline-more",
         "raw",
     ],
     crate_root = "src/lib.rs",
@@ -52,12 +49,12 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=hashbrown",
         "manual",
     ],
     version = "0.12.3",
     # buildifier: leave-alone
     deps = [
-        "@raze__ahash__0_7_6//:ahash",
     ],
 )
 

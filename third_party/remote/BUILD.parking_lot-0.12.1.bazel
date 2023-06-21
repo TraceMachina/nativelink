@@ -45,13 +45,14 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=parking_lot",
         "manual",
     ],
     version = "0.12.1",
     # buildifier: leave-alone
     deps = [
-        "@raze__lock_api__0_4_9//:lock_api",
-        "@raze__parking_lot_core__0_9_3//:parking_lot_core",
+        "@raze__lock_api__0_4_10//:lock_api",
+        "@raze__parking_lot_core__0_9_8//:parking_lot_core",
     ],
 )
 

@@ -48,13 +48,14 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=tracing-futures",
         "manual",
     ],
     version = "0.2.5",
     # buildifier: leave-alone
     deps = [
-        "@raze__pin_project__1_0_12//:pin_project",
-        "@raze__tracing__0_1_36//:tracing",
+        "@raze__pin_project__1_1_0//:pin_project",
+        "@raze__tracing__0_1_37//:tracing",
     ],
 )
 

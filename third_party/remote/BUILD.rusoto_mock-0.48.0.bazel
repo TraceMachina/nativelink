@@ -1,0 +1,65 @@
+"""
+@generated
+cargo-raze crate build file.
+
+DO NOT EDIT! Replaced on runs of cargo-raze
+"""
+
+# buildifier: disable=load
+load("@bazel_skylib//lib:selects.bzl", "selects")
+
+# buildifier: disable=load
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_binary",
+    "rust_library",
+    "rust_proc_macro",
+    "rust_test",
+)
+
+package(default_visibility = [
+    # Public for visibility by "@raze__crate__version//" targets.
+    #
+    # Prefer access through "//third_party", which limits external
+    # visibility to explicit Cargo.toml dependencies.
+    "//visibility:public",
+])
+
+licenses([
+    "notice",  # MIT from expression "MIT"
+])
+
+# Generated Targets
+
+rust_library(
+    name = "rusoto_mock",
+    srcs = glob(["**/*.rs"]),
+    crate_features = [
+        "default",
+        "native-tls",
+    ],
+    crate_root = "src/lib.rs",
+    data = [],
+    edition = "2018",
+    proc_macro_deps = [
+        "@raze__async_trait__0_1_68//:async_trait",
+    ],
+    rustc_flags = [
+        "--cap-lints=allow",
+    ],
+    tags = [
+        "cargo-raze",
+        "crate-name=rusoto_mock",
+        "manual",
+    ],
+    version = "0.48.0",
+    # buildifier: leave-alone
+    deps = [
+        "@raze__chrono__0_4_26//:chrono",
+        "@raze__futures__0_3_28//:futures",
+        "@raze__http__0_2_9//:http",
+        "@raze__rusoto_core__0_48_0//:rusoto_core",
+        "@raze__serde__1_0_164//:serde",
+        "@raze__serde_json__1_0_97//:serde_json",
+    ],
+)

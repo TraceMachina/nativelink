@@ -34,8 +34,6 @@ licenses([
 rust_library(
     name = "redox_users",
     srcs = glob(["**/*.rs"]),
-    crate_features = [
-    ],
     crate_root = "src/lib.rs",
     data = [],
     edition = "2018",
@@ -44,13 +42,14 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=redox_users",
         "manual",
     ],
     version = "0.4.3",
     # buildifier: leave-alone
     deps = [
-        "@raze__getrandom__0_2_7//:getrandom",
+        "@raze__getrandom__0_2_10//:getrandom",
         "@raze__redox_syscall__0_2_16//:redox_syscall",
-        "@raze__thiserror__1_0_37//:thiserror",
+        "@raze__thiserror__1_0_40//:thiserror",
     ],
 )

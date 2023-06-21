@@ -12,131 +12,149 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//// Request object for keep alive requests.
+/// / Request object for keep alive requests.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KeepAliveRequest {
-    //// ID of the worker making the request.
-    #[prost(string, tag="1")]
+    /// / ID of the worker making the request.
+    #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
 }
-//// Request object for going away requests.
+/// / Request object for going away requests.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GoingAwayRequest {
-    //// ID of the worker making the request.
-    #[prost(string, tag="1")]
+    /// / ID of the worker making the request.
+    #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
 }
-//// Represents the initial request sent to the scheduler informing the
-//// scheduler about this worker's capabilities.
+/// / Represents the initial request sent to the scheduler informing the
+/// / scheduler about this worker's capabilities.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SupportedProperties {
-    //// The list of properties this worker can support. The exact
-    //// implementation is driven by the configuration matrix between the
-    //// worker and scheduler.
-    ////
-    //// The scheduler may reject this worker if any property keys that
-    //// the scheduler is not configured to support, or may simply ignore
-    //// the unsupported properties.
-    ////
-    //// The details on how to use this property can be found here:
-    //// <https://github.com/allada/turbo-cache/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs>
-    #[prost(message, repeated, tag="1")]
-    pub properties: ::prost::alloc::vec::Vec<super::super::super::super::super::build::bazel::remote::execution::v2::platform::Property>,
+    /// / The list of properties this worker can support. The exact
+    /// / implementation is driven by the configuration matrix between the
+    /// / worker and scheduler.
+    /// /
+    /// / The scheduler may reject this worker if any property keys that
+    /// / the scheduler is not configured to support, or may simply ignore
+    /// / the unsupported properties.
+    /// /
+    /// / The details on how to use this property can be found here:
+    /// / <https://github.com/allada/turbo-cache/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs>
+    #[prost(message, repeated, tag = "1")]
+    pub properties: ::prost::alloc::vec::Vec<
+        super::super::super::super::super::build::bazel::remote::execution::v2::platform::Property,
+    >,
 }
-//// The result of an ExecutionRequest.
+/// / The result of an ExecutionRequest.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteResult {
-    //// ID of the worker making the request.
-    #[prost(string, tag="1")]
+    /// / ID of the worker making the request.
+    #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
-    //// The original execution digest request for this response. The scheduler knows what it
-    //// should be, but we do safety checks to ensure it really is the request we expected.
-    #[prost(message, optional, tag="2")]
-    pub action_digest: ::core::option::Option<super::super::super::super::super::build::bazel::remote::execution::v2::Digest>,
-    //// The salt originally sent along with the StartExecute request. This salt is used
-    //// as a seed for cases where the execution digest should never be cached or merged
-    //// with other jobs. This salt is added to the hash function used to compute jobs that
-    //// are running or cached.
-    #[prost(uint64, tag="3")]
+    /// / The original execution digest request for this response. The scheduler knows what it
+    /// / should be, but we do safety checks to ensure it really is the request we expected.
+    #[prost(message, optional, tag = "2")]
+    pub action_digest: ::core::option::Option<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+    /// / The salt originally sent along with the StartExecute request. This salt is used
+    /// / as a seed for cases where the execution digest should never be cached or merged
+    /// / with other jobs. This salt is added to the hash function used to compute jobs that
+    /// / are running or cached.
+    #[prost(uint64, tag = "3")]
     pub salt: u64,
-    //// The actual response data.
-    #[prost(oneof="execute_result::Result", tags="4, 5")]
+    /// / The actual response data.
+    #[prost(oneof = "execute_result::Result", tags = "4, 5")]
     pub result: ::core::option::Option<execute_result::Result>,
 }
 /// Nested message and enum types in `ExecuteResult`.
 pub mod execute_result {
-    //// The actual response data.
+    /// / The actual response data.
+    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
-        //// Result of the execution. See `build.bazel.remote.execution.v2.ExecuteResponse`
-        //// for details.
-        #[prost(message, tag="4")]
-        ExecuteResponse(super::super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteResponse),
-        //// An internal error. This is only present when an internal error happened that
-        //// was not recoverable. If the execution job failed but at no fault of the worker
-        //// it should not use this field and should send the error via execute_response.
-        #[prost(message, tag="5")]
+        /// / Result of the execution. See `build.bazel.remote.execution.v2.ExecuteResponse`
+        /// / for details.
+        #[prost(message, tag = "4")]
+        ExecuteResponse(
+            super::super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteResponse,
+        ),
+        /// / An internal error. This is only present when an internal error happened that
+        /// / was not recoverable. If the execution job failed but at no fault of the worker
+        /// / it should not use this field and should send the error via execute_response.
+        #[prost(message, tag = "5")]
         InternalError(super::super::super::super::super::super::google::rpc::Status),
     }
 }
-//// Result sent back from the server when a node connects.
+/// / Result sent back from the server when a node connects.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ConnectionResult {
-    //// The internal ID given to the newly connected node.
-    #[prost(string, tag="1")]
+    /// / The internal ID given to the newly connected node.
+    #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
 }
-//// Communication from the scheduler to the worker.
+/// / Communication from the scheduler to the worker.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateForWorker {
-    #[prost(oneof="update_for_worker::Update", tags="1, 2, 3, 4")]
+    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4")]
     pub update: ::core::option::Option<update_for_worker::Update>,
 }
 /// Nested message and enum types in `UpdateForWorker`.
 pub mod update_for_worker {
+    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Update {
-        //// This will be sent only as the first item in the stream after the node
-        //// has connected.
-        #[prost(message, tag="1")]
+        /// / This will be sent only as the first item in the stream after the node
+        /// / has connected.
+        #[prost(message, tag = "1")]
         ConnectionResult(super::ConnectionResult),
-        //// Message used to let the worker know that it is still alive as well
-        //// as check to see if the worker is still alive. The worker
-        //// may close the connection if the scheduler has not sent any messages
-        //// after some amount of time (configured in the scheduler's
-        //// configuration).
-        #[prost(message, tag="2")]
+        /// / Message used to let the worker know that it is still alive as well
+        /// / as check to see if the worker is still alive. The worker
+        /// / may close the connection if the scheduler has not sent any messages
+        /// / after some amount of time (configured in the scheduler's
+        /// / configuration).
+        #[prost(message, tag = "2")]
         KeepAlive(()),
-        //// Informs the worker about some work it should begin performing the
-        //// requested action.
-        #[prost(message, tag="3")]
+        /// / Informs the worker about some work it should begin performing the
+        /// / requested action.
+        #[prost(message, tag = "3")]
         StartAction(super::StartExecute),
-        //// Informs the worker that it has been disconnected from the pool.
-        //// The worker may discard any outstanding work that is being executed.
-        #[prost(message, tag="4")]
+        /// / Informs the worker that it has been disconnected from the pool.
+        /// / The worker may discard any outstanding work that is being executed.
+        #[prost(message, tag = "4")]
         Disconnect(()),
     }
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StartExecute {
-    //// The action information used to execute job.
-    #[prost(message, optional, tag="1")]
-    pub execute_request: ::core::option::Option<super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteRequest>,
-    //// See documentation in ExecuteResult::salt.
-    #[prost(uint64, tag="2")]
+    /// / The action information used to execute job.
+    #[prost(message, optional, tag = "1")]
+    pub execute_request: ::core::option::Option<
+        super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteRequest,
+    >,
+    /// / See documentation in ExecuteResult::salt.
+    #[prost(uint64, tag = "2")]
     pub salt: u64,
 }
 /// Generated client implementations.
 pub mod worker_api_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
-    //// This API describes how schedulers communicate with Worker nodes.
-    ////
-    //// When a worker node comes online it must be pre-configured with the
-    //// endpoint of the scheduler it will register with. Once the worker
-    //// connects to the scheduler it must send a `RegisterSupportedProperties`
-    //// command to the scheduler. The scheduler will then use this information
-    //// to determine which jobs the worker can process.
+    use tonic::codegen::http::Uri;
+    /// / This API describes how schedulers communicate with Worker nodes.
+    /// /
+    /// / When a worker node comes online it must be pre-configured with the
+    /// / endpoint of the scheduler it will register with. Once the worker
+    /// / connects to the scheduler it must send a `RegisterSupportedProperties`
+    /// / command to the scheduler. The scheduler will then use this information
+    /// / to determine which jobs the worker can process.
     #[derive(Debug, Clone)]
     pub struct WorkerApiClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -163,6 +181,10 @@ pub mod worker_api_client {
             let inner = tonic::client::Grpc::new(inner);
             Self { inner }
         }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
         pub fn with_interceptor<F>(
             inner: T,
             interceptor: F,
@@ -182,25 +204,25 @@ pub mod worker_api_client {
         {
             WorkerApiClient::new(InterceptedService::new(inner, interceptor))
         }
-        /// Compress requests with `gzip`.
+        /// Compress requests with the given encoding.
         ///
         /// This requires the server to support it otherwise it might respond with an
         /// error.
         #[must_use]
-        pub fn send_gzip(mut self) -> Self {
-            self.inner = self.inner.send_gzip();
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
             self
         }
-        /// Enable decompressing responses with `gzip`.
+        /// Enable decompressing responses.
         #[must_use]
-        pub fn accept_gzip(mut self) -> Self {
-            self.inner = self.inner.accept_gzip();
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
             self
         }
-        //// Registers this worker and informs the scheduler what properties
-        //// this worker supports. The response must be listened on the client
-        //// side for updates from the server. The first item sent will always be
-        //// a ConnectionResult, after that it is undefined.
+        /// / Registers this worker and informs the scheduler what properties
+        /// / this worker supports. The response must be listened on the client
+        /// / side for updates from the server. The first item sent will always be
+        /// / a ConnectionResult, after that it is undefined.
         pub async fn connect_worker(
             &mut self,
             request: impl tonic::IntoRequest<super::SupportedProperties>,
@@ -223,11 +245,11 @@ pub mod worker_api_client {
             );
             self.inner.server_streaming(request.into_request(), path, codec).await
         }
-        //// Message used to let the scheduler know that it is still alive as
-        //// well as check to see if the scheduler is still alive. The scheduler
-        //// may close the connection if the worker has not sent any messages
-        //// after some amount of time (configured in the scheduler's
-        //// configuration).
+        /// / Message used to let the scheduler know that it is still alive as
+        /// / well as check to see if the scheduler is still alive. The scheduler
+        /// / may close the connection if the worker has not sent any messages
+        /// / after some amount of time (configured in the scheduler's
+        /// / configuration).
         pub async fn keep_alive(
             &mut self,
             request: impl tonic::IntoRequest<super::KeepAliveRequest>,
@@ -247,17 +269,17 @@ pub mod worker_api_client {
             );
             self.inner.unary(request.into_request(), path, codec).await
         }
-        //// Informs the scheduler that the service is going offline and
-        //// should stop issuing any new actions on this worker.
-        ////
-        //// The worker may stay connected even after sending this command
-        //// and may even send an `ExecuteResult` after sending this command.
-        //// It is up to the scheduler implementation to decide how to handle
-        //// this case.
-        ////
-        //// Any job that was running on this instance likely needs to be
-        //// executed again, but up to the scheduler on how or when to handle
-        //// this case.
+        /// / Informs the scheduler that the service is going offline and
+        /// / should stop issuing any new actions on this worker.
+        /// /
+        /// / The worker may stay connected even after sending this command
+        /// / and may even send an `ExecuteResult` after sending this command.
+        /// / It is up to the scheduler implementation to decide how to handle
+        /// / this case.
+        /// /
+        /// / Any job that was running on this instance likely needs to be
+        /// / executed again, but up to the scheduler on how or when to handle
+        /// / this case.
         pub async fn going_away(
             &mut self,
             request: impl tonic::IntoRequest<super::GoingAwayRequest>,
@@ -277,7 +299,7 @@ pub mod worker_api_client {
             );
             self.inner.unary(request.into_request(), path, codec).await
         }
-        //// Informs the scheduler about the result of an execution request.
+        /// / Informs the scheduler about the result of an execution request.
         pub async fn execution_response(
             &mut self,
             request: impl tonic::IntoRequest<super::ExecuteResult>,
@@ -303,60 +325,60 @@ pub mod worker_api_client {
 pub mod worker_api_server {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
-    ///Generated trait containing gRPC methods that should be implemented for use with WorkerApiServer.
+    /// Generated trait containing gRPC methods that should be implemented for use with WorkerApiServer.
     #[async_trait]
     pub trait WorkerApi: Send + Sync + 'static {
-        ///Server streaming response type for the ConnectWorker method.
+        /// Server streaming response type for the ConnectWorker method.
         type ConnectWorkerStream: futures_core::Stream<
                 Item = Result<super::UpdateForWorker, tonic::Status>,
             >
             + Send
             + 'static;
-        //// Registers this worker and informs the scheduler what properties
-        //// this worker supports. The response must be listened on the client
-        //// side for updates from the server. The first item sent will always be
-        //// a ConnectionResult, after that it is undefined.
+        /// / Registers this worker and informs the scheduler what properties
+        /// / this worker supports. The response must be listened on the client
+        /// / side for updates from the server. The first item sent will always be
+        /// / a ConnectionResult, after that it is undefined.
         async fn connect_worker(
             &self,
             request: tonic::Request<super::SupportedProperties>,
         ) -> Result<tonic::Response<Self::ConnectWorkerStream>, tonic::Status>;
-        //// Message used to let the scheduler know that it is still alive as
-        //// well as check to see if the scheduler is still alive. The scheduler
-        //// may close the connection if the worker has not sent any messages
-        //// after some amount of time (configured in the scheduler's
-        //// configuration).
+        /// / Message used to let the scheduler know that it is still alive as
+        /// / well as check to see if the scheduler is still alive. The scheduler
+        /// / may close the connection if the worker has not sent any messages
+        /// / after some amount of time (configured in the scheduler's
+        /// / configuration).
         async fn keep_alive(
             &self,
             request: tonic::Request<super::KeepAliveRequest>,
         ) -> Result<tonic::Response<()>, tonic::Status>;
-        //// Informs the scheduler that the service is going offline and
-        //// should stop issuing any new actions on this worker.
-        ////
-        //// The worker may stay connected even after sending this command
-        //// and may even send an `ExecuteResult` after sending this command.
-        //// It is up to the scheduler implementation to decide how to handle
-        //// this case.
-        ////
-        //// Any job that was running on this instance likely needs to be
-        //// executed again, but up to the scheduler on how or when to handle
-        //// this case.
+        /// / Informs the scheduler that the service is going offline and
+        /// / should stop issuing any new actions on this worker.
+        /// /
+        /// / The worker may stay connected even after sending this command
+        /// / and may even send an `ExecuteResult` after sending this command.
+        /// / It is up to the scheduler implementation to decide how to handle
+        /// / this case.
+        /// /
+        /// / Any job that was running on this instance likely needs to be
+        /// / executed again, but up to the scheduler on how or when to handle
+        /// / this case.
         async fn going_away(
             &self,
             request: tonic::Request<super::GoingAwayRequest>,
         ) -> Result<tonic::Response<()>, tonic::Status>;
-        //// Informs the scheduler about the result of an execution request.
+        /// / Informs the scheduler about the result of an execution request.
         async fn execution_response(
             &self,
             request: tonic::Request<super::ExecuteResult>,
         ) -> Result<tonic::Response<()>, tonic::Status>;
     }
-    //// This API describes how schedulers communicate with Worker nodes.
-    ////
-    //// When a worker node comes online it must be pre-configured with the
-    //// endpoint of the scheduler it will register with. Once the worker
-    //// connects to the scheduler it must send a `RegisterSupportedProperties`
-    //// command to the scheduler. The scheduler will then use this information
-    //// to determine which jobs the worker can process.
+    /// / This API describes how schedulers communicate with Worker nodes.
+    /// /
+    /// / When a worker node comes online it must be pre-configured with the
+    /// / endpoint of the scheduler it will register with. Once the worker
+    /// / connects to the scheduler it must send a `RegisterSupportedProperties`
+    /// / command to the scheduler. The scheduler will then use this information
+    /// / to determine which jobs the worker can process.
     #[derive(Debug)]
     pub struct WorkerApiServer<T: WorkerApi> {
         inner: _Inner<T>,
@@ -385,16 +407,16 @@ pub mod worker_api_server {
         {
             InterceptedService::new(Self::new(inner), interceptor)
         }
-        /// Enable decompressing requests with `gzip`.
+        /// Enable decompressing requests with the given encoding.
         #[must_use]
-        pub fn accept_gzip(mut self) -> Self {
-            self.accept_compression_encodings.enable_gzip();
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
             self
         }
-        /// Compress responses with `gzip`, if the client supports it.
+        /// Compress responses with the given encoding, if the client supports it.
         #[must_use]
-        pub fn send_gzip(mut self) -> Self {
-            self.send_compression_encodings.enable_gzip();
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
             self
         }
     }
@@ -606,7 +628,7 @@ pub mod worker_api_server {
             write!(f, "{:?}", self.0)
         }
     }
-    impl<T: WorkerApi> tonic::transport::NamedService for WorkerApiServer<T> {
+    impl<T: WorkerApi> tonic::server::NamedService for WorkerApiServer<T> {
         const NAME: &'static str = "com.github.allada.turbo_cache.remote_execution.WorkerApi";
     }
 }

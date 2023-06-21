@@ -14,28 +14,29 @@
 
 /// This resource represents a long-running operation that is the result of a
 /// network API call.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Operation {
     /// The server-assigned name, which is only unique within the same service that
     /// originally returns it. If you use the default HTTP mapping, the
     /// `name` should be a resource name ending with `operations/{unique_id}`.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     /// Service-specific metadata associated with the operation.  It typically
     /// contains progress information and common metadata such as create time.
     /// Some services might not provide such metadata.  Any method that returns a
     /// long-running operation should document the metadata type, if any.
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub metadata: ::core::option::Option<::prost_types::Any>,
     /// If the value is `false`, it means the operation is still in progress.
     /// If `true`, the operation is completed, and either `error` or `response` is
     /// available.
-    #[prost(bool, tag="3")]
+    #[prost(bool, tag = "3")]
     pub done: bool,
     /// The operation result, which can be either an `error` or a valid `response`.
     /// If `done` == `false`, neither `error` nor `response` is set.
     /// If `done` == `true`, exactly one of `error` or `response` is set.
-    #[prost(oneof="operation::Result", tags="4, 5")]
+    #[prost(oneof = "operation::Result", tags = "4, 5")]
     pub result: ::core::option::Option<operation::Result>,
 }
 /// Nested message and enum types in `Operation`.
@@ -43,10 +44,11 @@ pub mod operation {
     /// The operation result, which can be either an `error` or a valid `response`.
     /// If `done` == `false`, neither `error` nor `response` is set.
     /// If `done` == `true`, exactly one of `error` or `response` is set.
+    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         /// The error result of the operation in case of failure or cancellation.
-        #[prost(message, tag="4")]
+        #[prost(message, tag = "4")]
         Error(super::super::rpc::Status),
         /// The normal response of the operation in case of success.  If the original
         /// method returns no data on success, such as `Delete`, the response is
@@ -56,80 +58,87 @@ pub mod operation {
         /// is the original method name.  For example, if the original method name
         /// is `TakeSnapshot()`, the inferred response type is
         /// `TakeSnapshotResponse`.
-        #[prost(message, tag="5")]
+        #[prost(message, tag = "5")]
         Response(::prost_types::Any),
     }
 }
 /// The request message for \[Operations.GetOperation][google.longrunning.Operations.GetOperation\].
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetOperationRequest {
     /// The name of the operation resource.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
 /// The request message for \[Operations.ListOperations][google.longrunning.Operations.ListOperations\].
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListOperationsRequest {
     /// The name of the operation's parent resource.
-    #[prost(string, tag="4")]
+    #[prost(string, tag = "4")]
     pub name: ::prost::alloc::string::String,
     /// The standard list filter.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub filter: ::prost::alloc::string::String,
     /// The standard list page size.
-    #[prost(int32, tag="2")]
+    #[prost(int32, tag = "2")]
     pub page_size: i32,
     /// The standard list page token.
-    #[prost(string, tag="3")]
+    #[prost(string, tag = "3")]
     pub page_token: ::prost::alloc::string::String,
 }
 /// The response message for \[Operations.ListOperations][google.longrunning.Operations.ListOperations\].
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListOperationsResponse {
     /// A list of operations that matches the specified filter in the request.
-    #[prost(message, repeated, tag="1")]
+    #[prost(message, repeated, tag = "1")]
     pub operations: ::prost::alloc::vec::Vec<Operation>,
     /// The standard List next-page token.
-    #[prost(string, tag="2")]
+    #[prost(string, tag = "2")]
     pub next_page_token: ::prost::alloc::string::String,
 }
 /// The request message for \[Operations.CancelOperation][google.longrunning.Operations.CancelOperation\].
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelOperationRequest {
     /// The name of the operation resource to be cancelled.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
 /// The request message for \[Operations.DeleteOperation][google.longrunning.Operations.DeleteOperation\].
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeleteOperationRequest {
     /// The name of the operation resource to be deleted.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
 /// The request message for \[Operations.WaitOperation][google.longrunning.Operations.WaitOperation\].
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WaitOperationRequest {
     /// The name of the operation resource to wait on.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     /// The maximum duration to wait before timing out. If left blank, the wait
     /// will be at most the time permitted by the underlying HTTP/RPC protocol.
     /// If RPC context deadline is also specified, the shorter one will be used.
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub timeout: ::core::option::Option<::prost_types::Duration>,
 }
 /// A message representing the message types used by a long-running operation.
 ///
 /// Example:
 ///
-///   rpc LongRunningRecognize(LongRunningRecognizeRequest)
-///       returns (google.longrunning.Operation) {
-///     option (google.longrunning.operation_info) = {
-///       response_type: "LongRunningRecognizeResponse"
-///       metadata_type: "LongRunningRecognizeMetadata"
-///     };
-///   }
+///    rpc LongRunningRecognize(LongRunningRecognizeRequest)
+///        returns (google.longrunning.Operation) {
+///      option (google.longrunning.operation_info) = {
+///        response_type: "LongRunningRecognizeResponse"
+///        metadata_type: "LongRunningRecognizeMetadata"
+///      };
+///    }
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OperationInfo {
     /// Required. The message name of the primary return type for this
@@ -140,7 +149,7 @@ pub struct OperationInfo {
     /// message name must be used (e.g. `google.protobuf.Struct`).
     ///
     /// Note: Altering this value constitutes a breaking change.
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub response_type: ::prost::alloc::string::String,
     /// Required. The message name of the metadata type for this long-running
     /// operation.
@@ -149,13 +158,14 @@ pub struct OperationInfo {
     /// message name must be used (e.g. `google.protobuf.Struct`).
     ///
     /// Note: Altering this value constitutes a breaking change.
-    #[prost(string, tag="2")]
+    #[prost(string, tag = "2")]
     pub metadata_type: ::prost::alloc::string::String,
 }
 /// Generated client implementations.
 pub mod operations_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// Manages long-running operations with an API service.
     ///
     /// When an API method normally takes long time to complete, it can be designed
@@ -191,6 +201,10 @@ pub mod operations_client {
             let inner = tonic::client::Grpc::new(inner);
             Self { inner }
         }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
         pub fn with_interceptor<F>(
             inner: T,
             interceptor: F,
@@ -210,19 +224,19 @@ pub mod operations_client {
         {
             OperationsClient::new(InterceptedService::new(inner, interceptor))
         }
-        /// Compress requests with `gzip`.
+        /// Compress requests with the given encoding.
         ///
         /// This requires the server to support it otherwise it might respond with an
         /// error.
         #[must_use]
-        pub fn send_gzip(mut self) -> Self {
-            self.inner = self.inner.send_gzip();
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
             self
         }
-        /// Enable decompressing responses with `gzip`.
+        /// Enable decompressing responses.
         #[must_use]
-        pub fn accept_gzip(mut self) -> Self {
-            self.inner = self.inner.accept_gzip();
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
             self
         }
         /// Lists operations that match the specified filter in the request. If the
@@ -362,7 +376,7 @@ pub mod operations_client {
 pub mod operations_server {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
-    ///Generated trait containing gRPC methods that should be implemented for use with OperationsServer.
+    /// Generated trait containing gRPC methods that should be implemented for use with OperationsServer.
     #[async_trait]
     pub trait Operations: Send + Sync + 'static {
         /// Lists operations that match the specified filter in the request. If the
@@ -459,16 +473,16 @@ pub mod operations_server {
         {
             InterceptedService::new(Self::new(inner), interceptor)
         }
-        /// Enable decompressing requests with `gzip`.
+        /// Enable decompressing requests with the given encoding.
         #[must_use]
-        pub fn accept_gzip(mut self) -> Self {
-            self.accept_compression_encodings.enable_gzip();
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
             self
         }
-        /// Compress responses with `gzip`, if the client supports it.
+        /// Compress responses with the given encoding, if the client supports it.
         #[must_use]
-        pub fn send_gzip(mut self) -> Self {
-            self.send_compression_encodings.enable_gzip();
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
             self
         }
     }
@@ -725,7 +739,7 @@ pub mod operations_server {
             write!(f, "{:?}", self.0)
         }
     }
-    impl<T: Operations> tonic::transport::NamedService for OperationsServer<T> {
+    impl<T: Operations> tonic::server::NamedService for OperationsServer<T> {
         const NAME: &'static str = "google.longrunning.Operations";
     }
 }

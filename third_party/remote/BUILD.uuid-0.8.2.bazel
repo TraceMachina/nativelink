@@ -58,11 +58,12 @@ rust_library(
     ],
     tags = [
         "cargo-raze",
+        "crate-name=uuid",
         "manual",
     ],
     version = "0.8.2",
     # buildifier: leave-alone
     deps = [
-        "@raze__getrandom__0_2_7//:getrandom",
+        "@raze__getrandom__0_2_10//:getrandom",
     ],
 )

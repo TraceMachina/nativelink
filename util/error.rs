@@ -14,7 +14,7 @@
 
 use std::result::Result;
 
-use prost_types::TimestampOutOfSystemRangeError;
+use prost_types::TimestampError;
 
 #[macro_export]
 macro_rules! make_err {
@@ -165,8 +165,8 @@ impl From<std::convert::Infallible> for Error {
     }
 }
 
-impl From<TimestampOutOfSystemRangeError> for Error {
-    fn from(err: TimestampOutOfSystemRangeError) -> Self {
+impl From<TimestampError> for Error {
+    fn from(err: TimestampError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err)
     }
 }
