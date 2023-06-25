@@ -17,17 +17,15 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
 use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
-use nix::fcntl::{renameat2, RenameFlags};
-use rand::{thread_rng, Rng};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom, Take};
+use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
-use tokio::time::sleep;
 use tokio_stream::wrappers::ReadDirStream;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -40,32 +38,43 @@ use traits::{StoreTrait, UploadSizeInfo};
 // Default size to allocate memory of the buffer when reading files.
 const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 
+struct DiskFile {
+    content_path: String,
+    delete_on_drop: bool,
+    file_evicted_callback: Option<&'static (dyn Fn() + Sync)>,
+}
+
 struct FileEntry {
     digest: DigestInfo,
     file_size: u64,
     temp_path: Arc<String>,
-    content_path: Arc<String>,
-    // Will be the name of the file in the temp_path if it is flagged for deletion.
-    pending_delete_file_name: AtomicU64,
-    file_evicted_callback: Option<&'static (dyn Fn() + Sync)>,
+    // The details of the file on disk are protected by an RwLock to ensure
+    // that if the file is evicted from the content store it is placed into a
+    // temporary directory until all references dropped.  This ensures the
+    // immutibility of a FileEntry even if updates are performed.
+    disk_file: RwLock<DiskFile>,
 }
 
 impl FileEntry {
     async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot<'_>>, Error> {
-        let full_content_path = to_full_path_from_digest(&self.content_path, &self.digest);
-        let mut file = fs::open_file(&full_content_path)
+        let disk_file = self.disk_file.read().await;
+        let mut file = fs::open_file(&disk_file.content_path)
             .await
-            .err_tip(|| format!("Failed to open file in filesystem store {}", full_content_path))?;
+            .err_tip(|| format!("Failed to open file in filesystem store {}", disk_file.content_path))?;
 
         file.seek(SeekFrom::Start(offset))
             .await
-            .err_tip(|| format!("Failed to seek file: {}", full_content_path))?;
+            .err_tip(|| format!("Failed to seek file: {}", disk_file.content_path))?;
         Ok(file.take(length))
     }
+}
 
-    #[inline]
-    fn flag_moved_to_temp_file(&self, rand_file_name: u64) {
-        self.pending_delete_file_name.store(rand_file_name, Ordering::Relaxed);
+impl Debug for DiskFile {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        f.debug_struct("DiskFile")
+            .field("content_path", &self.content_path)
+            .field("delete_on_drop", &self.delete_on_drop)
+            .finish()
     }
 }
 
@@ -75,9 +84,19 @@ impl Debug for FileEntry {
             .field("digest", &self.digest)
             .field("file_size", &self.file_size)
             .field("temp_path", &self.temp_path)
-            .field("content_path", &self.content_path)
-            .field("pending_delete_file_name", &self.pending_delete_file_name)
+            .field("disk_file", &self.disk_file)
             .finish()
+    }
+}
+
+fn temp_file_name() -> u64 {
+    static NEXT_TEMP_FILENAME: AtomicU64 = AtomicU64::new(1);
+    match NEXT_TEMP_FILENAME.fetch_add(1, Ordering::Relaxed) {
+        // Edge case that the U64 wrapped around... 0 is a special flag to say
+        // there is no temporary file, so grab the next number.  It's not going
+        // to wrap around again that quickly, it's a U64!
+        0 => NEXT_TEMP_FILENAME.fetch_add(1, Ordering::Relaxed),
+        val => val,
     }
 }
 
@@ -90,10 +109,11 @@ impl LenEntry for FileEntry {
 
     #[inline]
     async fn touch(&self) {
-        let full_content_path = to_full_path_from_digest(&self.content_path, &self.digest);
+        let disk_file = self.disk_file.read().await;
+        let content_path = disk_file.content_path.clone();
         let set_atime_fut = spawn_blocking(move || {
-            set_file_atime(&full_content_path, FileTime::now())
-                .err_tip(|| format!("Failed to touch file in filesystem store {}", full_content_path))
+            set_file_atime(&content_path, FileTime::now())
+                .err_tip(|| format!("Failed to touch file in filesystem store {}", content_path))
         });
         let res = match set_atime_fut.await {
             Ok(res) => res,
@@ -109,40 +129,48 @@ impl LenEntry for FileEntry {
 
     #[inline]
     async fn unref(&self) {
-        let rand_file_name = thread_rng().gen::<u64>();
+        let mut disk_file = self.disk_file.write().await;
+        if disk_file.delete_on_drop {
+            // Already marked for deletion, don't bother doing it again.
+            return;
+        }
 
-        let from_path = to_full_path_from_digest(&self.content_path, &self.digest);
-        let to_path = to_full_path(&self.temp_path, &format!("{}", rand_file_name));
-        log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Deleting: {}", &from_path);
+        let temp_file = to_full_path(&self.temp_path, &format!("{:x}", temp_file_name()));
+        log::info!(
+            "\x1b[0;31mFilesystem Store\x1b[0m: Deleting: {}",
+            &disk_file.content_path
+        );
         // It is possible (although extremely unlikely) that another thread is reading
         // this file while we want to delete it here. To prevent errors in either case
         // we rename the file (since that other thread would have an open file handle)
         // to the temp folder then delete it when the Arc reference is dropped.
-        if let Err(err) = fs::rename(&from_path, &to_path).await {
-            log::warn!("Failed to rename file from {} to {} : {:?}", from_path, to_path, err);
+        if let Err(err) = fs::rename(&disk_file.content_path, &temp_file).await {
+            log::warn!(
+                "Failed to rename file from {} to {} : {:?}",
+                disk_file.content_path,
+                temp_file,
+                err
+            );
+        } else {
+            disk_file.delete_on_drop = true;
+            disk_file.content_path = temp_file;
         }
-        self.flag_moved_to_temp_file(rand_file_name);
     }
 }
 
-impl Drop for FileEntry {
+impl Drop for DiskFile {
     fn drop(&mut self) {
-        // If the file was flagged to be deleted (ie: only if unref() was called) delete
-        // the file, but in another spawn. This will ensure we don't delete the files
-        // on safe shutdown as well as not block this thread while we wait on an OS
-        // blocking call.
-        let pending_delete_file_name = self.pending_delete_file_name.load(Ordering::Relaxed);
-        if pending_delete_file_name == 0 {
+        if !self.delete_on_drop {
             return;
         }
+        let content_path = self.content_path.clone();
         let file_evicted_callback = self.file_evicted_callback.take();
-        let full_temp_path = to_full_path(&self.temp_path, &pending_delete_file_name.to_string());
         tokio::spawn(async move {
-            log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Store deleting: {}", &full_temp_path);
-            if let Err(err) = fs::remove_file(&full_temp_path).await {
+            log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Store deleting: {}", &content_path);
+            if let Err(err) = fs::remove_file(&content_path).await {
                 log::warn!(
                     "\x1b[0;31mFilesystem Store\x1b[0m: Failed to remove file {} {:?}",
-                    full_temp_path,
+                    content_path,
                     err
                 );
             }
@@ -190,9 +218,11 @@ async fn add_files_to_cache(
             digest: digest.clone(),
             file_size,
             temp_path: temp_path.clone(),
-            content_path: content_path.clone(),
-            pending_delete_file_name: AtomicU64::new(0),
-            file_evicted_callback: None,
+            disk_file: RwLock::new(DiskFile {
+                content_path: to_full_path_from_digest(&content_path, &digest),
+                delete_on_drop: false,
+                file_evicted_callback: None,
+            }),
         };
         let time_since_anchor = anchor_time
             .duration_since(atime)
@@ -330,6 +360,19 @@ impl FilesystemStore {
         Ok(store)
     }
 
+    async fn get_entry(&self, digest: &DigestInfo) -> Result<Arc<FileEntry>, Error> {
+        self.evicting_map
+            .get(&digest)
+            .await
+            .ok_or_else(|| make_err!(Code::NotFound, "not found in filesystem store"))
+    }
+
+    pub async fn hard_link(&self, digest: &DigestInfo, dst: impl AsRef<Path>) -> Result<(), Error> {
+        let entry = self.get_entry(digest).await?;
+        let disk_file = entry.disk_file.read().await;
+        fs::hard_link(&disk_file.content_path, dst).await
+    }
+
     pub fn get_file_for_digest(&self, digest: &DigestInfo) -> String {
         to_full_path_from_digest(self.content_path.as_ref(), &digest)
     }
@@ -338,7 +381,6 @@ impl FilesystemStore {
         self: Pin<&Self>,
         temp_loc: &str,
         mut temp_file: fs::FileSlot<'a>,
-        temp_name_num: u64,
         digest: DigestInfo,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
@@ -371,57 +413,25 @@ impl FilesystemStore {
             digest: digest.clone(),
             file_size,
             temp_path: self.temp_path.clone(),
-            content_path: self.content_path.clone(),
-            pending_delete_file_name: AtomicU64::new(0),
-            file_evicted_callback: self.file_evicted_callback,
+            disk_file: RwLock::new(DiskFile {
+                content_path: to_full_path_from_digest(&self.content_path, &digest),
+                delete_on_drop: false,
+                file_evicted_callback: self.file_evicted_callback,
+            }),
         });
 
-        let final_loc = to_full_path_from_digest(&self.content_path, &digest);
-
-        let final_path = Path::new(&final_loc);
-        let current_path = Path::new(&temp_loc);
-        let rename_flags = if final_path.exists() {
-            RenameFlags::RENAME_EXCHANGE
-        } else {
-            RenameFlags::empty()
-        };
-
-        // TODO(allada) We should find another way to do this without needing to use this nix
-        // library. We need a way to atomically swap files, so if one location is downloading the
-        // file and another replaces the contents it doesn't error out the downloading one.
-        // We can't use two operations here because a `.has()/.get()` call might see it existing
-        // then try and download it, but if we get EXTREMELY unlucky we might move the file then
-        // another location might try to run `.get()` on it, and the file won't exist then the
-        // second rename might happen (finishing the stages), resulting in an error to the
-        // fetcher. By using the RENAME_EXCHANGE flag it solves our problem, but limits the
-        // filesystem and operating system.
-        renameat2(None, current_path, None, final_path, rename_flags)
-            .map_err(|e| {
-                make_err!(
-                    Code::NotFound,
-                    "Could not atomically swap files {} and {} in filesystem store {}",
-                    temp_loc,
-                    final_loc,
-                    e
-                )
-            })
-            .err_tip(|| "This could be due to the filesystem not supporting RENAME_EXCHANGE")?;
-
-        if let Some(old_item) = self.evicting_map.insert(digest, entry).await {
-            // Even though the move is atomic above, it is possible that during a hardlink operation
-            // the action will find the inode (which could be either the new or old file at this
-            // point), then create the hardlink with the queried inode. But if the file gets deleted
-            // after it grabs the inode but before the hardlink it could result in a NotFound error.
-            // By putting a delay before deleting the temp files we give some leeway so this error
-            // will be extremely rare.
-            tokio::spawn(async move {
-                const DELAY_TO_DELETE_TEMP_FILES: u64 = 100;
-                sleep(Duration::from_millis(DELAY_TO_DELETE_TEMP_FILES)).await;
-                // At this point `temp_name_num` will be the file containing the old content we
-                // are going to delete.
-                old_item.flag_moved_to_temp_file(temp_name_num);
-            });
+        // In order to do an immutable swap in the map here, we take the write
+        // lock for the new entry, then we swap out the entry in the map and
+        // then take the write lock of any existing entry, then we swap the
+        // files on disk to ensure it's all in sequence.
+        let new_disk_file = entry.disk_file.write().await;
+        if let Some(old_item) = self.evicting_map.insert(digest, entry.clone()).await {
+            // Move the old file out of the way of the new file
+            old_item.unref().await;
         }
+        // Now the content_path is free, so we can take it
+        fs::rename(&temp_loc, &new_disk_file.content_path).await?;
+
         Ok(())
     }
 }
@@ -438,17 +448,13 @@ impl StoreTrait for FilesystemStore {
         reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let temp_name_num = thread_rng().gen::<u64>();
-        let temp_full_path = to_full_path(&self.temp_path, &temp_name_num.to_string());
+        let temp_full_path = to_full_path(&self.temp_path, &format!("{:x}", temp_file_name()));
 
         let temp_file = fs::create_file(&temp_full_path)
             .await
             .err_tip(|| "Failed to create temp file in filesystem store")?;
 
-        if let Err(err) = self
-            .update_file(&temp_full_path, temp_file, temp_name_num, digest, reader)
-            .await
-        {
+        if let Err(err) = self.update_file(&temp_full_path, temp_file, digest, reader).await {
             let result = fs::remove_file(temp_full_path)
                 .await
                 .err_tip(|| "Failed to delete temp file in filesystem store");
@@ -468,11 +474,7 @@ impl StoreTrait for FilesystemStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        let entry = self
-            .evicting_map
-            .get(&digest)
-            .await
-            .ok_or_else(|| make_err!(Code::NotFound, "not found in filesystem store"))?;
+        let entry = self.get_entry(&digest).await?;
         let mut file = entry
             .read_file_part(offset as u64, length.unwrap_or(usize::MAX) as u64)
             .await?;

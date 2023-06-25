@@ -219,8 +219,6 @@ rust_library(
         "//third_party:bytes",
         "//third_party:filetime",
         "//third_party:futures",
-        "//third_party:nix",
-        "//third_party:rand",
         "//third_party:tokio",
         "//third_party:tokio_stream",
         "//util:buf_channel",

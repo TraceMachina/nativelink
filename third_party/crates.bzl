@@ -1143,16 +1143,6 @@ def raze_fetch_remote_crates():
 
     maybe(
         http_archive,
-        name = "raze__memoffset__0_6_5",
-        url = "https://crates.io/api/v1/crates/memoffset/0.6.5/download",
-        type = "tar.gz",
-        sha256 = "5aa361d4faea93603064a027415f07bd8e1d5c88c9fbf68bf56a285428fd79ce",
-        strip_prefix = "memoffset-0.6.5",
-        build_file = Label("//third_party/remote:BUILD.memoffset-0.6.5.bazel"),
-    )
-
-    maybe(
-        http_archive,
         name = "raze__mime__0_3_17",
         url = "https://crates.io/api/v1/crates/mime/0.3.17/download",
         type = "tar.gz",
@@ -1209,16 +1199,6 @@ def raze_fetch_remote_crates():
         sha256 = "07226173c32f2926027b63cce4bcd8076c3552846cbe7925f3aaffeac0a3b92e",
         strip_prefix = "native-tls-0.2.11",
         build_file = Label("//third_party/remote:BUILD.native-tls-0.2.11.bazel"),
-    )
-
-    maybe(
-        http_archive,
-        name = "raze__nix__0_23_2",
-        url = "https://crates.io/api/v1/crates/nix/0.23.2/download",
-        type = "tar.gz",
-        sha256 = "8f3790c00a0150112de0f4cd161e3d7fc4b2d8a5542ffc35f099a2562aecb35c",
-        strip_prefix = "nix-0.23.2",
-        build_file = Label("//third_party/remote:BUILD.nix-0.23.2.bazel"),
     )
 
     maybe(

@@ -95,9 +95,7 @@ pub enum StoreConfig {
     /// the previous state, meaning anything uploaded will be persistent
     /// as long as the filesystem integrity holds. This store uses the
     /// filesystem's `atime` (access time) to hold the last touched time
-    /// of the file(s). We also use the RENAME_EXCHANGE flag to atomically
-    /// swap files if a file is being replaced. Only filesystems that
-    /// support `atime` and the RENAME_EXCHANGE flag are supported.
+    /// of the file(s). Only filesystems that support `atime` are supported.
     filesystem(FilesystemStore),
 
     /// Store used to reference a store in the root store manager.
