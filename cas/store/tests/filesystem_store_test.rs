@@ -12,22 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cell::RefCell;
 use std::env;
+use std::ops::DerefMut;
+use std::path::Path;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use filetime::{set_file_atime, FileTime};
+use futures::executor::block_on;
+use futures::task::Poll;
+use futures::{poll, Future};
+use lazy_static::lazy_static;
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncReadExt;
 use tokio_stream::{wrappers::ReadDirStream, StreamExt};
+use traits::UploadSizeInfo;
 
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
 use common::{fs, DigestInfo};
 use config;
 use error::{Error, ResultExt};
-use filesystem_store::FilesystemStore;
+use filesystem_store::{digest_from_filename, FileEntry, FilesystemStore};
 use traits::StoreTrait;
 
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
@@ -128,7 +137,8 @@ mod filesystem_store_tests {
                     }),
                     ..Default::default()
                 },
-                &on_file_delete,
+                Some(&on_file_delete),
+                None,
             )
             .await?,
         );
@@ -198,7 +208,8 @@ mod filesystem_store_tests {
                     }),
                     read_buffer_size: 1,
                 },
-                &on_file_delete,
+                Some(&on_file_delete),
+                None,
             )
             .await?,
         );
@@ -308,7 +319,8 @@ mod filesystem_store_tests {
                     }),
                     read_buffer_size: 1,
                 },
-                &on_file_delete,
+                Some(&on_file_delete),
+                None,
             )
             .await?,
         );
@@ -401,13 +413,17 @@ mod filesystem_store_tests {
         // Insert data into store.
         store.as_ref().update_oneshot(digest1.clone(), VALUE1.into()).await?;
 
-        let path = store.get_file_for_digest(&digest1);
+        let file_entry = store.get_file_entry_for_digest(&digest1).await?;
+        file_entry
+            .get_file_path_locked(move |path| async move {
+                // Set atime to along time ago.
+                set_file_atime(&path, FileTime::zero())?;
 
-        // Set atime to along time ago.
-        set_file_atime(&path, FileTime::zero())?;
-
-        // Check to ensure it was set to zero from previous command.
-        assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+                // Check to ensure it was set to zero from previous command.
+                assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+                Ok(())
+            })
+            .await?;
 
         // Now touch digest1.
         let data = store
@@ -416,8 +432,13 @@ mod filesystem_store_tests {
             .await?;
         assert_eq!(data, VALUE1.as_bytes());
 
-        // Ensure it was updated.
-        assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
+        file_entry
+            .get_file_path_locked(move |path| async move {
+                // Ensure it was updated.
+                assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
+                Ok(())
+            })
+            .await?;
 
         Ok(())
     }
@@ -438,13 +459,17 @@ mod filesystem_store_tests {
         // Insert data into store.
         store.as_ref().update_oneshot(digest1.clone(), VALUE1.into()).await?;
 
-        let path = store.get_file_for_digest(&digest1);
+        let file_entry = store.get_file_entry_for_digest(&digest1).await?;
+        file_entry
+            .get_file_path_locked(move |path| async move {
+                // Set atime to along time ago.
+                set_file_atime(&path, FileTime::zero())?;
 
-        // Set atime to along time ago.
-        set_file_atime(&path, FileTime::zero())?;
-
-        // Check to ensure it was set to zero from previous command.
-        assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+                // Check to ensure it was set to zero from previous command.
+                assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+                Ok(())
+            })
+            .await?;
 
         // Now touch digest1.
         let data = store
@@ -453,8 +478,213 @@ mod filesystem_store_tests {
             .await?;
         assert_eq!(data, VALUE1.as_bytes());
 
-        // Ensure it was updated.
-        assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
+        file_entry
+            .get_file_path_locked(move |path| async move {
+                // Ensure it was updated.
+                assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
+                Ok(())
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    // Test to ensure that if we are holding a reference to `FileEntry` and the contents are
+    // replaced, the `FileEntry` continues to use the old data.
+    // `FileEntry` file contents should be immutable for the lifetime of the object.
+    #[tokio::test]
+    async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error> {
+        let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+
+        let store = Box::pin(
+            FilesystemStore::new(&config::backends::FilesystemStore {
+                content_path: make_temp_path("content_path"),
+                temp_path: make_temp_path("temp_path"),
+                eviction_policy: None,
+                ..Default::default()
+            })
+            .await?,
+        );
+        // Insert data into store.
+        store.as_ref().update_oneshot(digest.clone(), VALUE1.into()).await?;
+        let file_entry = store.get_file_entry_for_digest(&digest).await?;
+        {
+            // The file contents should equal our initial data.
+            let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+            let mut file_contents = String::new();
+            reader.read_to_string(&mut file_contents).await?;
+            assert_eq!(file_contents, VALUE1);
+        }
+
+        // Now replace the data.
+        store.as_ref().update_oneshot(digest.clone(), VALUE2.into()).await?;
+
+        {
+            // The file contents still equal our old data.
+            let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+            let mut file_contents = String::new();
+            reader.read_to_string(&mut file_contents).await?;
+            assert_eq!(file_contents, VALUE1);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
+        const BIG_VALUE: &str = "0123";
+        let small_digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let big_digest = DigestInfo::try_new(&HASH1, BIG_VALUE.len())?;
+
+        lazy_static! {
+            static ref UNREFED_DIGESTS: Mutex<Vec<DigestInfo>> = Mutex::new(Vec::new());
+        }
+        fn on_unref_callback(file_entry: &FileEntry) {
+            block_on(file_entry.get_file_path_locked(move |path_str| async move {
+                let path = Path::new(&path_str);
+                let digest = digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
+                UNREFED_DIGESTS.lock().unwrap().push(digest);
+                Ok(())
+            }))
+            .unwrap();
+        }
+
+        let store = Box::pin(
+            FilesystemStore::new_with_callback(
+                &config::backends::FilesystemStore {
+                    content_path: make_temp_path("content_path"),
+                    temp_path: make_temp_path("temp_path"),
+                    eviction_policy: Some(config::backends::EvictionPolicy {
+                        max_bytes: 5,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                None,
+                Some(&on_unref_callback),
+            )
+            .await?,
+        );
+        // Insert data into store.
+        store
+            .as_ref()
+            .update_oneshot(small_digest.clone(), VALUE1.into())
+            .await?;
+        store
+            .as_ref()
+            .update_oneshot(big_digest.clone(), BIG_VALUE.into())
+            .await?;
+
+        {
+            // Our first digest should have been unrefed exactly once.
+            let unrefed_digests = UNREFED_DIGESTS.lock().unwrap();
+            assert_eq!(unrefed_digests.len(), 1, "Expected exactly 1 unrefed digest");
+            assert_eq!(unrefed_digests[0], small_digest, "Expected digest to match");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens() -> Result<(), Error> {
+        let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+        let store = Box::pin(
+            FilesystemStore::new(&config::backends::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                eviction_policy: None,
+                ..Default::default()
+            })
+            .await?,
+        );
+
+        let (mut tx, rx) = make_buf_channel_pair();
+        let update_fut = Rc::new(RefCell::new(store.as_ref().update(
+            digest.clone(),
+            rx,
+            UploadSizeInfo::MaxSize(100),
+        )));
+        // This will process as much of the future as it can before it needs to pause.
+        // Our temp file will be created and opened and ready to have contents streamed
+        // to it.
+        assert_eq!(poll!(update_fut.borrow_mut().deref_mut())?, Poll::Pending);
+        const INITIAL_CONTENT: &str = "hello";
+        tx.send(INITIAL_CONTENT.into()).await?;
+
+        // Now we extract that temp file that is generated.
+        async fn wait_for_temp_file<Fut: Future<Output = Result<(), Error>>, F: Fn() -> Fut>(
+            temp_path: &str,
+            yield_fn: F,
+        ) -> Result<fs::DirEntry, Error> {
+            loop {
+                // Just in case there's a
+                yield_fn().await?;
+                let (_permit, dir_handle) = fs::read_dir(&temp_path).await?.into_inner();
+                let mut read_dir_stream = ReadDirStream::new(dir_handle);
+                if let Some(dir_entry) = read_dir_stream.next().await {
+                    assert!(
+                        read_dir_stream.next().await.is_none(),
+                        "There should only be one file in temp directory"
+                    );
+                    let dir_entry = dir_entry?;
+                    // Ensure we have written to the file too. This ensures we have an open file handle.
+                    // Failing to do this may result in the file existing, but the `update_fut` not actually
+                    // sending data to it yet.
+                    if dir_entry.metadata().await?.len() >= INITIAL_CONTENT.len() as u64 {
+                        return Ok(dir_entry);
+                    }
+                }
+            }
+            // Unreachable.
+        }
+        wait_for_temp_file(&temp_path, || {
+            let update_fut_clone = update_fut.clone();
+            async move {
+                // This will ensure we yield to our future and other potential spawns.
+                tokio::task::yield_now().await;
+                assert_eq!(poll!(update_fut_clone.borrow_mut().deref_mut())?, Poll::Pending);
+                Ok(())
+            }
+        })
+        .await?;
+
+        // Now make it impossible for the file to be moved into the final path.
+        // This will trigger an error on `rename()`.
+        fs::remove_dir_all(&content_path).await?;
+
+        // Because send_eof() waits for shutdown of the rx side, we cannot just await in this thread.
+        tokio::spawn(async move {
+            tx.send_eof().await.unwrap();
+        });
+
+        // Now finish waiting on update(). This should reuslt in an error because we deleted our dest
+        // folder.
+        let update_result = update_fut.borrow_mut().deref_mut().await;
+        assert!(
+            update_result.is_err(),
+            "Expected update to fail due to temp file being deleted before rename"
+        );
+
+        // Note: Because the acutal delete might happen in another spawn, we need to yield before
+        // checking.
+        tokio::task::yield_now().await;
+
+        // Now it should have cleaned up it's temp files.
+        {
+            // Ensure `temp_path` is empty.
+            let (_permit, dir_handle) = fs::read_dir(&temp_path).await?.into_inner();
+            let mut read_dir_stream = ReadDirStream::new(dir_handle);
+            assert!(
+                read_dir_stream.next().await.is_none(),
+                "File found in temp_path after update() rename failure"
+            );
+        }
+
+        // Finally ensure that our entry is not in the store.
+        assert_eq!(store.as_ref().has(digest).await?, None, "Entry should not be in store");
 
         Ok(())
     }
