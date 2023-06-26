@@ -13,21 +13,19 @@
 // limitations under the License.
 
 use std::fmt::{Debug, Formatter};
-use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
+use async_lock::RwLock;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
-use nix::fcntl::{renameat2, RenameFlags};
-use rand::{thread_rng, Rng};
+use futures::Future;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom, Take};
 use tokio::task::spawn_blocking;
-use tokio::time::sleep;
 use tokio_stream::wrappers::ReadDirStream;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -40,45 +38,102 @@ use traits::{StoreTrait, UploadSizeInfo};
 // Default size to allocate memory of the buffer when reading files.
 const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 
-struct FileEntry {
-    digest: DigestInfo,
+#[derive(Debug)]
+struct FolderPaths {
+    temp_path: String,
+    content_path: String,
+}
+
+#[derive(Eq, PartialEq, Debug)]
+enum PathType {
+    Content,
+    Temp,
+}
+
+type FileNameDigest = DigestInfo;
+struct EncodedFilePath {
+    folder_paths: Arc<FolderPaths>,
+    path_type: PathType,
+    digest: FileNameDigest,
+}
+
+impl EncodedFilePath {
+    #[inline]
+    fn get_file_path(&self) -> String {
+        let folder = match self.path_type {
+            PathType::Content => &self.folder_paths.content_path,
+            PathType::Temp => &self.folder_paths.temp_path,
+        };
+        to_full_path_from_digest(folder, &self.digest)
+    }
+}
+
+#[inline]
+fn to_full_path_from_digest(folder: &str, digest: &DigestInfo) -> String {
+    format!("{}/{}-{}", folder, digest.str(), digest.size_bytes)
+}
+
+// Note: We don't store the full path of the file here because it would cause
+// a lot of needless memeory bloat. There's a high chance we'll end up with a
+// lot of small files, so to prevent storing duplicate data, we store an Arc
+// to the path of the directory where the file is stored and the packed digest.
+// Resulting in usize + sizeof(DigestInfo).
+pub struct FileEntry {
     file_size: u64,
-    temp_path: Arc<String>,
-    content_path: Arc<String>,
-    // Will be the name of the file in the temp_path if it is flagged for deletion.
-    pending_delete_file_name: AtomicU64,
+
+    // Encoded this way to save memory.
+    encoded_file_path: RwLock<EncodedFilePath>,
+
+    // TODO(allada) Figure out a way to only setup these fields for tests, they
+    // are not used in production code.
     file_evicted_callback: Option<&'static (dyn Fn() + Sync)>,
+    file_unrefed_callback: Option<&'static (dyn Fn(&FileEntry) + Sync)>,
 }
 
 impl FileEntry {
-    async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot<'_>>, Error> {
-        let full_content_path = to_full_path_from_digest(&self.content_path, &self.digest);
-        let mut file = fs::open_file(&full_content_path)
-            .await
-            .err_tip(|| format!("Failed to open file in filesystem store {}", full_content_path))?;
+    pub async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot<'_>>, Error> {
+        let (mut file, full_content_path_for_debug_only) = self
+            .get_file_path_locked(|full_content_path| async move {
+                let file = fs::open_file(&full_content_path)
+                    .await
+                    .err_tip(|| format!("Failed to open file in filesystem store {}", full_content_path))?;
+                Ok((file, full_content_path))
+            })
+            .await?;
 
         file.seek(SeekFrom::Start(offset))
             .await
-            .err_tip(|| format!("Failed to seek file: {}", full_content_path))?;
+            .err_tip(|| format!("Failed to seek file: {}", full_content_path_for_debug_only))?;
         Ok(file.take(length))
     }
 
-    #[inline]
-    fn flag_moved_to_temp_file(&self, rand_file_name: u64) {
-        self.pending_delete_file_name.store(rand_file_name, Ordering::Relaxed);
+    /// This function is a safe way to extract the file name of the underlying file. To protect users from
+    /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
+    /// the filename inside this function instead of extracting the filename and doing the logic outside.
+    /// This is because the filename is not guaranteed to exist after this function returns, however inside
+    /// the callback the file is always guaranteed to exist and immutable.
+    /// DO NOT USE THIS FUNCTION TO EXTRACT THE FILENAME AND STORE IT FOR LATER USE.
+    pub async fn get_file_path_locked<T, Fut: Future<Output = Result<T, Error>>, F: FnOnce(String) -> Fut>(
+        &self,
+        handler: F,
+    ) -> Result<T, Error> {
+        let encoded_file_path = self.encoded_file_path.read().await;
+        handler(encoded_file_path.get_file_path()).await
     }
 }
 
 impl Debug for FileEntry {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         f.debug_struct("FileEntry")
-            .field("digest", &self.digest)
             .field("file_size", &self.file_size)
-            .field("temp_path", &self.temp_path)
-            .field("content_path", &self.content_path)
-            .field("pending_delete_file_name", &self.pending_delete_file_name)
+            .field("encoded_file_path", &"<behind mutex>")
             .finish()
     }
+}
+
+fn make_temp_digest(digest: &mut DigestInfo) {
+    static DELETE_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+    digest.packed_hash[24..].clone_from_slice(&DELETE_FILE_COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
 }
 
 #[async_trait]
@@ -90,61 +145,83 @@ impl LenEntry for FileEntry {
 
     #[inline]
     async fn touch(&self) {
-        let full_content_path = to_full_path_from_digest(&self.content_path, &self.digest);
-        let set_atime_fut = spawn_blocking(move || {
-            set_file_atime(&full_content_path, FileTime::now())
-                .err_tip(|| format!("Failed to touch file in filesystem store {}", full_content_path))
-        });
-        let res = match set_atime_fut.await {
-            Ok(res) => res,
-            Err(_) => Err(make_err!(
-                Code::Internal,
-                "Failed to change atime of file due to spawn failing"
-            )),
-        };
-        if let Err(err) = res {
-            log::error!("{:?}", err);
+        let result = self
+            .get_file_path_locked(move |full_content_path| async move {
+                Ok(spawn_blocking(move || {
+                    set_file_atime(&full_content_path, FileTime::now())
+                        .err_tip(|| format!("Failed to touch file in filesystem store {}", full_content_path))
+                })
+                .await
+                .map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Failed to change atime of file due to spawn failing {:?}",
+                        e
+                    )
+                })??)
+            })
+            .await;
+        if let Err(e) = result {
+            log::error!("{}", e);
         }
     }
 
+    // unref() only triggers when an item is removed from the eviction_map. It is possible
+    // that another place in code has a reference to `FileEntry` and may later read the
+    // file. To support this edge case, we first move the file to a temp file and point
+    // target file location to the new temp file.
     #[inline]
     async fn unref(&self) {
-        let rand_file_name = thread_rng().gen::<u64>();
-
-        let from_path = to_full_path_from_digest(&self.content_path, &self.digest);
-        let to_path = to_full_path(&self.temp_path, &format!("{}", rand_file_name));
-        log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Deleting: {}", &from_path);
-        // It is possible (although extremely unlikely) that another thread is reading
-        // this file while we want to delete it here. To prevent errors in either case
-        // we rename the file (since that other thread would have an open file handle)
-        // to the temp folder then delete it when the Arc reference is dropped.
-        if let Err(err) = fs::rename(&from_path, &to_path).await {
-            log::warn!("Failed to rename file from {} to {} : {:?}", from_path, to_path, err);
+        if let Some(callback) = self.file_unrefed_callback {
+            (callback)(&self);
         }
-        self.flag_moved_to_temp_file(rand_file_name);
+        {
+            let mut encoded_file_path = self.encoded_file_path.write().await;
+            assert!(
+                encoded_file_path.path_type == PathType::Content,
+                "File may only be unrefed once"
+            );
+            let from_path = encoded_file_path.get_file_path();
+            let mut new_digest = encoded_file_path.digest.clone();
+            make_temp_digest(&mut new_digest);
+
+            let to_path = to_full_path_from_digest(&encoded_file_path.folder_paths.temp_path, &new_digest);
+
+            log::info!(
+                "\x1b[0;31mFilesystem Store\x1b[0m: Unref {}, moving file {} to {}",
+                encoded_file_path.digest.str(),
+                &from_path,
+                &to_path
+            );
+            if let Err(err) = fs::rename(&from_path, &to_path).await {
+                log::warn!("Failed to rename file from {} to {} : {:?}", from_path, to_path, err);
+            } else {
+                encoded_file_path.path_type = PathType::Temp;
+                encoded_file_path.digest = new_digest;
+            }
+        }
     }
 }
 
+// TODO(allada) When the `file_evicted_callback` is removed, move `Drop` to EncodedFilePath impl.
 impl Drop for FileEntry {
     fn drop(&mut self) {
-        // If the file was flagged to be deleted (ie: only if unref() was called) delete
-        // the file, but in another spawn. This will ensure we don't delete the files
-        // on safe shutdown as well as not block this thread while we wait on an OS
-        // blocking call.
-        let pending_delete_file_name = self.pending_delete_file_name.load(Ordering::Relaxed);
-        if pending_delete_file_name == 0 {
+        let encoded_file_path = self.encoded_file_path.get_mut();
+        // `drop()` can be called during shutdown, so we use `path_type` flag to know if the
+        // file actually needs to be deleted.
+        if encoded_file_path.path_type == PathType::Temp {
             return;
         }
+
+        let file_path = encoded_file_path.get_file_path();
         let file_evicted_callback = self.file_evicted_callback.take();
-        let full_temp_path = to_full_path(&self.temp_path, &pending_delete_file_name.to_string());
         tokio::spawn(async move {
-            log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Store deleting: {}", &full_temp_path);
-            if let Err(err) = fs::remove_file(&full_temp_path).await {
-                log::warn!(
-                    "\x1b[0;31mFilesystem Store\x1b[0m: Failed to remove file {} {:?}",
-                    full_temp_path,
-                    err
-                );
+            log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Deleting: {}", &file_path);
+            let result = fs::remove_file(&file_path)
+                .await
+                .err_tip(|| format!("Failed to remove file {}", file_path));
+            if let Err(err) = result {
+                log::warn!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
             }
             if let Some(callback) = file_evicted_callback {
                 (callback)();
@@ -154,45 +231,36 @@ impl Drop for FileEntry {
 }
 
 #[inline]
-fn to_full_path(folder: &str, name: &str) -> String {
-    format!("{}/{}", folder, name)
-}
-
-#[inline]
-fn to_full_path_from_digest(folder: &str, digest: &DigestInfo) -> String {
-    format!("{}/{}-{}", folder, digest.str(), digest.size_bytes)
+pub fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
+    let (hash, size) = file_name.split_once('-').err_tip(|| "")?;
+    let size = i64::from_str_radix(size, 10)?;
+    DigestInfo::try_new(hash, size)
 }
 
 async fn add_files_to_cache(
     evicting_map: &EvictingMap<Arc<FileEntry>, SystemTime>,
     anchor_time: &SystemTime,
-    temp_path: &Arc<String>,
-    content_path: &Arc<String>,
+    folder_paths: &Arc<FolderPaths>,
 ) -> Result<(), Error> {
-    fn make_digest(file_name: &str) -> Result<DigestInfo, Error> {
-        let (hash, size) = file_name.split_once('-').err_tip(|| "")?;
-        let size = i64::from_str_radix(size, 10)?;
-        DigestInfo::try_new(hash, size)
-    }
-
     async fn process_entry(
         evicting_map: &EvictingMap<Arc<FileEntry>, SystemTime>,
         file_name: &str,
         atime: SystemTime,
         file_size: u64,
         anchor_time: &SystemTime,
-        temp_path: &Arc<String>,
-        content_path: &Arc<String>,
+        folder_paths: &Arc<FolderPaths>,
     ) -> Result<(), Error> {
-        let digest = make_digest(&file_name)?;
+        let digest = digest_from_filename(&file_name)?;
 
         let file_entry = FileEntry {
-            digest: digest.clone(),
             file_size,
-            temp_path: temp_path.clone(),
-            content_path: content_path.clone(),
-            pending_delete_file_name: AtomicU64::new(0),
+            encoded_file_path: RwLock::new(EncodedFilePath {
+                folder_paths: folder_paths.clone(),
+                path_type: PathType::Content,
+                digest: digest.clone(),
+            }),
             file_evicted_callback: None,
+            file_unrefed_callback: None,
         };
         let time_since_anchor = anchor_time
             .duration_since(atime)
@@ -204,7 +272,7 @@ async fn add_files_to_cache(
     }
 
     let mut file_infos: Vec<(String, SystemTime, u64)> = {
-        let (_permit, dir_handle) = fs::read_dir(format!("{}/", content_path))
+        let (_permit, dir_handle) = fs::read_dir(format!("{}/", folder_paths.content_path))
             .await
             .err_tip(|| "Failed opening content directory for iterating in filesystem store")?
             .into_inner();
@@ -239,16 +307,7 @@ async fn add_files_to_cache(
 
     file_infos.sort_by(|a, b| a.1.cmp(&b.1));
     for (file_name, atime, file_size) in file_infos {
-        let result = process_entry(
-            &evicting_map,
-            &file_name,
-            atime,
-            file_size,
-            &anchor_time,
-            &temp_path,
-            &content_path,
-        )
-        .await;
+        let result = process_entry(&evicting_map, &file_name, atime, file_size, &anchor_time, &folder_paths).await;
         if let Err(err) = result {
             log::warn!(
                 "Could not add file to eviction cache, so deleting: {} - {:?}",
@@ -256,7 +315,7 @@ async fn add_files_to_cache(
                 err
             );
             // Ignore result.
-            let _ = fs::remove_file(format!("{}/{}", &content_path, &file_name)).await;
+            let _ = fs::remove_file(format!("{}/{}", &folder_paths.content_path, &file_name)).await;
         }
     }
     Ok(())
@@ -279,20 +338,22 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
 }
 
 pub struct FilesystemStore {
-    temp_path: Arc<String>,
-    content_path: Arc<String>,
+    folder_paths: Arc<FolderPaths>,
     evicting_map: EvictingMap<Arc<FileEntry>, SystemTime>,
     read_buffer_size: usize,
     file_evicted_callback: Option<&'static (dyn Fn() + Sync)>,
+    file_unrefed_callback: Option<&'static (dyn Fn(&FileEntry) + Sync)>,
 }
 
 impl FilesystemStore {
     pub async fn new_with_callback(
         config: &config::backends::FilesystemStore,
-        file_evicted_callback: &'static (dyn Fn() + Sync),
+        file_evicted_callback: Option<&'static (dyn Fn() + Sync)>,
+        file_unrefed_callback: Option<&'static (dyn Fn(&FileEntry) + Sync)>,
     ) -> Result<Self, Error> {
         let mut me = Self::new(config).await?;
-        me.file_evicted_callback = Some(file_evicted_callback);
+        me.file_evicted_callback = file_evicted_callback;
+        me.file_unrefed_callback = file_unrefed_callback;
         Ok(me)
     }
 
@@ -310,10 +371,12 @@ impl FilesystemStore {
             .await
             .err_tip(|| format!("Failed to content directory {:?}", &config.content_path))?;
 
-        let temp_path = Arc::new(config.temp_path.clone());
-        let content_path = Arc::new(config.content_path.clone());
-        add_files_to_cache(&evicting_map, &now, &temp_path, &content_path).await?;
-        prune_temp_path(&temp_path.as_ref()).await?;
+        let folder_paths = Arc::new(FolderPaths {
+            temp_path: config.temp_path.clone(),
+            content_path: config.content_path.clone(),
+        });
+        add_files_to_cache(&evicting_map, &now, &folder_paths).await?;
+        prune_temp_path(&folder_paths.temp_path).await?;
 
         let read_buffer_size = if config.read_buffer_size == 0 {
             DEFAULT_BUFF_SIZE
@@ -321,24 +384,26 @@ impl FilesystemStore {
             config.read_buffer_size as usize
         };
         let store = Self {
-            temp_path,
-            content_path,
+            folder_paths,
             evicting_map,
             read_buffer_size,
             file_evicted_callback: None,
+            file_unrefed_callback: None,
         };
         Ok(store)
     }
 
-    pub fn get_file_for_digest(&self, digest: &DigestInfo) -> String {
-        to_full_path_from_digest(self.content_path.as_ref(), &digest)
+    pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<FileEntry>, Error> {
+        self.evicting_map
+            .get(&digest)
+            .await
+            .ok_or_else(|| make_err!(Code::NotFound, "not found in filesystem store"))
     }
 
     async fn update_file<'a>(
         self: Pin<&Self>,
         temp_loc: &str,
         mut temp_file: fs::FileSlot<'a>,
-        temp_name_num: u64,
         digest: DigestInfo,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
@@ -368,59 +433,44 @@ impl FilesystemStore {
         drop(temp_file);
 
         let entry = Arc::new(FileEntry {
-            digest: digest.clone(),
             file_size,
-            temp_path: self.temp_path.clone(),
-            content_path: self.content_path.clone(),
-            pending_delete_file_name: AtomicU64::new(0),
+            encoded_file_path: RwLock::new(EncodedFilePath {
+                folder_paths: self.folder_paths.clone(),
+                path_type: PathType::Content,
+                digest: digest.clone(),
+            }),
             file_evicted_callback: self.file_evicted_callback,
+            file_unrefed_callback: self.file_unrefed_callback,
         });
 
-        let final_loc = to_full_path_from_digest(&self.content_path, &digest);
+        // This sequence of events is quite ticky to understand due to the amount of triggers that
+        // happen, async'ness of it and the locking. So here is a breakdown of what happens:
+        // 1. Here will hold a write lock on any file operations of this FileEntry.
+        // 2. Then insert the entry into the evicting map. This may trigger an eviction of other
+        //    entries.
+        // 3. Eviction triggers `unref()`, which grabs a write lock on the evicted FileEntrys
+        //    during the rename.
+        // 4. It should be impossible for items to be added while eviction is happening, so there
+        //    should not be a deadlock possability. However, it is possible for the new FileEntry
+        //    to be evicted before the file is moved into place. Eviction of the newly inserted
+        //    item is not possible within the `insert()` call because the write lock inside the
+        //    eviction map. If an eviction of new item happens after `insert()` but before
+        //    `rename()` then we get to finish our operation because the `unref()` of the new item
+        //    will be blocked on us because we currently have the lock.
+        // 5. Move the file into place. Since we hold a write lock still anyone that gets our new
+        //    FileEntry (which has not yet been placed on disk) will not be able to read the file's
+        //    contents until we relese the lock.
+        {
+            let encoded_file_path = entry.encoded_file_path.write().await;
+            let final_path = encoded_file_path.get_file_path();
 
-        let final_path = Path::new(&final_loc);
-        let current_path = Path::new(&temp_loc);
-        let rename_flags = if final_path.exists() {
-            RenameFlags::RENAME_EXCHANGE
-        } else {
-            RenameFlags::empty()
-        };
-
-        // TODO(allada) We should find another way to do this without needing to use this nix
-        // library. We need a way to atomically swap files, so if one location is downloading the
-        // file and another replaces the contents it doesn't error out the downloading one.
-        // We can't use two operations here because a `.has()/.get()` call might see it existing
-        // then try and download it, but if we get EXTREMELY unlucky we might move the file then
-        // another location might try to run `.get()` on it, and the file won't exist then the
-        // second rename might happen (finishing the stages), resulting in an error to the
-        // fetcher. By using the RENAME_EXCHANGE flag it solves our problem, but limits the
-        // filesystem and operating system.
-        renameat2(None, current_path, None, final_path, rename_flags)
-            .map_err(|e| {
-                make_err!(
-                    Code::NotFound,
-                    "Could not atomically swap files {} and {} in filesystem store {}",
-                    temp_loc,
-                    final_loc,
-                    e
+            self.evicting_map.insert(digest, entry.clone()).await;
+            fs::rename(temp_loc, &final_path).await.err_tip(|| {
+                format!(
+                    "Failed to rename temp file to final path {} -> {}",
+                    temp_loc, final_path
                 )
-            })
-            .err_tip(|| "This could be due to the filesystem not supporting RENAME_EXCHANGE")?;
-
-        if let Some(old_item) = self.evicting_map.insert(digest, entry).await {
-            // Even though the move is atomic above, it is possible that during a hardlink operation
-            // the action will find the inode (which could be either the new or old file at this
-            // point), then create the hardlink with the queried inode. But if the file gets deleted
-            // after it grabs the inode but before the hardlink it could result in a NotFound error.
-            // By putting a delay before deleting the temp files we give some leeway so this error
-            // will be extremely rare.
-            tokio::spawn(async move {
-                const DELAY_TO_DELETE_TEMP_FILES: u64 = 100;
-                sleep(Duration::from_millis(DELAY_TO_DELETE_TEMP_FILES)).await;
-                // At this point `temp_name_num` will be the file containing the old content we
-                // are going to delete.
-                old_item.flag_moved_to_temp_file(temp_name_num);
-            });
+            })?;
         }
         Ok(())
     }
@@ -438,17 +488,14 @@ impl StoreTrait for FilesystemStore {
         reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let temp_name_num = thread_rng().gen::<u64>();
-        let temp_full_path = to_full_path(&self.temp_path, &temp_name_num.to_string());
-
+        let mut temp_digest = digest.clone();
+        make_temp_digest(&mut temp_digest);
+        let temp_full_path = to_full_path_from_digest(&self.folder_paths.temp_path, &temp_digest);
         let temp_file = fs::create_file(&temp_full_path)
             .await
             .err_tip(|| "Failed to create temp file in filesystem store")?;
 
-        if let Err(err) = self
-            .update_file(&temp_full_path, temp_file, temp_name_num, digest, reader)
-            .await
-        {
+        if let Err(err) = self.update_file(&temp_full_path, temp_file, digest, reader).await {
             let result = fs::remove_file(temp_full_path)
                 .await
                 .err_tip(|| "Failed to delete temp file in filesystem store");
