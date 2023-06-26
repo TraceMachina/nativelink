@@ -27,6 +27,7 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 /// We wrap all tokio::fs items in our own wrapper so we can limit the number of outstanding
 /// open files at any given time. This will greatly reduce the chance we'll hit open file limit
 /// issues.
+pub use tokio::fs::DirEntry;
 
 #[derive(Debug)]
 pub struct FileSlot<'a> {
