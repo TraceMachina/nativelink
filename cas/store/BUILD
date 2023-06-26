@@ -216,6 +216,7 @@ rust_library(
     srcs = ["filesystem_store.rs"],
     deps = [
         "//config",
+        "//third_party:async_lock",
         "//third_party:bytes",
         "//third_party:filetime",
         "//third_party:futures",
@@ -395,6 +396,8 @@ rust_test(
     deps = [
         "//config",
         "//third_party:filetime",
+        "//third_party:futures",
+        "//third_party:lazy_static",
         "//third_party:pretty_assertions",
         "//third_party:rand",
         "//third_party:tokio",

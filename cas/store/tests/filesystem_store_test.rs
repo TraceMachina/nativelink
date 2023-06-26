@@ -13,21 +13,26 @@
 // limitations under the License.
 
 use std::env;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 use filetime::{set_file_atime, FileTime};
+use futures::executor::block_on;
+use lazy_static::lazy_static;
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncReadExt;
+use tokio::task::spawn_blocking;
 use tokio_stream::{wrappers::ReadDirStream, StreamExt};
 
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
 use common::{fs, DigestInfo};
 use config;
 use error::{Error, ResultExt};
-use filesystem_store::FilesystemStore;
+use filesystem_store::{digest_from_filename, FileEntry, FilesystemStore};
 use traits::StoreTrait;
 
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
@@ -128,7 +133,8 @@ mod filesystem_store_tests {
                     }),
                     ..Default::default()
                 },
-                &on_file_delete,
+                Some(&on_file_delete),
+                None,
             )
             .await?,
         );
@@ -198,7 +204,8 @@ mod filesystem_store_tests {
                     }),
                     read_buffer_size: 1,
                 },
-                &on_file_delete,
+                Some(&on_file_delete),
+                None,
             )
             .await?,
         );
@@ -308,7 +315,8 @@ mod filesystem_store_tests {
                     }),
                     read_buffer_size: 1,
                 },
-                &on_file_delete,
+                Some(&on_file_delete),
+                None,
             )
             .await?,
         );
@@ -401,13 +409,16 @@ mod filesystem_store_tests {
         // Insert data into store.
         store.as_ref().update_oneshot(digest1.clone(), VALUE1.into()).await?;
 
-        let path = store.get_file_for_digest(&digest1);
-
-        // Set atime to along time ago.
-        set_file_atime(&path, FileTime::zero())?;
-
-        // Check to ensure it was set to zero from previous command.
-        assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+        let file_entry = store.get_file_entry_for_digest(&digest1).await?;
+        file_entry
+            .get_file_path_locked(move |path| async move {
+                // Set atime to along time ago.
+                set_file_atime(&path, FileTime::zero())?;
+                // Check to ensure it was set to zero from previous command.
+                assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+                Ok(())
+            })
+            .await?;
 
         // Now touch digest1.
         let data = store
@@ -416,8 +427,13 @@ mod filesystem_store_tests {
             .await?;
         assert_eq!(data, VALUE1.as_bytes());
 
-        // Ensure it was updated.
-        assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
+        file_entry
+            .get_file_path_locked(move |path| async move {
+                // Ensure it was updated.
+                assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
+                Ok(())
+            })
+            .await?;
 
         Ok(())
     }
@@ -438,13 +454,16 @@ mod filesystem_store_tests {
         // Insert data into store.
         store.as_ref().update_oneshot(digest1.clone(), VALUE1.into()).await?;
 
-        let path = store.get_file_for_digest(&digest1);
-
-        // Set atime to along time ago.
-        set_file_atime(&path, FileTime::zero())?;
-
-        // Check to ensure it was set to zero from previous command.
-        assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+        let file_entry = store.get_file_entry_for_digest(&digest1).await?;
+        file_entry
+            .get_file_path_locked(move |path| async move {
+                // Set atime to along time ago.
+                set_file_atime(&path, FileTime::zero())?;
+                // Check to ensure it was set to zero from previous command.
+                assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+                Ok(())
+            })
+            .await?;
 
         // Now touch digest1.
         let data = store
@@ -453,8 +472,108 @@ mod filesystem_store_tests {
             .await?;
         assert_eq!(data, VALUE1.as_bytes());
 
-        // Ensure it was updated.
-        assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
+        file_entry
+            .get_file_path_locked(move |path| async move {
+                // Ensure it was updated.
+                assert!(fs::metadata(&path).await?.accessed()? > SystemTime::UNIX_EPOCH);
+                Ok(())
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    // Test to ensure that if we are holding a reference to `FileEntry` and the contents are
+    // replaced, the `FileEntry` continues to use the old data.
+    // `FileEntry` file contents should be immutable for the lifetime of the object.
+    #[tokio::test]
+    async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error> {
+        let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+
+        let store = Box::pin(
+            FilesystemStore::new(&config::backends::FilesystemStore {
+                content_path: make_temp_path("content_path"),
+                temp_path: make_temp_path("temp_path"),
+                eviction_policy: None,
+                ..Default::default()
+            })
+            .await?,
+        );
+        // Insert data into store.
+        store.as_ref().update_oneshot(digest.clone(), VALUE1.into()).await?;
+        let file_entry = store.get_file_entry_for_digest(&digest).await?;
+        {
+            // The file contents should equal our initial data.
+            let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+            let mut file_contents = String::new();
+            reader.read_to_string(&mut file_contents).await?;
+            assert_eq!(file_contents, VALUE1);
+        }
+
+        // Now replace the data.
+        store.as_ref().update_oneshot(digest.clone(), VALUE2.into()).await?;
+
+        {
+            // The file contents still equal our old data.
+            let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+            let mut file_contents = String::new();
+            reader.read_to_string(&mut file_contents).await?;
+            assert_eq!(file_contents, VALUE1);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
+        const BIG_VALUE: &str = "0123";
+        let small_digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let big_digest = DigestInfo::try_new(&HASH1, BIG_VALUE.len())?;
+
+        lazy_static! {
+            static ref UNREFED_DIGESTS: Mutex<Vec<DigestInfo>> = Mutex::new(Vec::new());
+        }
+        fn on_unref_callback(file_entry: &FileEntry) {
+            block_on(file_entry.get_file_path_locked(move |path_str| async move {
+                let path = Path::new(&path_str);
+                let digest = digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
+                UNREFED_DIGESTS.lock().unwrap().push(digest);
+                Ok(())
+            }));
+        }
+
+        let store = Box::pin(
+            FilesystemStore::new_with_callback(
+                &config::backends::FilesystemStore {
+                    content_path: make_temp_path("content_path"),
+                    temp_path: make_temp_path("temp_path"),
+                    eviction_policy: Some(config::backends::EvictionPolicy {
+                        max_bytes: 5,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                None,
+                Some(&on_unref_callback),
+            )
+            .await?,
+        );
+        // Insert data into store.
+        store
+            .as_ref()
+            .update_oneshot(small_digest.clone(), VALUE1.into())
+            .await?;
+        store
+            .as_ref()
+            .update_oneshot(big_digest.clone(), BIG_VALUE.into())
+            .await?;
+
+        {
+            // Our first digest should have been unrefed exactly once.
+            let unrefed_digests = UNREFED_DIGESTS.lock().unwrap();
+            assert_eq!(unrefed_digests.len(), 1, "Expected exactly 1 unrefed digest");
+            assert_eq!(unrefed_digests[0], small_digest, "Expected digest to match");
+        }
 
         Ok(())
     }

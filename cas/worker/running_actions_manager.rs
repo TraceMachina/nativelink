@@ -85,7 +85,7 @@ pub fn download_to_directory<'a>(
                 .err_tip(|| "Expected Digest to exist in Directory::file::digest")?
                 .try_into()
                 .err_tip(|| "In Directory::file::digest")?;
-            let src = filesystem_store.get_file_for_digest(&digest);
+            // let src = filesystem_store.get_file_for_digest(&digest);
             let dest = format!("{}/{}", current_directory, file.name);
             let mut mtime = None;
             let mut unix_mode = None;
@@ -94,11 +94,17 @@ pub fn download_to_directory<'a>(
                 unix_mode = properties.unix_mode;
             }
             let is_executable = file.is_executable;
+            let digest_copy = digest.clone();
             futures.push(
                 cas_store
                     .populate_fast_store(digest.clone())
                     .and_then(move |_| async move {
-                        fs::hard_link(src, &dest)
+                        let file_entry = filesystem_store
+                            .get_file_entry_for_digest(&digest_copy)
+                            .await
+                            .err_tip(|| "During hard link")?;
+                        file_entry
+                            .get_file_path_locked(|src| fs::hard_link(src, &dest))
                             .await
                             .map_err(|e| make_err!(Code::Internal, "Could not make hardlink, {:?} : {}", e, dest))?;
                         if is_executable {
