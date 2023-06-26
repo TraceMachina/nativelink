@@ -193,7 +193,7 @@ where
             let (key, eviction_item) = state.lru.pop_lru().expect("Tried to peek() then pop() but failed");
             state.sum_store_size -= eviction_item.data.len() as u64;
             eviction_item.data.unref().await;
-            log::info!("\x1b[0;31mevicting map\x1b[0m: Evicting {:?}", key);
+            log::info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.str());
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
@@ -244,12 +244,7 @@ where
 
         let maybe_old_item = if let Some(old_item) = state.lru.put(digest.into(), eviction_item) {
             state.sum_store_size -= old_item.data.len() as u64;
-            // We do not want to unref here because if we are on a filesystem-backed
-            // store (or similar) the name of the newly inserted item will be the same
-            // as the name of the old item. If we were to unref might trigger updated
-            // file to be deleted. Unref is purely unnecessary here since we will always
-            // be updating the underlying data at this point instead of evicting/deleting
-            // it.
+            old_item.data.unref().await;
             Some(old_item.data)
         } else {
             None
@@ -263,7 +258,6 @@ where
         let mut state = self.state.lock().await;
         if let Some(entry) = state.lru.pop(digest) {
             state.sum_store_size -= entry.data.len() as u64;
-            drop(state);
             entry.data.unref().await;
             return true;
         }
