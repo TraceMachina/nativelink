@@ -74,9 +74,12 @@ pub trait LenEntry {
     /// to be deleted and then in the Drop call actually do the deleting.
     /// This will ensure nowhere else in the program still holds a reference
     /// to this object.
-    /// Note: You should not rely only on the Drop trait. Doing so might
-    /// result in the program safely shutting down and calling the Drop method
-    /// on each object, which if you are deleting items you may not want to do.
+    /// You should not rely only on the Drop trait. Doing so might result in the
+    /// program safely shutting down and calling the Drop method on each object,
+    /// which if you are deleting items you may not want to do.
+    /// It is undefined behavior to have `unref()` called more than once.
+    /// During the execution of `unref()` no items can be added or removed to/from
+    /// the EvictionMap globally (including inside `unref()`).
     #[inline]
     async fn unref(&self) {}
 }
@@ -192,8 +195,9 @@ where
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size) {
             let (key, eviction_item) = state.lru.pop_lru().expect("Tried to peek() then pop() but failed");
             state.sum_store_size -= eviction_item.data.len() as u64;
+            // Note: See comment in `unref()` requring global lock of insert/remove.
             eviction_item.data.unref().await;
-            log::info!("\x1b[0;31mevicting map\x1b[0m: Evicting {:?}", key);
+            log::info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.str());
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
@@ -244,12 +248,8 @@ where
 
         let maybe_old_item = if let Some(old_item) = state.lru.put(digest.into(), eviction_item) {
             state.sum_store_size -= old_item.data.len() as u64;
-            // We do not want to unref here because if we are on a filesystem-backed
-            // store (or similar) the name of the newly inserted item will be the same
-            // as the name of the old item. If we were to unref might trigger updated
-            // file to be deleted. Unref is purely unnecessary here since we will always
-            // be updating the underlying data at this point instead of evicting/deleting
-            // it.
+            // Note: See comment in `unref()` requring global lock of insert/remove.
+            old_item.data.unref().await;
             Some(old_item.data)
         } else {
             None
@@ -261,11 +261,28 @@ where
 
     pub async fn remove(&self, digest: &DigestInfo) -> bool {
         let mut state = self.state.lock().await;
+        self.inner_remove(&mut state, digest).await
+    }
+
+    async fn inner_remove(&self, state: &mut State<T>, digest: &DigestInfo) -> bool {
         if let Some(entry) = state.lru.pop(digest) {
             state.sum_store_size -= entry.data.len() as u64;
-            drop(state);
+            // Note: See comment in `unref()` requring global lock of insert/remove.
             entry.data.unref().await;
             return true;
+        }
+        false
+    }
+
+    /// Same as remove(), but allows for a conditional to be applied to the entry before removal
+    /// in an atomic fashion.
+    pub async fn remove_if<F: FnOnce(&T) -> bool>(&self, digest: &DigestInfo, cond: F) -> bool {
+        let mut state = self.state.lock().await;
+        if let Some(entry) = state.lru.get(digest) {
+            if !cond(&entry.data) {
+                return false;
+            }
+            return self.inner_remove(&mut state, digest).await;
         }
         false
     }

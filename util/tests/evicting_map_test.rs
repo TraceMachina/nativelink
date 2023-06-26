@@ -261,7 +261,7 @@ mod evicting_map_tests {
     }
 
     #[tokio::test]
-    async fn unref_not_called_on_replace() -> Result<(), Error> {
+    async fn unref_called_on_replace() -> Result<(), Error> {
         #[derive(Debug)]
         struct MockEntry {
             data: Bytes,
@@ -318,7 +318,7 @@ mod evicting_map_tests {
         let existing_entry = evicting_map.get(&DigestInfo::try_new(HASH1, 0)?).await.unwrap();
         assert_eq!(existing_entry.data, DATA2);
 
-        assert_eq!(entry1.unref_called.load(Ordering::Relaxed), false);
+        assert_eq!(entry1.unref_called.load(Ordering::Relaxed), true);
         assert_eq!(entry2.unref_called.load(Ordering::Relaxed), false);
 
         Ok(())
