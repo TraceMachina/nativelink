@@ -32,7 +32,7 @@ genrule(
     outs = _genproto_files,
     cmd = "\n".join([
         "set -e",
-        "export PROTOC=bazel-out/host/bin/external/com_google_protobuf/protoc",
+        "export PROTOC=$(execpath @com_google_protobuf//:protoc)",
         "$(execpath :gen_protos_tool) --output_dir $(RULEDIR) " + " ".join([
             ("--input $(location :%s)" % file) for file in _proto_files
         ]),

@@ -27,7 +27,8 @@ As a reference you should be able to compile this project using bazel with somet
 ```sh
 bazel test //... \
     --remote_cache=grpcs://cas.INSERT_DOMAIN_NAME_YOU_SETUP_IN_PREREQUISITES_HERE \
-    --remote_executor=grpcs://scheduler.INSERT_DOMAIN_NAME_YOU_SETUP_IN_PREREQUISITES_HERE
+    --remote_executor=grpcs://scheduler.INSERT_DOMAIN_NAME_YOU_SETUP_IN_PREREQUISITES_HERE \
+    --remote_instance_name=main
 ```
 
 ## Server configuration
