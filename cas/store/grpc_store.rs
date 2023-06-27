@@ -15,7 +15,6 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use async_lock::Mutex;
 use async_trait::async_trait;
 use futures::{stream::unfold, Stream};
 use shellexpand;
@@ -26,6 +25,7 @@ use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::{log, DigestInfo};
 use config;
 use error::{error_if, make_input_err, Error, ResultExt};
+use parking_lot::Mutex;
 use proto::build::bazel::remote::execution::v2::{
     action_cache_client::ActionCacheClient, content_addressable_storage_client::ContentAddressableStorageClient,
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
@@ -193,12 +193,12 @@ impl GrpcStore {
             }
             // TODO(allada) I'm sure there's a way to do this without a mutex, but rust can be super
             // picky with borrowing through a stream await.
-            *local_state.error.lock().await = Some(maybe_message.unwrap_err());
+            *local_state.error.lock() = Some(maybe_message.unwrap_err());
             None
         });
 
         let result = client.write(stream).await.err_tip(|| "in GrpcStore::write")?;
-        if let Some(err) = (error.lock().await).take() {
+        if let Some(err) = error.lock().take() {
             return Err(err);
         }
         return Ok(result);
