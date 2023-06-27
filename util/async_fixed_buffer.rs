@@ -21,9 +21,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-use async_lock::Mutex;
 use fixed_buffer::FixedBuf;
-use futures::{ready, Future};
+use futures::Future;
+use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 
@@ -78,7 +78,7 @@ impl<T> AsyncFixedBuf<T> {
             if did_shutdown.swap(true, Ordering::Relaxed) {
                 return;
             }
-            wake(waker.lock().await.deref_mut());
+            wake(waker.lock().deref_mut());
         })
     }
 }
@@ -112,8 +112,7 @@ impl<T: AsRef<[u8]> + Unpin> AsyncRead for AsyncFixedBuf<T> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         let me = self.project();
-        let mut waker_lock = me.waker.lock();
-        let mut waker = ready!(Pin::new(&mut waker_lock).poll(cx));
+        let mut waker = me.waker.lock();
 
         let num_read = me.inner.read_and_copy_bytes(buf.initialize_unfilled());
         buf.advance(num_read);
@@ -143,8 +142,7 @@ impl<T: AsRef<[u8]> + Unpin> AsyncRead for AsyncFixedBuf<T> {
 impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
         let me = self.project();
-        let mut waker_lock = me.waker.lock();
-        let mut waker = ready!(Pin::new(&mut waker_lock).poll(cx));
+        let mut waker = me.waker.lock();
 
         if me.did_shutdown.load(Ordering::Relaxed) {
             wake(&mut waker);
@@ -192,8 +190,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        let mut waker_lock = self.waker.lock();
-        let mut waker = ready!(Pin::new(&mut waker_lock).poll(cx));
+        let mut waker = self.waker.lock();
 
         if self.inner.is_empty() {
             wake(&mut waker);
@@ -203,9 +200,8 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
         Poll::Pending
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        let mut waker_lock = self.waker.lock();
-        let mut waker = ready!(Pin::new(&mut waker_lock).poll(cx));
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        let mut waker = self.waker.lock();
 
         self.did_shutdown.store(true, Ordering::Relaxed);
         wake(&mut waker);

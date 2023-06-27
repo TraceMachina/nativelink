@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use action_messages::ActionResult;
 use error::{make_input_err, Error};
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
-use running_actions_manager::{ActionId, RunningAction, RunningActionsManager};
+use running_actions_manager::{RunningAction, RunningActionsManager};
 
 #[derive(Debug)]
 enum RunningActionManagerCalls {
@@ -100,10 +100,6 @@ impl RunningActionsManager for MockRunningActionsManager {
         match rx_resp_lock.recv().await.expect("Could not receive msg in mpsc") {
             RunningActionManagerReturns::CreateAndAddAction(result) => result,
         }
-    }
-
-    async fn get_action(&self, _action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error> {
-        unimplemented!("get_action not implemented");
     }
 
     async fn kill_all(&self) {
