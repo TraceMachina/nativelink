@@ -102,11 +102,11 @@ impl RunningActionsManager for MockRunningActionsManager {
         }
     }
 
-    async fn get_action(&self, _action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error> {
+    fn get_action(&self, _action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error> {
         unimplemented!("get_action not implemented");
     }
 
-    async fn kill_all(&self) {
+    fn kill_all(&self) {
         self.tx_kill_all.send(()).expect("Could not send request to mpsc");
     }
 }

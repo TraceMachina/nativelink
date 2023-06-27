@@ -861,7 +861,10 @@ mod running_actions_manager_tests {
             .await?;
 
         // Start the action and kill it at the same time.
-        let result = futures::join!(run_action(running_action_impl), running_actions_manager.kill_all()).0?;
+        let result = futures::join!(run_action(running_action_impl), async {
+            running_actions_manager.kill_all()
+        })
+        .0?;
 
         // Check that the action was killed.
         assert_eq!(9, result.exit_code);

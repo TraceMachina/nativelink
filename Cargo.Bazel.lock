@@ -1,5 +1,5 @@
 {
-  "checksum": "7ba4c619cdcf6bb43fbfadb39a3207ee2ef162a7907e632ed76ff7ab77b697e1",
+  "checksum": "1f509064a530945cea1a818bf8c8d06f3e18b9ccba980d2f785c071b7fd19b11",
   "crates": {
     "adler 1.0.2": {
       "name": "adler",
@@ -2514,6 +2514,10 @@
             {
               "id": "nix 0.23.2",
               "target": "nix"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
             },
             {
               "id": "pin-project-lite 0.2.9",

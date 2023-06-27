@@ -92,9 +92,9 @@ rust_library(
     srcs = ["async_fixed_buffer.rs"],
     visibility = ["//visibility:public"],
     deps = [
-        "@crate_index//:async-lock",
         "@crate_index//:fixed-buffer",
         "@crate_index//:futures",
+        "@crate_index//:parking_lot",
         "@crate_index//:pin-project-lite",
         "@crate_index//:tokio",
     ],

@@ -23,12 +23,12 @@ use std::process::Stdio;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Weak};
 use std::time::SystemTime;
 
-use async_lock::Mutex;
 use bytes::{BufMut, Bytes, BytesMut};
 use filetime::{set_file_mtime, FileTime};
 use futures::future::{try_join, try_join3, try_join_all, BoxFuture, FutureExt, TryFutureExt};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use hex;
+use parking_lot::Mutex;
 use relative_path::RelativePath;
 use tokio::io::AsyncSeekExt;
 use tokio::process;
@@ -442,7 +442,7 @@ impl RunningAction for RunningActionImpl {
     /// up to the stores to rate limit if needed.
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
             state.execution_metadata.input_fetch_start_timestamp = (self.running_actions_manager.now_fn)();
         }
         let command = {
@@ -485,7 +485,7 @@ impl RunningAction for RunningActionImpl {
         }
         log::info!("\x1b[0;31mWorker Received Command\x1b[0m: {:?}", command);
         {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
             state.command_proto = Some(command);
             state.execution_metadata.input_fetch_completed_timestamp = (self.running_actions_manager.now_fn)();
         }
@@ -494,7 +494,7 @@ impl RunningAction for RunningActionImpl {
 
     async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
             state.execution_metadata.execution_start_timestamp = (self.running_actions_manager.now_fn)();
             (
                 state
@@ -565,7 +565,7 @@ impl RunningAction for RunningActionImpl {
                     let stdout = all_stdout_fut.await.err_tip(|| "Internal error reading from stdout of worker task")??;
                     let stderr = all_stderr_fut.await.err_tip(|| "Internal error reading from stderr of worker task")??;
                     {
-                        let mut state = self.state.lock().await;
+                        let mut state = self.state.lock();
                         state.command_proto = Some(command_proto);
                         state.execution_result = Some(RunningActionImplExecutionResult{
                             stdout,
@@ -589,7 +589,7 @@ impl RunningAction for RunningActionImpl {
     async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         log::info!("\x1b[0;31mWorker Uploading Results\x1b[0m");
         let (mut command_proto, execution_result, mut execution_metadata) = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
             state.execution_metadata.output_upload_start_timestamp = (self.running_actions_manager.now_fn)();
             (
                 state
@@ -746,7 +746,7 @@ impl RunningAction for RunningActionImpl {
         output_file_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_directory_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock();
             execution_metadata.worker_completed_timestamp = (self.running_actions_manager.now_fn)();
             state.action_result = Some(ActionResult {
                 output_files,
@@ -770,14 +770,14 @@ impl RunningAction for RunningActionImpl {
             .await
             .err_tip(|| format!("Could not remove working directory {}", self.work_directory));
         self.did_cleanup.store(true, Ordering::Relaxed);
-        if let Err(e) = self.running_actions_manager.cleanup_action(&self.action_id).await {
+        if let Err(e) = self.running_actions_manager.cleanup_action(&self.action_id) {
             return Result::<Arc<Self>, Error>::Err(e).merge(remove_dir_result.map(|_| self));
         }
         remove_dir_result.map(|_| self)
     }
 
     async fn get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock();
         state
             .action_result
             .take()
@@ -799,9 +799,9 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         start_execute: StartExecute,
     ) -> Result<Arc<Self::RunningAction>, Error>;
 
-    async fn get_action(&self, action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error>;
+    fn get_action(&self, action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error>;
 
-    async fn kill_all(&self);
+    fn kill_all(&self);
 }
 
 /// A function to get the current system time, used to allow mocking for tests
@@ -880,8 +880,8 @@ impl RunningActionsManagerImpl {
         Ok(action_info)
     }
 
-    async fn cleanup_action(&self, action_id: &ActionId) -> Result<(), Error> {
-        let mut running_actions = self.running_actions.lock().await;
+    fn cleanup_action(&self, action_id: &ActionId) -> Result<(), Error> {
+        let mut running_actions = self.running_actions.lock();
         running_actions.remove(action_id).err_tip(|| {
             format!(
                 "Expected action id '{:?}' to exist in RunningActionsManagerImpl",
@@ -891,9 +891,12 @@ impl RunningActionsManagerImpl {
         Ok(())
     }
 
-    async fn kill_action(action: Arc<RunningActionImpl>) {
-        let mut action_state = action.state.lock().await;
-        if let Some(kill_channel_tx) = action_state.kill_channel_tx.take() {
+    fn kill_action(action: Arc<RunningActionImpl>) {
+        let kill_channel_tx = {
+            let mut action_state = action.state.lock();
+            action_state.kill_channel_tx.take()
+        };
+        if let Some(kill_channel_tx) = kill_channel_tx {
             match kill_channel_tx.send(()) {
                 Err(_) => log::error!("Error sending kill to running action"),
                 _ => (),
@@ -940,14 +943,14 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             self.clone(),
         ));
         {
-            let mut running_actions = self.running_actions.lock().await;
+            let mut running_actions = self.running_actions.lock();
             running_actions.insert(action_id, Arc::downgrade(&running_action));
         }
         Ok(running_action)
     }
 
-    async fn get_action(&self, action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error> {
-        let running_actions = self.running_actions.lock().await;
+    fn get_action(&self, action_id: &ActionId) -> Result<Arc<Self::RunningAction>, Error> {
+        let running_actions = self.running_actions.lock();
         Ok(running_actions
             .get(action_id)
             .err_tip(|| format!("Action '{:?}' not found", action_id))?
@@ -955,17 +958,16 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .err_tip(|| "Could not upgrade RunningAction Arc")?)
     }
 
-    async fn kill_all(&self) {
-        let kill_actions = {
-            let running_actions = self.running_actions.lock().await;
-            futures::future::join_all(
-                running_actions
-                    .iter()
-                    .filter_map(|(_action_id, action)| action.upgrade())
-                    .map(|action| Box::pin(Self::kill_action(action))),
-            )
+    fn kill_all(&self) {
+        let kill_actions: Vec<Arc<RunningActionImpl>> = {
+            let running_actions = self.running_actions.lock();
+            running_actions
+                .iter()
+                .filter_map(|(_action_id, action)| action.upgrade())
+                .collect()
         };
-        // Await the actions after dropping the Mutex.
-        kill_actions.await;
+        for action in kill_actions {
+            Self::kill_action(action)
+        }
     }
 }
