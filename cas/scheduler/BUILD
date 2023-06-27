@@ -28,7 +28,6 @@ rust_library(
         "//config",
         "//util:common",
         "//util:error",
-        "@crate_index//:async-lock",
         "@crate_index//:lru",
         "@crate_index//:rand",
         "@crate_index//:tokio",

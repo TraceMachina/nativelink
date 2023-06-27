@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use async_lock::Mutex;
 use lru::LruCache;
 use rand::{thread_rng, Rng};
 use tokio::sync::watch;
@@ -426,7 +425,7 @@ impl SchedulerImpl {
         self.retry_action(&action_info, &worker_id);
     }
 
-    async fn update_action(
+    fn update_action(
         &mut self,
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
@@ -499,11 +498,14 @@ impl SchedulerImpl {
     }
 }
 
+type SchedulerExecutor = Box<dyn FnOnce(&mut SchedulerImpl) + Send + Sync + 'static>;
+
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
 pub struct Scheduler {
-    inner: Mutex<SchedulerImpl>,
+    /// The queue of jobs to be executed on the worker thread.
+    inner_queue: tokio::sync::mpsc::UnboundedSender<SchedulerExecutor>,
     platform_property_manager: PlatformPropertyManager,
 }
 
@@ -526,15 +528,24 @@ impl Scheduler {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
 
+        let (tx_call, mut rx_call) = tokio::sync::mpsc::unbounded_channel::<SchedulerExecutor>();
+        // This is the thread that does all of the scheduling
+        let mut scheduler = SchedulerImpl {
+            queued_actions_set: HashSet::new(),
+            queued_actions: BTreeMap::new(),
+            workers: Workers::new(),
+            active_actions: HashMap::new(),
+            worker_timeout_s,
+            max_job_retries,
+        };
+        std::thread::spawn(move || {
+            while let Some(f) = rx_call.blocking_recv() {
+                f(&mut scheduler);
+            }
+        });
+
         Self {
-            inner: Mutex::new(SchedulerImpl {
-                queued_actions_set: HashSet::new(),
-                queued_actions: BTreeMap::new(),
-                workers: Workers::new(),
-                active_actions: HashMap::new(),
-                worker_timeout_s,
-                max_job_retries,
-            }),
+            inner_queue: tx_call,
             platform_property_manager,
         }
     }
@@ -543,26 +554,47 @@ impl Scheduler {
         &self.platform_property_manager
     }
 
+    async fn execute_inner<F, R>(&self, f: F) -> Result<R, Error>
+    where
+        F: FnOnce(&mut SchedulerImpl) -> Result<R, Error> + Send + Sync + 'static,
+        R: Send + Sync + 'static,
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        match self.inner_queue.send(Box::new(move |inner: &mut SchedulerImpl| {
+            let _ = tx.send(f(inner));
+        })) {
+            Ok(()) => rx
+                .await
+                .or::<Error>(Ok(Err(make_err!(
+                    Code::Internal,
+                    "Unable to get result from scheduler thread"
+                ))))
+                .unwrap(),
+            _ => Err(make_err!(Code::Internal, "Scheduler thread shut down")),
+        }
+    }
+
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
     pub async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
-        let mut inner = self.inner.lock().await;
-        let res = inner
-            .workers
-            .add_worker(worker)
-            .err_tip(|| "Error while adding worker, removing from pool");
-        if res.is_err() {
-            inner.immediate_evict_worker(&worker_id);
-            return res;
-        }
-        inner.do_try_match();
-        Ok(())
+        self.execute_inner(move |inner| {
+            let res = inner
+                .workers
+                .add_worker(worker)
+                .err_tip(|| "Error while adding worker, removing from pool");
+            if res.is_err() {
+                inner.immediate_evict_worker(&worker_id);
+                return res;
+            }
+            inner.do_try_match();
+            Ok(())
+        })
+        .await
     }
 
     /// Adds an action to the scheduler for remote execution.
     pub async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-        let mut inner = self.inner.lock().await;
-        inner.add_action(action_info)
+        self.execute_inner(move |inner| inner.add_action(action_info)).await
     }
 
     pub async fn update_worker_with_internal_error(
@@ -571,8 +603,13 @@ impl Scheduler {
         action_info_hash_key: &ActionInfoHashKey,
         err: Error,
     ) {
-        let mut inner = self.inner.lock().await;
-        inner.update_worker_with_internal_error(worker_id, action_info_hash_key, err)
+        let worker_id = worker_id.clone();
+        let action_info_hash_key = action_info_hash_key.clone();
+        let _ = self
+            .execute_inner(move |inner| {
+                Ok(inner.update_worker_with_internal_error(&worker_id, &action_info_hash_key, err))
+            })
+            .await;
     }
 
     /// Adds an action to the scheduler for remote execution.
@@ -582,8 +619,10 @@ impl Scheduler {
         action_info_hash_key: &ActionInfoHashKey,
         action_stage: ActionStage,
     ) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
-        inner.update_action(worker_id, action_info_hash_key, action_stage).await
+        let worker_id = worker_id.clone();
+        let action_info_hash_key = action_info_hash_key.clone();
+        self.execute_inner(move |inner| inner.update_action(&worker_id, &action_info_hash_key, action_stage))
+            .await
     }
 
     /// Event for when the keep alive message was received from the worker.
@@ -592,61 +631,76 @@ impl Scheduler {
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
-        inner
-            .workers
-            .refresh_lifetime(worker_id, timestamp)
-            .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
+        let worker_id = worker_id.clone();
+        self.execute_inner(move |inner| {
+            inner
+                .workers
+                .refresh_lifetime(&worker_id, timestamp)
+                .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
+        })
+        .await
     }
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     pub async fn remove_worker(&self, worker_id: WorkerId) {
-        let mut inner = self.inner.lock().await;
-        inner.immediate_evict_worker(&worker_id);
-        inner.do_try_match();
+        let _ = self
+            .execute_inner(move |inner| {
+                inner.immediate_evict_worker(&worker_id);
+                inner.do_try_match();
+                Ok(())
+            })
+            .await;
     }
 
     pub async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
-        // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
-        // map most of the time.
-        let worker_ids_to_remove: Vec<WorkerId> = inner
-            .workers
-            .workers
-            .iter()
-            .rev()
-            .map_while(|(worker_id, worker)| {
-                if worker.last_update_timestamp <= now_timestamp - inner.worker_timeout_s {
-                    Some(*worker_id)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for worker_id in worker_ids_to_remove.as_slice() {
-            log::warn!("Worker {} timed out, removing from pool", worker_id);
-            inner.immediate_evict_worker(&worker_id);
-        }
-        if !worker_ids_to_remove.is_empty() {
-            inner.do_try_match();
-        }
-        Ok(())
+        self.execute_inner(move |inner| {
+            // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
+            // map most of the time.
+            let worker_ids_to_remove: Vec<WorkerId> = inner
+                .workers
+                .workers
+                .iter()
+                .rev()
+                .map_while(|(worker_id, worker)| {
+                    if worker.last_update_timestamp <= now_timestamp - inner.worker_timeout_s {
+                        Some(*worker_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for worker_id in worker_ids_to_remove.as_slice() {
+                log::warn!("Worker {} timed out, removing from pool", worker_id);
+                inner.immediate_evict_worker(&worker_id);
+            }
+            if !worker_ids_to_remove.is_empty() {
+                inner.do_try_match();
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
     pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
-        let inner = self.inner.lock().await;
-        inner.workers.workers.contains(worker_id)
+        let worker_id = worker_id.clone();
+        self.execute_inner(move |inner| -> Result<bool, Error> { Ok(inner.workers.workers.contains(&worker_id)) })
+            .await
+            .or::<Error>(Ok(false))
+            .unwrap()
     }
 
     /// A unit test function used to send the keep alive message to the worker from the server.
     pub async fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        let mut inner = self.inner.lock().await;
-        let worker = inner
-            .workers
-            .workers
-            .get_mut(worker_id)
-            .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
-        worker.keep_alive()
+        let worker_id = worker_id.clone();
+        self.execute_inner(move |inner| {
+            let worker = inner
+                .workers
+                .workers
+                .get_mut(&worker_id)
+                .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
+            worker.keep_alive()
+        })
+        .await
     }
 }
