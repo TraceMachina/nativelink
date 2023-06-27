@@ -18,8 +18,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use async_lock::Mutex;
 use futures::{stream::unfold, Stream};
+use parking_lot::Mutex;
 use proto::google::bytestream::{
     byte_stream_server::ByteStream, byte_stream_server::ByteStreamServer as Server, QueryWriteStatusRequest,
     QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
@@ -236,7 +236,7 @@ impl ByteStreamServer {
             .ok_or_else(|| make_input_err!("UUID must be set if querying write status"))?;
 
         {
-            let active_uploads = self.active_uploads.lock().await;
+            let active_uploads = self.active_uploads.lock();
             if active_uploads.contains(uuid) {
                 return Ok(Response::new(QueryWriteStatusResponse {
                     // TODO(blaise.bruer) We currently don't support resuming a stream, so we always
@@ -300,13 +300,12 @@ impl ByteStream for ByteStreamServer {
             .ok_or_else(|| Into::<Status>::into(make_input_err!("UUID must be set if writing data")))?;
         {
             // Check to see if request is already being uploaded and if it is error, otherwise insert entry.
-            let mut active_uploads = self.active_uploads.lock().await;
-            if active_uploads.contains(&uuid) {
+            let mut active_uploads = self.active_uploads.lock();
+            if !active_uploads.insert(uuid.clone()) {
                 return Err(Into::<Status>::into(make_input_err!(
                     "Cannot upload same UUID simultaneously"
                 )));
             }
-            active_uploads.insert(uuid.clone());
         }
 
         log::info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", hash);
@@ -318,7 +317,7 @@ impl ByteStream for ByteStreamServer {
 
         {
             // Remove the active upload request.
-            let mut active_uploads = self.active_uploads.lock().await;
+            let mut active_uploads = self.active_uploads.lock();
             active_uploads.remove(&uuid);
         }
         let d = now.elapsed().as_secs_f32();
