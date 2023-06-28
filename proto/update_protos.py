@@ -81,7 +81,7 @@ def check(proto_packages):
             print("%s out of date" % dst)
             failed = True
     if failed:
-        print("To update, run: 'bazel run //proto:update_protos'")
+        print("To update, run: 'bazel run proto:update_protos'")
         raise SystemExit(1)
 
 
