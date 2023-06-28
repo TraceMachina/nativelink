@@ -258,7 +258,7 @@ mod local_worker_tests {
                 slow: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
             },
             Arc::new(
-                FilesystemStore::new(&config::backends::FilesystemStore {
+                <FilesystemStore>::new(&config::backends::FilesystemStore {
                     content_path: make_temp_path("content_path"),
                     temp_path: make_temp_path("temp_path"),
                     ..Default::default()
@@ -294,7 +294,7 @@ mod local_worker_tests {
                 slow: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
             },
             Arc::new(
-                FilesystemStore::new(&config::backends::FilesystemStore {
+                <FilesystemStore>::new(&config::backends::FilesystemStore {
                     content_path: make_temp_path("content_path"),
                     temp_path: make_temp_path("temp_path"),
                     ..Default::default()

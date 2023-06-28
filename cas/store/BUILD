@@ -416,6 +416,8 @@ rust_test(
         "//util:buf_channel",
         "//util:common",
         "//util:error",
+        "//util:evicting_map",
+        "@crate_index//:async-lock",
         "@crate_index//:filetime",
         "@crate_index//:futures",
         "@crate_index//:lazy_static",
@@ -424,4 +426,5 @@ rust_test(
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
     ],
+    proc_macro_deps = ["@crate_index//:async-trait"],
 )
