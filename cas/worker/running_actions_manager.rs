@@ -43,7 +43,7 @@ use async_trait::async_trait;
 use common::{fs, log, DigestInfo, JoinHandleDropGuard};
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
-use filesystem_store::FilesystemStore;
+use filesystem_store::{FileEntry, FilesystemStore};
 use proto::build::bazel::remote::execution::v2::{
     Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode, FileNode, SymlinkNode,
     Tree as ProtoTree,

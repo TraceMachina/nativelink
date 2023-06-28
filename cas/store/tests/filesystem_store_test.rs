@@ -14,6 +14,8 @@
 
 use std::cell::RefCell;
 use std::env;
+use std::fmt::{Debug, Formatter};
+use std::marker::PhantomData;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::pin::Pin;
@@ -22,6 +24,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use async_lock::RwLock;
+use async_trait::async_trait;
+use evicting_map::LenEntry;
 use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
 use futures::task::Poll;
@@ -29,6 +34,7 @@ use futures::{poll, Future};
 use lazy_static::lazy_static;
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncReadExt;
+use tokio::io::Take;
 use tokio::sync::Barrier;
 use tokio_stream::{wrappers::ReadDirStream, StreamExt};
 use traits::UploadSizeInfo;
@@ -37,8 +43,108 @@ use buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
 use common::{fs, DigestInfo};
 use config;
 use error::{Error, ResultExt};
-use filesystem_store::{digest_from_filename, FileEntry, FilesystemStore};
+use filesystem_store::{digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore};
 use traits::StoreTrait;
+
+trait FileEntryHooks {
+    fn on_unref<Fe: FileEntry>(_entry: &Fe) {}
+    fn on_drop<Fe: FileEntry>(_entry: &Fe) {}
+}
+
+struct TestFileEntry<Hooks: FileEntryHooks + 'static + Sync + Send> {
+    inner: Option<FileEntryImpl>,
+    _phantom: PhantomData<Hooks>,
+}
+
+impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hooks> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        f.debug_struct("TestFileEntry").field("inner", &self.inner).finish()
+    }
+}
+
+#[async_trait]
+impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<Hooks> {
+    fn create(file_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
+        Self {
+            inner: Some(FileEntryImpl::create(file_size, encoded_file_path)),
+            _phantom: PhantomData,
+        }
+    }
+
+    async fn make_and_open_file(
+        encoded_file_path: EncodedFilePath,
+    ) -> Result<(Self, fs::FileSlot<'static>, String), Error> {
+        let (inner, file_slot, path) = FileEntryImpl::make_and_open_file(encoded_file_path).await?;
+        Ok((
+            Self {
+                inner: Some(inner),
+                _phantom: PhantomData,
+            },
+            file_slot,
+            path,
+        ))
+    }
+
+    fn get_file_size<'a>(&'a mut self) -> &'a mut u64 {
+        self.inner.as_mut().unwrap().get_file_size()
+    }
+
+    fn get_encoded_file_path<'a>(&'a self) -> &'a RwLock<EncodedFilePath> {
+        self.inner.as_ref().unwrap().get_encoded_file_path()
+    }
+
+    async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot<'_>>, Error> {
+        self.inner.as_ref().unwrap().read_file_part(offset, length).await
+    }
+
+    async fn get_file_path_locked<T, Fut: Future<Output = Result<T, Error>> + Send, F: FnOnce(String) -> Fut + Send>(
+        &self,
+        handler: F,
+    ) -> Result<T, Error> {
+        self.inner.as_ref().unwrap().get_file_path_locked(handler).await
+    }
+}
+
+#[async_trait]
+impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<Hooks> {
+    fn len(&self) -> usize {
+        self.inner.as_ref().unwrap().len()
+    }
+
+    async fn touch(&self) {
+        self.inner.as_ref().unwrap().touch().await
+    }
+
+    async fn unref(&self) {
+        Hooks::on_unref(self);
+        self.inner.as_ref().unwrap().unref().await
+    }
+}
+
+impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks> {
+    fn drop(&mut self) {
+        let mut inner = self.inner.take().unwrap();
+        let shared_context = inner.get_shared_context_for_test();
+        // We do this complicated bit here because tokio does not give a way to run a
+        // command that will wait for all tasks and sub spawns to complete.
+        // Sadly we need to rely on `active_drop_spawns` to hit zero to ensure that
+        // all tasks have completed.
+        let thread_handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            rt.block_on(async move {
+                // Drop the FileEntryImpl in a controlled setting then wait for the
+                // `active_drop_spawns` to hit zero.
+                drop(inner);
+                while shared_context.active_drop_spawns.load(Ordering::Relaxed) > 0 {
+                    tokio::task::yield_now().await;
+                }
+            });
+        });
+        thread_handle.join().unwrap();
+        // At this point we can guarantee our file drop spawn has completed.
+        Hooks::on_drop(self);
+    }
+}
 
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
 /// not set.
@@ -79,7 +185,7 @@ mod filesystem_store_tests {
         let temp_path = make_temp_path("temp_path");
         {
             let store = Box::pin(
-                FilesystemStore::new(&config::backends::FilesystemStore {
+                FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
                     content_path: content_path.clone(),
                     temp_path: temp_path.clone(),
                     eviction_policy: None,
@@ -100,7 +206,7 @@ mod filesystem_store_tests {
         {
             // With a new store ensure content is still readable (ie: restores from shutdown).
             let store = Box::pin(
-                FilesystemStore::new(&config::backends::FilesystemStore {
+                FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
                     content_path,
                     temp_path,
                     eviction_policy: None,
@@ -123,24 +229,23 @@ mod filesystem_store_tests {
         let temp_path = make_temp_path("temp_path");
 
         static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
-        fn on_file_delete() {
-            DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
+        struct LocalHooks {}
+        impl FileEntryHooks for LocalHooks {
+            fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
+                DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
+            }
         }
 
         let store = Box::pin(
-            FilesystemStore::new_with_callback(
-                &config::backends::FilesystemStore {
-                    content_path: content_path.clone(),
-                    temp_path: temp_path.clone(),
-                    eviction_policy: Some(config::backends::EvictionPolicy {
-                        max_count: 3,
-                        ..Default::default()
-                    }),
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                eviction_policy: Some(config::backends::EvictionPolicy {
+                    max_count: 3,
                     ..Default::default()
-                },
-                Some(&on_file_delete),
-                None,
-            )
+                }),
+                ..Default::default()
+            })
             .await?,
         );
 
@@ -194,24 +299,23 @@ mod filesystem_store_tests {
         let temp_path = make_temp_path("temp_path");
 
         static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
-        fn on_file_delete() {
-            DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
+        struct LocalHooks {}
+        impl FileEntryHooks for LocalHooks {
+            fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
+                DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
+            }
         }
 
         let store = Arc::new(
-            FilesystemStore::new_with_callback(
-                &config::backends::FilesystemStore {
-                    content_path: content_path.clone(),
-                    temp_path: temp_path.clone(),
-                    eviction_policy: Some(config::backends::EvictionPolicy {
-                        max_count: 3,
-                        ..Default::default()
-                    }),
-                    read_buffer_size: 1,
-                },
-                Some(&on_file_delete),
-                None,
-            )
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                eviction_policy: Some(config::backends::EvictionPolicy {
+                    max_count: 3,
+                    ..Default::default()
+                }),
+                read_buffer_size: 1,
+            })
             .await?,
         );
 
@@ -305,24 +409,23 @@ mod filesystem_store_tests {
         let temp_path = make_temp_path("temp_path");
 
         static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
-        fn on_file_delete() {
-            DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
+        struct LocalHooks {}
+        impl FileEntryHooks for LocalHooks {
+            fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
+                DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
+            }
         }
 
         let store = Arc::new(
-            FilesystemStore::new_with_callback(
-                &config::backends::FilesystemStore {
-                    content_path: content_path.clone(),
-                    temp_path: temp_path.clone(),
-                    eviction_policy: Some(config::backends::EvictionPolicy {
-                        max_count: 1,
-                        ..Default::default()
-                    }),
-                    read_buffer_size: 1,
-                },
-                Some(&on_file_delete),
-                None,
-            )
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                eviction_policy: Some(config::backends::EvictionPolicy {
+                    max_count: 1,
+                    ..Default::default()
+                }),
+                read_buffer_size: 1,
+            })
             .await?,
         );
 
@@ -403,7 +506,7 @@ mod filesystem_store_tests {
         let digest1 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
 
         let store = Box::pin(
-            FilesystemStore::new(&config::backends::FilesystemStore {
+            FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
                 content_path: make_temp_path("content_path"),
                 temp_path: make_temp_path("temp_path"),
                 eviction_policy: None,
@@ -445,11 +548,11 @@ mod filesystem_store_tests {
     }
 
     #[tokio::test]
-    async fn eviction_deletes_file_test() -> Result<(), Error> {
+    async fn eviction_drops_file_test() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
 
         let store = Box::pin(
-            FilesystemStore::new(&config::backends::FilesystemStore {
+            FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
                 content_path: make_temp_path("content_path"),
                 temp_path: make_temp_path("temp_path"),
                 eviction_policy: None,
@@ -498,7 +601,7 @@ mod filesystem_store_tests {
         let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
 
         let store = Box::pin(
-            FilesystemStore::new(&config::backends::FilesystemStore {
+            FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
                 content_path: make_temp_path("content_path"),
                 temp_path: make_temp_path("temp_path"),
                 eviction_policy: None,
@@ -540,30 +643,29 @@ mod filesystem_store_tests {
         lazy_static! {
             static ref UNREFED_DIGESTS: Mutex<Vec<DigestInfo>> = Mutex::new(Vec::new());
         }
-        fn on_unref_callback(file_entry: &FileEntry) {
-            block_on(file_entry.get_file_path_locked(move |path_str| async move {
-                let path = Path::new(&path_str);
-                let digest = digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
-                UNREFED_DIGESTS.lock().unwrap().push(digest);
-                Ok(())
-            }))
-            .unwrap();
+        struct LocalHooks {}
+        impl FileEntryHooks for LocalHooks {
+            fn on_unref<Fe: FileEntry>(file_entry: &Fe) {
+                block_on(file_entry.get_file_path_locked(move |path_str| async move {
+                    let path = Path::new(&path_str);
+                    let digest = digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
+                    UNREFED_DIGESTS.lock().unwrap().push(digest);
+                    Ok(())
+                }))
+                .unwrap();
+            }
         }
 
         let store = Box::pin(
-            FilesystemStore::new_with_callback(
-                &config::backends::FilesystemStore {
-                    content_path: make_temp_path("content_path"),
-                    temp_path: make_temp_path("temp_path"),
-                    eviction_policy: Some(config::backends::EvictionPolicy {
-                        max_bytes: 5,
-                        ..Default::default()
-                    }),
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+                content_path: make_temp_path("content_path"),
+                temp_path: make_temp_path("temp_path"),
+                eviction_policy: Some(config::backends::EvictionPolicy {
+                    max_bytes: 5,
                     ..Default::default()
-                },
-                None,
-                Some(&on_unref_callback),
-            )
+                }),
+                ..Default::default()
+            })
             .await?,
         );
         // Insert data into store.
@@ -597,21 +699,20 @@ mod filesystem_store_tests {
             static ref FILE_DELETED_BARRIER: Arc<Barrier> = Arc::new(Barrier::new(2));
         }
 
-        fn on_file_drop() {
-            tokio::spawn(FILE_DELETED_BARRIER.wait());
+        struct LocalHooks {}
+        impl FileEntryHooks for LocalHooks {
+            fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
+                tokio::spawn(FILE_DELETED_BARRIER.wait());
+            }
         }
 
         let store = Box::pin(
-            FilesystemStore::new_with_callback(
-                &config::backends::FilesystemStore {
-                    content_path: content_path.clone(),
-                    temp_path: temp_path.clone(),
-                    eviction_policy: None,
-                    ..Default::default()
-                },
-                Some(&on_file_drop),
-                None,
-            )
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                eviction_policy: None,
+                ..Default::default()
+            })
             .await?,
         );
 
