@@ -2,18 +2,15 @@ use clap::{Arg, ArgAction, Command};
 use prost_build::Config;
 use std::path::PathBuf;
 use std::vec::Vec;
-use tonic_build;
 
 fn main() -> std::io::Result<()> {
     let matches = Command::new("Rust gRPC Codegen")
         .about("Codegen grpc/protobuf bindings for rust")
         .arg(
-            Arg::new("input")
-                .short('i')
-                .long("input")
+            Arg::new("inputs")
                 .required(true)
                 .action(ArgAction::Append)
-                .help("Input proto file"),
+                .help("Input proto files"),
         )
         .arg(
             Arg::new("output_dir")
@@ -23,7 +20,7 @@ fn main() -> std::io::Result<()> {
                 .help("Output directory"),
         )
         .get_matches();
-    let paths = matches.get_many::<String>("input").unwrap().collect::<Vec<&String>>();
+    let paths = matches.get_many::<String>("inputs").unwrap().collect::<Vec<&String>>();
     let output_dir = PathBuf::from(matches.get_one::<String>("output_dir").unwrap());
 
     let mut config = Config::new();
