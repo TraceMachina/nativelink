@@ -39,7 +39,9 @@ use traits::{StoreTrait, UploadSizeInfo};
 const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 
 #[derive(Debug)]
-struct FolderPaths {
+pub struct SharedContext {
+    // Used in testing to know how many active drop() spawns are running.
+    pub active_drop_spawns: AtomicU64,
     temp_path: String,
     content_path: String,
 }
@@ -51,8 +53,8 @@ enum PathType {
 }
 
 type FileNameDigest = DigestInfo;
-struct EncodedFilePath {
-    folder_paths: Arc<FolderPaths>,
+pub struct EncodedFilePath {
+    shared_context: Arc<SharedContext>,
     path_type: PathType,
     digest: FileNameDigest,
 }
@@ -61,8 +63,8 @@ impl EncodedFilePath {
     #[inline]
     fn get_file_path(&self) -> String {
         let folder = match self.path_type {
-            PathType::Content => &self.folder_paths.content_path,
-            PathType::Temp => &self.folder_paths.temp_path,
+            PathType::Content => &self.shared_context.content_path,
+            PathType::Temp => &self.shared_context.temp_path,
         };
         to_full_path_from_digest(folder, &self.digest)
     }
@@ -73,25 +75,107 @@ fn to_full_path_from_digest(folder: &str, digest: &DigestInfo) -> String {
     format!("{}/{}-{}", folder, digest.str(), digest.size_bytes)
 }
 
+#[async_trait]
+pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
+    fn create(file_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self;
+    async fn make_and_open_file(
+        encoded_file_path: EncodedFilePath,
+    ) -> Result<(Self, fs::FileSlot<'static>, String), Error>
+    where
+        Self: Sized;
+
+    /// Returns the underlying reference to where the filesize is stored.
+    fn get_file_size<'a>(&'a mut self) -> &'a mut u64;
+
+    /// Gets the underlying EncodedfilePath.
+    fn get_encoded_file_path<'a>(&'a self) -> &'a RwLock<EncodedFilePath>;
+
+    /// Returns a reader that will read part of the underlying file.
+    async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot<'_>>, Error>;
+
+    /// This function is a safe way to extract the file name of the underlying file. To protect users from
+    /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
+    /// the filename inside this function instead of extracting the filename and doing the logic outside.
+    /// This is because the filename is not guaranteed to exist after this function returns, however inside
+    /// the callback the file is always guaranteed to exist and immutable.
+    /// DO NOT USE THIS FUNCTION TO EXTRACT THE FILENAME AND STORE IT FOR LATER USE.
+    async fn get_file_path_locked<T, Fut: Future<Output = Result<T, Error>> + Send, F: FnOnce(String) -> Fut + Send>(
+        &self,
+        handler: F,
+    ) -> Result<T, Error>;
+}
+
 // Note: We don't store the full path of the file here because it would cause
 // a lot of needless memeory bloat. There's a high chance we'll end up with a
 // lot of small files, so to prevent storing duplicate data, we store an Arc
 // to the path of the directory where the file is stored and the packed digest.
 // Resulting in usize + sizeof(DigestInfo).
-pub struct FileEntry {
+pub struct FileEntryImpl {
     file_size: u64,
 
     // Encoded this way to save memory.
     encoded_file_path: RwLock<EncodedFilePath>,
-
-    // TODO(allada) Figure out a way to only setup these fields for tests, they
-    // are not used in production code.
-    file_evicted_callback: Option<&'static (dyn Fn() + Sync)>,
-    file_unrefed_callback: Option<&'static (dyn Fn(&FileEntry) + Sync)>,
 }
 
-impl FileEntry {
-    pub async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot<'_>>, Error> {
+impl FileEntryImpl {
+    pub fn get_shared_context_for_test(&mut self) -> Arc<SharedContext> {
+        self.encoded_file_path.get_mut().shared_context.clone()
+    }
+}
+
+#[async_trait]
+impl FileEntry for FileEntryImpl {
+    fn create(file_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
+        Self {
+            file_size,
+            encoded_file_path,
+        }
+    }
+
+    /// This encapsolates the logic for the edge case of if the file fails to create
+    /// the cleanup of the file is handled without creating a FileEntry, which would
+    /// try to cleanup the file as well during drop().
+    async fn make_and_open_file(
+        encoded_file_path: EncodedFilePath,
+    ) -> Result<(FileEntryImpl, fs::FileSlot<'static>, String), Error> {
+        let temp_full_path = encoded_file_path.get_file_path();
+        let temp_file_result = fs::create_file(&temp_full_path)
+            .await
+            .err_tip(|| format!("Failed to create {} in filesystem store", temp_full_path));
+
+        match temp_file_result {
+            Ok(file) => {
+                Ok((
+                    <FileEntryImpl as FileEntry>::create(
+                        0, /* Unknown yet, we will fill it in later */
+                        RwLock::new(encoded_file_path),
+                    ),
+                    file,
+                    temp_full_path,
+                ))
+            }
+            Err(mut err) => {
+                let remove_result = fs::remove_file(&temp_full_path)
+                    .await
+                    .err_tip(|| format!("Failed to remove file {} in filesystem store", temp_full_path));
+                if let Err(remove_err) = remove_result {
+                    err = err.merge(remove_err);
+                }
+                log::warn!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
+                Err(err)
+            }
+        }
+    }
+
+    fn get_file_size<'a>(&'a mut self) -> &'a mut u64 {
+        &mut self.file_size
+    }
+
+    fn get_encoded_file_path<'a>(&'a self) -> &'a RwLock<EncodedFilePath> {
+        &self.encoded_file_path
+    }
+
+    async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot<'_>>, Error> {
         let (mut file, full_content_path_for_debug_only) = self
             .get_file_path_locked(|full_content_path| async move {
                 let file = fs::open_file(&full_content_path)
@@ -107,66 +191,21 @@ impl FileEntry {
         Ok(file.take(length))
     }
 
-    /// This function is a safe way to extract the file name of the underlying file. To protect users from
-    /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
-    /// the filename inside this function instead of extracting the filename and doing the logic outside.
-    /// This is because the filename is not guaranteed to exist after this function returns, however inside
-    /// the callback the file is always guaranteed to exist and immutable.
-    /// DO NOT USE THIS FUNCTION TO EXTRACT THE FILENAME AND STORE IT FOR LATER USE.
-    pub async fn get_file_path_locked<T, Fut: Future<Output = Result<T, Error>>, F: FnOnce(String) -> Fut>(
+    async fn get_file_path_locked<T, Fut: Future<Output = Result<T, Error>> + Send, F: FnOnce(String) -> Fut + Send>(
         &self,
         handler: F,
     ) -> Result<T, Error> {
-        let encoded_file_path = self.encoded_file_path.read().await;
+        let encoded_file_path = self.get_encoded_file_path().read().await;
         handler(encoded_file_path.get_file_path()).await
     }
 }
 
-impl Debug for FileEntry {
+impl Debug for FileEntryImpl {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        f.debug_struct("FileEntry")
+        f.debug_struct("FileEntryImpl")
             .field("file_size", &self.file_size)
             .field("encoded_file_path", &"<behind mutex>")
             .finish()
-    }
-}
-
-/// This encapsolates the logic for the edge case of if the file fails to create
-/// the cleanup of the file is handled without creating a FileEntry, which would
-/// try to cleanup the file as well during drop().
-async fn make_file_entry(
-    encoded_file_path: EncodedFilePath,
-    file_evicted_callback: Option<&'static (dyn Fn() + Sync)>,
-    file_unrefed_callback: Option<&'static (dyn Fn(&FileEntry) + Sync)>,
-) -> Result<(FileEntry, fs::FileSlot<'static>, String), Error> {
-    let temp_full_path = encoded_file_path.get_file_path();
-    let temp_file_result = fs::create_file(&temp_full_path)
-        .await
-        .err_tip(|| format!("Failed to create {} in filesystem store", temp_full_path));
-
-    match temp_file_result {
-        Ok(file) => {
-            Ok((
-                FileEntry {
-                    file_size: 0, // Unknown yet, we will fill it in later.
-                    encoded_file_path: RwLock::new(encoded_file_path),
-                    file_evicted_callback,
-                    file_unrefed_callback,
-                },
-                file,
-                temp_full_path,
-            ))
-        }
-        Err(mut err) => {
-            let remove_result = fs::remove_file(&temp_full_path)
-                .await
-                .err_tip(|| format!("Failed to remove file {} in filesystem store", temp_full_path));
-            if let Err(remove_err) = remove_result {
-                err = err.merge(remove_err);
-            }
-            log::warn!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
-            Err(err)
-        }
     }
 }
 
@@ -176,7 +215,7 @@ fn make_temp_digest(digest: &mut DigestInfo) {
 }
 
 #[async_trait]
-impl LenEntry for FileEntry {
+impl LenEntry for FileEntryImpl {
     #[inline]
     fn len(&self) -> usize {
         self.file_size as usize
@@ -206,14 +245,11 @@ impl LenEntry for FileEntry {
     }
 
     // unref() only triggers when an item is removed from the eviction_map. It is possible
-    // that another place in code has a reference to `FileEntry` and may later read the
+    // that another place in code has a reference to `FileEntryImpl` and may later read the
     // file. To support this edge case, we first move the file to a temp file and point
     // target file location to the new temp file. `unref()` should only ever be called once.
     #[inline]
     async fn unref(&self) {
-        if let Some(callback) = self.file_unrefed_callback {
-            (callback)(&self);
-        }
         {
             let mut encoded_file_path = self.encoded_file_path.write().await;
             if encoded_file_path.path_type == PathType::Temp {
@@ -225,7 +261,7 @@ impl LenEntry for FileEntry {
             let mut new_digest = encoded_file_path.digest.clone();
             make_temp_digest(&mut new_digest);
 
-            let to_path = to_full_path_from_digest(&encoded_file_path.folder_paths.temp_path, &new_digest);
+            let to_path = to_full_path_from_digest(&encoded_file_path.shared_context.temp_path, &new_digest);
 
             log::info!(
                 "\x1b[0;31mFilesystem Store\x1b[0m: Unref {}, moving file {} to {}",
@@ -244,7 +280,7 @@ impl LenEntry for FileEntry {
 }
 
 // TODO(allada) When the `file_evicted_callback` is removed, move `Drop` to EncodedFilePath impl.
-impl Drop for FileEntry {
+impl Drop for FileEntryImpl {
     fn drop(&mut self) {
         let encoded_file_path = self.encoded_file_path.get_mut();
         // `drop()` can be called during shutdown, so we use `path_type` flag to know if the
@@ -254,7 +290,8 @@ impl Drop for FileEntry {
         }
 
         let file_path = encoded_file_path.get_file_path();
-        let file_evicted_callback = self.file_evicted_callback.take();
+        let shared_context = encoded_file_path.shared_context.clone();
+        shared_context.active_drop_spawns.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
             log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Deleting: {}", &file_path);
             let result = fs::remove_file(&file_path)
@@ -263,9 +300,7 @@ impl Drop for FileEntry {
             if let Err(err) = result {
                 log::warn!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
             }
-            if let Some(callback) = file_evicted_callback {
-                (callback)();
-            }
+            shared_context.active_drop_spawns.fetch_sub(1, Ordering::Relaxed);
         });
     }
 }
@@ -277,31 +312,29 @@ pub fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
     DigestInfo::try_new(hash, size)
 }
 
-async fn add_files_to_cache(
-    evicting_map: &EvictingMap<Arc<FileEntry>, SystemTime>,
+async fn add_files_to_cache<Fe: FileEntry>(
+    evicting_map: &EvictingMap<Arc<Fe>, SystemTime>,
     anchor_time: &SystemTime,
-    folder_paths: &Arc<FolderPaths>,
+    shared_context: &Arc<SharedContext>,
 ) -> Result<(), Error> {
-    async fn process_entry(
-        evicting_map: &EvictingMap<Arc<FileEntry>, SystemTime>,
+    async fn process_entry<Fe: FileEntry>(
+        evicting_map: &EvictingMap<Arc<Fe>, SystemTime>,
         file_name: &str,
         atime: SystemTime,
         file_size: u64,
         anchor_time: &SystemTime,
-        folder_paths: &Arc<FolderPaths>,
+        shared_context: &Arc<SharedContext>,
     ) -> Result<(), Error> {
         let digest = digest_from_filename(&file_name)?;
 
-        let file_entry = FileEntry {
+        let file_entry = Fe::create(
             file_size,
-            encoded_file_path: RwLock::new(EncodedFilePath {
-                folder_paths: folder_paths.clone(),
+            RwLock::new(EncodedFilePath {
+                shared_context: shared_context.clone(),
                 path_type: PathType::Content,
                 digest: digest.clone(),
             }),
-            file_evicted_callback: None,
-            file_unrefed_callback: None,
-        };
+        );
         let time_since_anchor = anchor_time
             .duration_since(atime)
             .map_err(|_| make_input_err!("File access time newer than now"))?;
@@ -312,7 +345,7 @@ async fn add_files_to_cache(
     }
 
     let mut file_infos: Vec<(String, SystemTime, u64)> = {
-        let (_permit, dir_handle) = fs::read_dir(format!("{}/", folder_paths.content_path))
+        let (_permit, dir_handle) = fs::read_dir(format!("{}/", shared_context.content_path))
             .await
             .err_tip(|| "Failed opening content directory for iterating in filesystem store")?
             .into_inner();
@@ -347,7 +380,15 @@ async fn add_files_to_cache(
 
     file_infos.sort_by(|a, b| a.1.cmp(&b.1));
     for (file_name, atime, file_size) in file_infos {
-        let result = process_entry(&evicting_map, &file_name, atime, file_size, &anchor_time, &folder_paths).await;
+        let result = process_entry(
+            &evicting_map,
+            &file_name,
+            atime,
+            file_size,
+            &anchor_time,
+            &shared_context,
+        )
+        .await;
         if let Err(err) = result {
             log::warn!(
                 "Could not add file to eviction cache, so deleting: {} - {:?}",
@@ -355,7 +396,7 @@ async fn add_files_to_cache(
                 err
             );
             // Ignore result.
-            let _ = fs::remove_file(format!("{}/{}", &folder_paths.content_path, &file_name)).await;
+            let _ = fs::remove_file(format!("{}/{}", &shared_context.content_path, &file_name)).await;
         }
     }
     Ok(())
@@ -377,26 +418,13 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-pub struct FilesystemStore {
-    folder_paths: Arc<FolderPaths>,
-    evicting_map: EvictingMap<Arc<FileEntry>, SystemTime>,
+pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
+    shared_context: Arc<SharedContext>,
+    evicting_map: EvictingMap<Arc<Fe>, SystemTime>,
     read_buffer_size: usize,
-    file_evicted_callback: Option<&'static (dyn Fn() + Sync)>,
-    file_unrefed_callback: Option<&'static (dyn Fn(&FileEntry) + Sync)>,
 }
 
-impl FilesystemStore {
-    pub async fn new_with_callback(
-        config: &config::backends::FilesystemStore,
-        file_evicted_callback: Option<&'static (dyn Fn() + Sync)>,
-        file_unrefed_callback: Option<&'static (dyn Fn(&FileEntry) + Sync)>,
-    ) -> Result<Self, Error> {
-        let mut me = Self::new(config).await?;
-        me.file_evicted_callback = file_evicted_callback;
-        me.file_unrefed_callback = file_unrefed_callback;
-        Ok(me)
-    }
-
+impl<Fe: FileEntry> FilesystemStore<Fe> {
     pub async fn new(config: &config::backends::FilesystemStore) -> Result<Self, Error> {
         let now = SystemTime::now();
 
@@ -411,12 +439,13 @@ impl FilesystemStore {
             .await
             .err_tip(|| format!("Failed to content directory {:?}", &config.content_path))?;
 
-        let folder_paths = Arc::new(FolderPaths {
+        let shared_context = Arc::new(SharedContext {
+            active_drop_spawns: AtomicU64::new(0),
             temp_path: config.temp_path.clone(),
             content_path: config.content_path.clone(),
         });
-        add_files_to_cache(&evicting_map, &now, &folder_paths).await?;
-        prune_temp_path(&folder_paths.temp_path).await?;
+        add_files_to_cache(&evicting_map, &now, &shared_context).await?;
+        prune_temp_path(&shared_context.temp_path).await?;
 
         let read_buffer_size = if config.read_buffer_size == 0 {
             DEFAULT_BUFF_SIZE
@@ -424,16 +453,14 @@ impl FilesystemStore {
             config.read_buffer_size as usize
         };
         let store = Self {
-            folder_paths,
+            shared_context,
             evicting_map,
             read_buffer_size,
-            file_evicted_callback: None,
-            file_unrefed_callback: None,
         };
         Ok(store)
     }
 
-    pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<FileEntry>, Error> {
+    pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
         self.evicting_map
             .get(&digest)
             .await
@@ -442,7 +469,7 @@ impl FilesystemStore {
 
     async fn update_file<'a>(
         self: Pin<&Self>,
-        mut entry: FileEntry,
+        mut entry: Fe,
         mut temp_file: fs::FileSlot<'a>,
         final_digest: DigestInfo,
         mut reader: DropCloserReadHalf,
@@ -472,7 +499,7 @@ impl FilesystemStore {
 
         drop(temp_file);
 
-        entry.file_size = file_size;
+        *entry.get_file_size() = file_size;
         let entry = Arc::new(entry);
 
         // This sequence of events is quite ticky to understand due to the amount of triggers that
@@ -493,9 +520,9 @@ impl FilesystemStore {
         //    FileEntry (which has not yet been placed on disk) will not be able to read the file's
         //    contents until we relese the lock.
         {
-            let mut encoded_file_path = entry.encoded_file_path.write().await;
+            let mut encoded_file_path = entry.get_encoded_file_path().write().await;
             let final_encoded_file_path = EncodedFilePath {
-                folder_paths: encoded_file_path.folder_paths.clone(),
+                shared_context: encoded_file_path.shared_context.clone(),
                 path_type: PathType::Content,
                 digest: final_digest.clone(),
             };
@@ -519,7 +546,7 @@ impl FilesystemStore {
                 // It is possible that the item in our map is no longer the item we inserted,
                 // So, we need to conditionally remove it only if the pointers are the same.
                 self.evicting_map
-                    .remove_if(&final_digest, |map_entry| Arc::<FileEntry>::ptr_eq(map_entry, &entry))
+                    .remove_if(&final_digest, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
                     .await;
                 return Err(err);
             }
@@ -530,7 +557,7 @@ impl FilesystemStore {
 }
 
 #[async_trait]
-impl StoreTrait for FilesystemStore {
+impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
     async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
         Ok(self.evicting_map.size_for_key(&digest).await)
     }
@@ -544,15 +571,11 @@ impl StoreTrait for FilesystemStore {
         let mut temp_digest = digest.clone();
         make_temp_digest(&mut temp_digest);
 
-        let (entry, temp_file, temp_full_path) = make_file_entry(
-            EncodedFilePath {
-                folder_paths: self.folder_paths.clone(),
-                path_type: PathType::Temp,
-                digest: temp_digest,
-            },
-            self.file_evicted_callback,
-            self.file_unrefed_callback,
-        )
+        let (entry, temp_file, temp_full_path) = Fe::make_and_open_file(EncodedFilePath {
+            shared_context: self.shared_context.clone(),
+            path_type: PathType::Temp,
+            digest: temp_digest,
+        })
         .await?;
 
         self.update_file(entry, temp_file, digest, reader)

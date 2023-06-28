@@ -395,6 +395,7 @@ rust_test(
     srcs = ["tests/filesystem_store_test.rs"],
     deps = [
         "//config",
+        "//third_party:async_lock",
         "//third_party:filetime",
         "//third_party:futures",
         "//third_party:lazy_static",
@@ -405,7 +406,9 @@ rust_test(
         "//util:buf_channel",
         "//util:common",
         "//util:error",
+        "//util:evicting_map",
         ":filesystem_store",
         ":traits",
     ],
+    proc_macro_deps = ["//third_party:async_trait"],
 )
