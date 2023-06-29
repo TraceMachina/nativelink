@@ -14,9 +14,9 @@ rust_binary(
     name = "gen_protos_tool",
     srcs = ["gen_protos_tool.rs"],
     deps = [
-        "//third_party:clap",
-        "//third_party:prost_build",
-        "//third_party:tonic_build",
+        "@crate_index//:clap",
+        "@crate_index//:prost-build",
+        "@crate_index//:tonic-build",
         "@rules_rust//:rustfmt",
     ],
 )
@@ -78,9 +78,9 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//third_party:prost",
-        "//third_party:prost_types",
-        "//third_party:tonic",
+        "@crate_index//:prost",
+        "@crate_index//:prost-types",
+        "@crate_index//:tonic",
     ],
 )
 

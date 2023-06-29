@@ -3,89 +3,104 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 rust_library(
     name = "platform_property_manager",
     srcs = ["platform_property_manager.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
     deps = [
         "//config",
         "//proto",
         "//util:error",
     ],
-    visibility = ["//cas:__pkg__", "//cas:__subpackages__"]
 )
 
 rust_library(
     name = "scheduler",
     srcs = ["scheduler.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
     deps = [
-        "//config",
-        "//third_party:async_lock",
-        "//third_party:lru",
-        "//third_party:rand",
-        "//third_party:tokio",
-        "//util:common",
-        "//util:error",
         ":action_messages",
         ":platform_property_manager",
         ":worker",
+        "//config",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:async-lock",
+        "@crate_index//:lru",
+        "@crate_index//:rand",
+        "@crate_index//:tokio",
     ],
-    visibility = ["//cas:__pkg__", "//cas:__subpackages__"]
 )
 
 rust_library(
     name = "worker",
     srcs = ["worker.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
     deps = [
-        "//proto",
-        "//third_party:tokio",
-        "//third_party:uuid",
-        "//util:error",
         ":action_messages",
         ":platform_property_manager",
+        "//proto",
+        "//util:error",
+        "@crate_index//:tokio",
+        "@crate_index//:uuid",
     ],
-    visibility = ["//cas:__pkg__", "//cas:__subpackages__"]
 )
 
 rust_library(
     name = "action_messages",
     srcs = ["action_messages.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
     deps = [
+        ":platform_property_manager",
         "//proto",
-        "//third_party:prost",
-        "//third_party:prost_types",
-        "//third_party:sha2",
-        "//third_party:tonic",
         "//util:common",
         "//util:error",
-        ":platform_property_manager",
+        "@crate_index//:prost",
+        "@crate_index//:prost-types",
+        "@crate_index//:sha2",
+        "@crate_index//:tonic",
     ],
-    visibility = ["//cas:__pkg__", "//cas:__subpackages__"]
 )
 
 rust_test(
     name = "action_messages_test",
     srcs = ["tests/action_messages_test.rs"],
     deps = [
+        ":action_messages",
         "//proto",
-        "//third_party:pretty_assertions",
-        "//third_party:tokio",
         "//util:common",
         "//util:error",
-        ":action_messages",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:tokio",
     ],
 )
 
 rust_test(
     name = "scheduler_test",
     srcs = ["tests/scheduler_test.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
     deps = [
-        "//config",
-        "//proto",
-        "//third_party:pretty_assertions",
-        "//third_party:tokio",
-        "//util:common",
-        "//util:error",
         ":action_messages",
         ":platform_property_manager",
         ":scheduler",
         ":worker",
+        "//config",
+        "//proto",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:tokio",
     ],
-    visibility = ["//cas:__pkg__", "//cas:__subpackages__"]
 )

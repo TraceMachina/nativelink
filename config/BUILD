@@ -9,21 +9,21 @@ exports_files([
 rust_library(
     name = "config",
     srcs = ["lib.rs"],
+    visibility = ["//visibility:public"],
     deps = [
-        "//third_party:serde",
         ":backends",
         ":cas_server",
+        "@crate_index//:serde",
     ],
-    visibility = ["//visibility:public"],
 )
 
 rust_library(
     name = "cas_server",
     srcs = ["cas_server.rs"],
     deps = [
-        "//third_party:serde",
-        "//util:serde_utils",
         ":backends",
+        "//util:serde_utils",
+        "@crate_index//:serde",
     ],
 )
 
@@ -31,7 +31,7 @@ rust_library(
     name = "backends",
     srcs = ["backends.rs"],
     deps = [
-        "//third_party:serde",
         "//util:serde_utils",
+        "@crate_index//:serde",
     ],
 )
