@@ -50,11 +50,11 @@ Configuration is done via a JSON file that is passed in as the first parameter t
 
 ## How to update external rust deps
 
-Install `cargo` and then run: `cargo install cargo-raze`.
-From now on you can use: 
-```
-$ cargo generate-lockfile  # This will generate a new Cargo.lock file.
-$ cargo raze  # This will code-gen the bazel rules.
+All dependencies are tracked in a generated `@crate_index` workspace and locked
+in `Cargo.Bazel.lock`. To regenerate the `@crate_index`:
+
+```bash
+CARGO_BAZEL_REPIN=1 bazel sync --only=crate_index
 ```
 
 # License

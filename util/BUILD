@@ -3,33 +3,33 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 rust_library(
     name = "error",
     srcs = ["error.rs"],
+    visibility = ["//visibility:public"],
     deps = [
         "//proto",
-        "//third_party:hex",
-        "//third_party:prost",
-        "//third_party:prost_types",
-        "//third_party:tokio",
-        "//third_party:tonic",
+        "@crate_index//:hex",
+        "@crate_index//:prost",
+        "@crate_index//:prost-types",
+        "@crate_index//:tokio",
+        "@crate_index//:tonic",
     ],
-    visibility = ["//visibility:public"],
 )
 
 rust_library(
     name = "common",
     srcs = ["common.rs"],
+    visibility = ["//visibility:public"],
     deps = [
-        "//proto",
-        "//third_party:bytes",
-        "//third_party:hex",
-        "//third_party:lazy_init",
-        "//third_party:log",
-        "//third_party:prost",
-        "//third_party:serde",
-        "//third_party:tokio",
         ":error",
         ":fs",
+        "//proto",
+        "@crate_index//:bytes",
+        "@crate_index//:hex",
+        "@crate_index//:lazy-init",
+        "@crate_index//:log",
+        "@crate_index//:prost",
+        "@crate_index//:serde",
+        "@crate_index//:tokio",
     ],
-    visibility = ["//visibility:public"],
 )
 
 # This crate should be accessed through `common::fs`.
@@ -37,119 +37,119 @@ rust_library(
     name = "fs",
     srcs = ["fs.rs"],
     deps = [
-        "//third_party:log",
-        "//third_party:tokio",
         ":error",
+        "@crate_index//:log",
+        "@crate_index//:tokio",
     ],
 )
 
 rust_library(
     name = "retry",
     srcs = ["retry.rs"],
-    deps = [
-        "//third_party:futures",
-        "//third_party:tokio",
-        ":error",
-    ],
     visibility = ["//visibility:public"],
+    deps = [
+        ":error",
+        "@crate_index//:futures",
+        "@crate_index//:tokio",
+    ],
 )
 
 rust_library(
     name = "resource_info",
     srcs = ["resource_info.rs"],
-    deps = [":error"],
     visibility = ["//visibility:public"],
+    deps = [":error"],
 )
 
 rust_library(
     name = "write_request_stream_wrapper",
     srcs = ["write_request_stream_wrapper.rs"],
+    visibility = ["//visibility:public"],
     deps = [
-        "//proto",
-        "//third_party:futures",
         ":error",
         ":resource_info",
+        "//proto",
+        "@crate_index//:futures",
     ],
-    visibility = ["//visibility:public"],
 )
 
 rust_library(
     name = "evicting_map",
     srcs = ["evicting_map.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    visibility = ["//visibility:public"],
     deps = [
         "//config",
-        "//third_party:async_lock",
-        "//third_party:lru",
-        "//third_party:serde",
         "//util:common",
+        "@crate_index//:async-lock",
+        "@crate_index//:lru",
+        "@crate_index//:serde",
     ],
-    proc_macro_deps = ["//third_party:async_trait"],
-    visibility = ["//visibility:public"],
 )
 
 rust_library(
     name = "async_fixed_buffer",
     srcs = ["async_fixed_buffer.rs"],
-    deps = [
-        "//third_party:async_lock",
-        "//third_party:fixed_buffer",
-        "//third_party:futures",
-        "//third_party:pin_project_lite",
-        "//third_party:tokio",
-    ],
     visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:async-lock",
+        "@crate_index//:fixed-buffer",
+        "@crate_index//:futures",
+        "@crate_index//:pin-project-lite",
+        "@crate_index//:tokio",
+    ],
 )
 
 rust_library(
     name = "write_counter",
     srcs = ["write_counter.rs"],
-    deps = [
-        "//third_party:pin_project_lite",
-        "//third_party:tokio",
-    ],
     visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:pin-project-lite",
+        "@crate_index//:tokio",
+    ],
 )
 
 rust_library(
     name = "buf_channel",
     srcs = ["buf_channel.rs"],
-    deps = [
-        "//third_party:bytes",
-        "//third_party:futures",
-        "//third_party:tokio",
-        "//third_party:tokio_util",
-        ":error",
-    ],
     visibility = ["//visibility:public"],
+    deps = [
+        ":error",
+        "@crate_index//:bytes",
+        "@crate_index//:futures",
+        "@crate_index//:tokio",
+        "@crate_index//:tokio-util",
+    ],
 )
 
 rust_library(
     name = "fastcdc",
     srcs = ["fastcdc.rs"],
-    deps = [
-        "//third_party:bytes",
-        "//third_party:tokio_util",
-    ],
     visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:bytes",
+        "@crate_index//:tokio-util",
+    ],
 )
 
 rust_library(
     name = "serde_utils",
     srcs = ["serde_utils.rs"],
-    deps = [
-        "//third_party:serde",
-        "//third_party:shellexpand",
-    ],
     visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:serde",
+        "@crate_index//:shellexpand",
+    ],
 )
 
 rust_test(
     name = "resource_info_test",
     srcs = ["tests/resource_info_test.rs"],
     deps = [
-        "//third_party:pretty_assertions",
-        "//third_party:tokio",
         ":resource_info",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:tokio",
     ],
 )
 
@@ -158,16 +158,16 @@ rust_test(
     srcs = ["tests/fastcdc_test.rs"],
     data = ["tests/data/SekienAkashita.jpg"],
     deps = [
-        "//third_party:bytes",
-        "//third_party:futures",
-        "//third_party:hex",
-        "//third_party:pretty_assertions",
-        "//third_party:rand",
-        "//third_party:sha2",
-        "//third_party:tokio",
-        "//third_party:tokio_util",
-        "//util:common",
         ":fastcdc",
+        "//util:common",
+        "@crate_index//:bytes",
+        "@crate_index//:futures",
+        "@crate_index//:hex",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:rand",
+        "@crate_index//:sha2",
+        "@crate_index//:tokio",
+        "@crate_index//:tokio-util",
     ],
 )
 
@@ -175,39 +175,39 @@ rust_test(
     name = "async_fixed_buffer_test",
     srcs = ["tests/async_fixed_buffer_test.rs"],
     deps = [
-        "//third_party:futures",
-        "//third_party:pretty_assertions",
-        "//third_party:tokio",
         ":async_fixed_buffer",
         ":error",
+        "@crate_index//:futures",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:tokio",
     ],
 )
 
 rust_test(
     name = "evicting_map_test",
     srcs = ["tests/evicting_map_test.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
-        "//config",
-        "//third_party:bytes",
-        "//third_party:hex",
-        "//third_party:mock_instant",
-        "//third_party:tokio",
-        "//util:common",
         ":error",
         ":evicting_map",
+        "//config",
+        "//util:common",
+        "@crate_index//:bytes",
+        "@crate_index//:hex",
+        "@crate_index//:mock_instant",
+        "@crate_index//:tokio",
     ],
-    proc_macro_deps = ["//third_party:async_trait"],
 )
 
 rust_test(
     name = "retry_test",
     srcs = ["tests/retry_test.rs"],
     deps = [
-        "//third_party:futures",
-        "//third_party:pretty_assertions",
-        "//third_party:tokio",
         ":error",
         ":retry",
+        "@crate_index//:futures",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:tokio",
     ],
 )
 
@@ -215,11 +215,11 @@ rust_test(
     name = "buf_channel_test",
     srcs = ["tests/buf_channel_test.rs"],
     deps = [
-        "//third_party:bytes",
-        "//third_party:futures",
-        "//third_party:pretty_assertions",
-        "//third_party:tokio",
         ":buf_channel",
         ":error",
+        "@crate_index//:bytes",
+        "@crate_index//:futures",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:tokio",
     ],
 )
