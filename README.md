@@ -34,7 +34,7 @@ This project was first created due to frustration with similar projects not work
 
 ## Build Requirements
 * Linux (most recent versions) (untested on Windows, but might work)
-* Bazel 3.0.0+
+* Bazel 5.0.0+
 * `libssl-dev` package installed (ie: `apt install libssl-dev` or `yum install libssl-dev`)
 
 ### Building
