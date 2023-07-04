@@ -37,12 +37,20 @@ This project was first created due to frustration with similar projects not work
 * Bazel 5.0.0+
 * `libssl-dev` package installed (ie: `apt install libssl-dev` or `yum install libssl-dev`)
 
-### Building
+### Building for deployment
+```
+$ bazel build -c opt //cas
+```
+
+> **Note**
+> Failing to use the `-c opt` flag will result in a very slow binary (~10x slower). 
+
+### Building for development
 ```
 $ bazel build //cas
 ```
 
-This will place an executable in `./bazel-bin/cas/cas` that will start the service.
+These will place an executable in `./bazel-bin/cas/cas` that will start the service.
 
 ### Configure
 
