@@ -30,6 +30,46 @@ pub type SchedulerRefName = String;
 /// Used when the config references `instance_name` in the protocol.
 pub type InstanceName = String;
 
+#[derive(Deserialize, Debug, Default, Clone, Copy)]
+pub enum CompressionAlgorithm {
+    /// No compression.
+    #[default]
+    None,
+    /// Zlib compression.
+    Gzip,
+}
+
+/// Note: Compressing data in the cloud rarely has a benefit, since most
+/// cloud providers have very high bandwidth backplanes. However, for
+/// clients not inside the data center, it might be a good idea to
+/// compress data to and from the cloud. This will however come at a high
+/// CPU and performance cost. If you are making remote execution share the
+/// same CAS/AC servers as client's remote cache, you can create multiple
+/// services with different compression settings that are served on
+/// different ports. Then configure the non-cloud clients to use one port
+/// and cloud-clients to use another.
+#[derive(Deserialize, Debug, Default)]
+pub struct CompressionConfig {
+    /// The compression algorithm that the server will use when sending
+    /// responses to clients. Enabling this will likely save a lot of
+    /// data transfer, but will consume a lot of CPU and add a lot of
+    /// latency.
+    /// see: https://github.com/allada/turbo-cache/issues/109
+    ///
+    /// Default: CompressionAlgorithm::None
+    pub send_compression_algorithm: Option<CompressionAlgorithm>,
+
+    /// The compression algorithm that the server will accept from clients.
+    /// The server will broadcast the supported compression algorithms to
+    /// clients and the client will choose which compression algorithm to
+    /// use. Enabling this will likely save a lot of data transfer, but
+    /// will consume a lot of CPU and add a lot of latency.
+    /// see: https://github.com/allada/turbo-cache/issues/109
+    ///
+    /// Defaults: <no supported compression>
+    pub accepted_compression_algorithms: Vec<CompressionAlgorithm>,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct AcStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
@@ -202,6 +242,10 @@ pub struct ServerConfig {
     /// to all IPs.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub listen_address: String,
+
+    /// Data transport compression configuration to use for this service.
+    #[serde(default)]
+    pub compression: CompressionConfig,
 
     /// Services to attach to server.
     pub services: Option<ServicesConfig>,
