@@ -501,6 +501,7 @@ dependencies = [
  "maplit",
  "mock_instant",
  "nix",
+ "parking_lot",
  "pin-project-lite",
  "pretty_assertions",
  "prost",
