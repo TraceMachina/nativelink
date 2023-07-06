@@ -127,7 +127,7 @@ mod s3_store_tests {
             Region::UsEast1,
         );
         let store = S3Store::new_with_client_and_jitter(
-            &config::backends::S3Store {
+            &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
                 ..Default::default()
             },
@@ -159,7 +159,7 @@ mod s3_store_tests {
             Region::UsEast1,
         );
         let store = S3Store::new_with_client_and_jitter(
-            &config::backends::S3Store {
+            &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
                 ..Default::default()
             },
@@ -191,9 +191,9 @@ mod s3_store_tests {
             Region::UsEast1,
         );
         let store = S3Store::new_with_client_and_jitter(
-            &config::backends::S3Store {
+            &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
-                retry: config::backends::Retry {
+                retry: config::stores::Retry {
                     max_retries: 1024,
                     delay: 0.,
                     jitter: 0.,
@@ -228,7 +228,7 @@ mod s3_store_tests {
 
         // Send payload.
         let store = S3Store::new_with_client_and_jitter(
-            &config::backends::S3Store {
+            &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
                 ..Default::default()
             },
@@ -280,7 +280,7 @@ mod s3_store_tests {
             Region::UsEast1,
         );
         let store = S3Store::new_with_client_and_jitter(
-            &config::backends::S3Store {
+            &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
                 ..Default::default()
             },
@@ -319,7 +319,7 @@ mod s3_store_tests {
             Region::UsEast1,
         );
         let store = S3Store::new_with_client_and_jitter(
-            &config::backends::S3Store {
+            &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
                 ..Default::default()
             },
@@ -350,9 +350,9 @@ mod s3_store_tests {
         let (request_tx, mut request_rx) = unbounded_channel::<RequestWithWriter>();
 
         let store = S3Store::new_with_client_and_jitter(
-            &config::backends::S3Store {
+            &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
-                retry: config::backends::Retry {
+                retry: config::stores::Retry {
                     max_retries: 2,
                     delay: 0.,
                     jitter: 0.,
@@ -433,9 +433,9 @@ mod s3_store_tests {
             Region::UsEast1,
         );
         let store = S3Store::new_with_client_and_jitter(
-            &config::backends::S3Store {
+            &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
-                retry: config::backends::Retry {
+                retry: config::stores::Retry {
                     max_retries: 1024,
                     delay: 0.,
                     jitter: 0.,
@@ -470,7 +470,7 @@ mod s3_store_tests {
         // Send payload.
         let digest = DigestInfo::try_new(&VALID_HASH1, send_data.len())?;
         let store = S3Store::new_with_client_and_jitter(
-            &config::backends::S3Store {
+            &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
                 ..Default::default()
             },

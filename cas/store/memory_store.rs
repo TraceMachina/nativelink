@@ -48,8 +48,8 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
-    pub fn new(config: &config::backends::MemoryStore) -> Self {
-        let empty_policy = config::backends::EvictionPolicy::default();
+    pub fn new(config: &config::stores::MemoryStore) -> Self {
+        let empty_policy = config::stores::EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
         MemoryStore {
             map: EvictingMap::new(eviction_policy, SystemTime::now()),

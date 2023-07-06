@@ -63,13 +63,13 @@ mod compression_store_tests {
     #[tokio::test]
     async fn simple_smoke_test() -> Result<(), Error> {
         let store_owned = CompressionStore::new(
-            config::backends::CompressionStore {
-                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-                compression_algorithm: config::backends::CompressionAlgorithm::LZ4(config::backends::Lz4Config {
+            config::stores::CompressionStore {
+                backend: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                compression_algorithm: config::stores::CompressionAlgorithm::LZ4(config::stores::Lz4Config {
                     ..Default::default()
                 }),
             },
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())),
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -90,14 +90,14 @@ mod compression_store_tests {
     #[tokio::test]
     async fn partial_reads_test() -> Result<(), Error> {
         let store_owned = CompressionStore::new(
-            config::backends::CompressionStore {
-                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-                compression_algorithm: config::backends::CompressionAlgorithm::LZ4(config::backends::Lz4Config {
+            config::stores::CompressionStore {
+                backend: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                compression_algorithm: config::stores::CompressionAlgorithm::LZ4(config::stores::Lz4Config {
                     block_size: 10,
                     ..Default::default()
                 }),
             },
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())),
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -139,13 +139,13 @@ mod compression_store_tests {
     #[tokio::test]
     async fn rand_5mb_smoke_test() -> Result<(), Error> {
         let store_owned = CompressionStore::new(
-            config::backends::CompressionStore {
-                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-                compression_algorithm: config::backends::CompressionAlgorithm::LZ4(config::backends::Lz4Config {
+            config::stores::CompressionStore {
+                backend: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                compression_algorithm: config::stores::CompressionAlgorithm::LZ4(config::stores::Lz4Config {
                     ..Default::default()
                 }),
             },
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())),
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -168,11 +168,11 @@ mod compression_store_tests {
 
     #[tokio::test]
     async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
-        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         let store_owned = CompressionStore::new(
-            config::backends::CompressionStore {
-                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-                compression_algorithm: config::backends::CompressionAlgorithm::LZ4(config::backends::Lz4Config {
+            config::stores::CompressionStore {
+                backend: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                compression_algorithm: config::stores::CompressionAlgorithm::LZ4(config::stores::Lz4Config {
                     ..Default::default()
                 }),
             },
@@ -215,11 +215,11 @@ mod compression_store_tests {
     async fn check_header_test() -> Result<(), Error> {
         const BLOCK_SIZE: u32 = 150;
         const MAX_SIZE_INPUT: usize = 1024 * 1024; // 1MB.
-        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         let store_owned = CompressionStore::new(
-            config::backends::CompressionStore {
-                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-                compression_algorithm: config::backends::CompressionAlgorithm::LZ4(config::backends::Lz4Config {
+            config::stores::CompressionStore {
+                backend: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                compression_algorithm: config::stores::CompressionAlgorithm::LZ4(config::stores::Lz4Config {
                     block_size: BLOCK_SIZE,
                     ..Default::default()
                 }),
@@ -290,11 +290,11 @@ mod compression_store_tests {
     #[tokio::test]
     async fn check_footer_test() -> Result<(), Error> {
         const BLOCK_SIZE: u32 = 32 * 1024;
-        let inner_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         let store_owned = CompressionStore::new(
-            config::backends::CompressionStore {
-                backend: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-                compression_algorithm: config::backends::CompressionAlgorithm::LZ4(config::backends::Lz4Config {
+            config::stores::CompressionStore {
+                backend: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                compression_algorithm: config::stores::CompressionAlgorithm::LZ4(config::stores::Lz4Config {
                     block_size: BLOCK_SIZE,
                     ..Default::default()
                 }),

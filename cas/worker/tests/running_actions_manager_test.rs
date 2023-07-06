@@ -61,19 +61,19 @@ async fn setup_stores() -> Result<
     ),
     Error,
 > {
-    let fast_config = config::backends::FilesystemStore {
+    let fast_config = config::stores::FilesystemStore {
         content_path: make_temp_path("content_path"),
         temp_path: make_temp_path("temp_path"),
         eviction_policy: None,
         ..Default::default()
     };
-    let slow_config = config::backends::MemoryStore::default();
+    let slow_config = config::stores::MemoryStore::default();
     let fast_store = Pin::new(Arc::new(FilesystemStore::new(&fast_config).await?));
     let slow_store = Pin::new(Arc::new(MemoryStore::new(&slow_config)));
     let cas_store = Pin::new(Arc::new(FastSlowStore::new(
-        &config::backends::FastSlowStore {
-            fast: config::backends::StoreConfig::filesystem(fast_config),
-            slow: config::backends::StoreConfig::memory(slow_config),
+        &config::stores::FastSlowStore {
+            fast: config::stores::StoreConfig::filesystem(fast_config),
+            slow: config::stores::StoreConfig::memory(slow_config),
         },
         Pin::into_inner(fast_store.clone()),
         Pin::into_inner(slow_store.clone()),

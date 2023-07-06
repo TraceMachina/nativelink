@@ -2,7 +2,7 @@
 
 This service uses a JSON file as the configuration format. The JSON format is compatible with how protobuf's JSON format is structed.
 
-To view the available fields please refer to [backends.rs](https://github.com/allada/turbo-cache/blob/master/config/backends.rs) and [cas_server](https://github.com/allada/turbo-cache/blob/master/config/cas_server.rs).
+To view the available fields please refer to [stores.rs](https://github.com/allada/turbo-cache/blob/master/config/stores.rs) and [cas_server](https://github.com/allada/turbo-cache/blob/master/config/cas_server.rs).
 
 These two files should have enough documentation in them on what each field does and where each field goes.
 

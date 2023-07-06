@@ -23,10 +23,10 @@ use memory_store::MemoryStore;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use traits::StoreTrait;
 
-fn make_default_config() -> config::backends::DedupStore {
-    config::backends::DedupStore {
-        index_store: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-        content_store: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+fn make_default_config() -> config::stores::DedupStore {
+    config::stores::DedupStore {
+        index_store: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+        content_store: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
         min_size: 8 * 1024,
         normal_size: 32 * 1024,
         max_size: 128 * 1024,
@@ -54,8 +54,8 @@ mod dedup_store_tests {
     async fn simple_round_trip_test() -> Result<(), Error> {
         let store_owned = DedupStore::new(
             &make_default_config(),
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())), // Index store.
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())), // Content store.
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())), // Index store.
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())), // Content store.
         );
         let store = Pin::new(&store_owned);
 
@@ -78,10 +78,10 @@ mod dedup_store_tests {
 
     #[tokio::test]
     async fn check_missing_last_chunk_test() -> Result<(), Error> {
-        let content_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let content_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         let store_owned = DedupStore::new(
             &make_default_config(),
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())), // Index store.
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())), // Index store.
             content_store.clone(),
         );
         let store = Pin::new(&store_owned);
@@ -121,8 +121,8 @@ mod dedup_store_tests {
     async fn fetch_part_test() -> Result<(), Error> {
         let store_owned = DedupStore::new(
             &make_default_config(),
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())), // Index store.
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())), // Content store.
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())), // Index store.
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())), // Content store.
         );
         let store = Pin::new(&store_owned);
 
@@ -154,9 +154,9 @@ mod dedup_store_tests {
     /// content items exist instead of just checking the entry in the index store.
     #[tokio::test]
     async fn has_checks_content_store() -> Result<(), Error> {
-        let index_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
-        let content_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore {
-            eviction_policy: Some(config::backends::EvictionPolicy {
+        let index_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
+        let content_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore {
+            eviction_policy: Some(config::stores::EvictionPolicy {
                 max_count: 10,
                 ..Default::default()
             }),
@@ -209,9 +209,9 @@ mod dedup_store_tests {
     /// properly return None.
     #[tokio::test]
     async fn has_with_no_existing_index_returns_none_test() -> Result<(), Error> {
-        let index_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
-        let content_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore {
-            eviction_policy: Some(config::backends::EvictionPolicy {
+        let index_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
+        let content_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore {
+            eviction_policy: Some(config::stores::EvictionPolicy {
                 max_count: 10,
                 ..Default::default()
             }),

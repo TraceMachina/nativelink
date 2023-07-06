@@ -23,7 +23,7 @@ use lru::LruCache;
 use serde::{Deserialize, Serialize};
 
 use common::{log, DigestInfo, SerializableDigestInfo};
-use config::backends::EvictionPolicy;
+use config::stores::EvictionPolicy;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct SerializedLRU {
