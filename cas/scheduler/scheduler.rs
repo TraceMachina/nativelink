@@ -386,7 +386,7 @@ impl SchedulerImpl {
         false
     }
 
-    fn update_worker_with_internal_error(
+    fn update_action_with_internal_error(
         &mut self,
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
@@ -565,14 +565,14 @@ impl Scheduler {
         inner.add_action(action_info)
     }
 
-    pub async fn update_worker_with_internal_error(
+    pub async fn update_action_with_internal_error(
         &self,
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
         err: Error,
     ) {
         let mut inner = self.inner.lock().await;
-        inner.update_worker_with_internal_error(worker_id, action_info_hash_key, err)
+        inner.update_action_with_internal_error(worker_id, action_info_hash_key, err)
     }
 
     /// Adds an action to the scheduler for remote execution.
