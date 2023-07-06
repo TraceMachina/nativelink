@@ -50,7 +50,7 @@ use traits::{StoreTrait, UploadSizeInfo};
 const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
 
 // Size for the large vector pool if not specified.
-// NOTE: If this value is changed also change comment in backends.rs.
+// NOTE: If this value is changed also change comment in stores.rs.
 const DEFAULT_ADDITIONAL_MAX_CONCURRENT_REQUESTS: usize = 20;
 
 struct InnerThrottledDispatcher {
@@ -130,12 +130,12 @@ pub struct S3Store {
     bucket: String,
     key_prefix: String,
     jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
-    retry: config::backends::Retry,
+    retry: config::stores::Retry,
     retrier: Retrier,
 }
 
 impl S3Store {
-    pub fn new(config: &config::backends::S3Store) -> Result<Self, Error> {
+    pub fn new(config: &config::stores::S3Store) -> Result<Self, Error> {
         let mut additional_max_concurrent_requests = config.additional_max_concurrent_requests;
         if additional_max_concurrent_requests == 0 {
             additional_max_concurrent_requests = DEFAULT_ADDITIONAL_MAX_CONCURRENT_REQUESTS;
@@ -168,7 +168,7 @@ impl S3Store {
     }
 
     pub fn new_with_client_and_jitter(
-        config: &config::backends::S3Store,
+        config: &config::stores::S3Store,
         s3_client: S3Client,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {

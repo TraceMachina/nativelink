@@ -111,7 +111,7 @@ pub const CHUNK_FRAME_TYPE: u8 = 0;
 /// Number representing the footer.
 pub const FOOTER_FRAME_TYPE: u8 = 1;
 
-/// This is a partial mirror of config::backends::Lz4Config.
+/// This is a partial mirror of config::stores::Lz4Config.
 /// We cannot use that natively here because it could cause our
 /// serialized format to change if we added more configs.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Copy, Clone)]
@@ -203,17 +203,17 @@ impl UploadState {
 /// only send the contents requested.
 pub struct CompressionStore {
     inner_store: Arc<dyn StoreTrait>,
-    config: config::backends::Lz4Config,
+    config: config::stores::Lz4Config,
     bincode_options: BincodeOptions,
 }
 
 impl CompressionStore {
     pub fn new(
-        compression_config: config::backends::CompressionStore,
+        compression_config: config::stores::CompressionStore,
         inner_store: Arc<dyn StoreTrait>,
     ) -> Result<Self, Error> {
         let lz4_config = match compression_config.compression_algorithm {
-            config::backends::CompressionAlgorithm::LZ4(mut lz4_config) => {
+            config::stores::CompressionAlgorithm::LZ4(mut lz4_config) => {
                 if lz4_config.block_size == 0 {
                     lz4_config.block_size = DEFAULT_BLOCK_SIZE;
                 }

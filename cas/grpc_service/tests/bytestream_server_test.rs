@@ -36,7 +36,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+            &config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
             &store_manager,
         )
         .await?,

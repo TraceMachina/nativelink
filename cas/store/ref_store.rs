@@ -43,7 +43,7 @@ pub struct RefStore {
 }
 
 impl RefStore {
-    pub fn new(config: &config::backends::RefStore, store_manager: Arc<StoreManager>) -> Self {
+    pub fn new(config: &config::stores::RefStore, store_manager: Arc<StoreManager>) -> Self {
         RefStore {
             ref_store_name: config.name.clone(),
             store_manager,

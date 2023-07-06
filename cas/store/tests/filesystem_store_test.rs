@@ -185,7 +185,7 @@ mod filesystem_store_tests {
         let temp_path = make_temp_path("temp_path");
         {
             let store = Box::pin(
-                FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
+                FilesystemStore::<FileEntryImpl>::new(&config::stores::FilesystemStore {
                     content_path: content_path.clone(),
                     temp_path: temp_path.clone(),
                     eviction_policy: None,
@@ -206,7 +206,7 @@ mod filesystem_store_tests {
         {
             // With a new store ensure content is still readable (ie: restores from shutdown).
             let store = Box::pin(
-                FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
+                FilesystemStore::<FileEntryImpl>::new(&config::stores::FilesystemStore {
                     content_path,
                     temp_path,
                     eviction_policy: None,
@@ -237,10 +237,10 @@ mod filesystem_store_tests {
         }
 
         let store = Box::pin(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::stores::FilesystemStore {
                 content_path: content_path.clone(),
                 temp_path: temp_path.clone(),
-                eviction_policy: Some(config::backends::EvictionPolicy {
+                eviction_policy: Some(config::stores::EvictionPolicy {
                     max_count: 3,
                     ..Default::default()
                 }),
@@ -307,10 +307,10 @@ mod filesystem_store_tests {
         }
 
         let store = Arc::new(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::stores::FilesystemStore {
                 content_path: content_path.clone(),
                 temp_path: temp_path.clone(),
-                eviction_policy: Some(config::backends::EvictionPolicy {
+                eviction_policy: Some(config::stores::EvictionPolicy {
                     max_count: 3,
                     ..Default::default()
                 }),
@@ -417,10 +417,10 @@ mod filesystem_store_tests {
         }
 
         let store = Arc::new(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::stores::FilesystemStore {
                 content_path: content_path.clone(),
                 temp_path: temp_path.clone(),
-                eviction_policy: Some(config::backends::EvictionPolicy {
+                eviction_policy: Some(config::stores::EvictionPolicy {
                     max_count: 1,
                     ..Default::default()
                 }),
@@ -506,7 +506,7 @@ mod filesystem_store_tests {
         let digest1 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
 
         let store = Box::pin(
-            FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
+            FilesystemStore::<FileEntryImpl>::new(&config::stores::FilesystemStore {
                 content_path: make_temp_path("content_path"),
                 temp_path: make_temp_path("temp_path"),
                 eviction_policy: None,
@@ -552,7 +552,7 @@ mod filesystem_store_tests {
         let digest1 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
 
         let store = Box::pin(
-            FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
+            FilesystemStore::<FileEntryImpl>::new(&config::stores::FilesystemStore {
                 content_path: make_temp_path("content_path"),
                 temp_path: make_temp_path("temp_path"),
                 eviction_policy: None,
@@ -601,7 +601,7 @@ mod filesystem_store_tests {
         let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
 
         let store = Box::pin(
-            FilesystemStore::<FileEntryImpl>::new(&config::backends::FilesystemStore {
+            FilesystemStore::<FileEntryImpl>::new(&config::stores::FilesystemStore {
                 content_path: make_temp_path("content_path"),
                 temp_path: make_temp_path("temp_path"),
                 eviction_policy: None,
@@ -657,10 +657,10 @@ mod filesystem_store_tests {
         }
 
         let store = Box::pin(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::stores::FilesystemStore {
                 content_path: make_temp_path("content_path"),
                 temp_path: make_temp_path("temp_path"),
-                eviction_policy: Some(config::backends::EvictionPolicy {
+                eviction_policy: Some(config::stores::EvictionPolicy {
                     max_bytes: 5,
                     ..Default::default()
                 }),
@@ -707,7 +707,7 @@ mod filesystem_store_tests {
         }
 
         let store = Box::pin(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::backends::FilesystemStore {
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&config::stores::FilesystemStore {
                 content_path: content_path.clone(),
                 temp_path: temp_path.clone(),
                 eviction_policy: None,

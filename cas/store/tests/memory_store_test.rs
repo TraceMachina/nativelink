@@ -30,7 +30,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn insert_one_item_then_update() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&config::backends::MemoryStore::default());
+        let store_owned = MemoryStore::new(&config::stores::MemoryStore::default());
         let store = Pin::new(&store_owned);
 
         {
@@ -75,7 +75,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn read_partial() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&config::backends::MemoryStore::default());
+        let store_owned = MemoryStore::new(&config::stores::MemoryStore::default());
         let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "1234";
@@ -98,7 +98,7 @@ mod memory_store_tests {
     // due to internal EOF handling. This is an edge case test.
     #[tokio::test]
     async fn read_zero_size_item_test() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&config::backends::MemoryStore::default());
+        let store_owned = MemoryStore::new(&config::stores::MemoryStore::default());
         let store = Pin::new(&store_owned);
 
         // Insert dummy value into store.
@@ -118,7 +118,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn errors_with_invalid_inputs() -> Result<(), Error> {
-        let store_owned = MemoryStore::new(&config::backends::MemoryStore::default());
+        let store_owned = MemoryStore::new(&config::stores::MemoryStore::default());
         let store = Pin::new(&store_owned);
         const VALUE1: &str = "123";
         {

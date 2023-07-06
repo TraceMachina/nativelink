@@ -38,7 +38,7 @@ pub struct FastSlowStore {
 
 impl FastSlowStore {
     pub fn new(
-        _config: &config::backends::FastSlowStore,
+        _config: &config::stores::FastSlowStore,
         fast_store: Arc<dyn StoreTrait>,
         slow_store: Arc<dyn StoreTrait>,
     ) -> Self {

@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use backends;
 use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
+use stores;
 
 /// Name of the store. This type will be used when referencing a store
 /// in the `CasConfig::stores`'s map key.
@@ -307,7 +307,7 @@ pub struct LocalWorkerConfig {
     /// The directory work jobs will be executed from. This directory will be fully
     /// managed by the worker service and will be purged on startup.
     /// This directory and the directory referenced in local_filesystem_store_ref's
-    /// backends::FilesystemStore::content_path must be on the same filesystem.
+    /// stores::FilesystemStore::content_path must be on the same filesystem.
     /// Hardlinks will be used when placing files that are accessible to the jobs
     /// that are sourced from local_filesystem_store_ref's content_path.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -346,7 +346,7 @@ pub struct GlobalConfig {
 pub struct CasConfig {
     /// List of stores available to use in this config.
     /// The keys can be used in other configs when needing to reference a store.
-    pub stores: HashMap<StoreRefName, backends::StoreConfig>,
+    pub stores: HashMap<StoreRefName, stores::StoreConfig>,
 
     /// Worker configurations used to execute jobs.
     pub workers: Option<Vec<WorkerConfig>>,

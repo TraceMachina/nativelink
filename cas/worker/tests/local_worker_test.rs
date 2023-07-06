@@ -285,20 +285,20 @@ mod local_worker_tests {
     #[tokio::test]
     async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn std::error::Error>> {
         let cas_store = Arc::new(FastSlowStore::new(
-            &config::backends::FastSlowStore {
+            &config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
-                fast: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-                slow: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+                fast: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                slow: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
             },
             Arc::new(
-                <FilesystemStore>::new(&config::backends::FilesystemStore {
+                <FilesystemStore>::new(&config::stores::FilesystemStore {
                     content_path: make_temp_path("content_path"),
                     temp_path: make_temp_path("temp_path"),
                     ..Default::default()
                 })
                 .await?,
             ),
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())),
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())),
         ));
         let work_directory = make_temp_path("foo");
         new_local_worker(
@@ -321,20 +321,20 @@ mod local_worker_tests {
     #[tokio::test]
     async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(), Box<dyn std::error::Error>> {
         let cas_store = Arc::new(FastSlowStore::new(
-            &config::backends::FastSlowStore {
+            &config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
-                fast: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-                slow: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+                fast: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                slow: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
             },
             Arc::new(
-                <FilesystemStore>::new(&config::backends::FilesystemStore {
+                <FilesystemStore>::new(&config::stores::FilesystemStore {
                     content_path: make_temp_path("content_path"),
                     temp_path: make_temp_path("temp_path"),
                     ..Default::default()
                 })
                 .await?,
             ),
-            Arc::new(MemoryStore::new(&config::backends::MemoryStore::default())),
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())),
         ));
         let work_directory = make_temp_path("foo");
         fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;

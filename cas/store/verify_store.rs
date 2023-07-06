@@ -32,7 +32,7 @@ pub struct VerifyStore {
 }
 
 impl VerifyStore {
-    pub fn new(config: &config::backends::VerifyStore, inner_store: Arc<dyn StoreTrait>) -> Self {
+    pub fn new(config: &config::stores::VerifyStore, inner_store: Arc<dyn StoreTrait>) -> Self {
         VerifyStore {
             inner_store: inner_store,
             verify_size: config.verify_size,

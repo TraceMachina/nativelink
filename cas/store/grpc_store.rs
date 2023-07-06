@@ -50,7 +50,7 @@ pub struct GrpcStore {
 }
 
 impl GrpcStore {
-    pub async fn new(config: &config::backends::GrpcStore) -> Result<Self, Error> {
+    pub async fn new(config: &config::stores::GrpcStore) -> Result<Self, Error> {
         error_if!(config.endpoints.len() == 0, "Expected at least 1 endpoint in GrpcStore");
         let mut endpoints = Vec::with_capacity(config.endpoints.len());
         for endpoint in &config.endpoints {

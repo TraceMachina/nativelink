@@ -437,10 +437,10 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
-    pub async fn new(config: &config::backends::FilesystemStore) -> Result<Self, Error> {
+    pub async fn new(config: &config::stores::FilesystemStore) -> Result<Self, Error> {
         let now = SystemTime::now();
 
-        let empty_policy = config::backends::EvictionPolicy::default();
+        let empty_policy = config::stores::EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
         let evicting_map = EvictingMap::new(eviction_policy, now);
 

@@ -35,7 +35,7 @@ use error::{make_err, Code, Error, ResultExt};
 use fastcdc::FastCDC;
 use traits::{StoreTrait, UploadSizeInfo};
 
-// NOTE: If these change update the comments in `backends.rs` to reflect
+// NOTE: If these change update the comments in `stores.rs` to reflect
 // the new defaults.
 const DEFAULT_MIN_SIZE: usize = 64 * 1024;
 const DEFAULT_NORM_SIZE: usize = 256 * 1024;
@@ -58,7 +58,7 @@ pub struct DedupStore {
 
 impl DedupStore {
     pub fn new(
-        config: &config::backends::DedupStore,
+        config: &config::stores::DedupStore,
         index_store: Arc<dyn StoreTrait>,
         content_store: Arc<dyn StoreTrait>,
     ) -> Self {

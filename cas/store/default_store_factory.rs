@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use compression_store::CompressionStore;
-use config::{self, backends::StoreConfig};
+use config::{self, stores::StoreConfig};
 use dedup_store::DedupStore;
 use error::Error;
 use fast_slow_store::FastSlowStore;

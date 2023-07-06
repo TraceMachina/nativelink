@@ -21,7 +21,7 @@ use bytes::Bytes;
 use mock_instant::{Instant as MockInstant, MockClock};
 
 use common::DigestInfo;
-use config::backends::EvictionPolicy;
+use config::stores::EvictionPolicy;
 use error::Error;
 use evicting_map::{EvictingMap, InstantWrapper, LenEntry};
 

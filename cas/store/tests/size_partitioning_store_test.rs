@@ -37,14 +37,14 @@ mod ref_store_tests {
     const BIG_VALUE: &str = "123456789";
 
     fn setup_stores(size: u64) -> (SizePartitioningStore, Arc<MemoryStore>, Arc<MemoryStore>) {
-        let lower_memory_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
-        let upper_memory_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let lower_memory_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
+        let upper_memory_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
 
         let size_part_store = SizePartitioningStore::new(
-            &config::backends::SizePartitioningStore {
+            &config::stores::SizePartitioningStore {
                 size,
-                lower_store: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-                upper_store: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+                lower_store: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                upper_store: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
             },
             lower_memory_store.clone(),
             upper_memory_store.clone(),

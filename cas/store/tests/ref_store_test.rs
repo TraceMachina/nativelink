@@ -33,11 +33,11 @@ mod ref_store_tests {
     fn setup_stores() -> (Arc<MemoryStore>, Arc<RefStore>) {
         let store_manager = Arc::new(StoreManager::new());
 
-        let memory_store_owned = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+        let memory_store_owned = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         store_manager.add_store("foo", memory_store_owned.clone());
 
         let ref_store_owned = Arc::new(RefStore::new(
-            &config::backends::RefStore {
+            &config::stores::RefStore {
                 name: "foo".to_string(),
             },
             store_manager.clone(),

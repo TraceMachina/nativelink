@@ -27,12 +27,12 @@ use fast_slow_store::FastSlowStore;
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
 fn make_stores() -> (Arc<impl StoreTrait>, Arc<impl StoreTrait>, Arc<impl StoreTrait>) {
-    let fast_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
-    let slow_store = Arc::new(MemoryStore::new(&config::backends::MemoryStore::default()));
+    let fast_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
+    let slow_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
     let fast_slow_store = Arc::new(FastSlowStore::new(
-        &config::backends::FastSlowStore {
-            fast: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
-            slow: config::backends::StoreConfig::memory(config::backends::MemoryStore::default()),
+        &config::stores::FastSlowStore {
+            fast: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+            slow: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
         },
         fast_store.clone(),
         slow_store.clone(),

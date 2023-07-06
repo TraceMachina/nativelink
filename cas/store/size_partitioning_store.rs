@@ -31,7 +31,7 @@ pub struct SizePartitioningStore {
 
 impl SizePartitioningStore {
     pub fn new(
-        config: &config::backends::SizePartitioningStore,
+        config: &config::stores::SizePartitioningStore,
         lower_store: Arc<dyn StoreTrait>,
         upper_store: Arc<dyn StoreTrait>,
     ) -> Self {

@@ -11,7 +11,7 @@ rust_library(
     srcs = ["lib.rs"],
     visibility = ["//visibility:public"],
     deps = [
-        ":backends",
+        ":stores",
         ":cas_server",
         "@crate_index//:serde",
     ],
@@ -21,15 +21,15 @@ rust_library(
     name = "cas_server",
     srcs = ["cas_server.rs"],
     deps = [
-        ":backends",
+        ":stores",
         "//util:serde_utils",
         "@crate_index//:serde",
     ],
 )
 
 rust_library(
-    name = "backends",
-    srcs = ["backends.rs"],
+    name = "stores",
+    srcs = ["stores.rs"],
     deps = [
         "//util:serde_utils",
         "@crate_index//:serde",
