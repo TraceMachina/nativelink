@@ -171,7 +171,7 @@ impl WorkerApiServer {
             }
             execute_result::Result::InternalError(e) => {
                 self.scheduler
-                    .update_worker_with_internal_error(&worker_id, &action_info_hash_key, e.into())
+                    .update_action_with_internal_error(&worker_id, &action_info_hash_key, e.into())
                     .await;
             }
         }

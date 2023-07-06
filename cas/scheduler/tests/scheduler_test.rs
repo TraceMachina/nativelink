@@ -1034,7 +1034,7 @@ mod scheduler_tests {
             salt: 0,
         };
         scheduler
-            .update_worker_with_internal_error(
+            .update_action_with_internal_error(
                 &WORKER_ID,
                 &action_info_hash_key,
                 make_err!(Code::Internal, "Some error"),
@@ -1067,7 +1067,7 @@ mod scheduler_tests {
 
         // Send internal error from worker again.
         scheduler
-            .update_worker_with_internal_error(
+            .update_action_with_internal_error(
                 &WORKER_ID,
                 &action_info_hash_key,
                 make_err!(Code::Internal, "Some error"),
