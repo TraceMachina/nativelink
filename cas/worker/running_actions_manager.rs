@@ -30,6 +30,7 @@ use futures::future::{try_join, try_join3, try_join_all, BoxFuture, FutureExt, T
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use hex;
 use parking_lot::Mutex;
+use prost::Message;
 use relative_path::RelativePath;
 use tokio::io::AsyncSeekExt;
 use tokio::process;
@@ -37,18 +38,24 @@ use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_util::io::ReaderStream;
+use tonic::Request;
 
-use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_to_store};
+use ac_utils::{
+    compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_to_store, ESTIMATED_DIGEST_SIZE,
+};
 use action_messages::{ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use async_trait::async_trait;
 use common::{fs, log, DigestInfo, JoinHandleDropGuard};
+use config::cas_server::UploadCacheResultsStrategy;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
+use grpc_store::GrpcStore;
 use proto::build::bazel::remote::execution::v2::{
     Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode, FileNode, SymlinkNode,
     Tree as ProtoTree,
 };
+use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, UpdateActionResultRequest};
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
 use store::Store;
 
@@ -815,6 +822,8 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         start_execute: StartExecute,
     ) -> Result<Arc<Self::RunningAction>, Error>;
 
+    async fn cache_action_result(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error>;
+
     async fn kill_all(&self);
 }
 
@@ -828,6 +837,8 @@ pub struct RunningActionsManagerImpl {
     entrypoint_cmd: Option<Arc<String>>,
     cas_store: Arc<FastSlowStore>,
     filesystem_store: Arc<FilesystemStore>,
+    ac_store: Arc<dyn Store>,
+    upload_strategy: UploadCacheResultsStrategy,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
     now_fn: NowFn,
 }
@@ -837,6 +848,8 @@ impl RunningActionsManagerImpl {
         root_work_directory: String,
         entrypoint_cmd: Option<Arc<String>>,
         cas_store: Arc<FastSlowStore>,
+        ac_store: Arc<dyn Store>,
+        upload_strategy: UploadCacheResultsStrategy,
         now_fn: NowFn,
     ) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
@@ -852,6 +865,8 @@ impl RunningActionsManagerImpl {
             entrypoint_cmd,
             cas_store,
             filesystem_store,
+            ac_store,
+            upload_strategy,
             running_actions: Mutex::new(HashMap::new()),
             now_fn,
         })
@@ -861,8 +876,17 @@ impl RunningActionsManagerImpl {
         root_work_directory: String,
         entrypoint_cmd: Option<Arc<String>>,
         cas_store: Arc<FastSlowStore>,
+        ac_store: Arc<dyn Store>,
+        upload_strategy: UploadCacheResultsStrategy,
     ) -> Result<Self, Error> {
-        Self::new_with_now_fn(root_work_directory, entrypoint_cmd, cas_store, SystemTime::now)
+        Self::new_with_now_fn(
+            root_work_directory,
+            entrypoint_cmd,
+            cas_store,
+            ac_store,
+            upload_strategy,
+            SystemTime::now,
+        )
     }
 
     async fn make_work_directory(&self, action_id: &ActionId) -> Result<String, Error> {
@@ -969,6 +993,47 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             running_actions.insert(action_id, Arc::downgrade(&running_action));
         }
         Ok(running_action)
+    }
+
+    async fn cache_action_result(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error> {
+        match self.upload_strategy {
+            UploadCacheResultsStrategy::SuccessOnly => {
+                if action_result.exit_code != 0 {
+                    return Ok(());
+                }
+            }
+            UploadCacheResultsStrategy::Never => return Ok(()),
+            UploadCacheResultsStrategy::Everything => {}
+        }
+
+        let proto_action_result: ProtoActionResult = action_result.into();
+        // If we are a GrpcStore we shortcut here, as this is a special store.
+        let any_store = self.ac_store.clone().as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
+            let update_action_request = UpdateActionResultRequest {
+                // This is populated by `update_action_result`.
+                instance_name: "".to_string(),
+                action_digest: Some(action_digest.clone().into()),
+                action_result: Some(proto_action_result),
+                results_cache_policy: None,
+            };
+            grpc_store
+                .update_action_result(Request::new(update_action_request))
+                .await
+                .map(|_| ())
+                .err_tip(|| "Caching ActionResult")?;
+        } else {
+            let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
+            proto_action_result
+                .encode(&mut store_data)
+                .err_tip(|| "Encoding ActionResult for caching")?;
+            Pin::new(self.ac_store.as_ref())
+                .update_oneshot(action_digest.clone(), store_data.freeze())
+                .await
+                .err_tip(|| "Caching ActionResult")?;
+        };
+        Ok(())
     }
 
     async fn kill_all(&self) {

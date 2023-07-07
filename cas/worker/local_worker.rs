@@ -155,9 +155,16 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         })
                                 );
 
+                            let running_actions_manager = self.running_actions_manager.clone();
                             let make_publish_future = move |res: Result<ActionResult, Error>| async move {
                                 match res {
                                     Ok(action_result) => {
+                                        // Save in the action cache before notifying the scheduler that we've completed.
+                                        if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
+                                            if let Err(err) = running_actions_manager.cache_action_result(digest_info, action_result.clone()).await {
+                                                log::error!("\x1b[0;31mError saving action in store\x1b[0m: {} - {:?}", err, action_digest);
+                                            }
+                                        }
                                         grpc_client.execution_response(
                                             ExecuteResult{
                                                 worker_id,
@@ -219,6 +226,7 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
 pub async fn new_local_worker(
     config: Arc<LocalWorkerConfig>,
     cas_store: Arc<dyn Store>,
+    ac_store: Arc<dyn Store>,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
     let fast_slow_store = cas_store
         .as_any()
@@ -244,6 +252,8 @@ pub async fn new_local_worker(
         config.work_directory.clone(),
         entrypoint_cmd,
         fast_slow_store,
+        ac_store,
+        config.ac_store_strategy,
     )?)
     .clone();
     Ok(LocalWorker::new_with_connection_factory_and_actions_manager(

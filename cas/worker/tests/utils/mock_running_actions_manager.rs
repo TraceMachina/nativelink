@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use action_messages::ActionResult;
+use common::DigestInfo;
 use error::{make_input_err, Error};
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
 use running_actions_manager::{RunningAction, RunningActionsManager};
@@ -26,6 +27,7 @@ use running_actions_manager::{RunningAction, RunningActionsManager};
 #[derive(Debug)]
 enum RunningActionManagerCalls {
     CreateAndAddAction((String, StartExecute)),
+    CacheActionResult((DigestInfo, ActionResult)),
 }
 
 enum RunningActionManagerReturns {
@@ -67,12 +69,21 @@ impl MockRunningActionsManager {
         let mut rx_call_lock = self.rx_call.lock().await;
         let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
             RunningActionManagerCalls::CreateAndAddAction(req) => req,
+            _ => panic!("Got incorrect call waiting for create_and_add_action"),
         };
         self.tx_resp
             .send(RunningActionManagerReturns::CreateAndAddAction(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
             .unwrap();
         req
+    }
+
+    pub async fn expect_cache_action_result(&self) -> (DigestInfo, ActionResult) {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        match rx_call_lock.recv().await.expect("Could not recieve msg in mpsc") {
+            RunningActionManagerCalls::CacheActionResult(req) => req,
+            _ => panic!("Got incorrect call waiting for cache_action_result"),
+        }
     }
 
     pub async fn expect_kill_all(&self) {
@@ -100,6 +111,16 @@ impl RunningActionsManager for MockRunningActionsManager {
         match rx_resp_lock.recv().await.expect("Could not receive msg in mpsc") {
             RunningActionManagerReturns::CreateAndAddAction(result) => result,
         }
+    }
+
+    async fn cache_action_result(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error> {
+        self.tx_call
+            .send(RunningActionManagerCalls::CacheActionResult((
+                action_digest,
+                action_result,
+            )))
+            .expect("Could not send request to mpsc");
+        Ok(())
     }
 
     async fn kill_all(&self) {
