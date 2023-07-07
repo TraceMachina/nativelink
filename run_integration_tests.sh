@@ -93,6 +93,7 @@ for pattern in "${TEST_PATTERNS[@]}"; do
       echo "$FILENAME passed"
     else
       echo "$FILENAME failed with exit code $EXIT_CODE"
+      docker-compose logs
       exit $EXIT_CODE
     fi
     docker-compose down
