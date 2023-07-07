@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::{vec_deque::VecDeque, HashMap};
+use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::fs::Permissions;
 use std::io::Cursor;
@@ -391,6 +392,7 @@ struct RunningActionImplState {
 pub struct RunningActionImpl {
     action_id: ActionId,
     work_directory: String,
+    entrypoint_cmd: Option<Arc<String>>,
     action_info: ActionInfo,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
     state: Mutex<RunningActionImplState>,
@@ -402,6 +404,7 @@ impl RunningActionImpl {
         execution_metadata: ExecutionMetadata,
         action_id: ActionId,
         work_directory: String,
+        entrypoint_cmd: Option<Arc<String>>,
         action_info: ActionInfo,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
     ) -> Self {
@@ -409,6 +412,7 @@ impl RunningActionImpl {
         Self {
             action_id,
             work_directory,
+            entrypoint_cmd,
             action_info,
             running_actions_manager,
             state: Mutex::new(RunningActionImplState {
@@ -509,10 +513,16 @@ impl RunningAction for RunningActionImpl {
                     .fuse(),
             )
         };
-        let args = &command_proto.arguments[..];
-        if args.len() < 1 {
+        if command_proto.arguments.len() < 1 {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
+        let args: Vec<&OsStr> = if let Some(entrypoint_cmd) = &self.entrypoint_cmd {
+            std::iter::once(entrypoint_cmd.as_ref().as_ref())
+                .chain(command_proto.arguments.iter().map(|v| v.as_ref()))
+                .collect()
+        } else {
+            command_proto.arguments.iter().map(|v| v.as_ref()).collect()
+        };
         log::info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
         let mut command_builder = process::Command::new(&args[0]);
         command_builder
@@ -815,6 +825,7 @@ type NowFn = fn() -> SystemTime;
 /// with actions while they are running.
 pub struct RunningActionsManagerImpl {
     root_work_directory: String,
+    entrypoint_cmd: Option<Arc<String>>,
     cas_store: Arc<FastSlowStore>,
     filesystem_store: Arc<FilesystemStore>,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
@@ -824,6 +835,7 @@ pub struct RunningActionsManagerImpl {
 impl RunningActionsManagerImpl {
     pub fn new_with_now_fn(
         root_work_directory: String,
+        entrypoint_cmd: Option<Arc<String>>,
         cas_store: Arc<FastSlowStore>,
         now_fn: NowFn,
     ) -> Result<Self, Error> {
@@ -837,6 +849,7 @@ impl RunningActionsManagerImpl {
             .clone();
         Ok(Self {
             root_work_directory,
+            entrypoint_cmd,
             cas_store,
             filesystem_store,
             running_actions: Mutex::new(HashMap::new()),
@@ -844,8 +857,12 @@ impl RunningActionsManagerImpl {
         })
     }
 
-    pub fn new(root_work_directory: String, cas_store: Arc<FastSlowStore>) -> Result<Self, Error> {
-        Self::new_with_now_fn(root_work_directory, cas_store, SystemTime::now)
+    pub fn new(
+        root_work_directory: String,
+        entrypoint_cmd: Option<Arc<String>>,
+        cas_store: Arc<FastSlowStore>,
+    ) -> Result<Self, Error> {
+        Self::new_with_now_fn(root_work_directory, entrypoint_cmd, cas_store, SystemTime::now)
     }
 
     async fn make_work_directory(&self, action_id: &ActionId) -> Result<String, Error> {
@@ -943,6 +960,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             execution_metadata,
             action_id,
             work_directory,
+            self.entrypoint_cmd.clone(),
             action_info,
             self.clone(),
         ));
