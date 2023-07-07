@@ -20,7 +20,6 @@ use async_trait::async_trait;
 use futures::Future;
 use lru::LruCache;
 use parking_lot::Mutex;
-use rand::{thread_rng, Rng};
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -176,7 +175,11 @@ impl SimpleSchedulerImpl {
     /// If the task cannot be executed immediately it will be queued for execution
     /// based on priority and other metrics.
     /// All further updates to the action will be provided through `listener`.
-    fn add_action(&mut self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    fn add_action(
+        &mut self,
+        name: String,
+        action_info: ActionInfo,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         // Check to see if the action is running, if it is and cacheable, merge the actions.
         if let Some(running_action) = self.active_actions.get_mut(&action_info) {
             let rx = running_action.action.notify_channel.subscribe();
@@ -224,7 +227,7 @@ impl SimpleSchedulerImpl {
         // we multiplex the same job requests from clients to the same worker, but one client should
         // not shutdown a job if another client is still waiting on it.
         let current_state = Arc::new(ActionState {
-            name: format!("{:X}", thread_rng().gen::<u128>()),
+            name,
             stage: ActionStage::Queued,
             action_digest,
         });
@@ -246,14 +249,10 @@ impl SimpleSchedulerImpl {
         Ok(rx)
     }
 
-    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, due_to_backpressure: bool) {
+    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId) {
         match self.active_actions.remove(action_info) {
             Some(running_action) => {
                 let mut awaited_action = running_action.action;
-                // Don't count a backpressure failure as an attempt for an action.
-                if due_to_backpressure {
-                    awaited_action.attempts -= 1;
-                }
                 let send_result = if awaited_action.attempts >= self.max_job_retries {
                     let mut default_action_result = ActionResult::default();
                     default_action_result.execution_metadata.worker = format!("{}", worker_id);
@@ -301,7 +300,7 @@ impl SimpleSchedulerImpl {
             // We create a temporary Vec to avoid doubt about a possible code
             // path touching the worker.running_action_infos elsewhere.
             for action_info in worker.running_action_infos.drain() {
-                self.retry_action(&action_info, &worker_id, false);
+                self.retry_action(&action_info, &worker_id);
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
@@ -394,6 +393,10 @@ impl SimpleSchedulerImpl {
         };
 
         let due_to_backpressure = err.code == Code::ResourceExhausted;
+        // Don't count a backpressure failure as an attempt for an action.
+        if due_to_backpressure {
+            running_action.action.attempts -= 1;
+        }
 
         if running_action.worker_id != *worker_id {
             log::error!(
@@ -422,7 +425,7 @@ impl SimpleSchedulerImpl {
         }
 
         // Re-queue the action or fail on max attempts.
-        self.retry_action(&action_info, &worker_id, due_to_backpressure);
+        self.retry_action(&action_info, &worker_id);
     }
 
     fn update_action(
@@ -606,9 +609,13 @@ impl ActionScheduler for SimpleScheduler {
         Ok(self.platform_property_manager.clone())
     }
 
-    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(
+        &self,
+        name: String,
+        action_info: ActionInfo,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let mut inner = self.inner.lock();
-        inner.add_action(action_info)
+        inner.add_action(name, action_info)
     }
 }
 
