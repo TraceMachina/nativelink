@@ -18,11 +18,20 @@ use serde::Deserialize;
 
 use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
 
+/// Name of the store. This type will be used when referencing a store
+/// in the `CasConfig::stores`'s map key.
+pub type StoreRefName = String;
+
+/// Name of the scheduler. This type will be used when referencing a
+/// scheduler in the `CasConfig::schedulers`'s map key.
+pub type SchedulerRefName = String;
+
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
 pub enum SchedulerConfig {
     simple(SimpleScheduler),
     grpc(GrpcScheduler),
+    cache_lookup(CacheLookupScheduler),
 }
 
 /// When the scheduler matches tasks to workers that are capable of running
@@ -104,4 +113,20 @@ pub struct GrpcScheduler {
     pub endpoint: String,
     /// The instance name to use at the given end point.
     pub instance_name: String,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct CacheLookupScheduler {
+    /// The reference to the action cache store to use to returned cached
+    /// actions from rather than running them again.
+    pub ac_store: StoreRefName,
+
+    /// The reference to the CAS which contains the outputs from the cached
+    /// actions to verify that the outputs still exist before returning a
+    /// cached result.
+    pub cas_store: StoreRefName,
+
+    /// The name of the scheduler to perform actions on if they were not found
+    /// in the action cache.
+    pub scheduler: SchedulerRefName,
 }
