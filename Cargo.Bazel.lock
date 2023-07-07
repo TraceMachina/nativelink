@@ -1,5 +1,5 @@
 {
-  "checksum": "1f509064a530945cea1a818bf8c8d06f3e18b9ccba980d2f785c071b7fd19b11",
+  "checksum": "2378e8339eeeac1c53097f159d8533ebb0de39f81c576c6500d97c7fc7c74729",
   "crates": {
     "adler 1.0.2": {
       "name": "adler",
@@ -10690,6 +10690,7 @@
           "common": [
             "default",
             "fs",
+            "net",
             "sync",
             "time",
             "tokio-util"

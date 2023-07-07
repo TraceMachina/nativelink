@@ -260,6 +260,11 @@ mod local_worker_tests {
             .simple_expect_get_finished_result(Ok(action_result.clone()))
             .await?;
 
+        // Expect the action to be updated in the action cache.
+        let (stored_digest, stored_result) = test_context.actions_manager.expect_save_action_in_store().await;
+        assert_eq!(stored_digest, action_digest.clone().into());
+        assert_eq!(stored_result, action_result.clone());
+
         // Now our client should be notified that our runner finished.
         let execution_response = test_context
             .client
@@ -300,6 +305,7 @@ mod local_worker_tests {
             ),
             Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())),
         ));
+        let ac_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         let work_directory = make_temp_path("foo");
         new_local_worker(
             Arc::new(LocalWorkerConfig {
@@ -307,6 +313,7 @@ mod local_worker_tests {
                 ..Default::default()
             }),
             cas_store,
+            ac_store,
         )
         .await?;
 
@@ -336,6 +343,7 @@ mod local_worker_tests {
             ),
             Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())),
         ));
+        let ac_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         let work_directory = make_temp_path("foo");
         fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
         let mut file = fs::create_file(format!("{}/{}", work_directory, "foo.txt")).await?;
@@ -346,6 +354,7 @@ mod local_worker_tests {
                 ..Default::default()
             }),
             cas_store,
+            ac_store,
         )
         .await?;
 

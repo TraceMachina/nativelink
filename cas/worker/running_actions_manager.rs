@@ -29,6 +29,7 @@ use futures::future::{try_join, try_join3, try_join_all, BoxFuture, FutureExt, T
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use hex;
 use parking_lot::Mutex;
+use prost::Message;
 use relative_path::RelativePath;
 use tokio::io::AsyncSeekExt;
 use tokio::process;
@@ -36,18 +37,23 @@ use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_util::io::ReaderStream;
+use tonic::Request;
 
-use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_to_store};
+use ac_utils::{
+    compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_to_store, ESTIMATED_DIGEST_SIZE,
+};
 use action_messages::{ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use async_trait::async_trait;
 use common::{fs, log, DigestInfo, JoinHandleDropGuard};
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
+use grpc_store::GrpcStore;
 use proto::build::bazel::remote::execution::v2::{
     Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode, FileNode, SymlinkNode,
     Tree as ProtoTree,
 };
+use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, UpdateActionResultRequest};
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
 use store::Store;
 
@@ -805,6 +811,8 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         start_execute: StartExecute,
     ) -> Result<Arc<Self::RunningAction>, Error>;
 
+    async fn save_action_in_store(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error>;
+
     async fn kill_all(&self);
 }
 
@@ -817,6 +825,7 @@ pub struct RunningActionsManagerImpl {
     root_work_directory: String,
     cas_store: Arc<FastSlowStore>,
     filesystem_store: Arc<FilesystemStore>,
+    ac_store: Arc<dyn Store>,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
     now_fn: NowFn,
 }
@@ -825,6 +834,7 @@ impl RunningActionsManagerImpl {
     pub fn new_with_now_fn(
         root_work_directory: String,
         cas_store: Arc<FastSlowStore>,
+        ac_store: Arc<dyn Store>,
         now_fn: NowFn,
     ) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
@@ -839,13 +849,18 @@ impl RunningActionsManagerImpl {
             root_work_directory,
             cas_store,
             filesystem_store,
+            ac_store,
             running_actions: Mutex::new(HashMap::new()),
             now_fn,
         })
     }
 
-    pub fn new(root_work_directory: String, cas_store: Arc<FastSlowStore>) -> Result<Self, Error> {
-        Self::new_with_now_fn(root_work_directory, cas_store, SystemTime::now)
+    pub fn new(
+        root_work_directory: String,
+        cas_store: Arc<FastSlowStore>,
+        ac_store: Arc<dyn Store>,
+    ) -> Result<Self, Error> {
+        Self::new_with_now_fn(root_work_directory, cas_store, ac_store, SystemTime::now)
     }
 
     async fn make_work_directory(&self, action_id: &ActionId) -> Result<String, Error> {
@@ -951,6 +966,33 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             running_actions.insert(action_id, Arc::downgrade(&running_action));
         }
         Ok(running_action)
+    }
+
+    async fn save_action_in_store(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error> {
+        let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
+        let proto_action_result: ProtoActionResult = action_result.into();
+        proto_action_result.encode(&mut store_data)?;
+        // If we are a GrpcStore we shortcut here, as this is a special store.
+        let any_store = self.ac_store.clone().as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
+            let update_action_request = UpdateActionResultRequest {
+                // This is populated by `update_action_result`.
+                instance_name: "".to_string(),
+                action_digest: Some(action_digest.clone().into()),
+                action_result: Some(proto_action_result),
+                results_cache_policy: None,
+            };
+            grpc_store
+                .update_action_result(Request::new(update_action_request))
+                .await
+                .map(|_| ())?;
+        } else {
+            Pin::new(self.ac_store.as_ref())
+                .update_oneshot(action_digest.clone(), store_data.freeze())
+                .await?;
+        };
+        Ok(())
     }
 
     async fn kill_all(&self) {

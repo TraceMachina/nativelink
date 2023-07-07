@@ -22,7 +22,7 @@ rust_library(
 rust_library(
     name = "ac_server",
     srcs = ["ac_server.rs"],
-    visibility = ["//cas:__pkg__"],
+    visibility = ["//cas:__pkg__", "//cas/worker:__pkg__"],
     deps = [
         "//cas/store",
         "//cas/store:ac_utils",
