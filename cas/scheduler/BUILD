@@ -32,6 +32,40 @@ rust_library(
 )
 
 rust_library(
+    name = "mock_scheduler",
+    testonly = True,
+    srcs = ["tests/utils/mock_scheduler.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    deps = [
+        ":action_messages",
+        ":platform_property_manager",
+        ":scheduler",
+        "//util:error",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_library(
+    name = "scheduler_utils",
+    testonly = True,
+    srcs = ["tests/utils/scheduler_utils.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    deps = [
+        ":action_messages",
+        ":platform_property_manager",
+        "//util:common",
+    ],
+)
+
+rust_library(
     name = "simple_scheduler",
     srcs = ["simple_scheduler.rs"],
     visibility = [
@@ -50,8 +84,57 @@ rust_library(
         "@crate_index//:parking_lot",
         "@crate_index//:futures",
         "@crate_index//:lru",
-        "@crate_index//:rand",
         "@crate_index//:tokio",
+    ],
+)
+
+rust_library(
+    name = "cache_lookup_scheduler",
+    srcs = ["cache_lookup_scheduler.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    deps = [
+        ":action_messages",
+        ":platform_property_manager",
+        ":scheduler",
+        ":worker",
+        "//cas/store",
+        "//cas/store:ac_utils",
+        "//cas/store:grpc_store",
+        "//config",
+        "//proto",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:futures",
+        "@crate_index//:tonic",
+        "@crate_index//:tokio",
+        "@crate_index//:tokio-stream",
+    ],
+)
+
+rust_test(
+    name = "cache_lookup_scheduler_test",
+    srcs = ["tests/cache_lookup_scheduler_test.rs"],
+    deps = [
+        ":action_messages",
+        ":cache_lookup_scheduler",
+        ":mock_scheduler",
+        ":platform_property_manager",
+        ":scheduler",
+        ":scheduler_utils",
+        "//cas/store",
+        "//cas/store:memory_store",
+        "//config",
+        "//proto",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:prost",
+        "@crate_index//:tokio",
+        "@crate_index//:tokio-stream",
     ],
 )
 
@@ -85,9 +168,11 @@ rust_library(
         "//cas:__subpackages__",
     ],
     deps = [
+        ":cache_lookup_scheduler",
         ":grpc_scheduler",
         ":scheduler",
         ":simple_scheduler",
+        "//cas/store",
         "//config",
         "//util:error",
         "@crate_index//:futures",
@@ -155,6 +240,7 @@ rust_test(
         ":action_messages",
         ":platform_property_manager",
         ":scheduler",
+        ":scheduler_utils",
         ":simple_scheduler",
         ":worker",
         "//config",

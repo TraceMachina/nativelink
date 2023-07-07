@@ -20,7 +20,6 @@ use async_trait::async_trait;
 use futures::Future;
 use lru::LruCache;
 use parking_lot::Mutex;
-use rand::{thread_rng, Rng};
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -177,7 +176,11 @@ impl SimpleSchedulerImpl {
     /// If the task cannot be executed immediately it will be queued for execution
     /// based on priority and other metrics.
     /// All further updates to the action will be provided through `listener`.
-    fn add_action(&mut self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    fn add_action(
+        &mut self,
+        name: String,
+        action_info: ActionInfo,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         // Check to see if the action is running, if it is and cacheable, merge the actions.
         if let Some(running_action) = self.active_actions.get_mut(&action_info) {
             let rx = running_action.action.notify_channel.subscribe();
@@ -225,7 +228,7 @@ impl SimpleSchedulerImpl {
         // we multiplex the same job requests from clients to the same worker, but one client should
         // not shutdown a job if another client is still waiting on it.
         let current_state = Arc::new(ActionState {
-            name: format!("{:X}", thread_rng().gen::<u128>()),
+            name,
             stage: ActionStage::Queued,
             action_digest,
         });
@@ -594,9 +597,13 @@ impl ActionScheduler for SimpleScheduler {
         Ok(self.platform_property_manager.clone())
     }
 
-    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(
+        &self,
+        name: String,
+        action_info: ActionInfo,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let mut inner = self.inner.lock();
-        inner.add_action(action_info)
+        inner.add_action(name, action_info)
     }
 }
 

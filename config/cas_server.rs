@@ -17,10 +17,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
-
-/// Name of the store. This type will be used when referencing a store
-/// in the `CasConfig::stores`'s map key.
-pub type StoreRefName = String;
+use stores::StoreRefName;
 
 /// Name of the scheduler. This type will be used when referencing a
 /// scheduler in the `CasConfig::schedulers`'s map key.
