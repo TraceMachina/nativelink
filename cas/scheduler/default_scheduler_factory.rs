@@ -17,16 +17,19 @@ use std::sync::Arc;
 
 use futures::Future;
 
+use cache_lookup_scheduler::CacheLookupScheduler;
 use config::schedulers::SchedulerConfig;
-use error::Error;
+use error::{Error, ResultExt};
 use grpc_scheduler::GrpcScheduler;
 use scheduler::{ActionScheduler, WorkerScheduler};
 use simple_scheduler::SimpleScheduler;
+use store::StoreManager;
 
 pub type SchedulerFactoryResults = (Option<Arc<dyn ActionScheduler>>, Option<Arc<dyn WorkerScheduler>>);
 
 pub fn scheduler_factory<'a>(
     scheduler_type_cfg: &'a SchedulerConfig,
+    store_manager: &'a StoreManager,
 ) -> Pin<Box<dyn Future<Output = Result<SchedulerFactoryResults, Error>> + 'a>> {
     Box::pin(async move {
         let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
@@ -35,6 +38,21 @@ pub fn scheduler_factory<'a>(
                 (Some(scheduler.clone()), Some(scheduler))
             }
             SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(&config).await?)), None),
+            SchedulerConfig::cache_lookup(config) => {
+                let cas_store = store_manager
+                    .get_store(&config.cas_store)
+                    .err_tip(|| format!("'cas_store': '{}' does not exist", config.cas_store))?;
+                let ac_store = store_manager
+                    .get_store(&config.ac_store)
+                    .err_tip(|| format!("'ac_store': '{}' does not exist", config.ac_store))?;
+                let (action_scheduler, worker_scheduler) = scheduler_factory(&config.scheduler, &store_manager).await?;
+                let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
+                    cas_store,
+                    ac_store,
+                    action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
+                )?);
+                (Some(cache_lookup_scheduler.clone()), worker_scheduler)
+            }
         };
         Ok(scheduler)
     })
