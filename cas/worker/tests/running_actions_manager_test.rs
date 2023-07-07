@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::io::Cursor;
 use std::os::unix::fs::MetadataExt;
 use std::pin::Pin;
 use std::str::from_utf8;
@@ -25,7 +26,7 @@ use futures::{FutureExt, TryFutureExt};
 use prost::Message;
 use rand::{thread_rng, Rng};
 
-use ac_utils::{get_and_decode_digest, serialize_and_upload_message};
+use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
 use action_messages::{ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use common::{fs, DigestInfo};
 use config;
@@ -386,6 +387,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
+            None,
             Pin::into_inner(cas_store.clone()),
             test_monotonic_clock,
         )?);
@@ -464,6 +466,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
+            None,
             Pin::into_inner(cas_store.clone()),
             test_monotonic_clock,
         )?);
@@ -586,6 +589,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
+            None,
             Pin::into_inner(cas_store.clone()),
             test_monotonic_clock,
         )?);
@@ -739,6 +743,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory.clone(),
+            None,
             Pin::into_inner(cas_store.clone()),
             test_monotonic_clock,
         )?);
@@ -826,6 +831,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             root_work_directory.clone(),
+            None,
             Pin::into_inner(cas_store.clone()),
         )?);
         const WORKER_ID: &str = "foo_worker_id";
@@ -865,6 +871,69 @@ mod running_actions_manager_tests {
 
         // Check that the action was killed.
         assert_eq!(9, result.exit_code);
+
+        Ok(())
+    }
+
+    // This script runs a command under `cas/worker/tests/wrapper_for_test.sh` set in a config.
+    // The wrapper script will print a constant string to stderr, and the test itself will
+    // print to stdout. We then check the results of both to make sure the shell script was
+    // invoked and the actual command was invoked under the shell script.
+    #[tokio::test]
+    async fn entrypoint_cmd_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, _, cas_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        const TEST_WRAPPER_SCRIPT: &str = "cas/worker/tests/wrapper_for_test.sh";
+        let mut full_wrapper_script_path = env::current_dir()?;
+        full_wrapper_script_path.push(TEST_WRAPPER_SCRIPT);
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+            root_work_directory.clone(),
+            Some(Arc::new(
+                full_wrapper_script_path.into_os_string().into_string().unwrap(),
+            )),
+            Pin::into_inner(cas_store.clone()),
+        )?);
+        const WORKER_ID: &str = "foo_worker_id";
+        const SALT: u64 = 66;
+        const EXPECTED_STDOUT: &str = "Action did run";
+        let command = Command {
+            arguments: vec!["printf".to_string(), EXPECTED_STDOUT.to_string()],
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+        let input_root_digest = serialize_and_upload_message(&Directory::default(), cas_store.as_ref()).await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+        let running_action_impl = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: SALT,
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                },
+            )
+            .await?;
+
+        let result = run_action(running_action_impl).await?;
+
+        let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT)).await?.0;
+        // Note: This string should match what is in worker_for_test.sh
+        let expected_stderr = compute_digest(Cursor::new("Wrapper script did run")).await?.0;
+        assert_eq!(expected_stdout, result.stdout_digest);
+        assert_eq!(expected_stderr, result.stderr_digest);
 
         Ok(())
     }

@@ -216,11 +216,10 @@ pub struct LocalWorkerConfig {
 
     /// The command to execute on every execution request. This will be parsed as
     /// a command + arguments (not shell).
-    /// '$@' has a special meaning in that all the arguments will expand into this
-    /// location.
-    /// Example: "run.sh $@" and a job with command: "sleep 5" will result in a
+    /// Example: "run.sh" and a job with command: "sleep 5" will result in a
     /// command like: "run.sh sleep 5".
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    /// Default: <Use the command from the job request>.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub entrypoint_cmd: String,
 
     /// Underlying CAS store that the worker will use to download CAS artifacts.
