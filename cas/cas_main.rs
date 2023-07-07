@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut worker_schedulers = HashMap::new();
     if let Some(schedulers_cfg) = cfg.schedulers {
         for (name, scheduler_cfg) in schedulers_cfg {
-            let (maybe_action_scheduler, maybe_worker_scheduler) = scheduler_factory(&scheduler_cfg)
+            let (maybe_action_scheduler, maybe_worker_scheduler) = scheduler_factory(&scheduler_cfg, &store_manager)
                 .await
                 .err_tip(|| format!("Failed to create scheduler '{}'", name))?;
             if let Some(action_scheduler) = maybe_action_scheduler {
