@@ -287,6 +287,7 @@ pub struct LocalWorkerConfig {
     /// location.
     /// Example: "run.sh $@" and a job with command: "sleep 5" will result in a
     /// command like: "run.sh sleep 5".
+    /// Default: <Use the command from the job request>.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub entrypoint_cmd: String,
 
