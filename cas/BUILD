@@ -12,6 +12,7 @@ rust_binary(
         "//cas/grpc_service:execution_server",
         "//cas/grpc_service:worker_api_server",
         "//cas/scheduler",
+        "//cas/scheduler:default_scheduler_factory",
         "//cas/store",
         "//cas/store:default_store_factory",
         "//cas/worker:local_worker",

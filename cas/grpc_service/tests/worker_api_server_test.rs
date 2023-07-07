@@ -21,7 +21,8 @@ use tonic::Request;
 
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionStage};
 use common::DigestInfo;
-use config::cas_server::{SchedulerConfig, WorkerApiConfig};
+use config::cas_server::WorkerApiConfig;
+use config::schedulers::SimpleScheduler;
 use error::{Error, ResultExt};
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::{
@@ -54,7 +55,7 @@ fn static_now_fn() -> Result<Duration, Error> {
 async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
-    let scheduler = Arc::new(Scheduler::new(&SchedulerConfig {
+    let scheduler = Arc::new(Scheduler::new(&SimpleScheduler {
         worker_timeout_s: worker_timeout,
         ..Default::default()
     }));

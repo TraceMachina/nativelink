@@ -108,11 +108,13 @@
   },
   "schedulers": {
     "MAIN_SCHEDULER": {
-      "supported_platform_properties": {
-        "cpu_count": "Minimum",
-        "cpu_arch": "Exact",
-        "memory_kb": "Minimum",
-        "kernel_version": "Exact",
+      "simple": {
+        "supported_platform_properties": {
+          "cpu_count": "Minimum",
+          "cpu_arch": "Exact",
+          "memory_kb": "Minimum",
+          "kernel_version": "Exact",
+        }
       }
     }
   },

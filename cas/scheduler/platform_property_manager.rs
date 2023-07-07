@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use config::cas_server::PropertyType;
+use config::schedulers::PropertyType;
 use error::{make_input_err, Code, Error, ResultExt};
 use proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
 

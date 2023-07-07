@@ -13,4 +13,5 @@
 // limitations under the License.
 
 pub use cas_server;
+pub use schedulers;
 pub use stores;

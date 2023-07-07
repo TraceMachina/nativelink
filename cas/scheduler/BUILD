@@ -36,6 +36,21 @@ rust_library(
 )
 
 rust_library(
+    name = "default_scheduler_factory",
+    srcs = ["default_scheduler_factory.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    deps = [
+        ":scheduler",
+        "//config",
+        "//util:error",
+        "@crate_index//:futures",
+    ],
+)
+
+rust_library(
     name = "worker",
     srcs = ["worker.rs"],
     visibility = [
