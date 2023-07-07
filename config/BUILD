@@ -42,6 +42,7 @@ rust_library(
     name = "schedulers",
     srcs = ["schedulers.rs"],
     deps = [
+        ":stores",
         "//util:serde_utils",
         "@crate_index//:serde",
     ],

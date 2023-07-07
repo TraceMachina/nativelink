@@ -17,12 +17,14 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
+use stores::StoreRefName;
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
 pub enum SchedulerConfig {
     simple(SimpleScheduler),
     grpc(GrpcScheduler),
+    cache_lookup(CacheLookupScheduler),
 }
 
 /// When the scheduler matches tasks to workers that are capable of running
@@ -119,4 +121,19 @@ pub struct GrpcScheduler {
     /// The upstream scheduler to forward requests to.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub endpoint: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CacheLookupScheduler {
+    /// The reference to the action cache store to use to returned cached
+    /// actions from rather than running them again.
+    pub ac_store: StoreRefName,
+
+    /// The reference to the CAS which contains the outputs from the cached
+    /// actions to verify that the outputs still exist before returning a
+    /// cached result.
+    pub cas_store: StoreRefName,
+
+    /// The nested scheduler to use if cache lookup fails.
+    pub scheduler: Box<SchedulerConfig>,
 }

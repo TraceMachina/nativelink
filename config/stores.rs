@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
 
+/// Name of the store. This type will be used when referencing a store
+/// in the `CasConfig::stores`'s map key.
+pub type StoreRefName = String;
+
 #[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum StoreConfig {

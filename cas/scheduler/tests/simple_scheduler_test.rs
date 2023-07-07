@@ -20,8 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch};
 
 use action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    NameOrPath, SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
+    ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath,
+    SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
 };
 use common::DigestInfo;
 use config;
@@ -32,30 +32,9 @@ use proto::com::github::allada::turbo_cache::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use scheduler::{ActionScheduler, WorkerScheduler};
+use scheduler_utils::{make_base_action_info, INSTANCE_NAME};
 use simple_scheduler::SimpleScheduler;
 use worker::{Worker, WorkerId};
-
-const INSTANCE_NAME: &str = "foobar_instance_name";
-
-fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
-    ActionInfo {
-        instance_name: INSTANCE_NAME.to_string(),
-        command_digest: DigestInfo::new([0u8; 32], 0),
-        input_root_digest: DigestInfo::new([0u8; 32], 0),
-        timeout: Duration::MAX,
-        platform_properties: PlatformProperties {
-            properties: HashMap::new(),
-        },
-        priority: 0,
-        load_timestamp: UNIX_EPOCH,
-        insert_timestamp,
-        unique_qualifier: ActionInfoHashKey {
-            digest: DigestInfo::new([0u8; 32], 0),
-            salt: 0,
-        },
-        skip_cache_lookup: true,
-    }
-}
 
 async fn verify_initial_connection_message(worker_id: WorkerId, rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>) {
     use pretty_assertions::assert_eq;
@@ -99,7 +78,7 @@ async fn setup_action(
     let mut action_info = make_base_action_info(insert_timestamp);
     action_info.platform_properties = platform_properties;
     action_info.unique_qualifier.digest = action_digest;
-    let result = scheduler.add_action(action_info).await;
+    let result = scheduler.add_action("name".to_string(), action_info).await;
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
     result
 }
