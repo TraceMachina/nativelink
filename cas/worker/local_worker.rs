@@ -235,9 +235,14 @@ pub async fn new_local_worker(
     fs::create_dir_all(&config.work_directory)
         .await
         .err_tip(|| format!("Could not make work_directory : {}", config.work_directory))?;
-
+    let entrypoint_cmd = if config.entrypoint_cmd.is_empty() {
+        None
+    } else {
+        Some(Arc::new(config.entrypoint_cmd.clone()))
+    };
     let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-        config.work_directory.to_string(),
+        config.work_directory.clone(),
+        entrypoint_cmd,
         fast_slow_store,
     )?)
     .clone();

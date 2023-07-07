@@ -88,7 +88,6 @@
       "worker_api_endpoint": {
         "uri": "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
       },
-      "entrypoint_cmd": "$@",
       "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
       "ac_store": "AC_S3_STORE",
       "work_directory": "/worker/work",
