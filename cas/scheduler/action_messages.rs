@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 
 use prost::Message;
 use prost_types::Any;
-use sha2::{Digest as _, Sha256};
+use sha2::{digest::Update as _, Digest as _, Sha256};
 
 use common::{DigestInfo, HashMapExt, VecExt};
 use error::{make_input_err, Error, ResultExt};
