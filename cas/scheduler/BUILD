@@ -56,6 +56,31 @@ rust_library(
 )
 
 rust_library(
+    name = "cache_lookup_scheduler",
+    srcs = ["cache_lookup_scheduler.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    deps = [
+        ":action_messages",
+        ":platform_property_manager",
+        ":scheduler",
+        "//cas/store",
+        "//cas/store:ac_utils",
+        "//cas/store:grpc_store",
+        "//config",
+        "//proto",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:rand",
+        "@crate_index//:tonic",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_library(
     name = "grpc_scheduler",
     srcs = ["grpc_scheduler.rs"],
     visibility = [
@@ -85,9 +110,11 @@ rust_library(
         "//cas:__subpackages__",
     ],
     deps = [
+        ":cache_lookup_scheduler",
         ":grpc_scheduler",
         ":scheduler",
         ":simple_scheduler",
+        "//cas/store",
         "//config",
         "//util:error",
         "@crate_index//:futures",
