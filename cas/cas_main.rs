@@ -28,11 +28,11 @@ use capabilities_server::CapabilitiesServer;
 use cas_server::CasServer;
 use common::fs::set_open_file_limit;
 use config::cas_server::{CasConfig, CompressionAlgorithm, GlobalConfig, WorkerConfig};
+use default_scheduler_factory::scheduler_factory;
 use default_store_factory::store_factory;
 use error::{make_err, Code, Error, ResultExt};
 use execution_server::ExecutionServer;
 use local_worker::new_local_worker;
-use scheduler::Scheduler;
 use store::StoreManager;
 use worker_api_server::WorkerApiServer;
 
@@ -104,8 +104,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut schedulers = HashMap::new();
     if let Some(schedulers_cfg) = cfg.schedulers {
-        for (scheduler_name, scheduler_cfg) in schedulers_cfg {
-            schedulers.insert(scheduler_name, Arc::new(Scheduler::new(&scheduler_cfg)));
+        for (name, scheduler_cfg) in schedulers_cfg {
+            schedulers.insert(
+                name.clone(),
+                scheduler_factory(&scheduler_cfg)
+                    .await
+                    .err_tip(|| format!("Failed to create scheduler '{}'", name))?,
+            );
         }
     }
 

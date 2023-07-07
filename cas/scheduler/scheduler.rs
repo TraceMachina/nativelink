@@ -24,7 +24,7 @@ use tokio::sync::watch;
 
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata};
 use common::{log, DigestInfo};
-use config::cas_server::SchedulerConfig;
+use config::schedulers::SimpleScheduler;
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
 use worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
@@ -508,7 +508,7 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(scheduler_cfg: &SchedulerConfig) -> Self {
+    pub fn new(scheduler_cfg: &SimpleScheduler) -> Self {
         let platform_property_manager = PlatformPropertyManager::new(
             scheduler_cfg
                 .supported_platform_properties

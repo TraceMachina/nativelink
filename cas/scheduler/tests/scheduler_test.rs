@@ -23,7 +23,7 @@ use action_messages::{
     NameOrPath, SymlinkInfo,
 };
 use common::DigestInfo;
-use config::cas_server::SchedulerConfig;
+use config::schedulers::SimpleScheduler;
 use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
 use proto::build::bazel::remote::execution::v2::ExecuteRequest;
@@ -109,7 +109,7 @@ mod scheduler_tests {
     async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x123456789111);
 
-        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let scheduler = Scheduler::new(&SimpleScheduler::default());
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
@@ -153,7 +153,7 @@ mod scheduler_tests {
     async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x111111);
         const WORKER_ID2: WorkerId = WorkerId(0x222222);
-        let scheduler = Scheduler::new(&SchedulerConfig {
+        let scheduler = Scheduler::new(&SimpleScheduler {
             worker_timeout_s: WORKER_TIMEOUT_S,
             ..Default::default()
         });
@@ -285,7 +285,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), Error> {
-        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let scheduler = Scheduler::new(&SimpleScheduler::default());
         let action_digest = DigestInfo::new([99u8; 32], 512);
         let mut platform_properties = PlatformProperties::default();
         platform_properties
@@ -360,7 +360,7 @@ mod scheduler_tests {
     async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x100009);
 
-        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let scheduler = Scheduler::new(&SimpleScheduler::default());
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut expected_action_state = ActionState {
@@ -429,7 +429,7 @@ mod scheduler_tests {
     #[tokio::test]
     async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x100010);
-        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let scheduler = Scheduler::new(&SimpleScheduler::default());
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
@@ -459,7 +459,7 @@ mod scheduler_tests {
     async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x111111);
         const WORKER_ID2: WorkerId = WorkerId(0x222222);
-        let scheduler = Scheduler::new(&SchedulerConfig {
+        let scheduler = Scheduler::new(&SimpleScheduler {
             worker_timeout_s: WORKER_TIMEOUT_S,
             ..Default::default()
         });
@@ -544,7 +544,7 @@ mod scheduler_tests {
     async fn update_action_sends_completed_result_to_client_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x123456789111);
 
-        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let scheduler = Scheduler::new(&SimpleScheduler::default());
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
@@ -634,7 +634,7 @@ mod scheduler_tests {
         const GOOD_WORKER_ID: WorkerId = WorkerId(0x123456789111);
         const ROGUE_WORKER_ID: WorkerId = WorkerId(0x987654321);
 
-        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let scheduler = Scheduler::new(&SimpleScheduler::default());
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut rx_from_worker = setup_new_worker(&scheduler, GOOD_WORKER_ID, Default::default()).await?;
@@ -718,7 +718,7 @@ mod scheduler_tests {
     async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x10000f);
 
-        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let scheduler = Scheduler::new(&SimpleScheduler::default());
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut expected_action_state = ActionState {
@@ -822,7 +822,7 @@ mod scheduler_tests {
     async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x123456789111);
 
-        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let scheduler = Scheduler::new(&SimpleScheduler::default());
         let action_digest1 = DigestInfo::new([11u8; 32], 512);
         let action_digest2 = DigestInfo::new([99u8; 32], 512);
 
@@ -960,7 +960,7 @@ mod scheduler_tests {
     async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x123456789111);
 
-        let scheduler = Scheduler::new(&SchedulerConfig::default());
+        let scheduler = Scheduler::new(&SimpleScheduler::default());
         let action_digest1 = DigestInfo::new([11u8; 32], 512);
         let action_digest2 = DigestInfo::new([99u8; 32], 512);
 
@@ -1008,7 +1008,7 @@ mod scheduler_tests {
     async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x123456789111);
 
-        let scheduler = Scheduler::new(&SchedulerConfig {
+        let scheduler = Scheduler::new(&SimpleScheduler {
             max_job_retries: 2,
             ..Default::default()
         });

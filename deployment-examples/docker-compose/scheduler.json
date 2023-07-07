@@ -10,8 +10,10 @@
   },
   "schedulers": {
     "MAIN_SCHEDULER": {
-      "supported_platform_properties": {
-        "cpu_count": "Minimum"
+      "simple": {
+        "supported_platform_properties": {
+          "cpu_count": "Minimum"
+        }
       }
     }
   },
