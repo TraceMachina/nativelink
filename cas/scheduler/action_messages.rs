@@ -504,7 +504,7 @@ pub struct ActionResult {
 }
 
 /// The execution status/stage. This should match ExecutionStage::Value in remote_execution.proto.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum ActionStage {
     /// Stage is unknown.
     Unknown,
@@ -518,8 +518,8 @@ pub enum ActionStage {
     Executing,
     /// Worker completed the work with result.
     Completed(ActionResult),
-    /// Result was found from cache.
-    CompletedFromCache(ActionResult),
+    /// Result was found from cache, don't decode the proto just to re-encode it.
+    CompletedFromCache(ProtoActionResult),
     /// Error or action failed with an exit code on the worker.
     /// This means that the job might have finished executing, but returned a non-zero
     /// exit code (for example a test failing or file not compilable). The `ActionResult`
@@ -557,7 +557,9 @@ impl Into<execution_stage::Value> for &ActionStage {
 
 impl Into<ExecuteResponse> for ActionStage {
     fn into(self) -> ExecuteResponse {
-        let (error, action_result, was_from_cache) = match self {
+        const RESPONSE_MESSAGE: &str = "TODO(blaise.bruer) We should put a reference something like bb_browser";
+
+        let (error, action_result) = match self {
             // We don't have an execute response if we don't have the results. It is defined
             // behavior to return an empty proto struct.
             ActionStage::Unknown => return ExecuteResponse::default(),
@@ -565,14 +567,26 @@ impl Into<ExecuteResponse> for ActionStage {
             ActionStage::Queued => return ExecuteResponse::default(),
             ActionStage::Executing => return ExecuteResponse::default(),
 
-            ActionStage::Completed(action_result) => (None, action_result, false),
-            ActionStage::CompletedFromCache(action_result) => (None, action_result, true),
-            ActionStage::Error((error, action_result)) => (Some(error), action_result, false),
+            ActionStage::Completed(action_result) => (None, action_result),
+            ActionStage::Error((error, action_result)) => (Some(error), action_result),
+
+            // Handled separately as there are no server logs and the action
+            // result is already in Proto format.
+            ActionStage::CompletedFromCache(proto_action_result) => {
+                return ExecuteResponse {
+                    result: Some(proto_action_result),
+                    cached_result: true,
+                    status: Some(Status::default()),
+                    server_logs: HashMap::new(),
+                    message: RESPONSE_MESSAGE.to_string(),
+                }
+            }
         };
+
         let mut server_logs = HashMap::with_capacity(action_result.server_logs.len());
-        for (k, v) in action_result.server_logs {
+        for (k, v) in &action_result.server_logs {
             server_logs.insert(
-                k,
+                k.clone(),
                 LogFile {
                     digest: Some(v.into()),
                     human_readable: false,
@@ -580,38 +594,35 @@ impl Into<ExecuteResponse> for ActionStage {
             );
         }
 
-        let mut output_symlinks = Vec::with_capacity(
-            action_result.output_file_symlinks.len() + action_result.output_directory_symlinks.len(),
-        );
-        output_symlinks.extend_from_slice(action_result.output_file_symlinks.as_slice());
-        output_symlinks.extend_from_slice(action_result.output_directory_symlinks.as_slice());
-
         ExecuteResponse {
-            result: Some(ProtoActionResult {
-                output_files: action_result.output_files.into_iter().map(|v| v.into()).collect(),
-                output_file_symlinks: action_result
-                    .output_file_symlinks
-                    .into_iter()
-                    .map(|v| v.into())
-                    .collect(),
-                output_symlinks: output_symlinks.into_iter().map(|v| v.into()).collect(),
-                output_directories: action_result.output_folders.into_iter().map(|v| v.into()).collect(),
-                output_directory_symlinks: action_result
-                    .output_directory_symlinks
-                    .into_iter()
-                    .map(|v| v.into())
-                    .collect(),
-                exit_code: action_result.exit_code,
-                stdout_raw: Default::default(),
-                stdout_digest: Some(action_result.stdout_digest.into()),
-                stderr_raw: Default::default(),
-                stderr_digest: Some(action_result.stderr_digest.into()),
-                execution_metadata: Some(action_result.execution_metadata.into()),
-            }),
-            cached_result: was_from_cache,
+            result: Some(action_result.into()),
+            cached_result: false,
             status: Some(error.map_or(Status::default(), |v| v.into())),
             server_logs,
-            message: "TODO(blaise.bruer) We should put a reference something like bb_browser".to_string(),
+            message: RESPONSE_MESSAGE.to_string(),
+        }
+    }
+}
+
+impl Into<ProtoActionResult> for ActionResult {
+    fn into(self) -> ProtoActionResult {
+        let mut output_symlinks =
+            Vec::with_capacity(self.output_file_symlinks.len() + self.output_directory_symlinks.len());
+        output_symlinks.extend_from_slice(self.output_file_symlinks.as_slice());
+        output_symlinks.extend_from_slice(self.output_directory_symlinks.as_slice());
+
+        ProtoActionResult {
+            output_files: self.output_files.into_iter().map(|v| v.into()).collect(),
+            output_file_symlinks: self.output_file_symlinks.into_iter().map(|v| v.into()).collect(),
+            output_symlinks: output_symlinks.into_iter().map(|v| v.into()).collect(),
+            output_directories: self.output_folders.into_iter().map(|v| v.into()).collect(),
+            output_directory_symlinks: self.output_directory_symlinks.into_iter().map(|v| v.into()).collect(),
+            exit_code: self.exit_code,
+            stdout_raw: Default::default(),
+            stdout_digest: Some(self.stdout_digest.into()),
+            stderr_raw: Default::default(),
+            stderr_digest: Some(self.stderr_digest.into()),
+            execution_metadata: Some(self.execution_metadata.into()),
         }
     }
 }
@@ -659,7 +670,7 @@ impl TryFrom<ExecuteResponse> for ActionStage {
         }
 
         if execute_response.cached_result {
-            return Ok(ActionStage::CompletedFromCache(action_result));
+            return Ok(ActionStage::CompletedFromCache(action_result.into()));
         }
         Ok(ActionStage::Completed(action_result))
     }
@@ -667,7 +678,7 @@ impl TryFrom<ExecuteResponse> for ActionStage {
 
 /// Current state of the action.
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct ActionState {
     pub name: String,
     pub action_digest: DigestInfo,
