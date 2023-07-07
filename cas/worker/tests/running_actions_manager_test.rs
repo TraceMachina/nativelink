@@ -34,7 +34,8 @@ use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
 use memory_store::MemoryStore;
 use proto::build::bazel::remote::execution::v2::{
-    Action, Command, Directory, DirectoryNode, ExecuteRequest, FileNode, NodeProperties, SymlinkNode, Tree,
+    Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest, FileNode,
+    NodeProperties, SymlinkNode, Tree,
 };
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
 use running_actions_manager::{
@@ -58,6 +59,7 @@ async fn setup_stores() -> Result<
         Pin<Arc<FilesystemStore>>,
         Pin<Arc<MemoryStore>>,
         Pin<Arc<FastSlowStore>>,
+        Pin<Arc<MemoryStore>>,
     ),
     Error,
 > {
@@ -70,6 +72,7 @@ async fn setup_stores() -> Result<
     let slow_config = config::stores::MemoryStore::default();
     let fast_store = Pin::new(Arc::new(FilesystemStore::new(&fast_config).await?));
     let slow_store = Pin::new(Arc::new(MemoryStore::new(&slow_config)));
+    let ac_store = Pin::new(Arc::new(MemoryStore::new(&slow_config)));
     let cas_store = Pin::new(Arc::new(FastSlowStore::new(
         &config::stores::FastSlowStore {
             fast: config::stores::StoreConfig::filesystem(fast_config),
@@ -78,7 +81,7 @@ async fn setup_stores() -> Result<
         Pin::into_inner(fast_store.clone()),
         Pin::into_inner(slow_store.clone()),
     )));
-    Ok((fast_store, slow_store, cas_store))
+    Ok((fast_store, slow_store, cas_store, ac_store))
 }
 
 async fn run_action(action: Arc<RunningActionImpl>) -> Result<ActionResult, Error> {
@@ -121,7 +124,7 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (fast_store, slow_store, cas_store) = setup_stores().await?;
+        let (fast_store, slow_store, cas_store, _) = setup_stores().await?;
 
         const FILE1_NAME: &str = "file1.txt";
         const FILE1_CONTENT: &str = "HELLOFILE1";
@@ -213,7 +216,7 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (fast_store, slow_store, cas_store) = setup_stores().await?;
+        let (fast_store, slow_store, cas_store, _) = setup_stores().await?;
 
         const DIRECTORY1_NAME: &str = "folder1";
         const FILE1_NAME: &str = "file1.txt";
@@ -306,7 +309,7 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (fast_store, slow_store, cas_store) = setup_stores().await?;
+        let (fast_store, slow_store, cas_store, _) = setup_stores().await?;
 
         const FILE_NAME: &str = "file.txt";
         const FILE_CONTENT: &str = "HELLOFILE";
@@ -375,7 +378,7 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn ensure_output_files_full_directories_are_created_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, _, cas_store) = setup_stores().await?;
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
@@ -387,6 +390,8 @@ mod running_actions_manager_tests {
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
             Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Never,
             test_monotonic_clock,
         )?);
         const WORKER_ID: &str = "foo_worker_id";
@@ -453,7 +458,7 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, slow_store, cas_store) = setup_stores().await?;
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
@@ -465,6 +470,8 @@ mod running_actions_manager_tests {
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
             Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Never,
             test_monotonic_clock,
         )?);
         const WORKER_ID: &str = "foo_worker_id";
@@ -575,7 +582,7 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, slow_store, cas_store) = setup_stores().await?;
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
@@ -587,6 +594,8 @@ mod running_actions_manager_tests {
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
             Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Never,
             test_monotonic_clock,
         )?);
         const WORKER_ID: &str = "foo_worker_id";
@@ -728,7 +737,7 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, _, cas_store) = setup_stores().await?;
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
@@ -740,6 +749,8 @@ mod running_actions_manager_tests {
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory.clone(),
             Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Never,
             test_monotonic_clock,
         )?);
         const WORKER_ID: &str = "foo_worker_id";
@@ -820,13 +831,15 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, _, cas_store) = setup_stores().await?;
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             root_work_directory.clone(),
             Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Never,
         )?);
         const WORKER_ID: &str = "foo_worker_id";
         const SALT: u64 = 55;
@@ -865,6 +878,106 @@ mod running_actions_manager_tests {
 
         // Check that the action was killed.
         assert_eq!(9, result.exit_code);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn save_action_in_memory_store() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+            "".to_string(),
+            Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
+        )?);
+
+        let action_digest = DigestInfo::new([02u8; 32], 32);
+        let action_result = ActionResult {
+            output_files: vec![FileInfo {
+                name_or_path: NameOrPath::Path("test.txt".to_string()),
+                digest: DigestInfo::try_new("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3", 3)?,
+                is_executable: false,
+            }],
+            stdout_digest: DigestInfo::try_new("426afaf613d8cfdd9fa8addcc030ae6c95a7950ae0301164af1d5851012081d5", 10)?,
+            stderr_digest: DigestInfo::try_new("7b2e400d08b8e334e3172d105be308b506c6036c62a9bde5c509d7808b28b213", 10)?,
+            exit_code: 0,
+            output_folders: vec![],
+            output_file_symlinks: vec![],
+            output_directory_symlinks: vec![],
+            server_logs: HashMap::new(),
+            execution_metadata: ExecutionMetadata {
+                worker: "WORKER_ID".to_string(),
+                queued_timestamp: SystemTime::UNIX_EPOCH,
+                worker_start_timestamp: make_system_time(0),
+                input_fetch_start_timestamp: make_system_time(1),
+                input_fetch_completed_timestamp: make_system_time(2),
+                execution_start_timestamp: make_system_time(3),
+                execution_completed_timestamp: make_system_time(4),
+                output_upload_start_timestamp: make_system_time(5),
+                output_upload_completed_timestamp: make_system_time(6),
+                worker_completed_timestamp: make_system_time(7),
+            },
+        };
+        running_actions_manager
+            .cache_action_result(action_digest.clone(), action_result.clone())
+            .await?;
+
+        let retrieved_result = get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
+
+        let proto_result: ProtoActionResult = action_result.into();
+        assert_eq!(proto_result, retrieved_result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn save_failed_action_in_memory_store() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+            "".to_string(),
+            Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Everything,
+        )?);
+
+        let action_digest = DigestInfo::new([02u8; 32], 32);
+        let action_result = ActionResult {
+            output_files: vec![FileInfo {
+                name_or_path: NameOrPath::Path("test.txt".to_string()),
+                digest: DigestInfo::try_new("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3", 3)?,
+                is_executable: false,
+            }],
+            stdout_digest: DigestInfo::try_new("426afaf613d8cfdd9fa8addcc030ae6c95a7950ae0301164af1d5851012081d5", 10)?,
+            stderr_digest: DigestInfo::try_new("7b2e400d08b8e334e3172d105be308b506c6036c62a9bde5c509d7808b28b213", 10)?,
+            exit_code: 1,
+            output_folders: vec![],
+            output_file_symlinks: vec![],
+            output_directory_symlinks: vec![],
+            server_logs: HashMap::new(),
+            execution_metadata: ExecutionMetadata {
+                worker: "WORKER_ID".to_string(),
+                queued_timestamp: SystemTime::UNIX_EPOCH,
+                worker_start_timestamp: make_system_time(0),
+                input_fetch_start_timestamp: make_system_time(1),
+                input_fetch_completed_timestamp: make_system_time(2),
+                execution_start_timestamp: make_system_time(3),
+                execution_completed_timestamp: make_system_time(4),
+                output_upload_start_timestamp: make_system_time(5),
+                output_upload_completed_timestamp: make_system_time(6),
+                worker_completed_timestamp: make_system_time(7),
+            },
+        };
+        running_actions_manager
+            .cache_action_result(action_digest.clone(), action_result.clone())
+            .await?;
+
+        let retrieved_result = get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
+
+        let proto_result: ProtoActionResult = action_result.into();
+        assert_eq!(proto_result, retrieved_result);
 
         Ok(())
     }

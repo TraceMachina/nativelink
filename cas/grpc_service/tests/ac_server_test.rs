@@ -31,18 +31,20 @@ use store::{Store, StoreManager};
 
 const INSTANCE_NAME: &str = "foo_instance_name";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
+const HASH1_SIZE: i64 = 147;
 
 async fn insert_into_store<T: Message>(
     store: Pin<&dyn Store>,
     hash: &str,
+    action_size: i64,
     action_result: &T,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let mut store_data = BytesMut::new();
     action_result.encode(&mut store_data)?;
     let data_len = store_data.len();
-    let digest = DigestInfo::try_new(&hash, data_len as i64)?;
+    let digest = DigestInfo::try_new(&hash, action_size)?;
     store.update_oneshot(digest.clone(), store_data.freeze()).await?;
-    Ok(digest.size_bytes)
+    Ok(data_len.try_into().unwrap())
 }
 
 async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
@@ -125,8 +127,8 @@ mod get_action_result {
         action_result.exit_code = 45;
 
         let ac_store = Pin::new(ac_store_owned.as_ref());
-        let digest_size = insert_into_store(ac_store, &HASH1, &action_result).await?;
-        let raw_response = get_action_result(&ac_server, HASH1, digest_size).await;
+        insert_into_store(ac_store, &HASH1, HASH1_SIZE, &action_result).await?;
+        let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
 
         assert!(raw_response.is_ok(), "Expected value, got error {:?}", raw_response);
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
@@ -143,9 +145,8 @@ mod get_action_result {
         action_result.exit_code = 45;
 
         let ac_store = Pin::new(ac_store_owned.as_ref());
-        let digest_size = insert_into_store(ac_store, &HASH1, &action_result).await?;
-        assert!(digest_size > 1, "Digest was too small");
-        let raw_response = get_action_result(&ac_server, HASH1, digest_size - 1).await;
+        insert_into_store(ac_store, &HASH1, HASH1_SIZE, &action_result).await?;
+        let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE - 1).await;
 
         let err = raw_response.unwrap_err();
         assert_eq!(err.code(), Code::NotFound);

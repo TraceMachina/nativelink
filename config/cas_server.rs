@@ -209,6 +209,18 @@ pub struct EndpointConfig {
     pub timeout: Option<f32>,
 }
 
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Deserialize, Debug, Default)]
+pub enum UploadCacheResultsStrategy {
+    /// Only upload action results with an exit code of 0.
+    #[default]
+    SuccessOnly,
+    /// Don't upload any action results.
+    Never,
+    /// Upload all action results that complete.
+    Everything,
+}
+
 #[derive(Deserialize, Debug, Default)]
 pub struct LocalWorkerConfig {
     /// Endpoint which the worker will connect to the scheduler's WorkerApiService.
@@ -236,6 +248,11 @@ pub struct LocalWorkerConfig {
     /// scheduler/client-cas after they have finished updating.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub ac_store: StoreRefName,
+
+    /// In which situations should the results be published to the ac_store, if
+    /// set to SuccessOnly then only results with an exit code of 0 will be
+    /// uploaded, if set to Everything all completed results will be uploaded.
+    pub ac_store_strategy: UploadCacheResultsStrategy,
 
     /// The directory work jobs will be executed from. This directory will be fully
     /// managed by the worker service and will be purged on startup.

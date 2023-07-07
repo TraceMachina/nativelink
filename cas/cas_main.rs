@@ -126,9 +126,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             local_worker_cfg.cas_fast_slow_store
                         )
                     })?;
-                let local_worker = new_local_worker(Arc::new(local_worker_cfg), fast_slow_store.clone())
-                    .await
-                    .err_tip(|| "Could not make LocalWorker")?;
+                let ac_store = store_manager.get_store(&local_worker_cfg.ac_store).err_tip(|| {
+                    format!(
+                        "Failed to find store for ac_store_ref in worker config : {}",
+                        local_worker_cfg.ac_store
+                    )
+                })?;
+                let local_worker =
+                    new_local_worker(Arc::new(local_worker_cfg), fast_slow_store.clone(), ac_store.clone())
+                        .await
+                        .err_tip(|| "Could not make LocalWorker")?;
                 tokio::spawn(local_worker.run())
             }
         };
