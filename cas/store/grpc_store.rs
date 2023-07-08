@@ -284,7 +284,7 @@ impl StoreTrait for GrpcStore {
         let resource_name = format!(
             "{}/uploads/{}/blobs/{}/{}",
             &self.instance_name,
-            Uuid::new_v4().hyphenated().encode_lower(&mut buf),
+            Uuid::new_v4().to_hyphenated().encode_lower(&mut buf),
             digest.str(),
             digest.size_bytes,
         );

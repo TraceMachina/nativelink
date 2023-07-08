@@ -34,7 +34,7 @@ pub struct WorkerId(pub u128);
 impl std::fmt::Display for WorkerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buf = Uuid::encode_buffer();
-        let worker_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
+        let worker_id_str = Uuid::from_u128(self.0).to_hyphenated().encode_lower(&mut buf);
         write!(f, "{}", worker_id_str)
     }
 }
@@ -42,7 +42,7 @@ impl std::fmt::Display for WorkerId {
 impl std::fmt::Debug for WorkerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buf = Uuid::encode_buffer();
-        let worker_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
+        let worker_id_str = Uuid::from_u128(self.0).to_hyphenated().encode_lower(&mut buf);
         f.write_str(worker_id_str)
     }
 }

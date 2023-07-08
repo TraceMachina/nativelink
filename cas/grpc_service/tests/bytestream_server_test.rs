@@ -87,7 +87,7 @@ pub mod write_tests {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip));
 
             let join_handle = tokio::spawn(async move {
                 let response_future = bs_server.write(Request::new(stream));
@@ -349,7 +349,7 @@ pub mod query_tests {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip));
 
             let bs_server_clone = bs_server.clone();
             let join_handle = tokio::spawn(async move {

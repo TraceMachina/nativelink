@@ -167,7 +167,7 @@ pub mod worker_api_client {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
-            D: TryInto<tonic::transport::Endpoint>,
+            D: std::convert::TryInto<tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
             let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
@@ -223,22 +223,6 @@ pub mod worker_api_client {
             self.inner = self.inner.accept_compressed(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
         /// / Registers this worker and informs the scheduler what properties
         /// / this worker supports. The response must be listened on the client
         /// / side for updates from the server. The first item sent will always be
@@ -246,7 +230,7 @@ pub mod worker_api_client {
         pub async fn connect_worker(
             &mut self,
             request: impl tonic::IntoRequest<super::SupportedProperties>,
-        ) -> std::result::Result<
+        ) -> Result<
             tonic::Response<tonic::codec::Streaming<super::UpdateForWorker>>,
             tonic::Status,
         > {
@@ -263,15 +247,7 @@ pub mod worker_api_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ConnectWorker",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "com.github.allada.turbo_cache.remote_execution.WorkerApi",
-                        "ConnectWorker",
-                    ),
-                );
-            self.inner.server_streaming(req, path, codec).await
+            self.inner.server_streaming(request.into_request(), path, codec).await
         }
         /// / Message used to let the scheduler know that it is still alive as
         /// / well as check to see if the scheduler is still alive. The scheduler
@@ -281,7 +257,7 @@ pub mod worker_api_client {
         pub async fn keep_alive(
             &mut self,
             request: impl tonic::IntoRequest<super::KeepAliveRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+        ) -> Result<tonic::Response<()>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -295,15 +271,7 @@ pub mod worker_api_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/com.github.allada.turbo_cache.remote_execution.WorkerApi/KeepAlive",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "com.github.allada.turbo_cache.remote_execution.WorkerApi",
-                        "KeepAlive",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// / Informs the scheduler that the service is going offline and
         /// / should stop issuing any new actions on this worker.
@@ -319,7 +287,7 @@ pub mod worker_api_client {
         pub async fn going_away(
             &mut self,
             request: impl tonic::IntoRequest<super::GoingAwayRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+        ) -> Result<tonic::Response<()>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -333,21 +301,13 @@ pub mod worker_api_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/com.github.allada.turbo_cache.remote_execution.WorkerApi/GoingAway",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "com.github.allada.turbo_cache.remote_execution.WorkerApi",
-                        "GoingAway",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// / Informs the scheduler about the result of an execution request.
         pub async fn execution_response(
             &mut self,
             request: impl tonic::IntoRequest<super::ExecuteResult>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+        ) -> Result<tonic::Response<()>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -361,15 +321,7 @@ pub mod worker_api_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ExecutionResponse",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "com.github.allada.turbo_cache.remote_execution.WorkerApi",
-                        "ExecutionResponse",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
     }
 }
@@ -382,7 +334,7 @@ pub mod worker_api_server {
     pub trait WorkerApi: Send + Sync + 'static {
         /// Server streaming response type for the ConnectWorker method.
         type ConnectWorkerStream: futures_core::Stream<
-                Item = std::result::Result<super::UpdateForWorker, tonic::Status>,
+                Item = Result<super::UpdateForWorker, tonic::Status>,
             >
             + Send
             + 'static;
@@ -393,10 +345,7 @@ pub mod worker_api_server {
         async fn connect_worker(
             &self,
             request: tonic::Request<super::SupportedProperties>,
-        ) -> std::result::Result<
-            tonic::Response<Self::ConnectWorkerStream>,
-            tonic::Status,
-        >;
+        ) -> Result<tonic::Response<Self::ConnectWorkerStream>, tonic::Status>;
         /// / Message used to let the scheduler know that it is still alive as
         /// / well as check to see if the scheduler is still alive. The scheduler
         /// / may close the connection if the worker has not sent any messages
@@ -405,7 +354,7 @@ pub mod worker_api_server {
         async fn keep_alive(
             &self,
             request: tonic::Request<super::KeepAliveRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
+        ) -> Result<tonic::Response<()>, tonic::Status>;
         /// / Informs the scheduler that the service is going offline and
         /// / should stop issuing any new actions on this worker.
         /// /
@@ -420,12 +369,12 @@ pub mod worker_api_server {
         async fn going_away(
             &self,
             request: tonic::Request<super::GoingAwayRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
+        ) -> Result<tonic::Response<()>, tonic::Status>;
         /// / Informs the scheduler about the result of an execution request.
         async fn execution_response(
             &self,
             request: tonic::Request<super::ExecuteResult>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
+        ) -> Result<tonic::Response<()>, tonic::Status>;
     }
     /// / This API describes how schedulers communicate with Worker nodes.
     /// /
@@ -439,8 +388,6 @@ pub mod worker_api_server {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: WorkerApi> WorkerApiServer<T> {
@@ -453,8 +400,6 @@ pub mod worker_api_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(
@@ -478,22 +423,6 @@ pub mod worker_api_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>> for WorkerApiServer<T>
     where
@@ -507,7 +436,7 @@ pub mod worker_api_server {
         fn poll_ready(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -530,7 +459,7 @@ pub mod worker_api_server {
                             &mut self,
                             request: tonic::Request<super::SupportedProperties>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).connect_worker(request).await
                             };
@@ -539,8 +468,6 @@ pub mod worker_api_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -550,10 +477,6 @@ pub mod worker_api_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
                         Ok(res)
@@ -576,15 +499,13 @@ pub mod worker_api_server {
                             &mut self,
                             request: tonic::Request<super::KeepAliveRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move { (*inner).keep_alive(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -594,10 +515,6 @@ pub mod worker_api_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -620,15 +537,13 @@ pub mod worker_api_server {
                             &mut self,
                             request: tonic::Request<super::GoingAwayRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move { (*inner).going_away(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -638,10 +553,6 @@ pub mod worker_api_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -662,7 +573,7 @@ pub mod worker_api_server {
                             &mut self,
                             request: tonic::Request<super::ExecuteResult>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).execution_response(request).await
                             };
@@ -671,8 +582,6 @@ pub mod worker_api_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -682,10 +591,6 @@ pub mod worker_api_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -714,14 +619,12 @@ pub mod worker_api_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: WorkerApi> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(Arc::clone(&self.0))
+            Self(self.0.clone())
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {

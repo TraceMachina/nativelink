@@ -183,7 +183,7 @@ pub mod operations_client {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
-            D: TryInto<tonic::transport::Endpoint>,
+            D: std::convert::TryInto<tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
             let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
@@ -239,22 +239,6 @@ pub mod operations_client {
             self.inner = self.inner.accept_compressed(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
         /// Lists operations that match the specified filter in the request. If the
         /// server doesn't support this method, it returns `UNIMPLEMENTED`.
         ///
@@ -268,10 +252,7 @@ pub mod operations_client {
         pub async fn list_operations(
             &mut self,
             request: impl tonic::IntoRequest<super::ListOperationsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListOperationsResponse>,
-            tonic::Status,
-        > {
+        ) -> Result<tonic::Response<super::ListOperationsResponse>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -285,12 +266,7 @@ pub mod operations_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/google.longrunning.Operations/ListOperations",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("google.longrunning.Operations", "ListOperations"),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// Gets the latest state of a long-running operation.  Clients can use this
         /// method to poll the operation result at intervals as recommended by the API
@@ -298,7 +274,7 @@ pub mod operations_client {
         pub async fn get_operation(
             &mut self,
             request: impl tonic::IntoRequest<super::GetOperationRequest>,
-        ) -> std::result::Result<tonic::Response<super::Operation>, tonic::Status> {
+        ) -> Result<tonic::Response<super::Operation>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -312,12 +288,7 @@ pub mod operations_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/google.longrunning.Operations/GetOperation",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("google.longrunning.Operations", "GetOperation"),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// Deletes a long-running operation. This method indicates that the client is
         /// no longer interested in the operation result. It does not cancel the
@@ -326,7 +297,7 @@ pub mod operations_client {
         pub async fn delete_operation(
             &mut self,
             request: impl tonic::IntoRequest<super::DeleteOperationRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+        ) -> Result<tonic::Response<()>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -340,12 +311,7 @@ pub mod operations_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/google.longrunning.Operations/DeleteOperation",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("google.longrunning.Operations", "DeleteOperation"),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// Starts asynchronous cancellation on a long-running operation.  The server
         /// makes a best effort to cancel the operation, but success is not
@@ -360,7 +326,7 @@ pub mod operations_client {
         pub async fn cancel_operation(
             &mut self,
             request: impl tonic::IntoRequest<super::CancelOperationRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+        ) -> Result<tonic::Response<()>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -374,12 +340,7 @@ pub mod operations_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/google.longrunning.Operations/CancelOperation",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("google.longrunning.Operations", "CancelOperation"),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// Waits for the specified long-running operation until it is done or reaches
         /// at most a specified timeout, returning the latest state.  If the operation
@@ -393,7 +354,7 @@ pub mod operations_client {
         pub async fn wait_operation(
             &mut self,
             request: impl tonic::IntoRequest<super::WaitOperationRequest>,
-        ) -> std::result::Result<tonic::Response<super::Operation>, tonic::Status> {
+        ) -> Result<tonic::Response<super::Operation>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -407,12 +368,7 @@ pub mod operations_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/google.longrunning.Operations/WaitOperation",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("google.longrunning.Operations", "WaitOperation"),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
     }
 }
@@ -436,17 +392,14 @@ pub mod operations_server {
         async fn list_operations(
             &self,
             request: tonic::Request<super::ListOperationsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ListOperationsResponse>,
-            tonic::Status,
-        >;
+        ) -> Result<tonic::Response<super::ListOperationsResponse>, tonic::Status>;
         /// Gets the latest state of a long-running operation.  Clients can use this
         /// method to poll the operation result at intervals as recommended by the API
         /// service.
         async fn get_operation(
             &self,
             request: tonic::Request<super::GetOperationRequest>,
-        ) -> std::result::Result<tonic::Response<super::Operation>, tonic::Status>;
+        ) -> Result<tonic::Response<super::Operation>, tonic::Status>;
         /// Deletes a long-running operation. This method indicates that the client is
         /// no longer interested in the operation result. It does not cancel the
         /// operation. If the server doesn't support this method, it returns
@@ -454,7 +407,7 @@ pub mod operations_server {
         async fn delete_operation(
             &self,
             request: tonic::Request<super::DeleteOperationRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
+        ) -> Result<tonic::Response<()>, tonic::Status>;
         /// Starts asynchronous cancellation on a long-running operation.  The server
         /// makes a best effort to cancel the operation, but success is not
         /// guaranteed.  If the server doesn't support this method, it returns
@@ -468,7 +421,7 @@ pub mod operations_server {
         async fn cancel_operation(
             &self,
             request: tonic::Request<super::CancelOperationRequest>,
-        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
+        ) -> Result<tonic::Response<()>, tonic::Status>;
         /// Waits for the specified long-running operation until it is done or reaches
         /// at most a specified timeout, returning the latest state.  If the operation
         /// is already done, the latest state is immediately returned.  If the timeout
@@ -481,7 +434,7 @@ pub mod operations_server {
         async fn wait_operation(
             &self,
             request: tonic::Request<super::WaitOperationRequest>,
-        ) -> std::result::Result<tonic::Response<super::Operation>, tonic::Status>;
+        ) -> Result<tonic::Response<super::Operation>, tonic::Status>;
     }
     /// Manages long-running operations with an API service.
     ///
@@ -497,8 +450,6 @@ pub mod operations_server {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: Operations> OperationsServer<T> {
@@ -511,8 +462,6 @@ pub mod operations_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(
@@ -536,22 +485,6 @@ pub mod operations_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>> for OperationsServer<T>
     where
@@ -565,7 +498,7 @@ pub mod operations_server {
         fn poll_ready(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -587,7 +520,7 @@ pub mod operations_server {
                             &mut self,
                             request: tonic::Request<super::ListOperationsRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).list_operations(request).await
                             };
@@ -596,8 +529,6 @@ pub mod operations_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -607,10 +538,6 @@ pub mod operations_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -633,7 +560,7 @@ pub mod operations_server {
                             &mut self,
                             request: tonic::Request<super::GetOperationRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).get_operation(request).await
                             };
@@ -642,8 +569,6 @@ pub mod operations_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -653,10 +578,6 @@ pub mod operations_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -679,7 +600,7 @@ pub mod operations_server {
                             &mut self,
                             request: tonic::Request<super::DeleteOperationRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).delete_operation(request).await
                             };
@@ -688,8 +609,6 @@ pub mod operations_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -699,10 +618,6 @@ pub mod operations_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -725,7 +640,7 @@ pub mod operations_server {
                             &mut self,
                             request: tonic::Request<super::CancelOperationRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).cancel_operation(request).await
                             };
@@ -734,8 +649,6 @@ pub mod operations_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -745,10 +658,6 @@ pub mod operations_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -771,7 +680,7 @@ pub mod operations_server {
                             &mut self,
                             request: tonic::Request<super::WaitOperationRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).wait_operation(request).await
                             };
@@ -780,8 +689,6 @@ pub mod operations_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -791,10 +698,6 @@ pub mod operations_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -823,14 +726,12 @@ pub mod operations_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: Operations> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(Arc::clone(&self.0))
+            Self(self.0.clone())
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {

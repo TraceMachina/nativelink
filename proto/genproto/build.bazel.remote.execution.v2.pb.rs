@@ -1575,7 +1575,7 @@ pub mod execution_client {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
-            D: TryInto<tonic::transport::Endpoint>,
+            D: std::convert::TryInto<tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
             let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
@@ -1629,22 +1629,6 @@ pub mod execution_client {
         #[must_use]
         pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
             self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
         /// Execute an action remotely.
@@ -1718,7 +1702,7 @@ pub mod execution_client {
         pub async fn execute(
             &mut self,
             request: impl tonic::IntoRequest<super::ExecuteRequest>,
-        ) -> std::result::Result<
+        ) -> Result<
             tonic::Response<
                 tonic::codec::Streaming<
                     super::super::super::super::super::super::google::longrunning::Operation,
@@ -1739,15 +1723,7 @@ pub mod execution_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.Execution/Execute",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.Execution",
-                        "Execute",
-                    ),
-                );
-            self.inner.server_streaming(req, path, codec).await
+            self.inner.server_streaming(request.into_request(), path, codec).await
         }
         /// Wait for an execution operation to complete. When the client initially
         /// makes the request, the server immediately responds with the current status
@@ -1758,7 +1734,7 @@ pub mod execution_client {
         pub async fn wait_execution(
             &mut self,
             request: impl tonic::IntoRequest<super::WaitExecutionRequest>,
-        ) -> std::result::Result<
+        ) -> Result<
             tonic::Response<
                 tonic::codec::Streaming<
                     super::super::super::super::super::super::google::longrunning::Operation,
@@ -1779,15 +1755,7 @@ pub mod execution_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.Execution/WaitExecution",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.Execution",
-                        "WaitExecution",
-                    ),
-                );
-            self.inner.server_streaming(req, path, codec).await
+            self.inner.server_streaming(request.into_request(), path, codec).await
         }
     }
 }
@@ -1820,7 +1788,7 @@ pub mod action_cache_client {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
-            D: TryInto<tonic::transport::Endpoint>,
+            D: std::convert::TryInto<tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
             let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
@@ -1876,22 +1844,6 @@ pub mod action_cache_client {
             self.inner = self.inner.accept_compressed(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
         /// Retrieve a cached execution result.
         ///
         /// Implementations SHOULD ensure that any blobs referenced from the
@@ -1907,7 +1859,7 @@ pub mod action_cache_client {
         pub async fn get_action_result(
             &mut self,
             request: impl tonic::IntoRequest<super::GetActionResultRequest>,
-        ) -> std::result::Result<tonic::Response<super::ActionResult>, tonic::Status> {
+        ) -> Result<tonic::Response<super::ActionResult>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -1921,15 +1873,7 @@ pub mod action_cache_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ActionCache/GetActionResult",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ActionCache",
-                        "GetActionResult",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// Upload a new execution result.
         ///
@@ -1953,7 +1897,7 @@ pub mod action_cache_client {
         pub async fn update_action_result(
             &mut self,
             request: impl tonic::IntoRequest<super::UpdateActionResultRequest>,
-        ) -> std::result::Result<tonic::Response<super::ActionResult>, tonic::Status> {
+        ) -> Result<tonic::Response<super::ActionResult>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -1967,15 +1911,7 @@ pub mod action_cache_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ActionCache/UpdateActionResult",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ActionCache",
-                        "UpdateActionResult",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
     }
 }
@@ -2064,7 +2000,7 @@ pub mod content_addressable_storage_client {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
-            D: TryInto<tonic::transport::Endpoint>,
+            D: std::convert::TryInto<tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
             let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
@@ -2122,22 +2058,6 @@ pub mod content_addressable_storage_client {
             self.inner = self.inner.accept_compressed(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
         /// Determine if blobs are present in the CAS.
         ///
         /// Clients can use this API before uploading blobs to determine which ones are
@@ -2150,10 +2070,7 @@ pub mod content_addressable_storage_client {
         pub async fn find_missing_blobs(
             &mut self,
             request: impl tonic::IntoRequest<super::FindMissingBlobsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::FindMissingBlobsResponse>,
-            tonic::Status,
-        > {
+        ) -> Result<tonic::Response<super::FindMissingBlobsResponse>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -2167,15 +2084,7 @@ pub mod content_addressable_storage_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
-                        "FindMissingBlobs",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// Upload many blobs at once.
         ///
@@ -2204,10 +2113,7 @@ pub mod content_addressable_storage_client {
         pub async fn batch_update_blobs(
             &mut self,
             request: impl tonic::IntoRequest<super::BatchUpdateBlobsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::BatchUpdateBlobsResponse>,
-            tonic::Status,
-        > {
+        ) -> Result<tonic::Response<super::BatchUpdateBlobsResponse>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -2221,15 +2127,7 @@ pub mod content_addressable_storage_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchUpdateBlobs",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
-                        "BatchUpdateBlobs",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// Download many blobs at once.
         ///
@@ -2254,10 +2152,7 @@ pub mod content_addressable_storage_client {
         pub async fn batch_read_blobs(
             &mut self,
             request: impl tonic::IntoRequest<super::BatchReadBlobsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::BatchReadBlobsResponse>,
-            tonic::Status,
-        > {
+        ) -> Result<tonic::Response<super::BatchReadBlobsResponse>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -2271,15 +2166,7 @@ pub mod content_addressable_storage_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchReadBlobs",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
-                        "BatchReadBlobs",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
         /// Fetch the entire directory tree rooted at a node.
         ///
@@ -2307,7 +2194,7 @@ pub mod content_addressable_storage_client {
         pub async fn get_tree(
             &mut self,
             request: impl tonic::IntoRequest<super::GetTreeRequest>,
-        ) -> std::result::Result<
+        ) -> Result<
             tonic::Response<tonic::codec::Streaming<super::GetTreeResponse>>,
             tonic::Status,
         > {
@@ -2324,15 +2211,7 @@ pub mod content_addressable_storage_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.ContentAddressableStorage/GetTree",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
-                        "GetTree",
-                    ),
-                );
-            self.inner.server_streaming(req, path, codec).await
+            self.inner.server_streaming(request.into_request(), path, codec).await
         }
     }
 }
@@ -2355,7 +2234,7 @@ pub mod capabilities_client {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
-            D: TryInto<tonic::transport::Endpoint>,
+            D: std::convert::TryInto<tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
             let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
@@ -2411,22 +2290,6 @@ pub mod capabilities_client {
             self.inner = self.inner.accept_compressed(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
         /// GetCapabilities returns the server capabilities configuration of the
         /// remote endpoint.
         /// Only the capabilities of the services supported by the endpoint will
@@ -2438,10 +2301,7 @@ pub mod capabilities_client {
         pub async fn get_capabilities(
             &mut self,
             request: impl tonic::IntoRequest<super::GetCapabilitiesRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ServerCapabilities>,
-            tonic::Status,
-        > {
+        ) -> Result<tonic::Response<super::ServerCapabilities>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -2455,15 +2315,7 @@ pub mod capabilities_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.Capabilities/GetCapabilities",
             );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.Capabilities",
-                        "GetCapabilities",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
+            self.inner.unary(request.into_request(), path, codec).await
         }
     }
 }
@@ -2476,7 +2328,7 @@ pub mod execution_server {
     pub trait Execution: Send + Sync + 'static {
         /// Server streaming response type for the Execute method.
         type ExecuteStream: futures_core::Stream<
-                Item = std::result::Result<
+                Item = Result<
                     super::super::super::super::super::super::google::longrunning::Operation,
                     tonic::Status,
                 >,
@@ -2554,10 +2406,10 @@ pub mod execution_server {
         async fn execute(
             &self,
             request: tonic::Request<super::ExecuteRequest>,
-        ) -> std::result::Result<tonic::Response<Self::ExecuteStream>, tonic::Status>;
+        ) -> Result<tonic::Response<Self::ExecuteStream>, tonic::Status>;
         /// Server streaming response type for the WaitExecution method.
         type WaitExecutionStream: futures_core::Stream<
-                Item = std::result::Result<
+                Item = Result<
                     super::super::super::super::super::super::google::longrunning::Operation,
                     tonic::Status,
                 >,
@@ -2573,10 +2425,7 @@ pub mod execution_server {
         async fn wait_execution(
             &self,
             request: tonic::Request<super::WaitExecutionRequest>,
-        ) -> std::result::Result<
-            tonic::Response<Self::WaitExecutionStream>,
-            tonic::Status,
-        >;
+        ) -> Result<tonic::Response<Self::WaitExecutionStream>, tonic::Status>;
     }
     /// The Remote Execution API is used to execute an
     /// [Action][build.bazel.remote.execution.v2.Action] on the remote
@@ -2591,8 +2440,6 @@ pub mod execution_server {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: Execution> ExecutionServer<T> {
@@ -2605,8 +2452,6 @@ pub mod execution_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(
@@ -2630,22 +2475,6 @@ pub mod execution_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>> for ExecutionServer<T>
     where
@@ -2659,7 +2488,7 @@ pub mod execution_server {
         fn poll_ready(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -2682,15 +2511,13 @@ pub mod execution_server {
                             &mut self,
                             request: tonic::Request<super::ExecuteRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move { (*inner).execute(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2700,10 +2527,6 @@ pub mod execution_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
                         Ok(res)
@@ -2727,7 +2550,7 @@ pub mod execution_server {
                             &mut self,
                             request: tonic::Request<super::WaitExecutionRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).wait_execution(request).await
                             };
@@ -2736,8 +2559,6 @@ pub mod execution_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2747,10 +2568,6 @@ pub mod execution_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
                         Ok(res)
@@ -2779,14 +2596,12 @@ pub mod execution_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: Execution> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(Arc::clone(&self.0))
+            Self(self.0.clone())
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
@@ -2820,7 +2635,7 @@ pub mod action_cache_server {
         async fn get_action_result(
             &self,
             request: tonic::Request<super::GetActionResultRequest>,
-        ) -> std::result::Result<tonic::Response<super::ActionResult>, tonic::Status>;
+        ) -> Result<tonic::Response<super::ActionResult>, tonic::Status>;
         /// Upload a new execution result.
         ///
         /// In order to allow the server to perform access control based on the type of
@@ -2843,7 +2658,7 @@ pub mod action_cache_server {
         async fn update_action_result(
             &self,
             request: tonic::Request<super::UpdateActionResultRequest>,
-        ) -> std::result::Result<tonic::Response<super::ActionResult>, tonic::Status>;
+        ) -> Result<tonic::Response<super::ActionResult>, tonic::Status>;
     }
     /// The action cache API is used to query whether a given action has already been
     /// performed and, if so, retrieve its result. Unlike the
@@ -2866,8 +2681,6 @@ pub mod action_cache_server {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: ActionCache> ActionCacheServer<T> {
@@ -2880,8 +2693,6 @@ pub mod action_cache_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(
@@ -2905,22 +2716,6 @@ pub mod action_cache_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>> for ActionCacheServer<T>
     where
@@ -2934,7 +2729,7 @@ pub mod action_cache_server {
         fn poll_ready(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -2956,7 +2751,7 @@ pub mod action_cache_server {
                             &mut self,
                             request: tonic::Request<super::GetActionResultRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).get_action_result(request).await
                             };
@@ -2965,8 +2760,6 @@ pub mod action_cache_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2976,10 +2769,6 @@ pub mod action_cache_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -3002,7 +2791,7 @@ pub mod action_cache_server {
                             &mut self,
                             request: tonic::Request<super::UpdateActionResultRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).update_action_result(request).await
                             };
@@ -3011,8 +2800,6 @@ pub mod action_cache_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -3022,10 +2809,6 @@ pub mod action_cache_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -3054,14 +2837,12 @@ pub mod action_cache_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: ActionCache> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(Arc::clone(&self.0))
+            Self(self.0.clone())
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
@@ -3092,10 +2873,7 @@ pub mod content_addressable_storage_server {
         async fn find_missing_blobs(
             &self,
             request: tonic::Request<super::FindMissingBlobsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::FindMissingBlobsResponse>,
-            tonic::Status,
-        >;
+        ) -> Result<tonic::Response<super::FindMissingBlobsResponse>, tonic::Status>;
         /// Upload many blobs at once.
         ///
         /// The server may enforce a limit of the combined total size of blobs
@@ -3123,10 +2901,7 @@ pub mod content_addressable_storage_server {
         async fn batch_update_blobs(
             &self,
             request: tonic::Request<super::BatchUpdateBlobsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::BatchUpdateBlobsResponse>,
-            tonic::Status,
-        >;
+        ) -> Result<tonic::Response<super::BatchUpdateBlobsResponse>, tonic::Status>;
         /// Download many blobs at once.
         ///
         /// The server may enforce a limit of the combined total size of blobs
@@ -3150,13 +2925,10 @@ pub mod content_addressable_storage_server {
         async fn batch_read_blobs(
             &self,
             request: tonic::Request<super::BatchReadBlobsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::BatchReadBlobsResponse>,
-            tonic::Status,
-        >;
+        ) -> Result<tonic::Response<super::BatchReadBlobsResponse>, tonic::Status>;
         /// Server streaming response type for the GetTree method.
         type GetTreeStream: futures_core::Stream<
-                Item = std::result::Result<super::GetTreeResponse, tonic::Status>,
+                Item = Result<super::GetTreeResponse, tonic::Status>,
             >
             + Send
             + 'static;
@@ -3186,7 +2958,7 @@ pub mod content_addressable_storage_server {
         async fn get_tree(
             &self,
             request: tonic::Request<super::GetTreeRequest>,
-        ) -> std::result::Result<tonic::Response<Self::GetTreeStream>, tonic::Status>;
+        ) -> Result<tonic::Response<Self::GetTreeStream>, tonic::Status>;
     }
     /// The CAS (content-addressable storage) is used to store the inputs to and
     /// outputs from the execution service. Each piece of content is addressed by the
@@ -3265,8 +3037,6 @@ pub mod content_addressable_storage_server {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: ContentAddressableStorage> ContentAddressableStorageServer<T> {
@@ -3279,8 +3049,6 @@ pub mod content_addressable_storage_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(
@@ -3304,22 +3072,6 @@ pub mod content_addressable_storage_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>>
     for ContentAddressableStorageServer<T>
@@ -3334,7 +3086,7 @@ pub mod content_addressable_storage_server {
         fn poll_ready(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -3356,7 +3108,7 @@ pub mod content_addressable_storage_server {
                             &mut self,
                             request: tonic::Request<super::FindMissingBlobsRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).find_missing_blobs(request).await
                             };
@@ -3365,8 +3117,6 @@ pub mod content_addressable_storage_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -3376,10 +3126,6 @@ pub mod content_addressable_storage_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -3402,7 +3148,7 @@ pub mod content_addressable_storage_server {
                             &mut self,
                             request: tonic::Request<super::BatchUpdateBlobsRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).batch_update_blobs(request).await
                             };
@@ -3411,8 +3157,6 @@ pub mod content_addressable_storage_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -3422,10 +3166,6 @@ pub mod content_addressable_storage_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -3448,7 +3188,7 @@ pub mod content_addressable_storage_server {
                             &mut self,
                             request: tonic::Request<super::BatchReadBlobsRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).batch_read_blobs(request).await
                             };
@@ -3457,8 +3197,6 @@ pub mod content_addressable_storage_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -3468,10 +3206,6 @@ pub mod content_addressable_storage_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -3495,15 +3229,13 @@ pub mod content_addressable_storage_server {
                             &mut self,
                             request: tonic::Request<super::GetTreeRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move { (*inner).get_tree(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -3513,10 +3245,6 @@ pub mod content_addressable_storage_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
                         Ok(res)
@@ -3545,14 +3273,12 @@ pub mod content_addressable_storage_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: ContentAddressableStorage> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(Arc::clone(&self.0))
+            Self(self.0.clone())
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
@@ -3583,10 +3309,7 @@ pub mod capabilities_server {
         async fn get_capabilities(
             &self,
             request: tonic::Request<super::GetCapabilitiesRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ServerCapabilities>,
-            tonic::Status,
-        >;
+        ) -> Result<tonic::Response<super::ServerCapabilities>, tonic::Status>;
     }
     /// The Capabilities service may be used by remote execution clients to query
     /// various server properties, in order to self-configure or return meaningful
@@ -3599,8 +3322,6 @@ pub mod capabilities_server {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: Capabilities> CapabilitiesServer<T> {
@@ -3613,8 +3334,6 @@ pub mod capabilities_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(
@@ -3638,22 +3357,6 @@ pub mod capabilities_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>> for CapabilitiesServer<T>
     where
@@ -3667,7 +3370,7 @@ pub mod capabilities_server {
         fn poll_ready(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -3689,7 +3392,7 @@ pub mod capabilities_server {
                             &mut self,
                             request: tonic::Request<super::GetCapabilitiesRequest>,
                         ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
+                            let inner = self.0.clone();
                             let fut = async move {
                                 (*inner).get_capabilities(request).await
                             };
@@ -3698,8 +3401,6 @@ pub mod capabilities_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -3709,10 +3410,6 @@ pub mod capabilities_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -3741,14 +3438,12 @@ pub mod capabilities_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: Capabilities> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(Arc::clone(&self.0))
+            Self(self.0.clone())
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
