@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:20.04 AS builder
+FROM ubuntu:22.04 AS builder
 
 # Install bazel and needed deps.
 RUN apt update && \
@@ -21,20 +21,21 @@ RUN apt update && \
         git \
         pkg-config \
         libssl-dev \
-        gcc \
-        g++ \
+        clang \
         python3 && \
     npm install -g @bazel/bazelisk
 
 WORKDIR /root/turbo-cache
 ADD . .
 
+ARG CC=clang
+
 # Compile `cas` binary.
 RUN bazel build --compilation_mode=opt //cas && \
     cp ./bazel-bin/cas/cas /root/turbo-cache-bin
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 COPY --from=builder /root/turbo-cache-bin /usr/local/bin/turbo-cache
 
 # Install runtime packages.
