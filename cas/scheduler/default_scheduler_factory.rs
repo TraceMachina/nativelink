@@ -24,9 +24,9 @@ use simple_scheduler::SimpleScheduler;
 
 pub fn scheduler_factory<'a>(
     scheduler_type_cfg: &'a SchedulerConfig,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Scheduler>, Error>> + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<dyn Scheduler>, Error>> + 'a>> {
     Box::pin(async move {
-        let scheduler = match scheduler_type_cfg {
+        let scheduler: Arc<dyn Scheduler> = match scheduler_type_cfg {
             SchedulerConfig::simple(config) => Arc::new(SimpleScheduler::new(&config)),
         };
         Ok(scheduler)

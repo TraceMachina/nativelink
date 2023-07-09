@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use async_trait::async_trait;
 use futures::Future;
 use lru::LruCache;
 use parking_lot::Mutex;
@@ -30,6 +31,7 @@ use common::{log, DigestInfo};
 use config;
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
+use scheduler::Scheduler;
 use worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
 
 /// Default timeout for workers in seconds.
@@ -578,12 +580,31 @@ impl SimpleScheduler {
         }
     }
 
-    pub fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
+    /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
+    pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
+        let inner = self.inner.lock();
+        inner.workers.workers.contains(worker_id)
+    }
+
+    /// A unit test function used to send the keep alive message to the worker from the server.
+    pub async fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        let mut inner = self.inner.lock();
+        let worker = inner
+            .workers
+            .workers
+            .get_mut(worker_id)
+            .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
+        worker.keep_alive()
+    }
+}
+
+#[async_trait]
+impl Scheduler for SimpleScheduler {
+    fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
         &self.platform_property_manager
     }
 
-    /// Adds a worker to the scheduler and begin using it to execute actions (when able).
-    pub async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
+    async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
         let mut inner = self.inner.lock();
         let res = inner
@@ -597,13 +618,12 @@ impl SimpleScheduler {
         res
     }
 
-    /// Adds an action to the scheduler for remote execution.
-    pub async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let mut inner = self.inner.lock();
         inner.add_action(action_info)
     }
 
-    pub async fn update_action_with_internal_error(
+    async fn update_action_with_internal_error(
         &self,
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
@@ -613,8 +633,7 @@ impl SimpleScheduler {
         inner.update_action_with_internal_error(worker_id, action_info_hash_key, err)
     }
 
-    /// Adds an action to the scheduler for remote execution.
-    pub async fn update_action(
+    async fn update_action(
         &self,
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
@@ -624,12 +643,7 @@ impl SimpleScheduler {
         inner.update_action(worker_id, action_info_hash_key, action_stage)
     }
 
-    /// Event for when the keep alive message was received from the worker.
-    pub async fn worker_keep_alive_received(
-        &self,
-        worker_id: &WorkerId,
-        timestamp: WorkerTimestamp,
-    ) -> Result<(), Error> {
+    async fn worker_keep_alive_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp) -> Result<(), Error> {
         let mut inner = self.inner.lock();
         inner
             .workers
@@ -637,13 +651,12 @@ impl SimpleScheduler {
             .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
     }
 
-    /// Removes worker from pool and reschedule any tasks that might be running on it.
-    pub async fn remove_worker(&self, worker_id: WorkerId) {
+    async fn remove_worker(&self, worker_id: WorkerId) {
         let mut inner = self.inner.lock();
         inner.immediate_evict_worker(&worker_id);
     }
 
-    pub async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
         let mut inner = self.inner.lock();
         // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
         // map most of the time.
@@ -665,23 +678,6 @@ impl SimpleScheduler {
             inner.immediate_evict_worker(&worker_id);
         }
         Ok(())
-    }
-
-    /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
-    pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
-        let inner = self.inner.lock();
-        inner.workers.workers.contains(worker_id)
-    }
-
-    /// A unit test function used to send the keep alive message to the worker from the server.
-    pub async fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        let mut inner = self.inner.lock();
-        let worker = inner
-            .workers
-            .workers
-            .get_mut(worker_id)
-            .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
-        worker.keep_alive()
     }
 }
 

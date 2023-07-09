@@ -22,7 +22,6 @@ use tonic::Request;
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionStage};
 use common::DigestInfo;
 use config::cas_server::WorkerApiConfig;
-use config::schedulers::SimpleScheduler;
 use error::{Error, ResultExt};
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::{
@@ -35,6 +34,7 @@ use proto::com::github::allada::turbo_cache::remote_execution::{
 };
 use proto::google::rpc::Status as ProtoStatus;
 use scheduler::Scheduler;
+use simple_scheduler::SimpleScheduler;
 use worker::WorkerId;
 use worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
 
@@ -42,7 +42,7 @@ const BASE_NOW_S: u64 = 10;
 const BASE_WORKER_TIMEOUT_S: u64 = 100;
 
 struct TestContext {
-    scheduler: Arc<Scheduler>,
+    scheduler: Arc<SimpleScheduler>,
     worker_api_server: WorkerApiServer,
     connection_worker_stream: ConnectWorkerStream,
     worker_id: WorkerId,
@@ -55,12 +55,12 @@ fn static_now_fn() -> Result<Duration, Error> {
 async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
-    let scheduler = Arc::new(Scheduler::new(&SimpleScheduler {
+    let scheduler = Arc::new(SimpleScheduler::new(&config::schedulers::SimpleScheduler {
         worker_timeout_s: worker_timeout,
         ..Default::default()
     }));
 
-    let mut schedulers = HashMap::new();
+    let mut schedulers: HashMap<String, Arc<dyn Scheduler>> = HashMap::new();
     schedulers.insert(SCHEDULER_NAME.to_string(), scheduler.clone());
     let worker_api_server = WorkerApiServer::new_with_now_fn(
         &WorkerApiConfig {

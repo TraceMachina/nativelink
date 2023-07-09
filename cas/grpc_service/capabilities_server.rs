@@ -38,7 +38,7 @@ pub struct CapabilitiesServer {
 impl CapabilitiesServer {
     pub fn new(
         config: &HashMap<InstanceName, CapabilitiesConfig>,
-        scheduler_map: &HashMap<String, Arc<Scheduler>>,
+        scheduler_map: &HashMap<String, Arc<dyn Scheduler>>,
     ) -> Result<Self, Error> {
         let mut supported_node_properties_for_instance = HashMap::new();
         for (instance_name, cfg) in config {

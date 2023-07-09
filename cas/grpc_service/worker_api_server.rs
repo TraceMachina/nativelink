@@ -40,12 +40,12 @@ pub type ConnectWorkerStream = Pin<Box<dyn Stream<Item = Result<UpdateForWorker,
 pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
 pub struct WorkerApiServer {
-    scheduler: Arc<Scheduler>,
+    scheduler: Arc<dyn Scheduler>,
     now_fn: NowFn,
 }
 
 impl WorkerApiServer {
-    pub fn new(config: &WorkerApiConfig, schedulers: &HashMap<String, Arc<Scheduler>>) -> Result<Self, Error> {
+    pub fn new(config: &WorkerApiConfig, schedulers: &HashMap<String, Arc<dyn Scheduler>>) -> Result<Self, Error> {
         Self::new_with_now_fn(
             config,
             schedulers,
@@ -61,7 +61,7 @@ impl WorkerApiServer {
     /// representing the current time. Used mostly in  unit tests.
     pub fn new_with_now_fn(
         config: &WorkerApiConfig,
-        schedulers: &HashMap<String, Arc<Scheduler>>,
+        schedulers: &HashMap<String, Arc<dyn Scheduler>>,
         now_fn: NowFn,
     ) -> Result<Self, Error> {
         let scheduler = schedulers

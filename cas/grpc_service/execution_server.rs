@@ -41,7 +41,7 @@ use store::{Store, StoreManager};
 const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
 struct InstanceInfo {
-    scheduler: Arc<Scheduler>,
+    scheduler: Arc<dyn Scheduler>,
     cas_store: Arc<dyn Store>,
 }
 
@@ -119,7 +119,7 @@ type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send
 impl ExecutionServer {
     pub fn new(
         config: &HashMap<InstanceName, ExecutionConfig>,
-        scheduler_map: &HashMap<String, Arc<Scheduler>>,
+        scheduler_map: &HashMap<String, Arc<dyn Scheduler>>,
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
         let mut instance_infos = HashMap::with_capacity(config.len());
