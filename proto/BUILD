@@ -22,6 +22,13 @@ rust_binary(
 )
 
 genrule(
+    name = "dummy_rule_used_to_improve_docker_layer_caching",
+    outs = ["dummy_rule_used_to_improve_docker_layer_caching.out"],
+    cmd = "touch $@", # Do nothing.
+    tools = ["@com_google_protobuf//:protoc"],
+)
+
+genrule(
     name = "gen_rs_protos",
     srcs = [
         "build/bazel/remote/execution/v2/remote_execution.proto",
