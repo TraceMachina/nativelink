@@ -20,6 +20,8 @@ services:
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      cache_from: 
+        - type=gha
     volumes:
       - ${TURBO_CACHE_DIR:-~/.cache/turbo-cache}:/root/.cache/turbo-cache
       - type: bind

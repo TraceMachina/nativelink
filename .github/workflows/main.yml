@@ -26,19 +26,26 @@ jobs:
 
     - name: Bazel test
       run: bazel test //...
-  integration-tests:
+  build-opt:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v3.5.3
       with:
         fetch-depth: 0
 
-    - uses: satackey/action-docker-layer-caching@v0.0.11
-      continue-on-error: true
+    - uses: docker/setup-buildx-action@v2
+    - uses: docker/build-push-action@v4
       with:
-        key: ${{ runner.os }}-{hash}-v1
-        restore-keys: |
-          docker-compose-cache-
+        context: .
+        file: ./deployment-examples/docker-compose/Dockerfile
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
+  integration-tests-opt:
+    runs-on: ubuntu-22.04
+    needs: build-opt
+    steps:
+    - uses: actions/checkout@v3.5.3
+    - uses: docker/setup-buildx-action@v2
     - name: Run tests
       run: sudo ./run_integration_tests.sh
