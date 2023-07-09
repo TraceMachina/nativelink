@@ -22,6 +22,20 @@ rust_library(
         "//cas:__subpackages__",
     ],
     deps = [
+        # TODO(#140) This is a temporary solution while a followup PR creates the actual
+        # trait. For now we are just aliasing the struct to make it easier on code review.
+        ":simple_scheduler",
+    ],
+)
+
+rust_library(
+    name = "simple_scheduler",
+    srcs = ["simple_scheduler.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    deps = [
         ":action_messages",
         ":platform_property_manager",
         ":worker",
@@ -45,6 +59,7 @@ rust_library(
     ],
     deps = [
         ":scheduler",
+        ":simple_scheduler",
         "//config",
         "//util:error",
         "@crate_index//:futures",
@@ -102,8 +117,8 @@ rust_test(
 )
 
 rust_test(
-    name = "scheduler_test",
-    srcs = ["tests/scheduler_test.rs"],
+    name = "simple_scheduler_test",
+    srcs = ["tests/simple_scheduler_test.rs"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
@@ -111,7 +126,7 @@ rust_test(
     deps = [
         ":action_messages",
         ":platform_property_manager",
-        ":scheduler",
+        ":simple_scheduler",
         ":worker",
         "//config",
         "//proto",
