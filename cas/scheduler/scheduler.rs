@@ -27,7 +27,7 @@ use worker::{Worker, WorkerId, WorkerTimestamp};
 #[async_trait]
 pub trait ActionScheduler: Sync + Send + Unpin {
     /// Returns the platform property manager.
-    fn get_platform_property_manager(&self) -> &PlatformPropertyManager;
+    async fn get_platform_property_manager(&self, instance_name: &str) -> Result<Arc<PlatformPropertyManager>, Error>;
 
     /// Adds an action to the scheduler for remote execution.
     async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error>;

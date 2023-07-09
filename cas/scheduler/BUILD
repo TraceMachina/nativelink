@@ -56,6 +56,28 @@ rust_library(
 )
 
 rust_library(
+    name = "grpc_scheduler",
+    srcs = ["grpc_scheduler.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    deps = [
+        ":action_messages",
+        ":platform_property_manager",
+        ":scheduler",
+        "//config",
+        "//proto",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:parking_lot",
+        "@crate_index//:tokio",
+        "@crate_index//:tonic",
+    ],
+)
+
+rust_library(
     name = "default_scheduler_factory",
     srcs = ["default_scheduler_factory.rs"],
     visibility = [
@@ -63,6 +85,7 @@ rust_library(
         "//cas:__subpackages__",
     ],
     deps = [
+        ":grpc_scheduler",
         ":scheduler",
         ":simple_scheduler",
         "//config",

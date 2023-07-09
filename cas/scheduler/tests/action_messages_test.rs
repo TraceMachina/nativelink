@@ -108,6 +108,7 @@ mod action_messages_tests {
                 digest: DigestInfo::new([0u8; 32], 0),
                 salt: 0,
             },
+            skip_cache_lookup: true,
         });
         let lowest_priority_action = Arc::new(ActionInfo {
             instance_name: INSTANCE_NAME.to_string(),
@@ -124,6 +125,7 @@ mod action_messages_tests {
                 digest: DigestInfo::new([1u8; 32], 0),
                 salt: 0,
             },
+            skip_cache_lookup: true,
         });
         let mut action_map = BTreeMap::<Arc<ActionInfo>, ()>::new();
         action_map.insert(lowest_priority_action.clone(), ());
@@ -156,6 +158,7 @@ mod action_messages_tests {
                 digest: DigestInfo::new([0u8; 32], 0),
                 salt: 0,
             },
+            skip_cache_lookup: true,
         });
         let current_action = Arc::new(ActionInfo {
             instance_name: INSTANCE_NAME.to_string(),
@@ -172,6 +175,7 @@ mod action_messages_tests {
                 digest: DigestInfo::new([1u8; 32], 0),
                 salt: 0,
             },
+            skip_cache_lookup: true,
         });
         let mut action_map = BTreeMap::<Arc<ActionInfo>, ()>::new();
         action_map.insert(current_action.clone(), ());

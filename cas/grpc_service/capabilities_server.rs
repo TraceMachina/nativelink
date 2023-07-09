@@ -36,7 +36,7 @@ pub struct CapabilitiesServer {
 }
 
 impl CapabilitiesServer {
-    pub fn new(
+    pub async fn new(
         config: &HashMap<InstanceName, CapabilitiesConfig>,
         scheduler_map: &HashMap<String, Arc<dyn ActionScheduler>>,
     ) -> Result<Self, Error> {
@@ -54,7 +54,12 @@ impl CapabilitiesServer {
                     })?
                     .clone();
 
-                for (platform_key, _) in scheduler.get_platform_property_manager().get_known_properties() {
+                for (platform_key, _) in scheduler
+                    .get_platform_property_manager(&instance_name)
+                    .await
+                    .err_tip(|| format!("Failed to get platform properties for {}", instance_name))?
+                    .get_known_properties()
+                {
                     properties.push(platform_key.clone());
                 }
             }
