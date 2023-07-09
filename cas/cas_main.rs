@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::Parser;
-use futures::future::{select_all, BoxFuture, TryFutureExt};
+use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
 use json5;
 use runfiles::Runfiles;
 use tonic::codec::CompressionEncoding;
@@ -262,29 +262,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .err_tip(|| "Could not create ByteStream service")?,
             )
             .add_optional_service(
-                services
-                    .capabilities
-                    .map_or(Ok(None), |cfg| {
-                        CapabilitiesServer::new(&cfg, &action_schedulers).and_then(|v| {
-                            let mut service = v.into_service();
-                            let send_algo = &server_cfg.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
-                                service = service.send_compressed(encoding);
-                            }
-                            for encoding in server_cfg
-                                .compression
-                                .accepted_compression_algorithms
-                                .iter()
-                                .map(into_encoding)
-                                // Filter None values.
-                                .filter_map(|v| v)
-                            {
-                                service = service.accept_compressed(encoding);
-                            }
-                            Ok(Some(service))
-                        })
-                    })
-                    .err_tip(|| "Could not create Capabilities service")?,
+                OptionFuture::from(
+                    services
+                        .capabilities
+                        .as_ref()
+                        // Borrow checker fighting here...
+                        .map(|_| CapabilitiesServer::new(&services.capabilities.as_ref().unwrap(), &action_schedulers)),
+                )
+                .await
+                .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
+                    Ok(Some(server?))
+                })
+                .err_tip(|| "Could not create Capabilities service")?
+                .and_then(|v| {
+                    let mut service = v.into_service();
+                    let send_algo = &server_cfg.compression.send_compression_algorithm;
+                    if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
+                        service = service.send_compressed(encoding);
+                    }
+                    for encoding in server_cfg
+                        .compression
+                        .accepted_compression_algorithms
+                        .iter()
+                        .map(into_encoding)
+                        // Filter None values.
+                        .filter_map(|v| v)
+                    {
+                        service = service.accept_compressed(encoding);
+                    }
+                    Some(service)
+                }),
             )
             .add_optional_service(
                 services

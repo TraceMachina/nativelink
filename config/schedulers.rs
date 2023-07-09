@@ -16,12 +16,13 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use serde_utils::convert_numeric_with_shellexpand;
+use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
 pub enum SchedulerConfig {
     simple(SimpleScheduler),
+    grpc(GrpcScheduler),
 }
 
 /// When the scheduler matches tasks to workers that are capable of running
@@ -90,4 +91,15 @@ pub struct SimpleScheduler {
     /// Default: 3
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_job_retries: usize,
+}
+
+/// A scheduler that simply forwards requests to an upstream scheduler.  This
+/// is useful to use when doing some kind of local action cache or CAS away from
+/// the main cluster of workers.  In general, it's more efficient to point the
+/// build at the main scheduler directly though.
+#[derive(Deserialize, Debug, Default)]
+pub struct GrpcScheduler {
+    /// The upstream scheduler to forward requests to.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub endpoint: String,
 }
