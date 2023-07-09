@@ -15,7 +15,6 @@
 use std::cmp;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
@@ -26,8 +25,8 @@ use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
-use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata};
-use common::{log, DigestInfo};
+use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState};
+use common::log;
 use config;
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
@@ -41,9 +40,6 @@ const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
-
-/// Exit code sent if there is an internal error.
-pub const INTERNAL_ERROR_EXIT_CODE: i32 = -178;
 
 /// An action that is being awaited on and last known state.
 struct AwaitedAction {
@@ -256,6 +252,8 @@ impl SimpleSchedulerImpl {
             Some(running_action) => {
                 let mut awaited_action = running_action.action;
                 let send_result = if awaited_action.attempts >= self.max_job_retries {
+                    let mut default_action_result = ActionResult::default();
+                    default_action_result.execution_metadata.worker = format!("{}", worker_id);
                     Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Error((
                         awaited_action.last_error.unwrap_or_else(|| {
                             make_err!(
@@ -263,28 +261,7 @@ impl SimpleSchedulerImpl {
                                 "Job cancelled because it attempted to execute too many times and failed"
                             )
                         }),
-                        ActionResult {
-                            output_files: Default::default(),
-                            output_folders: Default::default(),
-                            output_directory_symlinks: Default::default(),
-                            output_file_symlinks: Default::default(),
-                            exit_code: INTERNAL_ERROR_EXIT_CODE,
-                            stdout_digest: DigestInfo::empty_digest(),
-                            stderr_digest: DigestInfo::empty_digest(),
-                            execution_metadata: ExecutionMetadata {
-                                worker: format!("{}", worker_id),
-                                queued_timestamp: SystemTime::UNIX_EPOCH,
-                                worker_start_timestamp: SystemTime::UNIX_EPOCH,
-                                worker_completed_timestamp: SystemTime::UNIX_EPOCH,
-                                input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
-                                input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
-                                execution_start_timestamp: SystemTime::UNIX_EPOCH,
-                                execution_completed_timestamp: SystemTime::UNIX_EPOCH,
-                                output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
-                                output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
-                            },
-                            server_logs: Default::default(),
-                        },
+                        default_action_result,
                     ));
                     awaited_action.notify_channel.send(awaited_action.current_state.clone())
                     // Do not put the action back in the queue here, as this action attempted to run too many
@@ -514,7 +491,7 @@ impl SimpleSchedulerImpl {
 /// should be held in this struct.
 pub struct SimpleScheduler {
     inner: Arc<Mutex<SimpleSchedulerImpl>>,
-    platform_property_manager: PlatformPropertyManager,
+    platform_property_manager: Arc<PlatformPropertyManager>,
     task_worker_matching_future: JoinHandle<()>,
 }
 
@@ -537,12 +514,12 @@ impl SimpleScheduler {
         scheduler_cfg: &config::schedulers::SimpleScheduler,
         on_matching_engine_run: F,
     ) -> Self {
-        let platform_property_manager = PlatformPropertyManager::new(
+        let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             scheduler_cfg
                 .supported_platform_properties
                 .clone()
                 .unwrap_or(HashMap::new()),
-        );
+        ));
 
         let mut worker_timeout_s = scheduler_cfg.worker_timeout_s;
         if worker_timeout_s == 0 {
@@ -613,8 +590,8 @@ impl SimpleScheduler {
 
 #[async_trait]
 impl ActionScheduler for SimpleScheduler {
-    fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
-        &self.platform_property_manager
+    async fn get_platform_property_manager(&self, _instance_name: &str) -> Result<Arc<PlatformPropertyManager>, Error> {
+        Ok(self.platform_property_manager.clone())
     }
 
     async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
@@ -626,7 +603,7 @@ impl ActionScheduler for SimpleScheduler {
 #[async_trait]
 impl WorkerScheduler for SimpleScheduler {
     fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
-        &self.platform_property_manager
+        self.platform_property_manager.as_ref()
     }
 
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {

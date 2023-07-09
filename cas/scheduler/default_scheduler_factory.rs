@@ -19,6 +19,7 @@ use futures::Future;
 
 use config::schedulers::SchedulerConfig;
 use error::Error;
+use grpc_scheduler::GrpcScheduler;
 use scheduler::{ActionScheduler, WorkerScheduler};
 use simple_scheduler::SimpleScheduler;
 
@@ -33,6 +34,7 @@ pub fn scheduler_factory<'a>(
                 let scheduler = Arc::new(SimpleScheduler::new(&config));
                 (Some(scheduler.clone()), Some(scheduler))
             }
+            SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(&config).await?)), None),
         };
         Ok(scheduler)
     })

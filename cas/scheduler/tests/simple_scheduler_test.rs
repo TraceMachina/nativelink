@@ -21,7 +21,7 @@ use tokio::sync::{mpsc, watch};
 
 use action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    NameOrPath, SymlinkInfo,
+    NameOrPath, SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
 };
 use common::DigestInfo;
 use config;
@@ -32,7 +32,7 @@ use proto::com::github::allada::turbo_cache::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use scheduler::{ActionScheduler, WorkerScheduler};
-use simple_scheduler::{SimpleScheduler, INTERNAL_ERROR_EXIT_CODE};
+use simple_scheduler::SimpleScheduler;
 use worker::{Worker, WorkerId};
 
 const INSTANCE_NAME: &str = "foobar_instance_name";
@@ -53,6 +53,7 @@ fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
             digest: DigestInfo::new([0u8; 32], 0),
             salt: 0,
         },
+        skip_cache_lookup: true,
     }
 }
 
