@@ -26,19 +26,20 @@ use sha2::{digest::Update as _, Digest as _, Sha256};
 use common::{DigestInfo, HashMapExt, VecExt};
 use error::{make_input_err, Error, ResultExt};
 use platform_property_manager::PlatformProperties;
+use prost::bytes::Bytes;
 use proto::build::bazel::remote::execution::v2::{
     execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
-    ExecuteResponse, ExecutedActionMetadata, ExecutionPolicy, FileNode, LogFile, OutputDirectory, OutputFile,
-    OutputSymlink, Platform, SymlinkNode,
+    ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile, OutputSymlink,
+    SymlinkNode,
 };
 use proto::google::longrunning::{operation::Result as LongRunningResult, Operation};
 use proto::google::rpc::Status;
 
-/// This is a utility struct used to make it easier to match ActionInfos in a
-/// HashMap without needing to construct an entire ActionInfo.
+/// This is a utility struct used to make it easier to match `ActionInfos` in a
+/// `HashMap` without needing to construct an entire `ActionInfo`.
 /// Since the hashing only needs the digest and salt we can just alias them here
-/// and point the original ActionInfo structs to reference these structs for it's
-/// hashing functions.
+/// and point the original `ActionInfo` structs to reference these structs for
+/// it's hashing functions.
 #[derive(Debug, Clone)]
 pub struct ActionInfoHashKey {
     /// Digest of the underlying `Action`.
@@ -53,9 +54,9 @@ impl ActionInfoHashKey {
     /// Utility function used to make a unique hash of the digest including the salt.
     pub fn get_hash(&self) -> [u8; 32] {
         Sha256::new()
-            .chain(&self.digest.packed_hash)
-            .chain(&self.digest.size_bytes.to_le_bytes())
-            .chain(&self.salt.to_le_bytes())
+            .chain(self.digest.packed_hash)
+            .chain(self.digest.size_bytes.to_le_bytes())
+            .chain(self.salt.to_le_bytes())
             .finalize()
             .into()
     }
@@ -64,7 +65,7 @@ impl ActionInfoHashKey {
 /// Information needed to execute an action. This struct is used over bazel's proto `Action`
 /// for simplicity and offers a `salt`, which is useful to ensure during hashing (for dicts)
 /// to ensure we never match against another `ActionInfo` (when a task should never be cached).
-/// This struct must be 100% compatible with `ExecuteRequest` struct in remote_execution.proto
+/// This struct must be 100% compatible with `ExecuteRequest` struct in `remote_execution.proto`
 /// except for the salt field.
 #[derive(Clone, Debug)]
 pub struct ActionInfo {
@@ -100,13 +101,13 @@ pub struct ActionInfo {
 impl ActionInfo {
     /// Returns the underlying digest of the `Action`.
     #[inline]
-    pub fn digest(&self) -> &DigestInfo {
+    pub const fn digest(&self) -> &DigestInfo {
         &self.unique_qualifier.digest
     }
 
     /// Returns the salt used for cache busting/hashing.
     #[inline]
-    pub fn salt(&self) -> &u64 {
+    pub const fn salt(&self) -> &u64 {
         &self.unique_qualifier.salt
     }
 
@@ -129,14 +130,11 @@ impl ActionInfo {
                 .try_into()?,
             timeout: action
                 .timeout
-                .unwrap_or(prost_types::Duration::default())
+                .unwrap_or_default()
                 .try_into()
                 .map_err(|_| make_input_err!("Failed convert proto duration to system duration"))?,
-            platform_properties: action.platform.unwrap_or(Platform::default()).try_into()?,
-            priority: execute_request
-                .execution_policy
-                .unwrap_or(ExecutionPolicy::default())
-                .priority,
+            platform_properties: action.platform.unwrap_or_default().try_into()?,
+            priority: execute_request.execution_policy.unwrap_or_default().priority,
             load_timestamp,
             insert_timestamp: queued_timestamp,
             unique_qualifier: ActionInfoHashKey {
@@ -150,11 +148,11 @@ impl ActionInfo {
     }
 }
 
-impl Into<ExecuteRequest> for ActionInfo {
-    fn into(self) -> ExecuteRequest {
-        let digest = self.digest().into();
-        ExecuteRequest {
-            instance_name: self.instance_name,
+impl From<ActionInfo> for ExecuteRequest {
+    fn from(val: ActionInfo) -> Self {
+        let digest = val.digest().into();
+        Self {
+            instance_name: val.instance_name,
             action_digest: Some(digest),
             skip_cache_lookup: true,    // The worker should never cache lookup.
             execution_policy: None,     // Not used in the worker.
@@ -173,7 +171,7 @@ impl Into<ExecuteRequest> for ActionInfo {
 //          insert_timestamp, everything else is undefined, but must be deterministic.
 impl Hash for ActionInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        ActionInfoHashKey::hash(&self.unique_qualifier, state)
+        ActionInfoHashKey::hash(&self.unique_qualifier, state);
     }
 }
 
@@ -191,7 +189,7 @@ impl Ord for ActionInfo {
         self.priority
             .cmp(&other.priority)
             .then_with(|| other.insert_timestamp.cmp(&self.insert_timestamp))
-            .then_with(|| self.salt().cmp(&other.salt()))
+            .then_with(|| self.salt().cmp(other.salt()))
             .then_with(|| self.digest().size_bytes.cmp(&other.digest().size_bytes))
             .then_with(|| self.digest().packed_hash.cmp(&other.digest().packed_hash))
     }
@@ -203,7 +201,7 @@ impl PartialOrd for ActionInfo {
             .priority
             .cmp(&other.priority)
             .then_with(|| other.insert_timestamp.cmp(&self.insert_timestamp))
-            .then_with(|| self.salt().cmp(&other.salt()));
+            .then_with(|| self.salt().cmp(other.salt()));
         if cmp == Ordering::Equal {
             return None;
         }
@@ -239,29 +237,35 @@ impl Eq for ActionInfoHashKey {}
 /// This is in order to be able to reuse the same struct instead of building different
 /// structs when converting `FileInfo` -> {`OutputFile`, `FileNode`} and other similar
 /// structs.
-#[derive(Eq, PartialEq, PartialOrd, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone)]
 pub enum NameOrPath {
     Name(String),
     Path(String),
 }
 
+impl PartialOrd for NameOrPath {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Ord for NameOrPath {
     fn cmp(&self, other: &Self) -> Ordering {
         let self_lexical_name = match self {
-            NameOrPath::Name(name) => name,
-            NameOrPath::Path(path) => path,
+            Self::Name(name) => name,
+            Self::Path(path) => path,
         };
         let other_lexical_name = match other {
-            NameOrPath::Name(name) => name,
-            NameOrPath::Path(path) => path,
+            Self::Name(name) => name,
+            Self::Path(path) => path,
         };
         self_lexical_name.cmp(other_lexical_name)
     }
 }
 
 /// Represents an individual file and associated metadata.
-/// This struct must be 100% compatible with `OutputFile` and `FileNode` structs in
-/// remote_execution.proto.
+/// This struct must be 100% compatible with `OutputFile` and `FileNode` structs
+/// in `remote_execution.proto`.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct FileInfo {
     pub name_or_path: NameOrPath,
@@ -269,18 +273,17 @@ pub struct FileInfo {
     pub is_executable: bool,
 }
 
-impl Into<FileNode> for FileInfo {
-    fn into(self) -> FileNode {
-        let name = if let NameOrPath::Name(name) = self.name_or_path {
-            name
-        } else {
+//TODO: Make this TryFrom.
+impl From<FileInfo> for FileNode {
+    fn from(val: FileInfo) -> Self {
+        let NameOrPath::Name(name) = val.name_or_path else {
             panic!("Cannot return a FileInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
         };
-        FileNode {
+        Self {
             name,
-            digest: Some((&self.digest).into()),
-            is_executable: self.is_executable,
-            node_properties: Default::default(), // Not supported.
+            digest: Some((&val.digest).into()),
+            is_executable: val.is_executable,
+            node_properties: Option::default(), // Not supported.
         }
     }
 }
@@ -289,7 +292,7 @@ impl TryFrom<OutputFile> for FileInfo {
     type Error = Error;
 
     fn try_from(output_file: OutputFile) -> Result<Self, Error> {
-        Ok(FileInfo {
+        Ok(Self {
             name_or_path: NameOrPath::Path(output_file.path),
             digest: output_file
                 .digest
@@ -300,19 +303,18 @@ impl TryFrom<OutputFile> for FileInfo {
     }
 }
 
-impl Into<OutputFile> for FileInfo {
-    fn into(self) -> OutputFile {
-        let path = if let NameOrPath::Path(path) = self.name_or_path {
-            path
-        } else {
+//TODO: Make this TryFrom.
+impl From<FileInfo> for OutputFile {
+    fn from(val: FileInfo) -> Self {
+        let NameOrPath::Path(path) = val.name_or_path else {
             panic!("Cannot return a FileInfo that uses a NameOrPath::Name(), it must be a NameOrPath::Path()");
         };
-        OutputFile {
+        Self {
             path,
-            digest: Some((&self.digest).into()),
-            is_executable: self.is_executable,
-            contents: Default::default(),
-            node_properties: Default::default(), // Not supported.
+            digest: Some((&val.digest).into()),
+            is_executable: val.is_executable,
+            contents: Bytes::default(),
+            node_properties: Option::default(), // Not supported.
         }
     }
 }
@@ -329,24 +331,23 @@ impl TryFrom<SymlinkNode> for SymlinkInfo {
     type Error = Error;
 
     fn try_from(symlink_node: SymlinkNode) -> Result<Self, Error> {
-        Ok(SymlinkInfo {
+        Ok(Self {
             name_or_path: NameOrPath::Name(symlink_node.name),
             target: symlink_node.target,
         })
     }
 }
 
-impl Into<SymlinkNode> for SymlinkInfo {
-    fn into(self) -> SymlinkNode {
-        let name = if let NameOrPath::Name(name) = self.name_or_path {
-            name
-        } else {
+// TODO: Make this TryFrom.
+impl From<SymlinkInfo> for SymlinkNode {
+    fn from(val: SymlinkInfo) -> Self {
+        let NameOrPath::Name(name) = val.name_or_path else {
             panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
         };
-        SymlinkNode {
+        Self {
             name,
-            target: self.target,
-            node_properties: Default::default(), // Not supported.
+            target: val.target,
+            node_properties: Option::default(), // Not supported.
         }
     }
 }
@@ -355,24 +356,23 @@ impl TryFrom<OutputSymlink> for SymlinkInfo {
     type Error = Error;
 
     fn try_from(output_symlink: OutputSymlink) -> Result<Self, Error> {
-        Ok(SymlinkInfo {
+        Ok(Self {
             name_or_path: NameOrPath::Path(output_symlink.path),
             target: output_symlink.target,
         })
     }
 }
 
-impl Into<OutputSymlink> for SymlinkInfo {
-    fn into(self) -> OutputSymlink {
-        let path = if let NameOrPath::Path(path) = self.name_or_path {
-            path
-        } else {
+// TODO: Make this TryFrom.
+impl From<SymlinkInfo> for OutputSymlink {
+    fn from(val: SymlinkInfo) -> Self {
+        let NameOrPath::Path(path) = val.name_or_path else {
             panic!("Cannot return a SymlinkInfo that uses a NameOrPath::Path(), it must be a NameOrPath::Name()");
         };
-        OutputSymlink {
+        Self {
             path,
-            target: self.target,
-            node_properties: Default::default(), // Not supported.
+            target: val.target,
+            node_properties: Option::default(), // Not supported.
         }
     }
 }
@@ -389,7 +389,7 @@ impl TryFrom<OutputDirectory> for DirectoryInfo {
     type Error = Error;
 
     fn try_from(output_directory: OutputDirectory) -> Result<Self, Error> {
-        Ok(DirectoryInfo {
+        Ok(Self {
             path: output_directory.path,
             tree_digest: output_directory
                 .tree_digest
@@ -399,11 +399,11 @@ impl TryFrom<OutputDirectory> for DirectoryInfo {
     }
 }
 
-impl Into<OutputDirectory> for DirectoryInfo {
-    fn into(self) -> OutputDirectory {
-        OutputDirectory {
-            path: self.path,
-            tree_digest: Some(self.tree_digest.into()),
+impl From<DirectoryInfo> for OutputDirectory {
+    fn from(val: DirectoryInfo) -> Self {
+        Self {
+            path: val.path,
+            tree_digest: Some(val.tree_digest.into()),
         }
     }
 }
@@ -424,20 +424,20 @@ pub struct ExecutionMetadata {
     pub output_upload_completed_timestamp: SystemTime,
 }
 
-impl Into<ExecutedActionMetadata> for ExecutionMetadata {
-    fn into(self) -> ExecutedActionMetadata {
-        ExecutedActionMetadata {
-            worker: self.worker,
-            queued_timestamp: Some(self.queued_timestamp.into()),
-            worker_start_timestamp: Some(self.worker_start_timestamp.into()),
-            worker_completed_timestamp: Some(self.worker_completed_timestamp.into()),
-            input_fetch_start_timestamp: Some(self.input_fetch_start_timestamp.into()),
-            input_fetch_completed_timestamp: Some(self.input_fetch_completed_timestamp.into()),
-            execution_start_timestamp: Some(self.execution_start_timestamp.into()),
-            execution_completed_timestamp: Some(self.execution_completed_timestamp.into()),
-            output_upload_start_timestamp: Some(self.output_upload_start_timestamp.into()),
-            output_upload_completed_timestamp: Some(self.output_upload_completed_timestamp.into()),
-            auxiliary_metadata: Default::default(),
+impl From<ExecutionMetadata> for ExecutedActionMetadata {
+    fn from(val: ExecutionMetadata) -> Self {
+        Self {
+            worker: val.worker,
+            queued_timestamp: Some(val.queued_timestamp.into()),
+            worker_start_timestamp: Some(val.worker_start_timestamp.into()),
+            worker_completed_timestamp: Some(val.worker_completed_timestamp.into()),
+            input_fetch_start_timestamp: Some(val.input_fetch_start_timestamp.into()),
+            input_fetch_completed_timestamp: Some(val.input_fetch_completed_timestamp.into()),
+            execution_start_timestamp: Some(val.execution_start_timestamp.into()),
+            execution_completed_timestamp: Some(val.execution_completed_timestamp.into()),
+            output_upload_start_timestamp: Some(val.output_upload_start_timestamp.into()),
+            output_upload_completed_timestamp: Some(val.output_upload_completed_timestamp.into()),
+            auxiliary_metadata: Vec::default(),
         }
     }
 }
@@ -446,7 +446,7 @@ impl TryFrom<ExecutedActionMetadata> for ExecutionMetadata {
     type Error = Error;
 
     fn try_from(eam: ExecutedActionMetadata) -> Result<Self, Error> {
-        Ok(ExecutionMetadata {
+        Ok(Self {
             worker: eam.worker,
             queued_timestamp: eam
                 .queued_timestamp
@@ -489,7 +489,7 @@ impl TryFrom<ExecutedActionMetadata> for ExecutionMetadata {
 }
 
 /// Represents the results of an execution.
-/// This struct must be 100% compatible with `ActionResult` in remote_execution.proto.
+/// This struct must be 100% compatible with `ActionResult` in `remote_execution.proto`.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct ActionResult {
     pub output_files: Vec<FileInfo>,
@@ -503,7 +503,7 @@ pub struct ActionResult {
     pub server_logs: HashMap<String, DigestInfo>,
 }
 
-/// The execution status/stage. This should match ExecutionStage::Value in remote_execution.proto.
+/// The execution status/stage. This should match `ExecutionStage::Value` in `remote_execution.proto`.
 #[derive(PartialEq, Debug, Clone)]
 pub enum ActionStage {
     /// Stage is unknown.
@@ -528,101 +528,95 @@ pub enum ActionStage {
 }
 
 impl ActionStage {
-    pub fn has_action_result(&self) -> bool {
+    pub const fn has_action_result(&self) -> bool {
         match self {
-            ActionStage::Unknown => false,
-            ActionStage::CacheCheck => false,
-            ActionStage::Queued => false,
-            ActionStage::Executing => false,
-            ActionStage::Completed(_) => true,
-            ActionStage::CompletedFromCache(_) => true,
-            ActionStage::Error(_) => true,
+            Self::Unknown | Self::CacheCheck | Self::Queued | Self::Executing => false,
+            Self::Completed(_) | Self::CompletedFromCache(_) | Self::Error(_) => true,
         }
     }
 }
 
-impl Into<execution_stage::Value> for &ActionStage {
-    fn into(self) -> execution_stage::Value {
-        match self {
-            ActionStage::Unknown => execution_stage::Value::Unknown,
-            ActionStage::CacheCheck => execution_stage::Value::CacheCheck,
-            ActionStage::Queued => execution_stage::Value::Queued,
-            ActionStage::Executing => execution_stage::Value::Executing,
-            ActionStage::Completed(_) => execution_stage::Value::Completed,
-            ActionStage::CompletedFromCache(_) => execution_stage::Value::Completed,
-            ActionStage::Error(_) => execution_stage::Value::Completed,
+impl From<&ActionStage> for execution_stage::Value {
+    fn from(val: &ActionStage) -> Self {
+        match val {
+            ActionStage::Unknown => Self::Unknown,
+            ActionStage::CacheCheck => Self::CacheCheck,
+            ActionStage::Queued => Self::Queued,
+            ActionStage::Executing => Self::Executing,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) | ActionStage::Error(_) => Self::Completed,
         }
     }
 }
-
-impl Into<ExecuteResponse> for ActionStage {
-    fn into(self) -> ExecuteResponse {
+impl From<ActionStage> for ExecuteResponse {
+    fn from(val: ActionStage) -> Self {
         const RESPONSE_MESSAGE: &str = "TODO(blaise.bruer) We should put a reference something like bb_browser";
-
-        let (error, action_result) = match self {
-            // We don't have an execute response if we don't have the results. It is defined
-            // behavior to return an empty proto struct.
-            ActionStage::Unknown => return ExecuteResponse::default(),
-            ActionStage::CacheCheck => return ExecuteResponse::default(),
-            ActionStage::Queued => return ExecuteResponse::default(),
-            ActionStage::Executing => return ExecuteResponse::default(),
-
-            ActionStage::Completed(action_result) => (None, action_result),
-            ActionStage::Error((error, action_result)) => (Some(error), action_result),
-
-            // Handled separately as there are no server logs and the action
-            // result is already in Proto format.
-            ActionStage::CompletedFromCache(proto_action_result) => {
-                return ExecuteResponse {
-                    result: Some(proto_action_result),
-                    cached_result: true,
-                    status: Some(Status::default()),
-                    server_logs: HashMap::new(),
-                    message: RESPONSE_MESSAGE.to_string(),
-                }
+        let logs_from = |server_logs: &HashMap<String, DigestInfo>| -> HashMap<String, LogFile> {
+            let mut logs = HashMap::with_capacity(server_logs.len());
+            for (k, v) in server_logs {
+                logs.insert(
+                    k.clone(),
+                    LogFile {
+                        digest: Some(v.into()),
+                        human_readable: false,
+                    },
+                );
             }
+            logs
         };
 
-        let mut server_logs = HashMap::with_capacity(action_result.server_logs.len());
-        for (k, v) in &action_result.server_logs {
-            server_logs.insert(
-                k.clone(),
-                LogFile {
-                    digest: Some(v.into()),
-                    human_readable: false,
-                },
-            );
-        }
+        match val {
+            // We don't have an execute response if we don't have the results. It is defined
+            // behavior to return an empty proto struct.
+            ActionStage::Unknown | ActionStage::CacheCheck | ActionStage::Queued | ActionStage::Executing => {
+                Self::default()
+            }
 
-        ExecuteResponse {
-            result: Some(action_result.into()),
-            cached_result: false,
-            status: Some(error.map_or(Status::default(), |v| v.into())),
-            server_logs,
-            message: RESPONSE_MESSAGE.to_string(),
+            ActionStage::Completed(action_result) => Self {
+                server_logs: logs_from(&action_result.server_logs),
+                result: Some(action_result.into()),
+                cached_result: false,
+                status: Some(Status::default()),
+                message: RESPONSE_MESSAGE.to_string(),
+            },
+            ActionStage::Error((error, action_result)) => Self {
+                server_logs: logs_from(&action_result.server_logs),
+                result: Some(action_result.into()),
+                cached_result: false,
+                status: Some(error.into()),
+                message: RESPONSE_MESSAGE.to_string(),
+            },
+            // Handled separately as there are no server logs and the action
+            // result is already in Proto format.
+            ActionStage::CompletedFromCache(proto_action_result) => Self {
+                server_logs: HashMap::new(),
+                result: Some(proto_action_result),
+                cached_result: true,
+                status: Some(Status::default()),
+                message: RESPONSE_MESSAGE.to_string(),
+            },
         }
     }
 }
 
-impl Into<ProtoActionResult> for ActionResult {
-    fn into(self) -> ProtoActionResult {
+impl From<ActionResult> for ProtoActionResult {
+    fn from(val: ActionResult) -> Self {
         let mut output_symlinks =
-            Vec::with_capacity(self.output_file_symlinks.len() + self.output_directory_symlinks.len());
-        output_symlinks.extend_from_slice(self.output_file_symlinks.as_slice());
-        output_symlinks.extend_from_slice(self.output_directory_symlinks.as_slice());
+            Vec::with_capacity(val.output_file_symlinks.len() + val.output_directory_symlinks.len());
+        output_symlinks.extend_from_slice(val.output_file_symlinks.as_slice());
+        output_symlinks.extend_from_slice(val.output_directory_symlinks.as_slice());
 
-        ProtoActionResult {
-            output_files: self.output_files.into_iter().map(|v| v.into()).collect(),
-            output_file_symlinks: self.output_file_symlinks.into_iter().map(|v| v.into()).collect(),
-            output_symlinks: output_symlinks.into_iter().map(|v| v.into()).collect(),
-            output_directories: self.output_folders.into_iter().map(|v| v.into()).collect(),
-            output_directory_symlinks: self.output_directory_symlinks.into_iter().map(|v| v.into()).collect(),
-            exit_code: self.exit_code,
-            stdout_raw: Default::default(),
-            stdout_digest: Some(self.stdout_digest.into()),
-            stderr_raw: Default::default(),
-            stderr_digest: Some(self.stderr_digest.into()),
-            execution_metadata: Some(self.execution_metadata.into()),
+        Self {
+            output_files: val.output_files.into_iter().map(Into::into).collect(),
+            output_file_symlinks: val.output_file_symlinks.into_iter().map(Into::into).collect(),
+            output_symlinks: output_symlinks.into_iter().map(Into::into).collect(),
+            output_directories: val.output_folders.into_iter().map(Into::into).collect(),
+            output_directory_symlinks: val.output_directory_symlinks.into_iter().map(Into::into).collect(),
+            exit_code: val.exit_code,
+            stdout_raw: Bytes::default(),
+            stdout_digest: Some(val.stdout_digest.into()),
+            stderr_raw: Bytes::default(),
+            stderr_digest: Some(val.stderr_digest.into()),
+            execution_metadata: Some(val.execution_metadata.into()),
         }
     }
 }
@@ -630,17 +624,17 @@ impl Into<ProtoActionResult> for ActionResult {
 impl TryFrom<ExecuteResponse> for ActionStage {
     type Error = Error;
 
-    fn try_from(execute_response: ExecuteResponse) -> Result<ActionStage, Error> {
+    fn try_from(execute_response: ExecuteResponse) -> Result<Self, Error> {
         let proto_action_result = execute_response
             .result
             .err_tip(|| "Expected result to be set on ExecuteResponse msg")?;
         let action_result = ActionResult {
-            output_files: proto_action_result.output_files.try_map(|v| v.try_into())?,
+            output_files: proto_action_result.output_files.try_map(TryInto::try_into)?,
             output_directory_symlinks: proto_action_result
                 .output_directory_symlinks
-                .try_map(|v| v.try_into())?,
-            output_file_symlinks: proto_action_result.output_file_symlinks.try_map(|v| v.try_into())?,
-            output_folders: proto_action_result.output_directories.try_map(|v| v.try_into())?,
+                .try_map(TryInto::try_into)?,
+            output_file_symlinks: proto_action_result.output_file_symlinks.try_map(TryInto::try_into)?,
+            output_folders: proto_action_result.output_directories.try_map(TryInto::try_into)?,
             exit_code: proto_action_result.exit_code,
 
             stdout_digest: proto_action_result
@@ -666,13 +660,13 @@ impl TryFrom<ExecuteResponse> for ActionStage {
             .status
             .err_tip(|| "Expected status to be set on ExecuteResponse")?;
         if status.code != tonic::Code::Ok as i32 {
-            return Ok(ActionStage::Error((status.into(), action_result)));
+            return Ok(Self::Error((status.into(), action_result)));
         }
 
         if execute_response.cached_result {
-            return Ok(ActionStage::CompletedFromCache(action_result.into()));
+            return Ok(Self::CompletedFromCache(action_result.into()));
         }
-        Ok(ActionStage::Completed(action_result))
+        Ok(Self::Completed(action_result))
     }
 }
 
@@ -685,11 +679,11 @@ pub struct ActionState {
     pub stage: ActionStage,
 }
 
-impl Into<Operation> for ActionState {
-    fn into(self) -> Operation {
-        let has_action_result = self.stage.has_action_result();
-        let stage = Into::<execution_stage::Value>::into(&self.stage) as i32;
-        let execute_response: ExecuteResponse = self.stage.into();
+impl From<ActionState> for Operation {
+    fn from(val: ActionState) -> Self {
+        let has_action_result = val.stage.has_action_result();
+        let stage = Into::<execution_stage::Value>::into(&val.stage) as i32;
+        let execute_response: ExecuteResponse = val.stage.into();
 
         let serialized_response = if has_action_result {
             execute_response.encode_to_vec()
@@ -699,14 +693,14 @@ impl Into<Operation> for ActionState {
 
         let metadata = ExecuteOperationMetadata {
             stage,
-            action_digest: Some((&self.action_digest).into()),
+            action_digest: Some((&val.action_digest).into()),
             // TODO(blaise.bruer) We should support stderr/stdout streaming.
-            stdout_stream_name: Default::default(),
-            stderr_stream_name: Default::default(),
+            stdout_stream_name: String::default(),
+            stderr_stream_name: String::default(),
         };
 
-        Operation {
-            name: self.name,
+        Self {
+            name: val.name,
             metadata: Some(Any {
                 type_url: "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata".to_string(),
                 value: metadata.encode_to_vec(),
