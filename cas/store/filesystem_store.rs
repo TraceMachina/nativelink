@@ -30,7 +30,6 @@ use tokio_stream::wrappers::ReadDirStream;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::{fs, log, DigestInfo};
-use config;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use evicting_map::{EvictingMap, LenEntry};
 use traits::{StoreTrait, UploadSizeInfo};
@@ -80,7 +79,7 @@ fn get_file_path_raw(path_type: &PathType, shared_context: &SharedContext, diges
         PathType::Content => &shared_context.content_path,
         PathType::Temp => &shared_context.temp_path,
     };
-    to_full_path_from_digest(folder, &digest)
+    to_full_path_from_digest(folder, digest)
 }
 
 impl Drop for EncodedFilePath {
@@ -125,10 +124,10 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
         Self: Sized;
 
     /// Returns the underlying reference to where the filesize is stored.
-    fn get_file_size<'a>(&'a mut self) -> &'a mut u64;
+    fn get_file_size(&mut self) -> &mut u64;
 
     /// Gets the underlying EncodedfilePath.
-    fn get_encoded_file_path<'a>(&'a self) -> &'a RwLock<EncodedFilePath>;
+    fn get_encoded_file_path(&self) -> &RwLock<EncodedFilePath>;
 
     /// Returns a reader that will read part of the underlying file.
     async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot<'_>>, Error>;
@@ -200,11 +199,11 @@ impl FileEntry for FileEntryImpl {
         }
     }
 
-    fn get_file_size<'a>(&'a mut self) -> &'a mut u64 {
+    fn get_file_size(&mut self) -> &mut u64 {
         &mut self.file_size
     }
 
-    fn get_encoded_file_path<'a>(&'a self) -> &'a RwLock<EncodedFilePath> {
+    fn get_encoded_file_path(&self) -> &RwLock<EncodedFilePath> {
         &self.encoded_file_path
     }
 
@@ -255,10 +254,15 @@ impl LenEntry for FileEntryImpl {
     }
 
     #[inline]
+    fn is_empty(&self) -> bool {
+        self.file_size == 0
+    }
+
+    #[inline]
     async fn touch(&self) {
         let result = self
             .get_file_path_locked(move |full_content_path| async move {
-                Ok(spawn_blocking(move || {
+                spawn_blocking(move || {
                     set_file_atime(&full_content_path, FileTime::now())
                         .err_tip(|| format!("Failed to touch file in filesystem store {}", full_content_path))
                 })
@@ -269,7 +273,7 @@ impl LenEntry for FileEntryImpl {
                         "Failed to change atime of file due to spawn failing {:?}",
                         e
                     )
-                })??)
+                })?
             })
             .await;
         if let Err(e) = result {
@@ -315,7 +319,7 @@ impl LenEntry for FileEntryImpl {
 #[inline]
 pub fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
     let (hash, size) = file_name.split_once('-').err_tip(|| "")?;
-    let size = i64::from_str_radix(size, 10)?;
+    let size = size.parse::<i64>()?;
     DigestInfo::try_new(hash, size)
 }
 
@@ -336,7 +340,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
     ) -> Result<(), Error> {
-        let digest = digest_from_filename(&file_name)?;
+        let digest = digest_from_filename(file_name)?;
 
         let file_entry = Fe::create(
             file_size,
@@ -392,15 +396,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
 
     file_infos.sort_by(|a, b| a.1.cmp(&b.1));
     for (file_name, atime, file_size) in file_infos {
-        let result = process_entry(
-            &evicting_map,
-            &file_name,
-            atime,
-            file_size,
-            &anchor_time,
-            &shared_context,
-        )
-        .await;
+        let result = process_entry(evicting_map, &file_name, atime, file_size, anchor_time, shared_context).await;
         if let Err(err) = result {
             log::warn!(
                 "Could not add file to eviction cache, so deleting: {} - {:?}",
@@ -474,7 +470,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
         self.evicting_map
-            .get(&digest)
+            .get(digest)
             .await
             .ok_or_else(|| make_err!(Code::NotFound, "not found in filesystem store"))
     }
@@ -616,7 +612,7 @@ impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
             file.read_buf(&mut buf)
                 .await
                 .err_tip(|| "Failed to read data in filesystem store")?;
-            if buf.len() == 0 {
+            if buf.is_empty() {
                 break; // EOF.
             }
             writer

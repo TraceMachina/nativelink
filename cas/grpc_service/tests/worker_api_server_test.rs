@@ -296,7 +296,7 @@ pub mod execution_response_tests {
         server_logs.insert(
             "log_name".to_string(),
             LogFile {
-                digest: Some(DigestInfo::new([9u8; 32], 124).clone().into()),
+                digest: Some(DigestInfo::new([9u8; 32], 124).into()),
                 human_readable: false, // We only support non-human readable.
             },
         );
@@ -353,7 +353,7 @@ pub mod execution_response_tests {
                     message: "foo".to_string(),
                     details: Default::default(),
                 }),
-                server_logs: server_logs,
+                server_logs,
                 message: "TODO(blaise.bruer) We should put a reference something like bb_browser".to_string(),
             })),
         };

@@ -39,14 +39,14 @@ impl PlatformProperties {
     pub fn is_satisfied_by(&self, worker_properties: &PlatformProperties) -> bool {
         for (property, check_value) in &self.properties {
             if let Some(worker_value) = worker_properties.properties.get(property) {
-                if !check_value.is_satisfied_by(&worker_value) {
+                if !check_value.is_satisfied_by(worker_value) {
                     return false;
                 }
             } else {
                 return false;
             }
         }
-        return true;
+        true
     }
 }
 
@@ -126,14 +126,14 @@ impl PlatformPropertyManager {
     pub fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
         if let Some(prop_type) = self.known_properties.get(key) {
             return match prop_type {
-                PropertyType::Minimum => Ok(PlatformPropertyValue::Minimum(
-                    u64::from_str_radix(value, 10).err_tip_with_code(|e| {
+                PropertyType::Minimum => Ok(PlatformPropertyValue::Minimum(value.parse().err_tip_with_code(
+                    |e| {
                         (
                             Code::InvalidArgument,
                             format!("Cannot convert to platform property to u64: {} - {}", value, e),
                         )
-                    })?,
-                )),
+                    },
+                )?)),
                 PropertyType::Exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
                 PropertyType::Priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
             };

@@ -54,7 +54,7 @@ impl CapabilitiesServer {
                     })?
                     .clone();
 
-                for (platform_key, _) in scheduler.get_platform_property_manager().get_known_properties() {
+                for platform_key in scheduler.get_platform_property_manager().get_known_properties().keys() {
                     properties.push(platform_key.clone());
                 }
             }
@@ -78,21 +78,17 @@ impl Capabilities for CapabilitiesServer {
     ) -> Result<Response<ServerCapabilities>, Status> {
         let instance_name = request.into_inner().instance_name;
         let maybe_supported_node_properties = self.supported_node_properties_for_instance.get(&instance_name);
-        let execution_capabilities = if let Some(props_for_instance) = maybe_supported_node_properties {
-            Some(ExecutionCapabilities {
-                digest_function: DigestFunction::Sha256.into(),
-                exec_enabled: true, // TODO(blaise.bruer) Make this configurable.
-                execution_priority_capabilities: Some(PriorityCapabilities {
-                    priorities: vec![PriorityRange {
-                        min_priority: 0,
-                        max_priority: i32::MAX,
-                    }],
-                }),
-                supported_node_properties: props_for_instance.clone(),
-            })
-        } else {
-            None
-        };
+        let execution_capabilities = maybe_supported_node_properties.map(|props_for_instance| ExecutionCapabilities {
+            digest_function: DigestFunction::Sha256.into(),
+            exec_enabled: true, // TODO(blaise.bruer) Make this configurable.
+            execution_priority_capabilities: Some(PriorityCapabilities {
+                priorities: vec![PriorityRange {
+                    min_priority: 0,
+                    max_priority: i32::MAX,
+                }],
+            }),
+            supported_node_properties: props_for_instance.clone(),
+        });
 
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {

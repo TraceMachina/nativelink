@@ -298,13 +298,13 @@ impl SchedulerImpl {
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
     /// Note: This will not call .do_try_match().
     fn immediate_evict_worker(&mut self, worker_id: &WorkerId) {
-        if let Some(mut worker) = self.workers.remove_worker(&worker_id) {
+        if let Some(mut worker) = self.workers.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
             // We create a temporary Vec to avoid doubt about a possible code
             // path touching the worker.running_action_infos elsewhere.
             for action_info in worker.running_action_infos.drain() {
-                self.retry_action(&action_info, &worker_id);
+                self.retry_action(&action_info, worker_id);
             }
         }
     }
@@ -336,14 +336,14 @@ impl SchedulerImpl {
                     continue;
                 }
             };
-            let worker = if let Some(worker) = self.workers.find_worker_for_action_mut(&awaited_action) {
+            let worker = if let Some(worker) = self.workers.find_worker_for_action_mut(awaited_action) {
                 worker
             } else {
                 // No worker found, check the next action to see if there's a
                 // matching one for that.
                 continue;
             };
-            let worker_id = worker.id.clone();
+            let worker_id = worker.id;
 
             // Try to notify our worker of the new action to run, if it fails remove the worker from the
             // pool and try to find another worker.
@@ -423,7 +423,7 @@ impl SchedulerImpl {
         }
 
         // Re-queue the action or fail on max attempts.
-        self.retry_action(&action_info, &worker_id);
+        self.retry_action(&action_info, worker_id);
     }
 
     async fn update_action(
@@ -460,15 +460,12 @@ impl SchedulerImpl {
             );
             log::error!("{}", msg);
             // First put it back in our active_actions or we will drop the task.
-            self.active_actions.insert(action_info.clone(), running_action);
+            self.active_actions.insert(action_info, running_action);
             self.immediate_evict_worker(worker_id);
             return Err(make_input_err!("{}", msg));
         }
 
-        let did_complete = match action_stage {
-            ActionStage::Completed(_) => true,
-            _ => false,
-        };
+        let did_complete = matches!(action_stage, ActionStage::Completed(_));
 
         Arc::make_mut(&mut running_action.action.current_state).stage = action_stage;
 
@@ -545,7 +542,7 @@ impl Scheduler {
 
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
     pub async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
-        let worker_id = worker.id.clone();
+        let worker_id = worker.id;
         let mut inner = self.inner.lock().await;
         let res = inner
             .workers
@@ -625,7 +622,7 @@ impl Scheduler {
             .collect();
         for worker_id in worker_ids_to_remove.as_slice() {
             log::warn!("Worker {} timed out, removing from pool", worker_id);
-            inner.immediate_evict_worker(&worker_id);
+            inner.immediate_evict_worker(worker_id);
         }
         if !worker_ids_to_remove.is_empty() {
             inner.do_try_match();

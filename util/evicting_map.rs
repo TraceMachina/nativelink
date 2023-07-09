@@ -64,6 +64,9 @@ pub trait LenEntry {
     /// Length of referenced data.
     fn len(&self) -> usize;
 
+    /// Check if data is empty.
+    fn is_empty(&self) -> bool;
+
     /// Called when an entry is touched.
     #[inline]
     async fn touch(&self) {}
@@ -89,6 +92,11 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     #[inline]
     fn len(&self) -> usize {
         T::len(self.as_ref())
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        T::is_empty(self.as_ref())
     }
 
     #[inline]
@@ -148,7 +156,7 @@ where
             };
             serialized_lru
                 .data
-                .push((serialized_digest, eviction_item.seconds_since_anchor as i32));
+                .push((serialized_digest, eviction_item.seconds_since_anchor));
         }
         serialized_lru
     }
@@ -246,7 +254,7 @@ where
         };
         let mut state = self.state.lock().await;
 
-        let maybe_old_item = if let Some(old_item) = state.lru.put(digest.into(), eviction_item) {
+        let maybe_old_item = if let Some(old_item) = state.lru.put(digest, eviction_item) {
             state.sum_store_size -= old_item.data.len() as u64;
             // Note: See comment in `unref()` requring global lock of insert/remove.
             old_item.data.unref().await;

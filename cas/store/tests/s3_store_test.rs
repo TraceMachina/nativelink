@@ -34,7 +34,6 @@ use tokio_util::io::ReaderStream;
 
 use async_fixed_buffer::AsyncFixedBuf;
 use common::DigestInfo;
-use config;
 use error::Error;
 use error::ResultExt;
 use s3_store::S3Store;
@@ -102,12 +101,8 @@ fn get_range_from_request(request: &SignedRequest) -> Result<(usize, Option<usiz
     let (start, end) = range_header["bytes=".len()..]
         .split_once('-')
         .err_tip(|| "Expected '-' to be in 'range' header")?;
-    let start = usize::from_str_radix(&start, 10)?;
-    let end = if end.len() > 0 {
-        Some(usize::from_str_radix(&end, 10)?)
-    } else {
-        None
-    };
+    let start = start.parse()?;
+    let end = if !end.is_empty() { Some(end.parse()?) } else { None };
     Ok((start, end))
 }
 
@@ -136,7 +131,7 @@ mod s3_store_tests {
         )?;
         let store_pin = Pin::new(&store);
 
-        let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let result = store_pin.has(digest.clone()).await;
         assert_eq!(result, Ok(Some(512)), "Expected to find item, got: {:?}", result);
         Ok(())
@@ -168,7 +163,7 @@ mod s3_store_tests {
         )?;
         let store_pin = Pin::new(&store);
 
-        let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let result = store_pin.has(digest.clone()).await;
         assert_eq!(result, Ok(None), "Expected to not find item, got: {:?}", result);
         Ok(())
@@ -205,7 +200,7 @@ mod s3_store_tests {
         )?;
         let store_pin = Pin::new(&store);
 
-        let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let result = store_pin.has(digest.clone()).await;
         assert_eq!(result, Ok(Some(111)), "Expected to find item, got: {:?}", result);
         Ok(())
@@ -236,7 +231,7 @@ mod s3_store_tests {
             Box::new(move |_delay| Duration::from_secs(0)),
         )?;
         let store_pin = Pin::new(&store);
-        let get_part_fut = store_pin.update_oneshot(DigestInfo::try_new(&VALID_HASH1, 199)?, send_data.clone().into());
+        let get_part_fut = store_pin.update_oneshot(DigestInfo::try_new(VALID_HASH1, 199)?, send_data.clone().into());
 
         // Check requests.
         let send_data_fut = async move {
@@ -275,7 +270,7 @@ mod s3_store_tests {
         const AC_ENTRY_SIZE: u64 = 1000; // Any size that is not VALUE.len().
 
         let s3_client = S3Client::new_with(
-            MockRequestDispatcher::with_status(StatusCode::OK.into()).with_body(&VALUE),
+            MockRequestDispatcher::with_status(StatusCode::OK.into()).with_body(VALUE),
             MockCredentialsProvider,
             Region::UsEast1,
         );
@@ -290,7 +285,7 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
 
         let store_data = store_pin
-            .get_part_unchunked(DigestInfo::try_new(&VALID_HASH1, AC_ENTRY_SIZE)?, 0, None, None)
+            .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?, 0, None, None)
             .await?;
         assert_eq!(
             store_data,
@@ -309,8 +304,8 @@ mod s3_store_tests {
 
         let s3_client = S3Client::new_with(
             MockRequestDispatcher::with_status(StatusCode::OK.into()).with_request_checker(move |request| {
-                let range = get_range_from_request(&request);
-                assert!(!range.is_err(), "Unable to get range from request");
+                let range = get_range_from_request(request);
+                assert!(range.is_ok(), "Unable to get range from request");
                 let (start, end) = range.unwrap();
                 assert_eq!(start, OFFSET, "Expected start range to match");
                 assert_eq!(end, Some(OFFSET + LENGTH), "Expected end range to match");
@@ -332,7 +327,7 @@ mod s3_store_tests {
         const LENGTH: usize = 50_000; // Just a size that is not the same as the real data size.
         store_pin
             .get_part_unchunked(
-                DigestInfo::try_new(&VALID_HASH1, AC_ENTRY_SIZE)?,
+                DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
                 OFFSET,
                 Some(LENGTH),
                 None,
@@ -403,7 +398,7 @@ mod s3_store_tests {
             Result::<(), Error>::Ok(())
         };
 
-        let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let get_part_fut = Pin::new(&store).get_part_unchunked(digest, START_BYTE, None, None);
 
         // Now run our test.
@@ -446,7 +441,7 @@ mod s3_store_tests {
             Box::new(move |_delay| Duration::from_secs(0)),
         )?;
 
-        let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let result = Pin::new(&store).get_part_unchunked(digest, 0, None, None).await;
         assert!(result.is_ok(), "Expected to find item, got: {:?}", result);
         Ok(())
@@ -468,7 +463,7 @@ mod s3_store_tests {
         }
 
         // Send payload.
-        let digest = DigestInfo::try_new(&VALID_HASH1, send_data.len())?;
+        let digest = DigestInfo::try_new(VALID_HASH1, send_data.len())?;
         let store = S3Store::new_with_client_and_jitter(
             &config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),

@@ -24,9 +24,9 @@ fn main() -> std::io::Result<()> {
     let output_dir = PathBuf::from(matches.get_one::<String>("output_dir").unwrap());
 
     let mut config = Config::new();
-    config.bytes(&["."]);
+    config.bytes(["."]);
     tonic_build::configure()
-        .out_dir(&output_dir)
+        .out_dir(output_dir)
         .compile_with_config(config, &paths, &["proto"])?;
     Ok(())
 }

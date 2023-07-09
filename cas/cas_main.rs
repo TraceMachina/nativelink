@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use clap::Parser;
 use futures::future::{select_all, BoxFuture, TryFutureExt};
-use json5;
 use runfiles::Runfiles;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
@@ -144,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for server_cfg in cfg.servers {
         let server = Server::builder();
-        let services = server_cfg.services.ok_or_else(|| "'services' must be configured")?;
+        let services = server_cfg.services.ok_or("'services' must be configured")?;
 
         let server = server
             // TODO(allada) This is only used so we can get 200 status codes to know if our service
@@ -154,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .ac
                     .map_or(Ok(None), |cfg| {
-                        AcServer::new(&cfg, &store_manager).and_then(|v| {
+                        AcServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
@@ -164,13 +163,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
-                                .map(into_encoding)
-                                // Filter None values.
-                                .filter_map(|v| v)
+                                .filter_map(into_encoding)
                             {
                                 service = service.accept_compressed(encoding);
                             }
-                            Ok(Some(service))
+                            Some(service)
                         })
                     })
                     .err_tip(|| "Could not create AC service")?,
@@ -179,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .cas
                     .map_or(Ok(None), |cfg| {
-                        CasServer::new(&cfg, &store_manager).and_then(|v| {
+                        CasServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
@@ -189,13 +186,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
-                                .map(into_encoding)
-                                // Filter None values.
-                                .filter_map(|v| v)
+                                .filter_map(into_encoding)
                             {
                                 service = service.accept_compressed(encoding);
                             }
-                            Ok(Some(service))
+                            Some(service)
                         })
                     })
                     .err_tip(|| "Could not create CAS service")?,
@@ -204,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .execution
                     .map_or(Ok(None), |cfg| {
-                        ExecutionServer::new(&cfg, &schedulers, &store_manager).and_then(|v| {
+                        ExecutionServer::new(&cfg, &schedulers, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
@@ -214,13 +209,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
-                                .map(into_encoding)
-                                // Filter None values.
-                                .filter_map(|v| v)
+                                .filter_map(into_encoding)
                             {
                                 service = service.accept_compressed(encoding);
                             }
-                            Ok(Some(service))
+                            Some(service)
                         })
                     })
                     .err_tip(|| "Could not create Execution service")?,
@@ -229,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .bytestream
                     .map_or(Ok(None), |cfg| {
-                        ByteStreamServer::new(&cfg, &store_manager).and_then(|v| {
+                        ByteStreamServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
@@ -239,13 +232,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
-                                .map(into_encoding)
-                                // Filter None values.
-                                .filter_map(|v| v)
+                                .filter_map(into_encoding)
                             {
                                 service = service.accept_compressed(encoding);
                             }
-                            Ok(Some(service))
+                            Some(service)
                         })
                     })
                     .err_tip(|| "Could not create ByteStream service")?,
@@ -254,7 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .capabilities
                     .map_or(Ok(None), |cfg| {
-                        CapabilitiesServer::new(&cfg, &schedulers).and_then(|v| {
+                        CapabilitiesServer::new(&cfg, &schedulers).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
@@ -264,13 +255,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
-                                .map(into_encoding)
-                                // Filter None values.
-                                .filter_map(|v| v)
+                                .filter_map(into_encoding)
                             {
                                 service = service.accept_compressed(encoding);
                             }
-                            Ok(Some(service))
+                            Some(service)
                         })
                     })
                     .err_tip(|| "Could not create Capabilities service")?,
@@ -279,7 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
-                        WorkerApiServer::new(&cfg, &schedulers).and_then(|v| {
+                        WorkerApiServer::new(&cfg, &schedulers).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
@@ -289,13 +278,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
-                                .map(into_encoding)
-                                // Filter None values.
-                                .filter_map(|v| v)
+                                .filter_map(into_encoding)
                             {
                                 service = service.accept_compressed(encoding);
                             }
-                            Ok(Some(service))
+                            Some(service)
                         })
                     })
                     .err_tip(|| "Could not create WorkerApi service")?,

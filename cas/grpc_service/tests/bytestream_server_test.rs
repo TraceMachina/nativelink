@@ -23,7 +23,6 @@ use tokio::task::yield_now;
 use tonic::Request;
 
 use common::{encode_stream_proto, DigestInfo};
-use config;
 use default_store_factory::store_factory;
 use error::{make_err, Code, Error, ResultExt};
 use store::StoreManager;
@@ -110,7 +109,7 @@ pub mod write_tests {
                 raw_data.len()
             );
             let mut write_request = WriteRequest {
-                resource_name: resource_name,
+                resource_name,
                 write_offset: 0,
                 finish_write: false,
                 data: vec![].into(),
@@ -139,16 +138,16 @@ pub mod write_tests {
             let server_result = join_handle.await??;
             let committed_size =
                 usize::try_from(server_result.into_inner().committed_size).or(Err("Cant convert i64 to usize"))?;
-            assert_eq!(committed_size as usize, raw_data.len());
+            assert_eq!({ committed_size }, raw_data.len());
 
             // Now lets check our store to ensure it was written with proper data.
-            store.has(DigestInfo::try_new(&HASH1, raw_data.len())?).await?;
+            store.has(DigestInfo::try_new(HASH1, raw_data.len())?).await?;
             let store_data = store
-                .get_part_unchunked(DigestInfo::try_new(&HASH1, raw_data.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(HASH1, raw_data.len())?, 0, None, None)
                 .await?;
             assert_eq!(
                 std::str::from_utf8(&store_data),
-                std::str::from_utf8(&raw_data),
+                std::str::from_utf8(raw_data),
                 "Expected store to have been updated to new value"
             );
         }
@@ -178,7 +177,7 @@ pub mod read_tests {
 
         const VALUE1: &str = "12456789abcdefghijk";
 
-        let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
         store.update_oneshot(digest, VALUE1.into()).await?;
 
         let read_request = ReadRequest {
@@ -195,7 +194,7 @@ pub mod read_tests {
         let mut read_stream = bs_server.read(Request::new(read_request)).await?.into_inner();
         {
             let mut roundtrip_data = Vec::with_capacity(VALUE1.len());
-            assert!(VALUE1.len() > 0, "Expected at least one byte to be sent");
+            assert!(!VALUE1.is_empty(), "Expected at least one byte to be sent");
             while let Some(result_read_response) = read_stream.next().await {
                 roundtrip_data.append(&mut result_read_response?.data.to_vec());
             }
@@ -224,7 +223,7 @@ pub mod read_tests {
         raw_data[DATA_SIZE - 2] = 43u8;
 
         let data_len = raw_data.len();
-        let digest = DigestInfo::try_new(&HASH1, data_len)?;
+        let digest = DigestInfo::try_new(HASH1, data_len)?;
         store.update_oneshot(digest, raw_data.clone().into()).await?;
 
         let read_request = ReadRequest {
@@ -241,7 +240,7 @@ pub mod read_tests {
         let mut read_stream = bs_server.read(Request::new(read_request)).await?.into_inner();
         {
             let mut roundtrip_data = Vec::with_capacity(raw_data.len());
-            assert!(raw_data.len() > 0, "Expected at least one byte to be sent");
+            assert!(!raw_data.is_empty(), "Expected at least one byte to be sent");
             while let Some(result_read_response) = read_stream.next().await {
                 roundtrip_data.append(&mut result_read_response?.data.to_vec());
             }

@@ -26,7 +26,7 @@ pub fn scheduler_factory<'a>(
 ) -> Pin<Box<dyn Future<Output = Result<Arc<Scheduler>, Error>> + 'a>> {
     Box::pin(async move {
         let scheduler = match scheduler_type_cfg {
-            SchedulerConfig::simple(config) => Arc::new(Scheduler::new(&config)),
+            SchedulerConfig::simple(config) => Arc::new(Scheduler::new(config)),
         };
         Ok(scheduler)
     })

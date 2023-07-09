@@ -30,7 +30,6 @@ use tokio_util::codec::FramedRead;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
 use common::{log, DigestInfo, JoinHandleDropGuard, SerializableDigestInfo};
-use config;
 use error::{make_err, Code, Error, ResultExt};
 use fastcdc::FastCDC;
 use traits::{StoreTrait, UploadSizeInfo};
@@ -94,7 +93,7 @@ impl DedupStore {
         }
     }
 
-    fn pin_index_store<'a>(&'a self) -> Pin<&'a dyn StoreTrait> {
+    fn pin_index_store(&self) -> Pin<&dyn StoreTrait> {
         Pin::new(self.index_store.as_ref())
     }
 }
@@ -190,7 +189,7 @@ impl StoreTrait for DedupStore {
                     };
 
                     let content_store_pin = Pin::new(content_store.as_ref());
-                    let digest = DigestInfo::new(hash.clone().into(), frame.len() as i64);
+                    let digest = DigestInfo::new(hash.into(), frame.len() as i64);
                     if content_store_pin.has(digest.clone()).await?.is_some() {
                         // If our store has this digest, we don't need to upload it.
                         return Ok(index_entry);

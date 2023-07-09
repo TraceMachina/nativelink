@@ -82,17 +82,17 @@ impl Error {
 
 impl std::error::Error for Error {}
 
-impl Into<proto::google::rpc::Status> for Error {
-    fn into(self) -> proto::google::rpc::Status {
-        (&self).into()
+impl From<Error> for proto::google::rpc::Status {
+    fn from(val: Error) -> Self {
+        (&val).into()
     }
 }
 
-impl Into<proto::google::rpc::Status> for &Error {
-    fn into(self) -> proto::google::rpc::Status {
+impl From<&Error> for proto::google::rpc::Status {
+    fn from(val: &Error) -> Self {
         proto::google::rpc::Status {
-            code: self.code as i32,
-            message: self.message_string(),
+            code: val.code as i32,
+            message: val.message_string(),
             details: vec![],
         }
     }
@@ -198,9 +198,9 @@ impl From<tonic::Status> for Error {
     }
 }
 
-impl Into<tonic::Status> for Error {
-    fn into(self) -> tonic::Status {
-        tonic::Status::new(self.code.into(), self.messages.join(" : "))
+impl From<Error> for tonic::Status {
+    fn from(val: Error) -> Self {
+        tonic::Status::new(val.code.into(), val.messages.join(" : "))
     }
 }
 
@@ -253,7 +253,7 @@ impl<T, E: Into<Error>> ResultExt<T> for Result<T, E> {
         if let Err(e) = self {
             let mut e: Error = e.into();
             if let Err(other_err) = other {
-                let mut other_err: Error = other_err.into();
+                let mut other_err: Error = other_err;
                 // This will help with knowing which messages are tied to different errors.
                 e.messages.push("---".to_string());
                 e.messages.append(&mut other_err.messages);
@@ -286,6 +286,7 @@ impl<T> ResultExt<T> for Option<T> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive] // New Codes may be added in the future, so never exhaustively match!
 pub enum Code {
     Ok = 0,
     Cancelled = 1,
@@ -304,10 +305,6 @@ pub enum Code {
     Unavailable = 14,
     DataLoss = 15,
     Unauthenticated = 16,
-
-    // New Codes may be added in the future, so never exhaustively match!
-    #[doc(hidden)]
-    __NonExhaustive,
 }
 
 impl From<i32> for Code {
@@ -359,9 +356,9 @@ impl From<tonic::Code> for Code {
     }
 }
 
-impl Into<tonic::Code> for Code {
-    fn into(self) -> tonic::Code {
-        match self {
+impl From<Code> for tonic::Code {
+    fn from(val: Code) -> Self {
+        match val {
             Code::Ok => tonic::Code::Ok,
             Code::Cancelled => tonic::Code::Cancelled,
             Code::Unknown => tonic::Code::Unknown,
@@ -379,7 +376,6 @@ impl Into<tonic::Code> for Code {
             Code::Unavailable => tonic::Code::Unavailable,
             Code::DataLoss => tonic::Code::DataLoss,
             Code::Unauthenticated => tonic::Code::Unauthenticated,
-            _ => tonic::Code::Unknown,
         }
     }
 }

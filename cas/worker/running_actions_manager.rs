@@ -27,7 +27,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 use filetime::{set_file_mtime, FileTime};
 use futures::future::{try_join, try_join3, try_join_all, BoxFuture, FutureExt, TryFutureExt};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
-use hex;
 use parking_lot::Mutex;
 use relative_path::RelativePath;
 use tokio::io::AsyncSeekExt;
@@ -273,7 +272,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                 if file_type.is_dir() {
                     let full_dir_path = full_dir_path.clone();
                     dir_futures.push(
-                        upload_directory(cas_store, full_path.clone(), &full_work_directory)
+                        upload_directory(cas_store, full_path.clone(), full_work_directory)
                             .and_then(|(dir, all_dirs)| async move {
                                 let directory_name = full_path
                                     .file_name()
@@ -449,11 +448,9 @@ impl RunningAction for RunningActionImpl {
             // Download and build out our input files/folders. Also fetch and decode our Command.
             let cas_store_pin = Pin::new(self.running_actions_manager.cas_store.as_ref());
             let command_fut = async {
-                Ok(
-                    get_and_decode_digest::<ProtoCommand>(cas_store_pin, &self.action_info.command_digest)
-                        .await
-                        .err_tip(|| "Converting command_digest to Command")?,
-                )
+                get_and_decode_digest::<ProtoCommand>(cas_store_pin, &self.action_info.command_digest)
+                    .await
+                    .err_tip(|| "Converting command_digest to Command")
             };
             let filesystem_store_pin = Pin::new(self.running_actions_manager.filesystem_store.as_ref());
             // Download the input files/folder and place them into the temp directory.
@@ -510,7 +507,7 @@ impl RunningAction for RunningActionImpl {
             )
         };
         let args = &command_proto.arguments[..];
-        if args.len() < 1 {
+        if args.is_empty() {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
         log::info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
@@ -760,8 +757,8 @@ impl RunningAction for RunningActionImpl {
                 output_directory_symlinks,
                 output_file_symlinks,
                 exit_code: execution_result.exit_code,
-                stdout_digest: stdout_digest.into(),
-                stderr_digest: stderr_digest.into(),
+                stdout_digest,
+                stderr_digest,
                 execution_metadata,
                 server_logs: Default::default(), // TODO(allada) Not implemented.
             });
@@ -901,9 +898,8 @@ impl RunningActionsManagerImpl {
             action_state.kill_channel_tx.take()
         };
         if let Some(kill_channel_tx) = kill_channel_tx {
-            match kill_channel_tx.send(()) {
-                Err(_) => log::error!("Error sending kill to running action"),
-                _ => (),
+            if kill_channel_tx.send(()).is_err() {
+                log::error!("Error sending kill to running action")
             }
         }
     }
@@ -929,8 +925,8 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         let work_directory = self.make_work_directory(&action_id).await?;
         let execution_metadata = ExecutionMetadata {
             worker: worker_id,
-            queued_timestamp: action_info.insert_timestamp.clone(),
-            worker_start_timestamp: action_info.load_timestamp.clone(),
+            queued_timestamp: action_info.insert_timestamp,
+            worker_start_timestamp: action_info.load_timestamp,
             worker_completed_timestamp: SystemTime::UNIX_EPOCH,
             input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
             input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,

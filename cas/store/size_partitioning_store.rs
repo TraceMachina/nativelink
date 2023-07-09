@@ -19,7 +19,6 @@ use async_trait::async_trait;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
-use config;
 use error::Error;
 use traits::{StoreTrait, UploadSizeInfo};
 

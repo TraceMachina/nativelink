@@ -57,6 +57,12 @@ impl MockWorkerApiClient {
     }
 }
 
+impl Default for MockWorkerApiClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockWorkerApiClient {
     pub async fn expect_connect_worker(
         &mut self,

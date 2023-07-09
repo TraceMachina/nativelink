@@ -44,9 +44,9 @@ pin_project! {
 }
 
 fn wake(waker: &mut Option<Waker>) {
-    waker.take().map(|w| {
+    if let Some(w) = waker.take() {
         w.wake();
-    });
+    }
 }
 
 fn park(waker: &mut Option<Waker>, cx: &Context<'_>) {
@@ -116,7 +116,7 @@ impl<T: AsRef<[u8]> + Unpin> AsyncRead for AsyncFixedBuf<T> {
 
         let num_read = me.inner.read_and_copy_bytes(buf.initialize_unfilled());
         buf.advance(num_read);
-        if num_read <= 0 {
+        if num_read == 0 {
             if me.received_eof.load(Ordering::Relaxed) {
                 wake(&mut waker);
                 return Poll::Ready(Ok(()));
@@ -130,8 +130,8 @@ impl<T: AsRef<[u8]> + Unpin> AsyncRead for AsyncFixedBuf<T> {
         }
         // Have not yet reached EOF and have no data to read,
         // so we need to try and wake our writer, replace the waker and wait.
-        if num_read <= 0 {
-            park(&mut waker, &cx);
+        if num_read == 0 {
+            park(&mut waker, cx);
             return Poll::Pending;
         }
         wake(&mut waker);
@@ -151,7 +151,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
                 "Receiver disconnected",
             )));
         }
-        if buf.len() == 0 {
+        if buf.is_empty() {
             // EOF happens when a zero byte message is sent.
             me.received_eof.store(true, Ordering::Relaxed);
             me.did_shutdown.store(true, Ordering::Relaxed);
@@ -183,7 +183,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
                     return Poll::Pending;
                 }
 
-                park(&mut waker, &cx);
+                park(&mut waker, cx);
                 Poll::Pending
             }
         }
@@ -196,7 +196,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
             wake(&mut waker);
             return Poll::Ready(Ok(()));
         }
-        park(&mut waker, &cx);
+        park(&mut waker, cx);
         Poll::Pending
     }
 
@@ -250,7 +250,7 @@ pin_project! {
         fn drop(mut this: Pin<&mut Self>) {
             if !this.did_shutdown.load(Ordering::Relaxed) {
                 let close_fut = this.close_fut.take().unwrap();
-                tokio::spawn(async move { close_fut.await });
+                tokio::spawn(close_fut);
             }
         }
     }

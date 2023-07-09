@@ -51,7 +51,7 @@ mod action_messages_tests {
                 any.type_url,
                 "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse"
             ),
-            other => assert!(false, "Expected Some(Result(Any)), got: {:?}", other),
+            other => panic!("Expected Some(Result(Any)), got: {:?}", other),
         }
 
         Ok(())

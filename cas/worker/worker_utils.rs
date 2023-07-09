@@ -41,10 +41,10 @@ pub async fn make_supported_properties(
                             value: value.clone(),
                         });
                     }
-                    return Ok(props);
+                    Ok(props)
                 }
                 WrokerProperty::query_cmd(cmd) => {
-                    let maybe_split_cmd = shlex::split(&cmd);
+                    let maybe_split_cmd = shlex::split(cmd);
                     let (command, args) = match &maybe_split_cmd {
                         Some(split_cmd) => (&split_cmd[0], &split_cmd[1..]),
                         None => {
@@ -81,7 +81,7 @@ pub async fn make_supported_properties(
                             value: value.err_tip(|| "Could split input by lines")?.clone(),
                         });
                     }
-                    return Ok(props);
+                    Ok(props)
                 }
             }
         });

@@ -31,3 +31,6 @@ build --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
 test --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
 # This will make rustfmt only run on `bazel test`.
 test --output_groups=+rustfmt_checks
+
+build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+test --output_groups=+clippy_checks

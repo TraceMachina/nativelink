@@ -30,16 +30,19 @@ use size_partitioning_store::SizePartitioningStore;
 use store::{Store, StoreManager};
 use verify_store::VerifyStore;
 
+// TODO: Ugly.
+type StoreFactoryOutput = Result<Arc<dyn Store>, Error>;
+
 pub fn store_factory<'a>(
     backend: &'a StoreConfig,
     store_manager: &'a Arc<StoreManager>,
-) -> Pin<Box<dyn Future<Output = Result<Arc<dyn Store>, Error>> + 'a>> {
+) -> Pin<Box<dyn Future<Output = StoreFactoryOutput> + 'a>> {
     Box::pin(async move {
         let store: Arc<dyn Store> = match backend {
-            StoreConfig::memory(config) => Arc::new(MemoryStore::new(&config)),
-            StoreConfig::s3_store(config) => Arc::new(S3Store::new(&config)?),
+            StoreConfig::memory(config) => Arc::new(MemoryStore::new(config)),
+            StoreConfig::s3_store(config) => Arc::new(S3Store::new(config)?),
             StoreConfig::verify(config) => Arc::new(VerifyStore::new(
-                &config,
+                config,
                 store_factory(&config.backend, store_manager).await?,
             )),
             StoreConfig::compression(config) => Arc::new(CompressionStore::new(
@@ -47,23 +50,23 @@ pub fn store_factory<'a>(
                 store_factory(&config.backend, store_manager).await?,
             )?),
             StoreConfig::dedup(config) => Arc::new(DedupStore::new(
-                &config,
+                config,
                 store_factory(&config.index_store, store_manager).await?,
                 store_factory(&config.content_store, store_manager).await?,
             )),
             StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
-                &config,
+                config,
                 store_factory(&config.fast, store_manager).await?,
                 store_factory(&config.slow, store_manager).await?,
             )),
-            StoreConfig::filesystem(config) => Arc::new(<FilesystemStore>::new(&config).await?),
-            StoreConfig::ref_store(config) => Arc::new(RefStore::new(&config, store_manager.clone())),
+            StoreConfig::filesystem(config) => Arc::new(<FilesystemStore>::new(config).await?),
+            StoreConfig::ref_store(config) => Arc::new(RefStore::new(config, store_manager.clone())),
             StoreConfig::size_partitioning(config) => Arc::new(SizePartitioningStore::new(
-                &config,
+                config,
                 store_factory(&config.lower_store, store_manager).await?,
                 store_factory(&config.upper_store, store_manager).await?,
             )),
-            StoreConfig::grpc(config) => Arc::new(GrpcStore::new(&config).await?),
+            StoreConfig::grpc(config) => Arc::new(GrpcStore::new(config).await?),
         };
         Ok(store)
     })

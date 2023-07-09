@@ -28,7 +28,6 @@ use rand::{thread_rng, Rng};
 use ac_utils::{get_and_decode_digest, serialize_and_upload_message};
 use action_messages::{ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use common::{fs, DigestInfo};
-use config;
 use error::{Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
@@ -109,7 +108,7 @@ fn monotonic_clock(counter: &AtomicU64) -> SystemTime {
 }
 
 fn increment_clock(time: &mut SystemTime) -> SystemTime {
-    let previous_time = time.clone();
+    let previous_time = *time;
     *time = previous_time.checked_add(Duration::from_secs(1)).unwrap();
     previous_time
 }
@@ -132,18 +131,18 @@ mod running_actions_manager_tests {
 
         let root_directory_digest = {
             // Make and insert (into store) our digest info needed to create our directory & files.
-            let file1_content_digest = DigestInfo::new([02u8; 32], 32);
+            let file1_content_digest = DigestInfo::new([2u8; 32], 32);
             slow_store
                 .as_ref()
                 .update_oneshot(file1_content_digest.clone(), FILE1_CONTENT.into())
                 .await?;
-            let file2_content_digest = DigestInfo::new([03u8; 32], 32);
+            let file2_content_digest = DigestInfo::new([3u8; 32], 32);
             slow_store
                 .as_ref()
                 .update_oneshot(file2_content_digest.clone(), FILE2_CONTENT.into())
                 .await?;
 
-            let root_directory_digest = DigestInfo::new([01u8; 32], 32);
+            let root_directory_digest = DigestInfo::new([1u8; 32], 32);
             let root_directory = Directory {
                 files: vec![
                     FileNode {
@@ -222,9 +221,9 @@ mod running_actions_manager_tests {
 
         let root_directory_digest = {
             // Make and insert (into store) our digest info needed to create our directory & files.
-            let directory1_digest = DigestInfo::new([01u8; 32], 32);
+            let directory1_digest = DigestInfo::new([1u8; 32], 32);
             {
-                let file1_content_digest = DigestInfo::new([02u8; 32], 32);
+                let file1_content_digest = DigestInfo::new([2u8; 32], 32);
                 slow_store
                     .as_ref()
                     .update_oneshot(file1_content_digest.clone(), FILE1_CONTENT.into())
@@ -242,7 +241,7 @@ mod running_actions_manager_tests {
                     .update_oneshot(directory1_digest.clone(), directory1.encode_to_vec().into())
                     .await?;
             }
-            let directory2_digest = DigestInfo::new([03u8; 32], 32);
+            let directory2_digest = DigestInfo::new([3u8; 32], 32);
             {
                 // Now upload an empty directory.
                 slow_store
@@ -250,7 +249,7 @@ mod running_actions_manager_tests {
                     .update_oneshot(directory2_digest.clone(), Directory::default().encode_to_vec().into())
                     .await?;
             }
-            let root_directory_digest = DigestInfo::new([05u8; 32], 32);
+            let root_directory_digest = DigestInfo::new([5u8; 32], 32);
             {
                 let root_directory = Directory {
                     directories: vec![
@@ -315,13 +314,13 @@ mod running_actions_manager_tests {
 
         let root_directory_digest = {
             // Make and insert (into store) our digest info needed to create our directory & files.
-            let file_content_digest = DigestInfo::new([01u8; 32], 32);
+            let file_content_digest = DigestInfo::new([1u8; 32], 32);
             slow_store
                 .as_ref()
                 .update_oneshot(file_content_digest.clone(), FILE_CONTENT.into())
                 .await?;
 
-            let root_directory_digest = DigestInfo::new([02u8; 32], 32);
+            let root_directory_digest = DigestInfo::new([2u8; 32], 32);
             let root_directory = Directory {
                 files: vec![FileNode {
                     name: FILE_NAME.to_string(),
@@ -679,7 +678,6 @@ mod running_actions_manager_tests {
                     },
                     root_directory
                 ],
-                ..Default::default()
             }
         );
         let mut clock_time = make_system_time(0);
@@ -711,7 +709,7 @@ mod running_actions_manager_tests {
                 server_logs: HashMap::new(),
                 execution_metadata: ExecutionMetadata {
                     worker: WORKER_ID.to_string(),
-                    queued_timestamp: queued_timestamp,
+                    queued_timestamp,
                     worker_start_timestamp: increment_clock(&mut clock_time),
                     input_fetch_start_timestamp: increment_clock(&mut clock_time),
                     input_fetch_completed_timestamp: increment_clock(&mut clock_time),

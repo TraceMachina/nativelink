@@ -81,9 +81,7 @@ mod local_worker_tests {
         // Now wait for our client to send `.connect_worker()` (which has our platform properties).
         let mut supported_properties = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
         // It is undefined which order these will be returned in, so we sort it.
-        supported_properties
-            .properties
-            .sort_by(|a, b| a.encode_to_vec().cmp(&b.encode_to_vec()));
+        supported_properties.properties.sort_by_key(|a| a.encode_to_vec());
         assert_eq!(
             supported_properties,
             SupportedProperties {
@@ -195,11 +193,11 @@ mod local_worker_tests {
         }
 
         const SALT: u64 = 1000;
-        let action_digest = DigestInfo::new([03u8; 32], 10);
+        let action_digest = DigestInfo::new([3u8; 32], 10);
         let action_info = ActionInfo {
             instance_name: "foo".to_string(),
-            command_digest: DigestInfo::new([01u8; 32], 10),
-            input_root_digest: DigestInfo::new([02u8; 32], 10),
+            command_digest: DigestInfo::new([1u8; 32], 10),
+            input_root_digest: DigestInfo::new([2u8; 32], 10),
             timeout: Duration::from_secs(1),
             platform_properties: PlatformProperties::default(),
             priority: 0,

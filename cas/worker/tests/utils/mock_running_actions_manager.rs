@@ -59,15 +59,20 @@ impl MockRunningActionsManager {
     }
 }
 
+impl Default for MockRunningActionsManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockRunningActionsManager {
     pub async fn expect_create_and_add_action(
         &self,
         result: Result<Arc<MockRunningAction>, Error>,
     ) -> (String, StartExecute) {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
-            RunningActionManagerCalls::CreateAndAddAction(req) => req,
-        };
+        let RunningActionManagerCalls::CreateAndAddAction(req) =
+            rx_call_lock.recv().await.expect("Could not receive msg in mpsc");
         self.tx_resp
             .send(RunningActionManagerReturns::CreateAndAddAction(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
@@ -122,6 +127,9 @@ enum RunningActionReturns {
     Execute(Result<Arc<MockRunningAction>, Error>),
     UploadResults(Result<Arc<MockRunningAction>, Error>),
     Cleanup(Result<Arc<MockRunningAction>, Error>),
+
+    // TODO: The size of this struct is at least 496 bytes. Seems wrong. Before
+    //       wrapping it in a Box, make sure we're not wasting space here first.
     GetFinishedResult(Result<ActionResult, Error>),
 }
 
@@ -160,9 +168,9 @@ impl MockRunningAction {
 
     pub async fn expect_prepare_action(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
+        match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
             RunningActionCalls::PrepareAction => (),
-            req => panic!("expect_prepare_action expected PrepareAction, got : {:?}", req),
+            unexpected => panic!("expect_prepare_action expected PrepareAction, got : {:?}", unexpected),
         };
         let result = match result {
             Ok(()) => Ok(self.clone()),
@@ -171,14 +179,14 @@ impl MockRunningAction {
         self.tx_resp
             .send(RunningActionReturns::PrepareAction(result))
             .expect("Could not send request to mpsc");
-        Ok(req)
+        Ok(())
     }
 
     pub async fn expect_execute(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
+        match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
             RunningActionCalls::Execute => (),
-            req => panic!("expect_execute expected Execute, got : {:?}", req),
+            unexpected => panic!("expect_execute expected Execute, got : {:?}", unexpected),
         };
         let result = match result {
             Ok(()) => Ok(self.clone()),
@@ -187,14 +195,14 @@ impl MockRunningAction {
         self.tx_resp
             .send(RunningActionReturns::Execute(result))
             .expect("Could not send request to mpsc");
-        Ok(req)
+        Ok(())
     }
 
     pub async fn upload_results(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
+        match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
             RunningActionCalls::UploadResults => (),
-            req => panic!("expect_upload_results expected UploadResults, got : {:?}", req),
+            unexpected => panic!("expect_upload_results expected UploadResults, got : {:?}", unexpected),
         };
         let result = match result {
             Ok(()) => Ok(self.clone()),
@@ -203,14 +211,14 @@ impl MockRunningAction {
         self.tx_resp
             .send(RunningActionReturns::UploadResults(result))
             .expect("Could not send request to mpsc");
-        Ok(req)
+        Ok(())
     }
 
     pub async fn cleanup(self: &Arc<Self>, result: Result<(), Error>) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
+        match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
             RunningActionCalls::Cleanup => (),
-            req => panic!("expect_cleanup expected Cleanup, got : {:?}", req),
+            unexpected => panic!("expect_cleanup expected Cleanup, got : {:?}", unexpected),
         };
         let result = match result {
             Ok(()) => Ok(self.clone()),
@@ -219,19 +227,28 @@ impl MockRunningAction {
         self.tx_resp
             .send(RunningActionReturns::Cleanup(result))
             .expect("Could not send request to mpsc");
-        Ok(req)
+        Ok(())
     }
 
     pub async fn get_finished_result(self: &Arc<Self>, result: Result<ActionResult, Error>) -> Result<(), Error> {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
+        match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
             RunningActionCalls::GetFinishedResult => (),
-            req => panic!("expect_get_finished_result expected GetFinishedResult, got : {:?}", req),
+            unexpected => panic!(
+                "expect_get_finished_result expected GetFinishedResult, got : {:?}",
+                unexpected
+            ),
         };
         self.tx_resp
             .send(RunningActionReturns::GetFinishedResult(result))
             .expect("Could not send request to mpsc");
-        Ok(req)
+        Ok(())
+    }
+}
+
+impl Default for MockRunningAction {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -132,9 +132,9 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         Update::StartAction(start_execute) => {
                             let add_future_channel = add_future_channel.clone();
                             let mut grpc_client = self.grpc_client.clone();
-                            let salt = start_execute.salt.clone();
+                            let salt = start_execute.salt;
                             let worker_id = self.worker_id.clone();
-                            let action_digest = start_execute.execute_request.as_ref().map_or(None, |v| v.action_digest.clone());
+                            let action_digest = start_execute.execute_request.as_ref().and_then(|v| v.action_digest.clone());
                             let start_action_fut = self
                                 .running_actions_manager
                                 .clone()
@@ -239,8 +239,7 @@ pub async fn new_local_worker(
     let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
         config.work_directory.to_string(),
         fast_slow_store,
-    )?)
-    .clone();
+    )?);
     Ok(LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
         running_actions_manager,
@@ -324,7 +323,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         let sleep_fn_pin = Pin::new(&sleep_fn);
         let error_handler = Box::pin(move |e: Error| async move {
             log::error!("{:?}", e);
-            (&sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
+            (sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
         });
 
         loop {

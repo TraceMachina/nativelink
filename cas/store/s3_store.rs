@@ -40,7 +40,6 @@ use tokio_util::io::ReaderStream;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::{log, DigestInfo, JoinHandleDropGuard};
-use config;
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use retry::{ExponentialBackoff, Retrier, RetryResult};
 use traits::{StoreTrait, UploadSizeInfo};
@@ -176,7 +175,7 @@ impl S3Store {
             s3_client: Arc::new(s3_client),
             bucket: config.bucket.to_string(),
             key_prefix: config.key_prefix.as_ref().unwrap_or(&"".to_string()).to_owned(),
-            jitter_fn: jitter_fn,
+            jitter_fn,
             retry: config.retry.to_owned(),
             retrier: Retrier::new(Box::new(|duration| Box::pin(sleep(duration)))),
         })
@@ -320,10 +319,10 @@ impl StoreTrait for S3Store {
                 // at a time here. Otherwise a client that has very high upload speed but
                 // s3 has slow download speeds, we might end up using an insane amount of ram.
                 let write_buf = reader
-                    .take(bytes_per_upload_part as usize)
+                    .take(bytes_per_upload_part)
                     .await
                     .err_tip(|| "Failed to read chunk in s3_store")?;
-                if write_buf.len() == 0 {
+                if write_buf.is_empty() {
                     break; // Reached EOF.
                 }
 

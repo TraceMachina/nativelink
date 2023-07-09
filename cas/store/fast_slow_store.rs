@@ -20,7 +20,6 @@ use futures::{join, FutureExt};
 
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
-use config;
 use error::{make_err, Code, Error, ResultExt};
 use traits::{StoreTrait, UploadSizeInfo};
 
@@ -45,7 +44,7 @@ impl FastSlowStore {
         Self { fast_store, slow_store }
     }
 
-    pub fn fast_store<'a>(&'a self) -> &'a Arc<dyn StoreTrait> {
+    pub fn fast_store(&self) -> &Arc<dyn StoreTrait> {
         &self.fast_store
     }
 
@@ -59,7 +58,7 @@ impl FastSlowStore {
             .has(digest.clone())
             .await
             .err_tip(|| "While querying in populate_fast_store")?;
-        if let Some(_) = maybe_size_info {
+        if maybe_size_info.is_some() {
             return Ok(());
         }
         // TODO(blaise.bruer) This is extremely inefficient, since we are just trying
@@ -74,11 +73,11 @@ impl FastSlowStore {
         get_res.err_tip(|| "Failed to populate()").merge(drain_res)
     }
 
-    fn pin_fast_store<'a>(&'a self) -> Pin<&'a dyn StoreTrait> {
+    fn pin_fast_store(&self) -> Pin<&dyn StoreTrait> {
         Pin::new(self.fast_store.as_ref())
     }
 
-    fn pin_slow_store<'a>(&'a self) -> Pin<&'a dyn StoreTrait> {
+    fn pin_slow_store(&self) -> Pin<&dyn StoreTrait> {
         Pin::new(self.slow_store.as_ref())
     }
 }
@@ -109,7 +108,7 @@ impl StoreTrait for FastSlowStore {
                     .recv()
                     .await
                     .err_tip(|| "Failed to read buffer in fastslow store")?;
-                if buffer.len() == 0 {
+                if buffer.is_empty() {
                     // EOF received.
                     fast_tx
                         .send_eof()
@@ -192,7 +191,7 @@ impl StoreTrait for FastSlowStore {
                     .recv()
                     .await
                     .err_tip(|| "Failed to read data data buffer from slow store")?;
-                if output_buf.len() == 0 {
+                if output_buf.is_empty() {
                     // Write out our EOF.
                     // It is possible for the client to disconnect the stream because they got
                     // all the data they wanted, which could lead to an error when writing this

@@ -556,7 +556,7 @@ mod scheduler_tests {
             // Other tests check full data. We only care if we got StartAction.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {:?}", v),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
@@ -646,7 +646,7 @@ mod scheduler_tests {
             // Other tests check full data. We only care if we got StartAction.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {:?}", v),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
@@ -849,7 +849,7 @@ mod scheduler_tests {
 
         match rx_from_worker.recv().await.unwrap().update {
             Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-            v => assert!(false, "Expected StartAction, got : {:?}", v),
+            v => panic!("Expected StartAction, got : {:?}", v),
         }
         {
             // First client should be in an Executing state.
@@ -920,7 +920,7 @@ mod scheduler_tests {
             // Our second client should now executing.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {:?}", v),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client2_rx.borrow_and_update().stage, ActionStage::Executing);
@@ -992,7 +992,7 @@ mod scheduler_tests {
 
         match rx_from_worker.recv().await.unwrap().update {
             Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-            v => assert!(false, "Expected StartAction, got : {:?}", v),
+            v => panic!("Expected StartAction, got : {:?}", v),
         }
         {
             // First client should be in an Executing state.
@@ -1023,7 +1023,7 @@ mod scheduler_tests {
             // Other tests check full data. We only care if we got StartAction.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {:?}", v),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
@@ -1059,7 +1059,7 @@ mod scheduler_tests {
             // Other tests check full data. We only care if we got StartAction.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {:?}", v),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);

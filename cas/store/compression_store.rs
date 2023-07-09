@@ -174,7 +174,7 @@ impl UploadState {
             indexes: vec![SliceIndex { ..Default::default() }; max_index_count],
             index_count: max_index_count as u32,
             uncompressed_data_size: 0, // Updated later.
-            config: header.config.clone(),
+            config: header.config,
             version: CURRENT_STREAM_FORMAT_VERSION,
         };
 
@@ -224,7 +224,7 @@ impl CompressionStore {
             }
         };
         Ok(CompressionStore {
-            inner_store: inner_store,
+            inner_store,
             config: lz4_config,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
         })
@@ -250,11 +250,7 @@ impl StoreTrait for CompressionStore {
         let inner_store = self.inner_store.clone();
         let update_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
             Pin::new(inner_store.as_ref())
-                .update(
-                    digest,
-                    rx,
-                    UploadSizeInfo::MaxSize(output_state.max_output_size as usize),
-                )
+                .update(digest, rx, UploadSizeInfo::MaxSize(output_state.max_output_size))
                 .await
                 .err_tip(|| "Inner store update in compression store failed")
         }))
@@ -278,17 +274,17 @@ impl StoreTrait for CompressionStore {
             }
 
             let mut received_amt = 0;
-            let mut index_count = 0;
+            let mut index_count: usize = 0;
             for index in &mut output_state.footer.indexes {
                 let chunk = reader
                     .take(self.config.block_size as usize)
                     .await
                     .err_tip(|| "Failed to read take in update in compression store")?;
-                if chunk.len() == 0 {
+                if chunk.is_empty() {
                     break; // EOF.
                 }
 
-                received_amt = received_amt + chunk.len();
+                received_amt += chunk.len();
                 error_if!(
                     received_amt > output_state.input_max_size,
                     "Got more data than stated in compression store upload request"
@@ -301,11 +297,11 @@ impl StoreTrait for CompressionStore {
 
                 // For efficiency reasons we do some raw slice manipulation so we can write directly
                 // into our buffer instead of having to do another allocation.
-                let mut raw_compressed_data = unsafe {
+                let raw_compressed_data = unsafe {
                     std::slice::from_raw_parts_mut(compressed_data_buf.chunk_mut().as_mut_ptr(), max_output_size)
                 };
 
-                let compressed_data_sz = compress_into(&chunk, &mut raw_compressed_data)
+                let compressed_data_sz = compress_into(&chunk, raw_compressed_data)
                     .map_err(|e| make_err!(Code::Internal, "Compression error {:?}", e))?;
                 unsafe {
                     compressed_data_buf.advance_mut(compressed_data_sz);
@@ -330,9 +326,7 @@ impl StoreTrait for CompressionStore {
             // one index too many.
             // Note: We need to be careful that if we don't have any data (zero bytes) it
             // doesn't go to -1.
-            if index_count > 0 {
-                index_count -= 1;
-            }
+            index_count = index_count.saturating_sub(1);
             output_state
                 .footer
                 .indexes
@@ -396,7 +390,7 @@ impl StoreTrait for CompressionStore {
                     config: Lz4Config { block_size: 0 },
                     upload_size: UploadSizeInfo::ExactSize(0),
                 };
-                let header_size = self.bincode_options.serialized_size(&EMPTY_HEADER).unwrap() as u64;
+                let header_size = self.bincode_options.serialized_size(&EMPTY_HEADER).unwrap();
                 let chunk = rx
                     .take(header_size as usize)
                     .await
@@ -440,7 +434,7 @@ impl StoreTrait for CompressionStore {
 
             let mut uncompressed_data_sz: u64 = 0;
             let mut remaining_bytes_to_send: u64 = length.unwrap_or(usize::MAX) as u64;
-            let mut chunks_count = 0;
+            let mut chunks_count: u32 = 0;
             while frame_type != FOOTER_FRAME_TYPE {
                 error_if!(
                     frame_type != CHUNK_FRAME_TYPE,
@@ -465,11 +459,11 @@ impl StoreTrait for CompressionStore {
 
                     // For efficiency reasons we do some raw slice manipulation so we can write directly
                     // into our buffer instead of having to do another allocation.
-                    let mut raw_decompressed_data = unsafe {
+                    let raw_decompressed_data = unsafe {
                         std::slice::from_raw_parts_mut(uncompressed_data.chunk_mut().as_mut_ptr(), max_output_size)
                     };
 
-                    let uncompressed_chunk_sz = decompress_into(&chunk, &mut raw_decompressed_data)
+                    let uncompressed_chunk_sz = decompress_into(&chunk, raw_decompressed_data)
                         .map_err(|e| make_err!(Code::Internal, "Decompression error {:?}", e))?;
                     unsafe { uncompressed_data.advance_mut(uncompressed_chunk_sz) };
                     let new_uncompressed_data_sz = uncompressed_data_sz + uncompressed_chunk_sz as u64;
@@ -506,9 +500,7 @@ impl StoreTrait for CompressionStore {
                 frame_sz = chunk.get_u32_le();
             }
             // Index count will always be +1 (unless it is zero bytes long).
-            if chunks_count > 0 {
-                chunks_count -= 1;
-            }
+            chunks_count = chunks_count.saturating_sub(1);
             {
                 // Read and validate footer.
                 let chunk = rx

@@ -53,9 +53,9 @@ impl ActionInfoHashKey {
     /// Utility function used to make a unique hash of the digest including the salt.
     pub fn get_hash(&self) -> [u8; 32] {
         Sha256::new()
-            .chain(&self.digest.packed_hash)
-            .chain(&self.digest.size_bytes.to_le_bytes())
-            .chain(&self.salt.to_le_bytes())
+            .chain(self.digest.packed_hash)
+            .chain(self.digest.size_bytes.to_le_bytes())
+            .chain(self.salt.to_le_bytes())
             .finalize()
             .into()
     }
@@ -150,11 +150,11 @@ impl ActionInfo {
     }
 }
 
-impl Into<ExecuteRequest> for ActionInfo {
-    fn into(self) -> ExecuteRequest {
-        let digest = self.digest().into();
+impl From<ActionInfo> for ExecuteRequest {
+    fn from(val: ActionInfo) -> Self {
+        let digest = val.digest().into();
         ExecuteRequest {
-            instance_name: self.instance_name,
+            instance_name: val.instance_name,
             action_digest: Some(digest),
             skip_cache_lookup: true,    // The worker should never cache lookup.
             execution_policy: None,     // Not used in the worker.
@@ -191,7 +191,7 @@ impl Ord for ActionInfo {
         self.priority
             .cmp(&other.priority)
             .then_with(|| other.insert_timestamp.cmp(&self.insert_timestamp))
-            .then_with(|| self.salt().cmp(&other.salt()))
+            .then_with(|| self.salt().cmp(other.salt()))
             .then_with(|| self.digest().size_bytes.cmp(&other.digest().size_bytes))
             .then_with(|| self.digest().packed_hash.cmp(&other.digest().packed_hash))
     }
@@ -203,7 +203,7 @@ impl PartialOrd for ActionInfo {
             .priority
             .cmp(&other.priority)
             .then_with(|| other.insert_timestamp.cmp(&self.insert_timestamp))
-            .then_with(|| self.salt().cmp(&other.salt()));
+            .then_with(|| self.salt().cmp(other.salt()));
         if cmp == Ordering::Equal {
             return None;
         }
@@ -399,11 +399,11 @@ impl TryFrom<OutputDirectory> for DirectoryInfo {
     }
 }
 
-impl Into<OutputDirectory> for DirectoryInfo {
-    fn into(self) -> OutputDirectory {
+impl From<DirectoryInfo> for OutputDirectory {
+    fn from(val: DirectoryInfo) -> Self {
         OutputDirectory {
-            path: self.path,
-            tree_digest: Some(self.tree_digest.into()),
+            path: val.path,
+            tree_digest: Some(val.tree_digest.into()),
         }
     }
 }
@@ -424,19 +424,19 @@ pub struct ExecutionMetadata {
     pub output_upload_completed_timestamp: SystemTime,
 }
 
-impl Into<ExecutedActionMetadata> for ExecutionMetadata {
-    fn into(self) -> ExecutedActionMetadata {
+impl From<ExecutionMetadata> for ExecutedActionMetadata {
+    fn from(val: ExecutionMetadata) -> Self {
         ExecutedActionMetadata {
-            worker: self.worker,
-            queued_timestamp: Some(self.queued_timestamp.into()),
-            worker_start_timestamp: Some(self.worker_start_timestamp.into()),
-            worker_completed_timestamp: Some(self.worker_completed_timestamp.into()),
-            input_fetch_start_timestamp: Some(self.input_fetch_start_timestamp.into()),
-            input_fetch_completed_timestamp: Some(self.input_fetch_completed_timestamp.into()),
-            execution_start_timestamp: Some(self.execution_start_timestamp.into()),
-            execution_completed_timestamp: Some(self.execution_completed_timestamp.into()),
-            output_upload_start_timestamp: Some(self.output_upload_start_timestamp.into()),
-            output_upload_completed_timestamp: Some(self.output_upload_completed_timestamp.into()),
+            worker: val.worker,
+            queued_timestamp: Some(val.queued_timestamp.into()),
+            worker_start_timestamp: Some(val.worker_start_timestamp.into()),
+            worker_completed_timestamp: Some(val.worker_completed_timestamp.into()),
+            input_fetch_start_timestamp: Some(val.input_fetch_start_timestamp.into()),
+            input_fetch_completed_timestamp: Some(val.input_fetch_completed_timestamp.into()),
+            execution_start_timestamp: Some(val.execution_start_timestamp.into()),
+            execution_completed_timestamp: Some(val.execution_completed_timestamp.into()),
+            output_upload_start_timestamp: Some(val.output_upload_start_timestamp.into()),
+            output_upload_completed_timestamp: Some(val.output_upload_completed_timestamp.into()),
             auxiliary_metadata: Default::default(),
         }
     }
@@ -541,9 +541,9 @@ impl ActionStage {
     }
 }
 
-impl Into<execution_stage::Value> for &ActionStage {
-    fn into(self) -> execution_stage::Value {
-        match self {
+impl From<&ActionStage> for execution_stage::Value {
+    fn from(val: &ActionStage) -> Self {
+        match val {
             ActionStage::Unknown => execution_stage::Value::Unknown,
             ActionStage::CacheCheck => execution_stage::Value::CacheCheck,
             ActionStage::Queued => execution_stage::Value::Queued,
@@ -674,11 +674,11 @@ pub struct ActionState {
     pub stage: ActionStage,
 }
 
-impl Into<Operation> for ActionState {
-    fn into(self) -> Operation {
-        let has_action_result = self.stage.has_action_result();
-        let stage = Into::<execution_stage::Value>::into(&self.stage) as i32;
-        let execute_response: ExecuteResponse = self.stage.into();
+impl From<ActionState> for Operation {
+    fn from(val: ActionState) -> Self {
+        let has_action_result = val.stage.has_action_result();
+        let stage = Into::<execution_stage::Value>::into(&val.stage) as i32;
+        let execute_response: ExecuteResponse = val.stage.into();
 
         let serialized_response = if has_action_result {
             execute_response.encode_to_vec()
@@ -688,14 +688,14 @@ impl Into<Operation> for ActionState {
 
         let metadata = ExecuteOperationMetadata {
             stage,
-            action_digest: Some((&self.action_digest).into()),
+            action_digest: Some((&val.action_digest).into()),
             // TODO(blaise.bruer) We should support stderr/stdout streaming.
             stdout_stream_name: Default::default(),
             stderr_stream_name: Default::default(),
         };
 
         Operation {
-            name: self.name,
+            name: val.name,
             metadata: Some(Any {
                 type_url: "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata".to_string(),
                 value: metadata.encode_to_vec(),
