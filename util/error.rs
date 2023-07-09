@@ -54,17 +54,19 @@ impl Error {
         if !msg.is_empty() {
             msgs.push(msg);
         }
-        Error { code, messages: msgs }
+        Self { code, messages: msgs }
     }
 
     #[inline]
-    pub fn append<S: std::string::ToString>(mut self, msg: S) -> Error {
+    #[must_use]
+    pub fn append<S: std::string::ToString>(mut self, msg: S) -> Self {
         self.messages.push(msg.to_string());
         self
     }
 
-    pub fn merge<E: Into<Error>>(mut self, other: E) -> Self {
-        let mut other: Error = other.into();
+    #[must_use]
+    pub fn merge<E: Into<Self>>(mut self, other: E) -> Self {
+        let mut other: Self = other.into();
         // This will help with knowing which messages are tied to different errors.
         self.messages.push("---".to_string());
         self.messages.append(&mut other.messages);
@@ -82,27 +84,21 @@ impl Error {
 
 impl std::error::Error for Error {}
 
-impl Into<proto::google::rpc::Status> for Error {
-    fn into(self) -> proto::google::rpc::Status {
-        (&self).into()
-    }
-}
-
-impl Into<proto::google::rpc::Status> for &Error {
-    fn into(self) -> proto::google::rpc::Status {
-        proto::google::rpc::Status {
-            code: self.code as i32,
-            message: self.message_string(),
+impl From<Error> for proto::google::rpc::Status {
+    fn from(val: Error) -> Self {
+        Self {
+            code: val.code as i32,
+            message: val.message_string(),
             details: vec![],
         }
     }
 }
 
 impl From<proto::google::rpc::Status> for Error {
-    fn from(status: proto::google::rpc::Status) -> Error {
-        Error {
-            code: status.code.into(),
-            messages: vec![status.message],
+    fn from(val: proto::google::rpc::Status) -> Self {
+        Self {
+            code: val.code.into(),
+            messages: vec![val.message],
         }
     }
 }
@@ -173,7 +169,7 @@ impl From<TimestampError> for Error {
 
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
-        Error {
+        Self {
             code: err.kind().into(),
             messages: vec![err.to_string()],
         }
@@ -198,9 +194,9 @@ impl From<tonic::Status> for Error {
     }
 }
 
-impl Into<tonic::Status> for Error {
-    fn into(self) -> tonic::Status {
-        tonic::Status::new(self.code.into(), self.messages.join(" : "))
+impl From<Error> for tonic::Status {
+    fn from(val: Error) -> Self {
+        Self::new(val.code.into(), val.messages.join(" : "))
     }
 }
 
@@ -253,7 +249,7 @@ impl<T, E: Into<Error>> ResultExt<T> for Result<T, E> {
         if let Err(e) = self {
             let mut e: Error = e.into();
             if let Err(other_err) = other {
-                let mut other_err: Error = other_err.into();
+                let mut other_err: Error = other_err;
                 // This will help with knowing which messages are tied to different errors.
                 e.messages.push("---".to_string());
                 e.messages.append(&mut other_err.messages);
@@ -286,6 +282,7 @@ impl<T> ResultExt<T> for Option<T> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive] // New Codes may be added in the future, so never exhaustively match!
 pub enum Code {
     Ok = 0,
     Cancelled = 1,
@@ -304,33 +301,29 @@ pub enum Code {
     Unavailable = 14,
     DataLoss = 15,
     Unauthenticated = 16,
-
-    // New Codes may be added in the future, so never exhaustively match!
-    #[doc(hidden)]
-    __NonExhaustive,
 }
 
 impl From<i32> for Code {
     fn from(code: i32) -> Self {
         match code {
-            x if x == Code::Ok as i32 => Code::Ok,
-            x if x == Code::Cancelled as i32 => Code::Cancelled,
-            x if x == Code::Unknown as i32 => Code::Unknown,
-            x if x == Code::InvalidArgument as i32 => Code::InvalidArgument,
-            x if x == Code::DeadlineExceeded as i32 => Code::DeadlineExceeded,
-            x if x == Code::NotFound as i32 => Code::NotFound,
-            x if x == Code::AlreadyExists as i32 => Code::AlreadyExists,
-            x if x == Code::PermissionDenied as i32 => Code::PermissionDenied,
-            x if x == Code::ResourceExhausted as i32 => Code::ResourceExhausted,
-            x if x == Code::FailedPrecondition as i32 => Code::FailedPrecondition,
-            x if x == Code::Aborted as i32 => Code::Aborted,
-            x if x == Code::OutOfRange as i32 => Code::OutOfRange,
-            x if x == Code::Unimplemented as i32 => Code::Unimplemented,
-            x if x == Code::Internal as i32 => Code::Internal,
-            x if x == Code::Unavailable as i32 => Code::Unavailable,
-            x if x == Code::DataLoss as i32 => Code::DataLoss,
-            x if x == Code::Unauthenticated as i32 => Code::Unauthenticated,
-            _ => Code::Unknown,
+            x if x == Self::Ok as i32 => Self::Ok,
+            x if x == Self::Cancelled as i32 => Self::Cancelled,
+            x if x == Self::Unknown as i32 => Self::Unknown,
+            x if x == Self::InvalidArgument as i32 => Self::InvalidArgument,
+            x if x == Self::DeadlineExceeded as i32 => Self::DeadlineExceeded,
+            x if x == Self::NotFound as i32 => Self::NotFound,
+            x if x == Self::AlreadyExists as i32 => Self::AlreadyExists,
+            x if x == Self::PermissionDenied as i32 => Self::PermissionDenied,
+            x if x == Self::ResourceExhausted as i32 => Self::ResourceExhausted,
+            x if x == Self::FailedPrecondition as i32 => Self::FailedPrecondition,
+            x if x == Self::Aborted as i32 => Self::Aborted,
+            x if x == Self::OutOfRange as i32 => Self::OutOfRange,
+            x if x == Self::Unimplemented as i32 => Self::Unimplemented,
+            x if x == Self::Internal as i32 => Self::Internal,
+            x if x == Self::Unavailable as i32 => Self::Unavailable,
+            x if x == Self::DataLoss as i32 => Self::DataLoss,
+            x if x == Self::Unauthenticated as i32 => Self::Unauthenticated,
+            _ => Self::Unknown,
         }
     }
 }
@@ -338,48 +331,47 @@ impl From<i32> for Code {
 impl From<tonic::Code> for Code {
     fn from(code: tonic::Code) -> Self {
         match code {
-            tonic::Code::Ok => Code::Ok,
-            tonic::Code::Cancelled => Code::Cancelled,
-            tonic::Code::Unknown => Code::Unknown,
-            tonic::Code::InvalidArgument => Code::InvalidArgument,
-            tonic::Code::DeadlineExceeded => Code::DeadlineExceeded,
-            tonic::Code::NotFound => Code::NotFound,
-            tonic::Code::AlreadyExists => Code::AlreadyExists,
-            tonic::Code::PermissionDenied => Code::PermissionDenied,
-            tonic::Code::ResourceExhausted => Code::ResourceExhausted,
-            tonic::Code::FailedPrecondition => Code::FailedPrecondition,
-            tonic::Code::Aborted => Code::Aborted,
-            tonic::Code::OutOfRange => Code::OutOfRange,
-            tonic::Code::Unimplemented => Code::Unimplemented,
-            tonic::Code::Internal => Code::Internal,
-            tonic::Code::Unavailable => Code::Unavailable,
-            tonic::Code::DataLoss => Code::DataLoss,
-            tonic::Code::Unauthenticated => Code::Unauthenticated,
+            tonic::Code::Ok => Self::Ok,
+            tonic::Code::Cancelled => Self::Cancelled,
+            tonic::Code::Unknown => Self::Unknown,
+            tonic::Code::InvalidArgument => Self::InvalidArgument,
+            tonic::Code::DeadlineExceeded => Self::DeadlineExceeded,
+            tonic::Code::NotFound => Self::NotFound,
+            tonic::Code::AlreadyExists => Self::AlreadyExists,
+            tonic::Code::PermissionDenied => Self::PermissionDenied,
+            tonic::Code::ResourceExhausted => Self::ResourceExhausted,
+            tonic::Code::FailedPrecondition => Self::FailedPrecondition,
+            tonic::Code::Aborted => Self::Aborted,
+            tonic::Code::OutOfRange => Self::OutOfRange,
+            tonic::Code::Unimplemented => Self::Unimplemented,
+            tonic::Code::Internal => Self::Internal,
+            tonic::Code::Unavailable => Self::Unavailable,
+            tonic::Code::DataLoss => Self::DataLoss,
+            tonic::Code::Unauthenticated => Self::Unauthenticated,
         }
     }
 }
 
-impl Into<tonic::Code> for Code {
-    fn into(self) -> tonic::Code {
-        match self {
-            Code::Ok => tonic::Code::Ok,
-            Code::Cancelled => tonic::Code::Cancelled,
-            Code::Unknown => tonic::Code::Unknown,
-            Code::InvalidArgument => tonic::Code::InvalidArgument,
-            Code::DeadlineExceeded => tonic::Code::DeadlineExceeded,
-            Code::NotFound => tonic::Code::NotFound,
-            Code::AlreadyExists => tonic::Code::AlreadyExists,
-            Code::PermissionDenied => tonic::Code::PermissionDenied,
-            Code::ResourceExhausted => tonic::Code::ResourceExhausted,
-            Code::FailedPrecondition => tonic::Code::FailedPrecondition,
-            Code::Aborted => tonic::Code::Aborted,
-            Code::OutOfRange => tonic::Code::OutOfRange,
-            Code::Unimplemented => tonic::Code::Unimplemented,
-            Code::Internal => tonic::Code::Internal,
-            Code::Unavailable => tonic::Code::Unavailable,
-            Code::DataLoss => tonic::Code::DataLoss,
-            Code::Unauthenticated => tonic::Code::Unauthenticated,
-            _ => tonic::Code::Unknown,
+impl From<Code> for tonic::Code {
+    fn from(val: Code) -> Self {
+        match val {
+            Code::Ok => Self::Ok,
+            Code::Cancelled => Self::Cancelled,
+            Code::Unknown => Self::Unknown,
+            Code::InvalidArgument => Self::InvalidArgument,
+            Code::DeadlineExceeded => Self::DeadlineExceeded,
+            Code::NotFound => Self::NotFound,
+            Code::AlreadyExists => Self::AlreadyExists,
+            Code::PermissionDenied => Self::PermissionDenied,
+            Code::ResourceExhausted => Self::ResourceExhausted,
+            Code::FailedPrecondition => Self::FailedPrecondition,
+            Code::Aborted => Self::Aborted,
+            Code::OutOfRange => Self::OutOfRange,
+            Code::Unimplemented => Self::Unimplemented,
+            Code::Internal => Self::Internal,
+            Code::Unavailable => Self::Unavailable,
+            Code::DataLoss => Self::DataLoss,
+            Code::Unauthenticated => Self::Unauthenticated,
         }
     }
 }
@@ -387,25 +379,24 @@ impl Into<tonic::Code> for Code {
 impl From<std::io::ErrorKind> for Code {
     fn from(kind: std::io::ErrorKind) -> Self {
         match kind {
-            std::io::ErrorKind::NotFound => Code::NotFound,
-            std::io::ErrorKind::PermissionDenied => Code::PermissionDenied,
-            std::io::ErrorKind::ConnectionRefused => Code::Unavailable,
-            std::io::ErrorKind::ConnectionReset => Code::Unavailable,
-            std::io::ErrorKind::ConnectionAborted => Code::Unavailable,
-            std::io::ErrorKind::NotConnected => Code::Internal,
-            std::io::ErrorKind::AddrInUse => Code::Internal,
-            std::io::ErrorKind::AddrNotAvailable => Code::Internal,
-            std::io::ErrorKind::BrokenPipe => Code::Internal,
-            std::io::ErrorKind::AlreadyExists => Code::AlreadyExists,
-            std::io::ErrorKind::WouldBlock => Code::Internal,
-            std::io::ErrorKind::InvalidInput => Code::InvalidArgument,
-            std::io::ErrorKind::InvalidData => Code::InvalidArgument,
-            std::io::ErrorKind::TimedOut => Code::DeadlineExceeded,
-            std::io::ErrorKind::WriteZero => Code::Internal,
-            std::io::ErrorKind::Interrupted => Code::Aborted,
-            std::io::ErrorKind::Other => Code::Internal,
-            std::io::ErrorKind::UnexpectedEof => Code::Internal,
-            _ => Code::Unknown,
+            std::io::ErrorKind::NotFound => Self::NotFound,
+            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted => Self::Unavailable,
+            std::io::ErrorKind::AlreadyExists => Self::AlreadyExists,
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => Self::InvalidArgument,
+            std::io::ErrorKind::TimedOut => Self::DeadlineExceeded,
+            std::io::ErrorKind::Interrupted => Self::Aborted,
+            std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::AddrInUse
+            | std::io::ErrorKind::AddrNotAvailable
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::WriteZero
+            | std::io::ErrorKind::Other
+            | std::io::ErrorKind::UnexpectedEof => Self::Internal,
+            _ => Self::Unknown,
         }
     }
 }
@@ -413,15 +404,14 @@ impl From<std::io::ErrorKind> for Code {
 impl From<Code> for std::io::ErrorKind {
     fn from(kind: Code) -> Self {
         match kind {
-            Code::Aborted => std::io::ErrorKind::Interrupted,
-            Code::AlreadyExists => std::io::ErrorKind::AlreadyExists,
-            Code::DeadlineExceeded => std::io::ErrorKind::TimedOut,
-            Code::Internal => std::io::ErrorKind::Other,
-            Code::InvalidArgument => std::io::ErrorKind::InvalidInput,
-            Code::NotFound => std::io::ErrorKind::NotFound,
-            Code::PermissionDenied => std::io::ErrorKind::PermissionDenied,
-            Code::Unavailable => std::io::ErrorKind::ConnectionRefused,
-            _ => std::io::ErrorKind::Other,
+            Code::Aborted => Self::Interrupted,
+            Code::AlreadyExists => Self::AlreadyExists,
+            Code::DeadlineExceeded => Self::TimedOut,
+            Code::InvalidArgument => Self::InvalidInput,
+            Code::NotFound => Self::NotFound,
+            Code::PermissionDenied => Self::PermissionDenied,
+            Code::Unavailable => Self::ConnectionRefused,
+            _ => Self::Other,
         }
     }
 }

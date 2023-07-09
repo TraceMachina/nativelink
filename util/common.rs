@@ -60,17 +60,16 @@ impl DigestInfo {
         let packed_hash = <[u8; 32]>::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {}", hash))?;
         let size_bytes = size_bytes
             .try_into()
-            .or_else(|_| Err(make_input_err!("Could not convert {} into i64", size_bytes)))?;
+            .map_err(|_| make_input_err!("Could not convert {} into i64", size_bytes))?;
         Ok(DigestInfo {
-            size_bytes: size_bytes,
-            packed_hash: packed_hash,
+            size_bytes,
+            packed_hash,
             str_hash: LazyTransform::new(None),
         })
     }
 
-    pub fn str<'a>(&'a self) -> &'a str {
-        &self
-            .str_hash
+    pub fn str(&self) -> &str {
+        self.str_hash
             .get_or_create(|v| v.unwrap_or_else(|| hex::encode(self.packed_hash)))
     }
 
@@ -129,38 +128,38 @@ impl TryFrom<Digest> for DigestInfo {
             <[u8; 32]>::from_hex(&digest.hash).err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
         Ok(DigestInfo {
             size_bytes: digest.size_bytes,
-            packed_hash: packed_hash,
+            packed_hash,
             str_hash: LazyTransform::new(Some(digest.hash)),
         })
     }
 }
 
-impl Into<Digest> for DigestInfo {
-    fn into(self) -> Digest {
-        let packed_hash = self.packed_hash;
-        let hash = self
+impl From<DigestInfo> for Digest {
+    fn from(val: DigestInfo) -> Self {
+        let packed_hash = val.packed_hash;
+        let hash = val
             .str_hash
             .into_inner()
             .unwrap_or_else(|v| v.unwrap_or_else(|| hex::encode(packed_hash)));
         Digest {
-            hash: hash,
-            size_bytes: self.size_bytes,
+            hash,
+            size_bytes: val.size_bytes,
         }
     }
 }
 
-impl Into<Digest> for &DigestInfo {
-    fn into(self) -> Digest {
+impl From<&DigestInfo> for Digest {
+    fn from(val: &DigestInfo) -> Self {
         Digest {
-            hash: self.str().to_string(),
-            size_bytes: self.size_bytes,
+            hash: val.str().to_string(),
+            size_bytes: val.size_bytes,
         }
     }
 }
 
-impl Into<DigestInfo> for SerializableDigestInfo {
-    fn into(self) -> DigestInfo {
-        DigestInfo::new(self.hash, self.size_bytes as i64)
+impl From<SerializableDigestInfo> for DigestInfo {
+    fn from(val: SerializableDigestInfo) -> Self {
+        DigestInfo::new(val.hash, val.size_bytes as i64)
     }
 }
 
