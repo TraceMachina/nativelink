@@ -12,6 +12,61 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// TODO(#140) This is a temporary solution while a followup PR creates the actual
-// trait. For now we are just aliasing the struct to make it easier on code review.
-pub use simple_scheduler::SimpleScheduler as Scheduler;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use tokio::sync::watch;
+
+use action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState};
+use error::Error;
+use platform_property_manager::PlatformPropertyManager;
+use worker::{Worker, WorkerId, WorkerTimestamp};
+
+/// ActionScheduler interface is responsible for interactions between the scheduler
+/// and action related operations.
+#[async_trait]
+pub trait ActionScheduler: Sync + Send + Unpin {
+    /// Returns the platform property manager.
+    fn get_platform_property_manager(&self) -> &PlatformPropertyManager;
+
+    /// Adds an action to the scheduler for remote execution.
+    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
+}
+
+/// WorkerScheduler interface is responsible for interactions between the scheduler
+/// and worker related operations.
+#[async_trait]
+pub trait WorkerScheduler: Sync + Send + Unpin {
+    /// Returns the platform property manager.
+    fn get_platform_property_manager(&self) -> &PlatformPropertyManager;
+
+    /// Adds a worker to the scheduler and begin using it to execute actions (when able).
+    async fn add_worker(&self, worker: Worker) -> Result<(), Error>;
+
+    /// Similar to `update_action()`, but called when there was an error that is not
+    /// related to the task, but rather the worker itself.
+    async fn update_action_with_internal_error(
+        &self,
+        worker_id: &WorkerId,
+        action_info_hash_key: &ActionInfoHashKey,
+        err: Error,
+    );
+
+    /// Updates the status of an action to the scheduler from the worker.
+    async fn update_action(
+        &self,
+        worker_id: &WorkerId,
+        action_info_hash_key: &ActionInfoHashKey,
+        action_stage: ActionStage,
+    ) -> Result<(), Error>;
+
+    /// Event for when the keep alive message was received from the worker.
+    async fn worker_keep_alive_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp) -> Result<(), Error>;
+
+    /// Removes worker from pool and reschedule any tasks that might be running on it.
+    async fn remove_worker(&self, worker_id: WorkerId);
+
+    /// Removes timed out workers from the pool. This is called periodically by an
+    /// external source.
+    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error>;
+}

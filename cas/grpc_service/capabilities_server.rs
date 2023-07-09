@@ -26,7 +26,7 @@ use proto::build::bazel::remote::execution::v2::{
     CacheCapabilities, ExecutionCapabilities, GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
 };
 use proto::build::bazel::semver::SemVer;
-use scheduler::Scheduler;
+use scheduler::ActionScheduler;
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
@@ -38,7 +38,7 @@ pub struct CapabilitiesServer {
 impl CapabilitiesServer {
     pub fn new(
         config: &HashMap<InstanceName, CapabilitiesConfig>,
-        scheduler_map: &HashMap<String, Arc<Scheduler>>,
+        scheduler_map: &HashMap<String, Arc<dyn ActionScheduler>>,
     ) -> Result<Self, Error> {
         let mut supported_node_properties_for_instance = HashMap::new();
         for (instance_name, cfg) in config {

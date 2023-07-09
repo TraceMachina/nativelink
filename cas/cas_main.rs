@@ -102,15 +102,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let mut schedulers = HashMap::new();
+    let mut action_schedulers = HashMap::new();
+    let mut worker_schedulers = HashMap::new();
     if let Some(schedulers_cfg) = cfg.schedulers {
         for (name, scheduler_cfg) in schedulers_cfg {
-            schedulers.insert(
-                name.clone(),
-                scheduler_factory(&scheduler_cfg)
-                    .await
-                    .err_tip(|| format!("Failed to create scheduler '{}'", name))?,
-            );
+            let (maybe_action_scheduler, maybe_worker_scheduler) = scheduler_factory(&scheduler_cfg)
+                .await
+                .err_tip(|| format!("Failed to create scheduler '{}'", name))?;
+            if let Some(action_scheduler) = maybe_action_scheduler {
+                action_schedulers.insert(name.clone(), action_scheduler);
+            }
+            if let Some(worker_scheduler) = maybe_worker_scheduler {
+                worker_schedulers.insert(name.clone(), worker_scheduler);
+            }
         }
     }
 
@@ -211,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .execution
                     .map_or(Ok(None), |cfg| {
-                        ExecutionServer::new(&cfg, &schedulers, &store_manager).and_then(|v| {
+                        ExecutionServer::new(&cfg, &action_schedulers, &store_manager).and_then(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
@@ -261,7 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .capabilities
                     .map_or(Ok(None), |cfg| {
-                        CapabilitiesServer::new(&cfg, &schedulers).and_then(|v| {
+                        CapabilitiesServer::new(&cfg, &action_schedulers).and_then(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
@@ -286,7 +290,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 services
                     .worker_api
                     .map_or(Ok(None), |cfg| {
-                        WorkerApiServer::new(&cfg, &schedulers).and_then(|v| {
+                        WorkerApiServer::new(&cfg, &worker_schedulers).and_then(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {

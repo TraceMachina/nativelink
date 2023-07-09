@@ -123,6 +123,7 @@ rust_test(
         "//cas/scheduler",
         "//cas/scheduler:action_messages",
         "//cas/scheduler:platform_property_manager",
+        "//cas/scheduler:simple_scheduler",
         "//cas/scheduler:worker",
         "//config",
         "//proto",

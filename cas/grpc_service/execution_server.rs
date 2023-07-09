@@ -19,7 +19,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::{Stream, StreamExt};
 use rand::{thread_rng, Rng};
-use tokio::time::interval;
 use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
 
@@ -34,14 +33,14 @@ use proto::build::bazel::remote::execution::v2::{
     WaitExecutionRequest,
 };
 use proto::google::longrunning::Operation;
-use scheduler::Scheduler;
+use scheduler::ActionScheduler;
 use store::{Store, StoreManager};
 
 /// Default priority remote execution jobs will get when not provided.
 const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
 struct InstanceInfo {
-    scheduler: Arc<Scheduler>,
+    scheduler: Arc<dyn ActionScheduler>,
     cas_store: Arc<dyn Store>,
 }
 
@@ -134,7 +133,7 @@ type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send
 impl ExecutionServer {
     pub fn new(
         config: &HashMap<InstanceName, ExecutionConfig>,
-        scheduler_map: &HashMap<String, Arc<Scheduler>>,
+        scheduler_map: &HashMap<String, Arc<dyn ActionScheduler>>,
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
         let mut instance_infos = HashMap::with_capacity(config.len());
@@ -152,29 +151,7 @@ impl ExecutionServer {
                 })?
                 .clone();
 
-            // This will protect us from holding a reference to the scheduler forever in the
-            // event our ExecutionServer dies. Our scheduler is a weak ref, so the spawn will
-            // eventually see the Arc went away and return.
-            let weak_scheduler = Arc::downgrade(&scheduler);
             instance_infos.insert(instance_name.to_string(), InstanceInfo { scheduler, cas_store });
-            tokio::spawn(async move {
-                let mut ticker = interval(Duration::from_secs(1));
-                loop {
-                    ticker.tick().await;
-                    let timestamp = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Error: system time is now behind unix epoch");
-                    match weak_scheduler.upgrade() {
-                        Some(scheduler) => {
-                            if let Err(e) = scheduler.remove_timedout_workers(timestamp.as_secs()).await {
-                                log::error!("Error while running remove_timedout_workers : {:?}", e);
-                            }
-                        }
-                        // If we fail to upgrade, our service is probably destroyed, so return.
-                        None => return,
-                    }
-                }
-            });
         }
         Ok(Self { instance_infos })
     }
