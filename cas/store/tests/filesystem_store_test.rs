@@ -33,8 +33,7 @@ use futures::task::Poll;
 use futures::{poll, Future};
 use lazy_static::lazy_static;
 use rand::{thread_rng, Rng};
-use tokio::io::AsyncReadExt;
-use tokio::io::Take;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
 use tokio::sync::Barrier;
 use tokio_stream::{wrappers::ReadDirStream, StreamExt};
 use traits::UploadSizeInfo;
@@ -42,7 +41,7 @@ use traits::UploadSizeInfo;
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
 use common::{fs, DigestInfo};
 use config;
-use error::{Error, ResultExt};
+use error::{Code, Error, ResultExt};
 use filesystem_store::{digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore};
 use traits::StoreTrait;
 
@@ -166,6 +165,13 @@ async fn read_file_contents(file_name: &str) -> Result<Vec<u8>, Error> {
         .await
         .err_tip(|| "Error reading file to end")?;
     Ok(data)
+}
+
+async fn write_file(file_name: &str, data: &[u8]) -> Result<(), Error> {
+    let mut file = fs::create_file(&file_name)
+        .await
+        .err_tip(|| format!("Failed to create file: {}", file_name))?;
+    Ok(file.write_all(&data).await?)
 }
 
 #[cfg(test)]
@@ -543,6 +549,49 @@ mod filesystem_store_tests {
                 Ok(())
             })
             .await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(), Error> {
+        // Note these are swapped to ensure they aren't in numerical order.
+        let digest1 = DigestInfo::try_new(&HASH2, VALUE2.len())?;
+        let digest2 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+
+        let content_path = make_temp_path("content_path");
+        fs::create_dir_all(&content_path).await?;
+
+        // Make the two files on disk before loading the store.
+        let file1 = format!("{}/{}-{}", content_path, digest1.str(), digest1.size_bytes);
+        let file2 = format!("{}/{}-{}", content_path, digest2.str(), digest2.size_bytes);
+        write_file(&file1, VALUE1.as_bytes()).await?;
+        write_file(&file2, VALUE2.as_bytes()).await?;
+        set_file_atime(&file1, FileTime::from_unix_time(0, 0))?;
+        set_file_atime(&file2, FileTime::from_unix_time(1, 0))?;
+
+        // Load the existing store from disk.
+        let store = Box::pin(
+            FilesystemStore::<FileEntryImpl>::new(&config::stores::FilesystemStore {
+                content_path,
+                temp_path: make_temp_path("temp_path"),
+                eviction_policy: Some(config::stores::EvictionPolicy {
+                    max_bytes: 0,
+                    max_seconds: 0,
+                    max_count: 1,
+                }),
+                ..Default::default()
+            })
+            .await?,
+        );
+
+        // This should exist and not have been evicted.
+        store.get_file_entry_for_digest(&digest2).await?;
+        // This should have been evicted.
+        match store.get_file_entry_for_digest(&digest1).await {
+            Ok(_) => panic!("Oldest file should have been evicted."),
+            Err(error) => assert_eq!(error.code, Code::NotFound),
+        }
 
         Ok(())
     }
