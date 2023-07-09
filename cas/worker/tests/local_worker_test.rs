@@ -209,6 +209,7 @@ mod local_worker_tests {
                 digest: action_digest.clone(),
                 salt: SALT,
             },
+            skip_cache_lookup: true,
         };
 
         {

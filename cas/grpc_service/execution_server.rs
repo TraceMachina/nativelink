@@ -23,7 +23,7 @@ use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
 
 use ac_utils::get_and_decode_digest;
-use action_messages::{ActionInfo, ActionInfoHashKey};
+use action_messages::{ActionInfo, ActionInfoHashKey, DEFAULT_EXECUTION_PRIORITY};
 use common::{log, DigestInfo};
 use config::cas_server::{ExecutionConfig, InstanceName};
 use error::{make_input_err, Error, ResultExt};
@@ -35,9 +35,6 @@ use proto::build::bazel::remote::execution::v2::{
 use proto::google::longrunning::Operation;
 use scheduler::ActionScheduler;
 use store::{Store, StoreManager};
-
-/// Default priority remote execution jobs will get when not provided.
-const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
 struct InstanceInfo {
     scheduler: Arc<dyn ActionScheduler>,
@@ -55,6 +52,7 @@ impl InstanceInfo {
         action_digest: DigestInfo,
         action: &Action,
         priority: i32,
+        skip_cache_lookup: bool,
     ) -> Result<ActionInfo, Error> {
         let command_digest = DigestInfo::try_from(
             action
@@ -120,6 +118,7 @@ impl InstanceInfo {
                     0
                 },
             },
+            skip_cache_lookup,
         })
     }
 }
@@ -182,7 +181,7 @@ impl ExecutionServer {
 
         let action = get_and_decode_digest::<Action>(instance_info.cas_pin(), &digest).await?;
         let action_info = instance_info
-            .build_action_info(instance_name, digest, &action, priority)
+            .build_action_info(instance_name, digest, &action, priority, execute_req.skip_cache_lookup)
             .await?;
 
         let rx = instance_info

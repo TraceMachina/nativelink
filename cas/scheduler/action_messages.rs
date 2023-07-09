@@ -34,6 +34,9 @@ use proto::build::bazel::remote::execution::v2::{
 use proto::google::longrunning::{operation::Result as LongRunningResult, Operation};
 use proto::google::rpc::Status;
 
+/// Default priority remote execution jobs will get when not provided.
+pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
+
 /// This is a utility struct used to make it easier to match ActionInfos in a
 /// HashMap without needing to construct an entire ActionInfo.
 /// Since the hashing only needs the digest and salt we can just alias them here
@@ -95,6 +98,9 @@ pub struct ActionInfo {
     /// return a temporary reference we must have an object tied to ActionInfo's lifetime and
     /// return it's reference.
     pub unique_qualifier: ActionInfoHashKey,
+
+    /// Whether to try looking up this action in the cache.
+    pub skip_cache_lookup: bool,
 }
 
 impl ActionInfo {
@@ -146,6 +152,7 @@ impl ActionInfo {
                     .try_into()?,
                 salt,
             },
+            skip_cache_lookup: execute_request.skip_cache_lookup,
         })
     }
 }
@@ -488,6 +495,9 @@ impl TryFrom<ExecutedActionMetadata> for ExecutionMetadata {
     }
 }
 
+/// Exit code sent if there is an internal error.
+pub const INTERNAL_ERROR_EXIT_CODE: i32 = -178;
+
 /// Represents the results of an execution.
 /// This struct must be 100% compatible with `ActionResult` in remote_execution.proto.
 #[derive(Eq, PartialEq, Debug, Clone)]
@@ -501,6 +511,33 @@ pub struct ActionResult {
     pub stderr_digest: DigestInfo,
     pub execution_metadata: ExecutionMetadata,
     pub server_logs: HashMap<String, DigestInfo>,
+}
+
+impl Default for ActionResult {
+    fn default() -> Self {
+        ActionResult {
+            output_files: Default::default(),
+            output_folders: Default::default(),
+            output_directory_symlinks: Default::default(),
+            output_file_symlinks: Default::default(),
+            exit_code: INTERNAL_ERROR_EXIT_CODE,
+            stdout_digest: DigestInfo::empty_digest(),
+            stderr_digest: DigestInfo::empty_digest(),
+            execution_metadata: ExecutionMetadata {
+                worker: "".to_string(),
+                queued_timestamp: SystemTime::UNIX_EPOCH,
+                worker_start_timestamp: SystemTime::UNIX_EPOCH,
+                worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+                input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+                input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+                execution_start_timestamp: SystemTime::UNIX_EPOCH,
+                execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+                output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+                output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+            },
+            server_logs: Default::default(),
+        }
+    }
 }
 
 /// The execution status/stage. This should match ExecutionStage::Value in remote_execution.proto.
@@ -673,6 +710,68 @@ impl TryFrom<ExecuteResponse> for ActionStage {
             return Ok(ActionStage::CompletedFromCache(action_result.into()));
         }
         Ok(ActionStage::Completed(action_result))
+    }
+}
+
+impl TryFrom<Operation> for ActionState {
+    type Error = Error;
+
+    fn try_from(operation: Operation) -> Result<ActionState, Error> {
+        let metadata = if let Some(metadata) = operation.metadata {
+            if metadata.type_url == "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata" {
+                ExecuteOperationMetadata::decode(metadata.value.as_slice())?
+            } else {
+                return Err(make_input_err!("Incorrect metadata structure in upstream operation."));
+            }
+        } else {
+            return Err(make_input_err!("No metadata in upstream operation."));
+        };
+
+        let action_digest = if let Some(action_digest) = metadata.action_digest {
+            action_digest.try_into()?
+        } else {
+            return Err(make_input_err!("No action digest in upstream operation metadata."));
+        };
+
+        let stage = match metadata.stage {
+            stage if stage == execution_stage::Value::Unknown as i32 => ActionStage::Unknown,
+            stage if stage == execution_stage::Value::CacheCheck as i32 => ActionStage::CacheCheck,
+            stage if stage == execution_stage::Value::Queued as i32 => ActionStage::Queued,
+            stage if stage == execution_stage::Value::Executing as i32 => ActionStage::Executing,
+            stage if stage == execution_stage::Value::Completed as i32 => {
+                if let Some(execute_response) = operation.result {
+                    match execute_response {
+                        LongRunningResult::Error(error) => ActionStage::Error((error.into(), ActionResult::default())),
+                        LongRunningResult::Response(response) => {
+                            // Could be Completed, CompletedFromCache or Error
+                            if response.type_url
+                                == "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse"
+                            {
+                                ExecuteResponse::decode(response.value.as_slice())?.try_into()?
+                            } else {
+                                return Err(make_input_err!(
+                                    "Incorrect result structure for completed upstream action."
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    return Err(make_input_err!("No result data for completed upstream action."));
+                }
+            }
+            stage => {
+                return Err(make_input_err!(
+                    "Unknown execution stage from upstream action {}.",
+                    stage
+                ));
+            }
+        };
+
+        Ok(ActionState {
+            name: operation.name,
+            action_digest,
+            stage,
+        })
     }
 }
 
