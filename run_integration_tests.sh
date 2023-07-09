@@ -41,8 +41,8 @@ EOT
   esac
 done
 
-if [[ $EUID -ne 0 ]]; then
-  echo "This script must be run as root due to docker permission issues" 
+if ! docker --version; then
+  echo "This script must be run as root due to docker permission issues (try with 'sudo')"
   exit 1
 fi
 
