@@ -41,11 +41,6 @@ EOT
   esac
 done
 
-if [[ $EUID -ne 0 ]]; then
-  echo "This script must be run as root due to docker permission issues" 
-  exit 1
-fi
-
 if [[ "${#TEST_PATTERNS[@]}" -eq 0 ]]; then
   TEST_PATTERNS=("*")
 fi
