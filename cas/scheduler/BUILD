@@ -21,10 +21,13 @@ rust_library(
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
-        # TODO(#140) This is a temporary solution while a followup PR creates the actual
-        # trait. For now we are just aliasing the struct to make it easier on code review.
-        ":simple_scheduler",
+        ":action_messages",
+        ":platform_property_manager",
+        ":worker",
+        "//util:error",
+        "@crate_index//:tokio",
     ],
 )
 
@@ -35,9 +38,11 @@ rust_library(
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
+        ":scheduler",
         ":worker",
         "//config",
         "//util:common",
@@ -126,6 +131,7 @@ rust_test(
     deps = [
         ":action_messages",
         ":platform_property_manager",
+        ":scheduler",
         ":simple_scheduler",
         ":worker",
         "//config",

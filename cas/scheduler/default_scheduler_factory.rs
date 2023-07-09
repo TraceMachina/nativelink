@@ -19,15 +19,20 @@ use futures::Future;
 
 use config::schedulers::SchedulerConfig;
 use error::Error;
-use scheduler::Scheduler;
+use scheduler::{ActionScheduler, WorkerScheduler};
 use simple_scheduler::SimpleScheduler;
+
+pub type SchedulerFactoryResults = (Option<Arc<dyn ActionScheduler>>, Option<Arc<dyn WorkerScheduler>>);
 
 pub fn scheduler_factory<'a>(
     scheduler_type_cfg: &'a SchedulerConfig,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Scheduler>, Error>> + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<SchedulerFactoryResults, Error>> + 'a>> {
     Box::pin(async move {
-        let scheduler = match scheduler_type_cfg {
-            SchedulerConfig::simple(config) => Arc::new(SimpleScheduler::new(&config)),
+        let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
+            SchedulerConfig::simple(config) => {
+                let scheduler = Arc::new(SimpleScheduler::new(&config));
+                (Some(scheduler.clone()), Some(scheduler))
+            }
         };
         Ok(scheduler)
     })

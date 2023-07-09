@@ -19,6 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::{stream::unfold, Stream};
 use tokio::sync::mpsc;
+use tokio::time::interval;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -32,7 +33,7 @@ use proto::com::github::allada::turbo_cache::remote_execution::{
     execute_result, worker_api_server::WorkerApi, worker_api_server::WorkerApiServer as Server, ExecuteResult,
     GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
-use scheduler::Scheduler;
+use scheduler::WorkerScheduler;
 use worker::{Worker, WorkerId};
 
 pub type ConnectWorkerStream = Pin<Box<dyn Stream<Item = Result<UpdateForWorker, Status>> + Send + Sync + 'static>>;
@@ -40,12 +41,40 @@ pub type ConnectWorkerStream = Pin<Box<dyn Stream<Item = Result<UpdateForWorker,
 pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
 pub struct WorkerApiServer {
-    scheduler: Arc<Scheduler>,
+    scheduler: Arc<dyn WorkerScheduler>,
     now_fn: NowFn,
 }
 
 impl WorkerApiServer {
-    pub fn new(config: &WorkerApiConfig, schedulers: &HashMap<String, Arc<Scheduler>>) -> Result<Self, Error> {
+    pub fn new(
+        config: &WorkerApiConfig,
+        schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
+    ) -> Result<Self, Error> {
+        for scheduler in schedulers.values() {
+            // This will protect us from holding a reference to the scheduler forever in the
+            // event our ExecutionServer dies. Our scheduler is a weak ref, so the spawn will
+            // eventually see the Arc went away and return.
+            let weak_scheduler = Arc::downgrade(&scheduler);
+            tokio::spawn(async move {
+                let mut ticker = interval(Duration::from_secs(1));
+                loop {
+                    ticker.tick().await;
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Error: system time is now behind unix epoch");
+                    match weak_scheduler.upgrade() {
+                        Some(scheduler) => {
+                            if let Err(e) = scheduler.remove_timedout_workers(timestamp.as_secs()).await {
+                                log::error!("Error while running remove_timedout_workers : {:?}", e);
+                            }
+                        }
+                        // If we fail to upgrade, our service is probably destroyed, so return.
+                        None => return,
+                    }
+                }
+            });
+        }
+
         Self::new_with_now_fn(
             config,
             schedulers,
@@ -61,7 +90,7 @@ impl WorkerApiServer {
     /// representing the current time. Used mostly in  unit tests.
     pub fn new_with_now_fn(
         config: &WorkerApiConfig,
-        schedulers: &HashMap<String, Arc<Scheduler>>,
+        schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
         now_fn: NowFn,
     ) -> Result<Self, Error> {
         let scheduler = schedulers

@@ -31,6 +31,7 @@ use proto::build::bazel::remote::execution::v2::ExecuteRequest;
 use proto::com::github::allada::turbo_cache::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
+use scheduler::{ActionScheduler, WorkerScheduler};
 use simple_scheduler::{SimpleScheduler, INTERNAL_ERROR_EXIT_CODE};
 use worker::{Worker, WorkerId};
 
