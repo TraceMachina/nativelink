@@ -254,6 +254,10 @@ impl LenEntry for FileEntryImpl {
         self.file_size as usize
     }
 
+    fn is_empty(&self) -> bool {
+        self.file_size == 0
+    }
+
     #[inline]
     async fn touch(&self) {
         let result = self
