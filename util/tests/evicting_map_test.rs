@@ -33,6 +33,11 @@ impl LenEntry for BytesWrapper {
     fn len(&self) -> usize {
         Bytes::len(&self.0)
     }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        Bytes::is_empty(&self.0)
+    }
 }
 
 impl From<Bytes> for BytesWrapper {
@@ -273,6 +278,11 @@ mod evicting_map_tests {
             fn len(&self) -> usize {
                 // Note: We are not testing this functionality.
                 return 0;
+            }
+
+            fn is_empty(&self) -> bool {
+                // Note: We are not testing this functionality.
+                return true;
             }
 
             async fn touch(&self) {
