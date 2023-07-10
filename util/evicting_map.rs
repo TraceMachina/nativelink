@@ -64,6 +64,9 @@ pub trait LenEntry {
     /// Length of referenced data.
     fn len(&self) -> usize;
 
+    /// Returns `true` if `self` has zero length.
+    fn is_empty(&self) -> bool;
+
     /// Called when an entry is touched.
     #[inline]
     async fn touch(&self) {}
@@ -92,13 +95,18 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 
     #[inline]
+    fn is_empty(&self) -> bool {
+        T::is_empty(self.as_ref())
+    }
+
+    #[inline]
     async fn touch(&self) {
-        self.as_ref().touch().await
+        self.as_ref().touch().await;
     }
 
     #[inline]
     async fn unref(&self) {
-        self.as_ref().unref().await
+        self.as_ref().unref().await;
     }
 }
 
@@ -148,7 +156,7 @@ where
             };
             serialized_lru
                 .data
-                .push((serialized_digest, eviction_item.seconds_since_anchor as i32));
+                .push((serialized_digest, eviction_item.seconds_since_anchor));
         }
         serialized_lru
     }
@@ -187,11 +195,8 @@ where
     }
 
     async fn evict_items(&self, state: &mut State<T>) {
-        let mut peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
-            entry
-        } else {
-            return;
-        };
+        let Some((_, mut peek_entry)) = state.lru.peek_lru() else { return; };
+
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size) {
             let (key, eviction_item) = state.lru.pop_lru().expect("Tried to peek() then pop() but failed");
             state.sum_store_size -= eviction_item.data.len() as u64;
@@ -246,7 +251,7 @@ where
         };
         let mut state = self.state.lock().await;
 
-        let maybe_old_item = if let Some(old_item) = state.lru.put(digest.into(), eviction_item) {
+        let maybe_old_item = if let Some(old_item) = state.lru.put(digest, eviction_item) {
             state.sum_store_size -= old_item.data.len() as u64;
             // Note: See comment in `unref()` requring global lock of insert/remove.
             old_item.data.unref().await;

@@ -33,6 +33,11 @@ impl LenEntry for BytesWrapper {
     fn len(&self) -> usize {
         Bytes::len(&self.0)
     }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        Bytes::is_empty(&self.0)
+    }
 }
 
 impl From<Bytes> for BytesWrapper {
@@ -272,7 +277,11 @@ mod evicting_map_tests {
         impl LenEntry for MockEntry {
             fn len(&self) -> usize {
                 // Note: We are not testing this functionality.
-                return 0;
+                0
+            }
+
+            fn is_empty(&self) -> bool {
+                unreachable!("We are not testing this functionality");
             }
 
             async fn touch(&self) {
@@ -318,8 +327,8 @@ mod evicting_map_tests {
         let existing_entry = evicting_map.get(&DigestInfo::try_new(HASH1, 0)?).await.unwrap();
         assert_eq!(existing_entry.data, DATA2);
 
-        assert_eq!(entry1.unref_called.load(Ordering::Relaxed), true);
-        assert_eq!(entry2.unref_called.load(Ordering::Relaxed), false);
+        assert!(entry1.unref_called.load(Ordering::Relaxed));
+        assert!(!entry2.unref_called.load(Ordering::Relaxed));
 
         Ok(())
     }
