@@ -47,6 +47,19 @@ pub enum PropertyType {
     Priority,
 }
 
+/// When a worker is being searched for to run a job, this will be used
+/// on how to choose which worker should run the job when multiple
+/// workers are able to run the task.
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Deserialize, Debug, Default)]
+pub enum WorkerAllocationStrategy {
+    /// Prefer workers that have been least recently used to run a job.
+    #[default]
+    LeastRecentlyUsed,
+    /// Prefer workers that have been most recently used to run a job.
+    MostRecentlyUsed,
+}
+
 #[derive(Deserialize, Debug, Default)]
 pub struct SimpleScheduler {
     /// A list of supported platform properties mapped to how these properties
@@ -90,4 +103,8 @@ pub struct SimpleScheduler {
     /// Default: 3
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_job_retries: usize,
+
+    /// The strategy used to assign workers jobs.
+    #[serde(default)]
+    pub allocation_strategy: WorkerAllocationStrategy,
 }

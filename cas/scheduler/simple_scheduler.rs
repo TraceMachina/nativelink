@@ -66,12 +66,15 @@ struct RunningAction {
 
 struct Workers {
     workers: LruCache<WorkerId, Worker>,
+    /// The allocation strategy for workers.
+    allocation_strategy: config::schedulers::WorkerAllocationStrategy,
 }
 
 impl Workers {
-    fn new() -> Self {
+    fn new(allocation_strategy: config::schedulers::WorkerAllocationStrategy) -> Self {
         Self {
             workers: LruCache::unbounded(),
+            allocation_strategy,
         }
     }
 
@@ -127,13 +130,24 @@ impl Workers {
     fn find_worker_for_action_mut<'a>(&'a mut self, awaited_action: &AwaitedAction) -> Option<&'a mut Worker> {
         assert!(matches!(awaited_action.current_state.stage, ActionStage::Queued));
         let action_properties = &awaited_action.action_info.platform_properties;
-        return self.workers.iter_mut().find_map(|(_, w)| {
-            if action_properties.is_satisfied_by(&w.platform_properties) {
-                Some(w)
-            } else {
-                None
+        let mut workers_iter = self.workers.iter_mut();
+        let workers_iter = match self.allocation_strategy {
+            // Use rfind to get the least recently used that satisfies the properties.
+            config::schedulers::WorkerAllocationStrategy::LeastRecentlyUsed => {
+                workers_iter.rfind(|(_, w)| action_properties.is_satisfied_by(&w.platform_properties))
             }
-        });
+            // Use find to get the most recently used that satisfies the properties.
+            config::schedulers::WorkerAllocationStrategy::MostRecentlyUsed => {
+                workers_iter.find(|(_, w)| action_properties.is_satisfied_by(&w.platform_properties))
+            }
+        };
+        let worker_id = workers_iter.map(|(_, w)| &w.id);
+        // We need to "touch" the worker to ensure it gets re-ordered in the LRUCache, since it was selected.
+        if let Some(&worker_id) = worker_id {
+            self.workers.get_mut(&worker_id)
+        } else {
+            None
+        }
     }
 }
 
@@ -156,7 +170,6 @@ struct SimpleSchedulerImpl {
     worker_timeout_s: u64,
     /// Default times a job can retry before failing.
     max_job_retries: usize,
-
     /// Notify task<->worker matching engine that work needs to be done.
     tasks_or_workers_change_notify: Arc<Notify>,
 }
@@ -546,7 +559,7 @@ impl SimpleScheduler {
         let inner = Arc::new(Mutex::new(SimpleSchedulerImpl {
             queued_actions_set: HashSet::new(),
             queued_actions: BTreeMap::new(),
-            workers: Workers::new(),
+            workers: Workers::new(scheduler_cfg.allocation_strategy.clone()),
             active_actions: HashMap::new(),
             worker_timeout_s,
             max_job_retries,
