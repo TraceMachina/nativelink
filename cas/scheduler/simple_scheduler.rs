@@ -127,13 +127,18 @@ impl Workers {
     fn find_worker_for_action_mut<'a>(&'a mut self, awaited_action: &AwaitedAction) -> Option<&'a mut Worker> {
         assert!(matches!(awaited_action.current_state.stage, ActionStage::Queued));
         let action_properties = &awaited_action.action_info.platform_properties;
-        return self.workers.iter_mut().find_map(|(_, w)| {
-            if action_properties.is_satisfied_by(&w.platform_properties) {
-                Some(w)
-            } else {
-                None
-            }
-        });
+        // Use rfind to get the least recently used that satisfies the properties.
+        let worker_id = self
+            .workers
+            .iter_mut()
+            .rfind(|(_, w)| action_properties.is_satisfied_by(&w.platform_properties))
+            .map(|(_, w)| &w.id);
+        // We need to "touch" the worker to ensure it gets re-ordered in the LRUCache, since it was selected.
+        if let Some(&worker_id) = worker_id {
+            self.workers.get_mut(&worker_id)
+        } else {
+            None
+        }
     }
 }
 
