@@ -22,15 +22,22 @@ ARG CC=clang
 
 # Builder that contains the OS dependencies.
 FROM ubuntu:${OS_VERSION} AS builder-deps
-RUN apt-get update && \
+RUN apt update && apt-get -y install curl gnupg && \
+    curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add - && \
+    echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list && \
+    apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        npm \
         git \
         pkg-config \
         libssl-dev \
         clang \
-        python3 && \
-    npm install -g @bazel/bazelisk@1.12.1
+        python3 \
+        yarn \
+        nodejs && \
+    yarn global add @bazel/bazelisk@1.12.1 && \
+    apt-get remove yarn -y && \
+    apt-get autoremove -y && \
+    apt-get clean -y
 SHELL [ "/bin/bash", "-euo", "pipefail", "-c" ]
 
 
