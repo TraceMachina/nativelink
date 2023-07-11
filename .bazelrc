@@ -31,3 +31,18 @@ build --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
 test --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
 # This will make rustfmt only run on `bazel test`.
 test --output_groups=+rustfmt_checks
+
+# TODO: The repo doesn't build with clippy enabled yet and this aspect will fail
+#       even on warnings. To test a single build target:
+#
+#           bazel build --config=clippy mytarget
+#
+#       To test current conformance of the entire repository, run tests with:
+#
+#           bazel test --config=clippy --keep_going ...
+#
+#       When all warnings are fixed the config gate will be removed and clippy
+#       will be enabled by default during tests.
+build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+test:clippy --output_groups=+clippy_checks
+build:clippy --output_groups=+clippy_checks
