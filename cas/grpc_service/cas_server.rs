@@ -51,7 +51,7 @@ impl CasServer {
                 .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", cas_cfg.cas_store))?;
             stores.insert(instance_name.to_string(), store);
         }
-        Ok(CasServer { stores: stores })
+        Ok(CasServer { stores })
     }
 
     pub fn into_service(self) -> Server<CasServer> {
@@ -166,7 +166,7 @@ impl CasServer {
         while let Some(result) = futures.next().await {
             responses.push(result.err_tip(|| "Internal error joining future")?);
         }
-        Ok(Response::new(BatchUpdateBlobsResponse { responses: responses }))
+        Ok(Response::new(BatchUpdateBlobsResponse { responses }))
     }
 
     async fn inner_batch_read_blobs(
@@ -232,7 +232,7 @@ impl CasServer {
         while let Some(result) = futures.next().await {
             responses.push(result.err_tip(|| "Internal error joining future")?);
         }
-        Ok(Response::new(BatchReadBlobsResponse { responses: responses }))
+        Ok(Response::new(BatchReadBlobsResponse { responses }))
     }
 
     async fn inner_get_tree(&self, grpc_request: Request<GetTreeRequest>) -> Result<Response<GetTreeStream>, Error> {
@@ -254,7 +254,7 @@ impl CasServer {
             // let stream = grpc_store.read(Request::new(read_request)).await?.into_inner();
             return Ok(Response::new(Box::pin(stream)));
         }
-        return Err(make_err!(Code::Unimplemented, "get_tree is not implemented"));
+        Err(make_err!(Code::Unimplemented, "get_tree is not implemented"))
     }
 }
 
@@ -269,7 +269,7 @@ impl ContentAddressableStorage for CasServer {
         let resp = self
             .inner_find_missing_blobs(grpc_request)
             .await
-            .err_tip(|| format!("Failed on find_missing_blobs() command"))
+            .err_tip(|| "Failed on find_missing_blobs() command")
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() {
@@ -289,7 +289,7 @@ impl ContentAddressableStorage for CasServer {
         let resp = self
             .inner_batch_update_blobs(grpc_request)
             .await
-            .err_tip(|| format!("Failed on batch_update_blobs() command"))
+            .err_tip(|| "Failed on batch_update_blobs() command")
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() {
@@ -309,7 +309,7 @@ impl ContentAddressableStorage for CasServer {
         let resp = self
             .inner_batch_read_blobs(grpc_request)
             .await
-            .err_tip(|| format!("Failed on batch_read_blobs() command"))
+            .err_tip(|| "Failed on batch_read_blobs() command")
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() {
@@ -327,7 +327,7 @@ impl ContentAddressableStorage for CasServer {
         let resp: Result<Response<Self::GetTreeStream>, Status> = self
             .inner_get_tree(grpc_request)
             .await
-            .err_tip(|| format!("Failed on get_tree() command"))
+            .err_tip(|| "Failed on get_tree() command")
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         match &resp {

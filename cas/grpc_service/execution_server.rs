@@ -42,7 +42,7 @@ struct InstanceInfo {
 }
 
 impl InstanceInfo {
-    fn cas_pin<'a>(&'a self) -> Pin<&'a dyn Store> {
+    fn cas_pin(&self) -> Pin<&dyn Store> {
         Pin::new(self.cas_store.as_ref())
     }
 
