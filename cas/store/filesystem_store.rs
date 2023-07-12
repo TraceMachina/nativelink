@@ -294,7 +294,7 @@ impl LenEntry for FileEntryImpl {
                 return;
             }
             let from_path = encoded_file_path.get_file_path();
-            let mut new_digest = encoded_file_path.digest.clone();
+            let mut new_digest = encoded_file_path.digest;
             make_temp_digest(&mut new_digest);
 
             let to_path = to_full_path_from_digest(&encoded_file_path.shared_context.temp_path, &new_digest);
@@ -346,7 +346,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             RwLock::new(EncodedFilePath {
                 shared_context: shared_context.clone(),
                 path_type: PathType::Content,
-                digest: digest.clone(),
+                digest,
             }),
         );
         let time_since_anchor = anchor_time
@@ -534,7 +534,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 &final_digest,
             );
 
-            self.evicting_map.insert(final_digest.clone(), entry.clone()).await;
+            self.evicting_map.insert(final_digest, entry.clone()).await;
 
             let result = fs::rename(encoded_file_path.get_file_path(), &final_path)
                 .await
@@ -575,7 +575,7 @@ impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
         reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let mut temp_digest = digest.clone();
+        let mut temp_digest = digest;
         make_temp_digest(&mut temp_digest);
 
         let (entry, temp_file, temp_full_path) = Fe::make_and_open_file(EncodedFilePath {

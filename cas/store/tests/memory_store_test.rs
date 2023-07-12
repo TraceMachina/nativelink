@@ -79,7 +79,7 @@ mod memory_store_tests {
 
         const VALUE1: &str = "1234";
         let digest = DigestInfo::try_new(VALID_HASH1, 4).unwrap();
-        store.update_oneshot(digest.clone(), VALUE1.into()).await?;
+        store.update_oneshot(digest, VALUE1.into()).await?;
 
         let store_data = store.get_part_unchunked(digest, 1, Some(2), None).await?;
 

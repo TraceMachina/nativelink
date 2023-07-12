@@ -204,9 +204,9 @@ mod filesystem_store_tests {
             );
 
             // Insert dummy value into store.
-            store.as_ref().update_oneshot(digest.clone(), VALUE1.into()).await?;
+            store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
             assert_eq!(
-                store.as_ref().has(digest.clone()).await,
+                store.as_ref().has(digest).await,
                 Ok(Some(VALUE1.len())),
                 "Expected filesystem store to have hash: {}",
                 HASH1
@@ -259,7 +259,7 @@ mod filesystem_store_tests {
         );
 
         // Insert data into store.
-        store.as_ref().update_oneshot(digest1.clone(), VALUE1.into()).await?;
+        store.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
         let expected_file_name = format!("{}/{}-{}", content_path, digest1.str(), digest1.size_bytes);
         {
@@ -269,7 +269,7 @@ mod filesystem_store_tests {
         }
 
         // Replace content.
-        store.as_ref().update_oneshot(digest1.clone(), VALUE2.into()).await?;
+        store.as_ref().update_oneshot(digest1, VALUE2.into()).await?;
 
         {
             // Check to ensure our file now has new content.
@@ -330,14 +330,11 @@ mod filesystem_store_tests {
 
         let store_pin = Pin::new(store.as_ref());
         // Insert data into store.
-        store_pin
-            .as_ref()
-            .update_oneshot(digest1.clone(), VALUE1.into())
-            .await?;
+        store_pin.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
         let (writer, mut reader) = make_buf_channel_pair();
         let store_clone = store.clone();
-        let digest1_clone = digest1.clone();
+        let digest1_clone = digest1;
         tokio::spawn(async move { Pin::new(store_clone.as_ref()).get(digest1_clone, writer).await });
 
         {
@@ -349,10 +346,7 @@ mod filesystem_store_tests {
         }
 
         // Replace content.
-        store_pin
-            .as_ref()
-            .update_oneshot(digest1.clone(), VALUE2.into())
-            .await?;
+        store_pin.as_ref().update_oneshot(digest1, VALUE2.into()).await?;
 
         // Ensure we let any background tasks finish.
         tokio::task::yield_now().await;
@@ -440,10 +434,7 @@ mod filesystem_store_tests {
 
         let store_pin = Pin::new(store.as_ref());
         // Insert data into store.
-        store_pin
-            .as_ref()
-            .update_oneshot(digest1.clone(), VALUE1.into())
-            .await?;
+        store_pin.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
         let mut reader = {
             let (writer, reader) = make_buf_channel_pair();
@@ -456,10 +447,7 @@ mod filesystem_store_tests {
         assert!(reader.peek().await.is_ok(), "Could not peek into reader");
 
         // Insert new content. This will evict the old item.
-        store_pin
-            .as_ref()
-            .update_oneshot(digest2.clone(), VALUE2.into())
-            .await?;
+        store_pin.as_ref().update_oneshot(digest2, VALUE2.into()).await?;
 
         // Ensure we let any background tasks finish.
         tokio::task::yield_now().await;
@@ -524,7 +512,7 @@ mod filesystem_store_tests {
             .await?,
         );
         // Insert data into store.
-        store.as_ref().update_oneshot(digest1.clone(), VALUE1.into()).await?;
+        store.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
         let file_entry = store.get_file_entry_for_digest(&digest1).await?;
         file_entry
@@ -539,10 +527,7 @@ mod filesystem_store_tests {
             .await?;
 
         // Now touch digest1.
-        let data = store
-            .as_ref()
-            .get_part_unchunked(digest1.clone(), 0, None, None)
-            .await?;
+        let data = store.as_ref().get_part_unchunked(digest1, 0, None, None).await?;
         assert_eq!(data, VALUE1.as_bytes());
 
         file_entry
@@ -613,7 +598,7 @@ mod filesystem_store_tests {
             .await?,
         );
         // Insert data into store.
-        store.as_ref().update_oneshot(digest1.clone(), VALUE1.into()).await?;
+        store.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
         let file_entry = store.get_file_entry_for_digest(&digest1).await?;
         file_entry
@@ -628,10 +613,7 @@ mod filesystem_store_tests {
             .await?;
 
         // Now touch digest1.
-        let data = store
-            .as_ref()
-            .get_part_unchunked(digest1.clone(), 0, None, None)
-            .await?;
+        let data = store.as_ref().get_part_unchunked(digest1, 0, None, None).await?;
         assert_eq!(data, VALUE1.as_bytes());
 
         file_entry
@@ -662,7 +644,7 @@ mod filesystem_store_tests {
             .await?,
         );
         // Insert data into store.
-        store.as_ref().update_oneshot(digest.clone(), VALUE1.into()).await?;
+        store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
         let file_entry = store.get_file_entry_for_digest(&digest).await?;
         {
             // The file contents should equal our initial data.
@@ -673,7 +655,7 @@ mod filesystem_store_tests {
         }
 
         // Now replace the data.
-        store.as_ref().update_oneshot(digest.clone(), VALUE2.into()).await?;
+        store.as_ref().update_oneshot(digest, VALUE2.into()).await?;
 
         {
             // The file contents still equal our old data.
@@ -721,14 +703,8 @@ mod filesystem_store_tests {
             .await?,
         );
         // Insert data into store.
-        store
-            .as_ref()
-            .update_oneshot(small_digest.clone(), VALUE1.into())
-            .await?;
-        store
-            .as_ref()
-            .update_oneshot(big_digest.clone(), BIG_VALUE.into())
-            .await?;
+        store.as_ref().update_oneshot(small_digest, VALUE1.into()).await?;
+        store.as_ref().update_oneshot(big_digest, BIG_VALUE.into()).await?;
 
         {
             // Our first digest should have been unrefed exactly once.
@@ -771,7 +747,7 @@ mod filesystem_store_tests {
 
         let (mut tx, rx) = make_buf_channel_pair();
         let update_fut = Rc::new(RefCell::new(store.as_ref().update(
-            digest.clone(),
+            digest,
             rx,
             UploadSizeInfo::MaxSize(100),
         )));

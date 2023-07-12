@@ -286,7 +286,7 @@ pub mod execution_response_tests {
             load_timestamp: make_system_time(0),
             insert_timestamp: make_system_time(0),
             unique_qualifier: ActionInfoHashKey {
-                digest: action_digest.clone(),
+                digest: action_digest,
                 salt: SALT,
             },
             skip_cache_lookup: true,
@@ -303,7 +303,7 @@ pub mod execution_response_tests {
         );
         let result = ExecuteResult {
             worker_id: test_context.worker_id.to_string(),
-            action_digest: Some(action_digest.clone().into()),
+            action_digest: Some(action_digest.into()),
             salt: SALT,
             result: Some(execute_result::Result::ExecuteResponse(ExecuteResponse {
                 result: Some(ProtoActionResult {

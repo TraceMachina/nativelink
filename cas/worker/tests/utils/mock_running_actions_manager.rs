@@ -27,7 +27,7 @@ use running_actions_manager::{RunningAction, RunningActionsManager};
 #[derive(Debug)]
 enum RunningActionManagerCalls {
     CreateAndAddAction((String, StartExecute)),
-    CacheActionResult((DigestInfo, ActionResult)),
+    CacheActionResult(Box<(DigestInfo, ActionResult)>),
 }
 
 enum RunningActionManagerReturns {
@@ -89,7 +89,7 @@ impl MockRunningActionsManager {
     pub async fn expect_cache_action_result(&self) -> (DigestInfo, ActionResult) {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock.recv().await.expect("Could not recieve msg in mpsc") {
-            RunningActionManagerCalls::CacheActionResult(req) => req,
+            RunningActionManagerCalls::CacheActionResult(req) => *req,
             _ => panic!("Got incorrect call waiting for cache_action_result"),
         }
     }
@@ -123,10 +123,10 @@ impl RunningActionsManager for MockRunningActionsManager {
 
     async fn cache_action_result(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error> {
         self.tx_call
-            .send(RunningActionManagerCalls::CacheActionResult((
+            .send(RunningActionManagerCalls::CacheActionResult(Box::new((
                 action_digest,
                 action_result,
-            )))
+            ))))
             .expect("Could not send request to mpsc");
         Ok(())
     }
@@ -151,7 +151,7 @@ enum RunningActionReturns {
     Execute(Result<Arc<MockRunningAction>, Error>),
     UploadResults(Result<Arc<MockRunningAction>, Error>),
     Cleanup(Result<Arc<MockRunningAction>, Error>),
-    GetFinishedResult(Result<ActionResult, Error>),
+    GetFinishedResult(Box<Result<ActionResult, Error>>),
 }
 
 #[derive(Debug)]
@@ -264,7 +264,7 @@ impl MockRunningAction {
             req => panic!("expect_get_finished_result expected GetFinishedResult, got : {req:?}"),
         };
         self.tx_resp
-            .send(RunningActionReturns::GetFinishedResult(result))
+            .send(RunningActionReturns::GetFinishedResult(Box::new(result)))
             .expect("Could not send request to mpsc");
         Ok(())
     }
@@ -322,7 +322,7 @@ impl RunningAction for MockRunningAction {
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock.recv().await.expect("Could not receive msg in mpsc") {
-            RunningActionReturns::GetFinishedResult(result) => result,
+            RunningActionReturns::GetFinishedResult(result) => *result,
             resp => panic!("execution_response expected GetFinishedResult response, received {resp:?}"),
         }
     }

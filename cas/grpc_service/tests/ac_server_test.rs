@@ -42,7 +42,7 @@ async fn insert_into_store<T: Message>(
     action_result.encode(&mut store_data)?;
     let data_len = store_data.len();
     let digest = DigestInfo::try_new(hash, action_size)?;
-    store.update_oneshot(digest.clone(), store_data.freeze()).await?;
+    store.update_oneshot(digest, store_data.freeze()).await?;
     Ok(data_len.try_into().unwrap())
 }
 

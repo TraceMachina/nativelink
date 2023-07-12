@@ -205,7 +205,7 @@ mod local_worker_tests {
             load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
-                digest: action_digest.clone(),
+                digest: action_digest,
                 salt: SALT,
             },
             skip_cache_lookup: true,
@@ -262,7 +262,7 @@ mod local_worker_tests {
 
         // Expect the action to be updated in the action cache.
         let (stored_digest, stored_result) = test_context.actions_manager.expect_cache_action_result().await;
-        assert_eq!(stored_digest, action_digest.clone());
+        assert_eq!(stored_digest, action_digest);
         assert_eq!(stored_result, action_result.clone());
 
         // Now our client should be notified that our runner finished.

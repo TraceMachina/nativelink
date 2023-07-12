@@ -106,7 +106,7 @@ impl StoreTrait for DedupStore {
         let index_entries = {
             let maybe_data = self
                 .pin_index_store()
-                .get_part_unchunked(digest.clone(), 0, None, Some(self.upload_normal_size))
+                .get_part_unchunked(digest, 0, None, Some(self.upload_normal_size))
                 .await
                 .err_tip(|| "Failed to read index store in dedup store");
             let data = match maybe_data {
@@ -137,7 +137,7 @@ impl StoreTrait for DedupStore {
             .map(move |index_entry| {
                 let content_store = self.content_store.clone();
                 async move {
-                    let digest = DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes as i64);
+                    let digest = DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes);
                     Pin::new(content_store.as_ref())
                         .has(digest)
                         .await
@@ -187,7 +187,7 @@ impl StoreTrait for DedupStore {
 
                     let content_store_pin = Pin::new(content_store.as_ref());
                     let digest = DigestInfo::new(hash.into(), frame.len() as i64);
-                    if content_store_pin.has(digest.clone()).await?.is_some() {
+                    if content_store_pin.has(digest).await?.is_some() {
                         // If our store has this digest, we don't need to upload it.
                         return Ok(index_entry);
                     }

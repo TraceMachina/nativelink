@@ -62,12 +62,12 @@ mod dedup_store_tests {
         let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
 
         store
-            .update_oneshot(digest.clone(), original_data.clone().into())
+            .update_oneshot(digest, original_data.clone().into())
             .await
             .err_tip(|| "Failed to write data to dedup store")?;
 
         let rt_data = store
-            .get_part_unchunked(digest.clone(), 0, None, Some(original_data.len()))
+            .get_part_unchunked(digest, 0, None, Some(original_data.len()))
             .await
             .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -89,7 +89,7 @@ mod dedup_store_tests {
         let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
 
         store
-            .update_oneshot(digest.clone(), original_data.into())
+            .update_oneshot(digest, original_data.into())
             .await
             .err_tip(|| "Failed to write data to dedup store")?;
 
@@ -103,7 +103,7 @@ mod dedup_store_tests {
 
         assert_eq!(did_delete, true, "Expected item to exist in store");
 
-        let result = store.get_part_unchunked(digest.clone(), 0, None, None).await;
+        let result = store.get_part_unchunked(digest, 0, None, None).await;
         assert!(result.is_err(), "Expected result to be an error");
         assert_eq!(
             result.unwrap_err().code,
@@ -130,13 +130,13 @@ mod dedup_store_tests {
         let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
         store
-            .update_oneshot(digest.clone(), original_data.clone().into())
+            .update_oneshot(digest, original_data.clone().into())
             .await
             .err_tip(|| "Failed to write data to dedup store")?;
 
         const ONE_THIRD_SZ: usize = DATA_SIZE / 3;
         let rt_data = store
-            .get_part_unchunked(digest.clone(), ONE_THIRD_SZ, Some(ONE_THIRD_SZ), None)
+            .get_part_unchunked(digest, ONE_THIRD_SZ, Some(ONE_THIRD_SZ), None)
             .await
             .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -169,13 +169,13 @@ mod dedup_store_tests {
         let digest1 = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
         store_pin
-            .update_oneshot(digest1.clone(), original_data.clone().into())
+            .update_oneshot(digest1, original_data.clone().into())
             .await
             .err_tip(|| "Failed to write data to dedup store")?;
 
         {
             // Check to ensure we our baseline `.has()` succeeds.
-            let size_info = store_pin.has(digest1.clone()).await.err_tip(|| "Failed to run .has")?;
+            let size_info = store_pin.has(digest1).await.err_tip(|| "Failed to run .has")?;
             assert_eq!(size_info, Some(DATA_SIZE), "Expected sizes to match");
         }
         {
@@ -185,7 +185,7 @@ mod dedup_store_tests {
             const DATA2: &str = "1234";
             let digest2 = DigestInfo::try_new(VALID_HASH2, DATA2.len()).unwrap();
             store_pin
-                .update_oneshot(digest2.clone(), DATA2.into())
+                .update_oneshot(digest2, DATA2.into())
                 .await
                 .err_tip(|| "Failed to write data to dedup store")?;
 
@@ -223,7 +223,7 @@ mod dedup_store_tests {
         let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
         {
-            let size_info = store_pin.has(digest.clone()).await.err_tip(|| "Failed to run .has")?;
+            let size_info = store_pin.has(digest).await.err_tip(|| "Failed to run .has")?;
             assert_eq!(size_info, None, "Expected None to be returned, got {:?}", size_info);
         }
         Ok(())

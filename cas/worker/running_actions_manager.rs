@@ -100,13 +100,12 @@ pub fn download_to_directory<'a>(
                 unix_mode = properties.unix_mode;
             }
             let is_executable = file.is_executable;
-            let digest_copy = digest.clone();
             futures.push(
                 cas_store
-                    .populate_fast_store(digest.clone())
+                    .populate_fast_store(digest)
                     .and_then(move |_| async move {
                         let file_entry = filesystem_store
-                            .get_file_entry_for_digest(&digest_copy)
+                            .get_file_entry_for_digest(&digest)
                             .await
                             .err_tip(|| "During hard link")?;
                         file_entry
@@ -185,7 +184,7 @@ async fn upload_file<'a>(
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
     file_handle.rewind().await.err_tip(|| "Could not rewind file")?;
-    upload_to_store(cas_store, digest.clone(), &mut file_handle)
+    upload_to_store(cas_store, digest, &mut file_handle)
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
 
@@ -631,14 +630,14 @@ impl RunningAction for RunningActionImpl {
                     let cursor = Cursor::new(execution_result.stdout);
                     let (digest, mut cursor) = compute_digest(cursor).await?;
                     cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
-                    upload_to_store(cas_store, digest.clone(), &mut cursor).await?;
+                    upload_to_store(cas_store, digest, &mut cursor).await?;
                     Result::<DigestInfo, Error>::Ok(digest)
                 },
                 async {
                     let cursor = Cursor::new(execution_result.stderr);
                     let (digest, mut cursor) = compute_digest(cursor).await?;
                     cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
-                    upload_to_store(cas_store, digest.clone(), &mut cursor).await?;
+                    upload_to_store(cas_store, digest, &mut cursor).await?;
                     Result::<DigestInfo, Error>::Ok(digest)
                 },
             )
@@ -1006,7 +1005,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             let update_action_request = UpdateActionResultRequest {
                 // This is populated by `update_action_result`.
                 instance_name: String::new(),
-                action_digest: Some(action_digest.clone().into()),
+                action_digest: Some(action_digest.into()),
                 action_result: Some(proto_action_result),
                 results_cache_policy: None,
             };
@@ -1021,7 +1020,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 .encode(&mut store_data)
                 .err_tip(|| "Encoding ActionResult for caching")?;
             Pin::new(self.ac_store.as_ref())
-                .update_oneshot(action_digest.clone(), store_data.freeze())
+                .update_oneshot(action_digest, store_data.freeze())
                 .await
                 .err_tip(|| "Caching ActionResult")?;
         };
