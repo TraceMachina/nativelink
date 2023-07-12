@@ -103,7 +103,7 @@ mod async_fixed_buffer_tests {
         let raw_fixed_buffer = AsyncFixedBuf::new(vec![0u8; 32].into_boxed_slice());
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
-        tx.write_all(&vec![255u8; 5]).await?;
+        tx.write_all(&[255u8; 5]).await?;
         {
             let mut read_buf = vec![0u8; 20];
             let fut = rx.read_to_end(&mut read_buf);
@@ -141,7 +141,7 @@ mod async_fixed_buffer_tests {
         let stream_closer_fut = raw_fixed_buffer.get_closer();
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
-        tx.write_all(&vec![255u8; 4]).await?;
+        tx.write_all(&[255u8; 4]).await?;
 
         let mut read_buffer = vec![0u8; 5];
         let read_fut = rx.read_exact(&mut read_buffer[..]);

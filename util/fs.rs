@@ -20,7 +20,6 @@ use std::task::Context;
 use std::task::Poll;
 
 use error::{make_err, Code, Error, ResultExt};
-use log;
 use tokio::io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf, SeekFrom};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -214,7 +213,7 @@ pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir<'static>, Error>
         .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
     Ok(ReadDir {
         permit,
-        inner: tokio::fs::read_dir(path).await.map_err(|e| Into::<Error>::into(e))?,
+        inner: tokio::fs::read_dir(path).await.map_err(Into::<Error>::into)?,
     })
 }
 

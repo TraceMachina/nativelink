@@ -17,7 +17,6 @@ use std::marker::PhantomData;
 use std::str::FromStr;
 
 use serde::{de, Deserialize, Deserializer};
-use shellexpand;
 
 /// Helper for serde macro so you can use shellexpand variables in the json configuration
 /// files when the number is a numeric type.

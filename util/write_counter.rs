@@ -38,11 +38,11 @@ impl<T: AsyncWrite> WriteCounter<T> {
         }
     }
 
-    pub fn inner_ref<'a>(&'a self) -> &'a T {
+    pub fn inner_ref(&self) -> &T {
         &self.inner
     }
 
-    pub fn inner_mut<'a>(&'a mut self) -> &'a mut T {
+    pub fn inner_mut(&mut self) -> &mut T {
         &mut self.inner
     }
 

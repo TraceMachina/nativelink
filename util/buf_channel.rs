@@ -41,7 +41,7 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
             close_rx,
         },
         DropCloserReadHalf {
-            rx: rx,
+            rx,
             partial: None,
             close_tx: Some(close_tx),
             close_after_size: u64::MAX,
@@ -101,7 +101,7 @@ impl DropCloserWriteHalf {
             match reader.next().await {
                 Some(maybe_chunk) => {
                     let chunk = maybe_chunk.err_tip(|| "Failed to forward message")?;
-                    if chunk.len() == 0 {
+                    if chunk.is_empty() {
                         // Don't send EOF here. We instead rely on None result to be EOF.
                         continue;
                     }
@@ -210,7 +210,7 @@ impl DropCloserReadHalf {
         }
     }
 
-    pub async fn peek<'a>(&'a mut self) -> &'a Result<Bytes, Error> {
+    pub async fn peek(&mut self) -> &Result<Bytes, Error> {
         assert!(
             self.close_after_size == u64::MAX,
             "Can't call peek() when take() was called"
@@ -219,7 +219,7 @@ impl DropCloserReadHalf {
             self.partial = Some(self.recv().await);
         }
         if let Some(result) = &self.partial {
-            return &result;
+            return result;
         }
         unreachable!();
     }
@@ -240,7 +240,7 @@ impl DropCloserReadHalf {
                 .await
                 .err_tip(|| "Failed to recv first chunk in collect_all_with_size_hint")?;
 
-            if first_chunk.len() == 0 {
+            if first_chunk.is_empty() {
                 return Ok(first_chunk);
             }
 
@@ -249,7 +249,7 @@ impl DropCloserReadHalf {
                 .await
                 .err_tip(|| "Failed to recv second chunk in collect_all_with_size_hint")?;
 
-            if second_chunk.len() == 0 {
+            if second_chunk.is_empty() {
                 return Ok(first_chunk);
             }
             (first_chunk, second_chunk)
@@ -264,7 +264,7 @@ impl DropCloserReadHalf {
                 .recv()
                 .await
                 .err_tip(|| "Failed to recv in collect_all_with_size_hint")?;
-            if chunk.len() == 0 {
+            if chunk.is_empty() {
                 break; // EOF.
             }
             buf.put(chunk);
@@ -288,7 +288,7 @@ impl DropCloserReadHalf {
             }
             assert!(partial.is_none(), "Partial should have been consumed during the recv()");
             let local_partial = chunk.split_off(desired_size - current_size);
-            *partial = if local_partial.len() == 0 {
+            *partial = if local_partial.is_empty() {
                 None
             } else {
                 Some(Ok(local_partial))
@@ -303,16 +303,16 @@ impl DropCloserReadHalf {
             // we will then go the slow path and actually copy our data.
             let mut first_chunk = self.recv().await.err_tip(|| "During first buf_channel::take()")?;
             populate_partial_if_needed(0, size, &mut first_chunk, &mut self.partial);
-            if first_chunk.len() == 0 || first_chunk.len() >= size {
+            if first_chunk.is_empty() || first_chunk.len() >= size {
                 assert!(
-                    first_chunk.len() == 0 || first_chunk.len() == size,
+                    first_chunk.is_empty() || first_chunk.len() == size,
                     "Length should be exactly size here"
                 );
                 return Ok(first_chunk);
             }
 
             let mut second_chunk = self.recv().await.err_tip(|| "During second buf_channel::take()")?;
-            if second_chunk.len() == 0 {
+            if second_chunk.is_empty() {
                 assert!(
                     first_chunk.len() <= size,
                     "Length should never be larger than size here"
@@ -328,7 +328,7 @@ impl DropCloserReadHalf {
 
         loop {
             let mut chunk = self.recv().await.err_tip(|| "During buf_channel::take()")?;
-            if chunk.len() == 0 {
+            if chunk.is_empty() {
                 break; // EOF.
             }
 
@@ -353,7 +353,7 @@ impl Stream for DropCloserReadHalf {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Box::pin(self.recv()).as_mut().poll(cx).map(|result| match result {
             Ok(bytes) => {
-                if bytes.len() == 0 {
+                if bytes.is_empty() {
                     return None;
                 }
                 Some(Ok(bytes))

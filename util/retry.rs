@@ -33,7 +33,7 @@ impl Iterator for ExponentialBackoff {
     type Item = Duration;
 
     fn next(&mut self) -> Option<Duration> {
-        self.current = self.current * 2;
+        self.current *= 2;
         Some(self.current)
     }
 }
@@ -76,7 +76,7 @@ impl Retrier {
                     None => return Err(make_err!(Code::Internal, "Retry stream ended abruptly",)),
                     Some(RetryResult::Ok(value)) => return Ok(value),
                     Some(RetryResult::Err(e)) => return Err(e),
-                    Some(RetryResult::Retry(e)) => (self.sleep_fn)(iter.next().ok_or_else(|| e)?).await,
+                    Some(RetryResult::Retry(e)) => (self.sleep_fn)(iter.next().ok_or(e)?).await,
                 }
             }
         })

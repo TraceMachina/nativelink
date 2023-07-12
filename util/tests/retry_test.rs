@@ -31,7 +31,7 @@ struct MockDurationIterator {
 
 impl MockDurationIterator {
     pub fn new(duration: Duration) -> Self {
-        MockDurationIterator { duration: duration }
+        MockDurationIterator { duration }
     }
 }
 
@@ -134,7 +134,6 @@ mod retry_tests {
                 // Remember: This function is called only on retries, not the first run.
                 sleep_fn_run_count_copy.fetch_add(1, Ordering::Relaxed);
                 assert_eq!(duration, Duration::from_millis(EXPECTED_MS));
-                ()
             })
         }));
 
