@@ -16,14 +16,13 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::future::Future;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{BufMut, Bytes, BytesMut};
 pub use fs;
 use hex::FromHex;
-use lazy_init::LazyTransform;
 pub use log;
 use prost::Message;
 use proto::build::bazel::remote::execution::v2::Digest;
@@ -32,16 +31,14 @@ use tokio::task::{JoinError, JoinHandle};
 
 use error::{make_input_err, Error, ResultExt};
 
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash)]
+#[repr(C)]
 pub struct DigestInfo {
-    /// Possibly the size of the digest in bytes. This should only be trusted
-    /// if `truest_size` is true.
-    pub size_bytes: i64,
-
     /// Raw hash in packed form.
     pub packed_hash: [u8; 32],
 
-    /// Cached string representation of the `packed_hash`.
-    str_hash: LazyTransform<Option<String>, String>,
+    /// Possibly the size of the digest in bytes.
+    pub size_bytes: i64,
 }
 
 impl DigestInfo {
@@ -49,7 +46,6 @@ impl DigestInfo {
         DigestInfo {
             size_bytes,
             packed_hash,
-            str_hash: LazyTransform::new(None),
         }
     }
 
@@ -64,13 +60,11 @@ impl DigestInfo {
         Ok(DigestInfo {
             size_bytes,
             packed_hash,
-            str_hash: LazyTransform::new(None),
         })
     }
 
-    pub fn str(&self) -> &str {
-        self.str_hash
-            .get_or_create(|v| v.unwrap_or_else(|| hex::encode(self.packed_hash)))
+    pub fn str(&self) -> String {
+        hex::encode(self.packed_hash)
     }
 
     pub fn empty_digest() -> DigestInfo {
@@ -81,7 +75,6 @@ impl DigestInfo {
                 0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24, 0x27,
                 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
             ],
-            str_hash: LazyTransform::new(None),
         }
     }
 }
@@ -95,31 +88,6 @@ impl fmt::Debug for DigestInfo {
     }
 }
 
-impl PartialEq for DigestInfo {
-    fn eq(&self, other: &Self) -> bool {
-        self.size_bytes == other.size_bytes && self.packed_hash == other.packed_hash
-    }
-}
-
-impl Eq for DigestInfo {}
-
-impl Hash for DigestInfo {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.size_bytes.hash(state);
-        self.packed_hash.hash(state);
-    }
-}
-
-impl Clone for DigestInfo {
-    fn clone(&self) -> Self {
-        DigestInfo {
-            size_bytes: self.size_bytes,
-            packed_hash: self.packed_hash,
-            str_hash: LazyTransform::new(None),
-        }
-    }
-}
-
 impl TryFrom<Digest> for DigestInfo {
     type Error = Error;
 
@@ -129,20 +97,14 @@ impl TryFrom<Digest> for DigestInfo {
         Ok(DigestInfo {
             size_bytes: digest.size_bytes,
             packed_hash,
-            str_hash: LazyTransform::new(Some(digest.hash)),
         })
     }
 }
 
 impl From<DigestInfo> for Digest {
     fn from(val: DigestInfo) -> Self {
-        let packed_hash = val.packed_hash;
-        let hash = val
-            .str_hash
-            .into_inner()
-            .unwrap_or_else(|v| v.unwrap_or_else(|| hex::encode(packed_hash)));
         Digest {
-            hash,
+            hash: val.str(),
             size_bytes: val.size_bytes,
         }
     }
@@ -151,23 +113,10 @@ impl From<DigestInfo> for Digest {
 impl From<&DigestInfo> for Digest {
     fn from(val: &DigestInfo) -> Self {
         Digest {
-            hash: val.str().to_string(),
+            hash: val.str(),
             size_bytes: val.size_bytes,
         }
     }
-}
-
-impl From<SerializableDigestInfo> for DigestInfo {
-    fn from(val: SerializableDigestInfo) -> Self {
-        DigestInfo::new(val.hash, val.size_bytes as i64)
-    }
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
-#[repr(C)]
-pub struct SerializableDigestInfo {
-    pub hash: [u8; 32],
-    pub size_bytes: u64,
 }
 
 /// Simple wrapper that will abort a future that is running in another spawn in the
