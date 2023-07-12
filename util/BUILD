@@ -24,7 +24,6 @@ rust_library(
         "//proto",
         "@crate_index//:bytes",
         "@crate_index//:hex",
-        "@crate_index//:lazy-init",
         "@crate_index//:log",
         "@crate_index//:prost",
         "@crate_index//:serde",
