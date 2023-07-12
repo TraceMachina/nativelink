@@ -16,7 +16,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use common::DigestInfo;
-use config;
 use error::Error;
 use memory_store::MemoryStore;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
@@ -81,7 +80,7 @@ mod fast_slow_store_tests {
         let store = Pin::new(store.as_ref());
 
         let original_data = make_random_data(20 * MEGABYTE_SZ);
-        let digest = DigestInfo::try_new(&VALID_HASH, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
         store
             .update_oneshot(digest.clone(), original_data.clone().into())
             .await?;
@@ -101,7 +100,7 @@ mod fast_slow_store_tests {
         let slow_store = Pin::new(slow_store.as_ref());
 
         let original_data = make_random_data(MEGABYTE_SZ);
-        let digest = DigestInfo::try_new(&VALID_HASH, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
         slow_store
             .update_oneshot(digest.clone(), original_data.clone().into())
             .await?;
@@ -130,7 +129,7 @@ mod fast_slow_store_tests {
         let slow_store = Pin::new(slow_store.as_ref());
 
         let original_data = make_random_data(MEGABYTE_SZ);
-        let digest = DigestInfo::try_new(&VALID_HASH, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
         slow_store
             .update_oneshot(digest.clone(), original_data.clone().into())
             .await?;

@@ -22,7 +22,6 @@ mod memory_store_tests {
     use error::Error;
 
     use common::DigestInfo;
-    use config;
     use memory_store::MemoryStore;
     use traits::StoreTrait;
 
@@ -37,10 +36,10 @@ mod memory_store_tests {
             // Insert dummy value into store.
             const VALUE1: &str = "13";
             store
-                .update_oneshot(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?, VALUE1.into())
+                .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, VALUE1.into())
                 .await?;
             assert_eq!(
-                store.has(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?).await,
+                store.has(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?).await,
                 Ok(Some(VALUE1.len())),
                 "Expected memory store to have hash: {}",
                 VALID_HASH1
@@ -51,10 +50,10 @@ mod memory_store_tests {
         let store_data = {
             // Now change value we just inserted.
             store
-                .update_oneshot(DigestInfo::try_new(&VALID_HASH1, VALUE2.len())?, VALUE2.into())
+                .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE2.len())?, VALUE2.into())
                 .await?;
             store
-                .get_part_unchunked(DigestInfo::try_new(&VALID_HASH1, VALUE2.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE2.len())?, 0, None, None)
                 .await?
         };
 
@@ -79,7 +78,7 @@ mod memory_store_tests {
         let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "1234";
-        let digest = DigestInfo::try_new(&VALID_HASH1, 4).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 4).unwrap();
         store.update_oneshot(digest.clone(), VALUE1.into()).await?;
 
         let store_data = store.get_part_unchunked(digest, 1, Some(2), None).await?;
@@ -104,11 +103,11 @@ mod memory_store_tests {
         // Insert dummy value into store.
         const VALUE: &str = "";
         store
-            .update_oneshot(DigestInfo::try_new(&VALID_HASH1, VALUE.len())?, VALUE.into())
+            .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE.len())?, VALUE.into())
             .await?;
         assert_eq!(
             store
-                .get_part_unchunked(DigestInfo::try_new(&VALID_HASH1, VALUE.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE.len())?, 0, None, None)
                 .await,
             Ok("".into()),
             "Expected memory store to have empty value"
@@ -124,7 +123,7 @@ mod memory_store_tests {
         {
             // .has() tests.
             async fn has_should_fail(store: Pin<&MemoryStore>, hash: &str, expected_size: usize) {
-                let digest = DigestInfo::try_new(&hash, expected_size);
+                let digest = DigestInfo::try_new(hash, expected_size);
                 assert!(
                     digest.is_err() || store.has(digest.unwrap()).await.is_err(),
                     ".has() should have failed: {} {}",
@@ -132,9 +131,9 @@ mod memory_store_tests {
                     expected_size
                 );
             }
-            has_should_fail(store, &TOO_LONG_HASH, VALUE1.len()).await;
-            has_should_fail(store, &TOO_SHORT_HASH, VALUE1.len()).await;
-            has_should_fail(store, &INVALID_HASH, VALUE1.len()).await;
+            has_should_fail(store, TOO_LONG_HASH, VALUE1.len()).await;
+            has_should_fail(store, TOO_SHORT_HASH, VALUE1.len()).await;
+            has_should_fail(store, INVALID_HASH, VALUE1.len()).await;
         }
         {
             // .update() tests.
@@ -144,7 +143,7 @@ mod memory_store_tests {
                 expected_size: usize,
                 value: &'static str,
             ) {
-                let digest = DigestInfo::try_new(&hash, expected_size);
+                let digest = DigestInfo::try_new(hash, expected_size);
                 assert!(
                     digest.is_err() || store.update_oneshot(digest.unwrap(), value.into(),).await.is_err(),
                     ".has() should have failed: {} {} {}",
@@ -153,14 +152,14 @@ mod memory_store_tests {
                     value
                 );
             }
-            update_should_fail(store, &TOO_LONG_HASH, VALUE1.len(), &VALUE1).await;
-            update_should_fail(store, &TOO_SHORT_HASH, VALUE1.len(), &VALUE1).await;
-            update_should_fail(store, &INVALID_HASH, VALUE1.len(), &VALUE1).await;
+            update_should_fail(store, TOO_LONG_HASH, VALUE1.len(), VALUE1).await;
+            update_should_fail(store, TOO_SHORT_HASH, VALUE1.len(), VALUE1).await;
+            update_should_fail(store, INVALID_HASH, VALUE1.len(), VALUE1).await;
         }
         {
             // .update() tests.
             async fn get_should_fail<'a>(store: Pin<&'a MemoryStore>, hash: &'a str, expected_size: usize) {
-                let digest = DigestInfo::try_new(&hash, expected_size);
+                let digest = DigestInfo::try_new(hash, expected_size);
                 assert!(
                     digest.is_err() || store.get_part_unchunked(digest.unwrap(), 0, None, None).await.is_err(),
                     ".get() should have failed: {} {}",
@@ -169,11 +168,11 @@ mod memory_store_tests {
                 );
             }
 
-            get_should_fail(store, &TOO_LONG_HASH, 1).await;
-            get_should_fail(store, &TOO_SHORT_HASH, 1).await;
-            get_should_fail(store, &INVALID_HASH, 1).await;
+            get_should_fail(store, TOO_LONG_HASH, 1).await;
+            get_should_fail(store, TOO_SHORT_HASH, 1).await;
+            get_should_fail(store, INVALID_HASH, 1).await;
             // With an empty store .get() should fail too.
-            get_should_fail(store, &VALID_HASH1, 1).await;
+            get_should_fail(store, VALID_HASH1, 1).await;
         }
         Ok(())
     }
