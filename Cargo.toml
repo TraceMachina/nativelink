@@ -30,7 +30,6 @@ tokio = { version = "1.29.1", features = ["macros", "io-util", "fs", "rt-multi-t
 tokio-stream = { version = "0.1.14", features = ["fs", "sync"] }
 tokio-util = { version = "0.7.8", features = ["io", "io-util", "codec"] }
 tonic = { version = "0.9.2", features = ["gzip"] }
-lazy-init = "0.5.1"
 log = "0.4.19"
 env_logger = "0.10.0"
 serde = "1.0.167"
