@@ -14,6 +14,8 @@
 
 # Override this if you want to run on a different version of ubuntu.
 ARG OS_VERSION=22.04
+# Override this to change the execution layer of the container running the binary.
+ARG OS_VERSION_EXEC=${OS_VERSION}
 # `--compilation_mode` to pass into bazel (eg: opt, dbg, fastbuild).
 ARG OPT_LEVEL=opt
 # Compiler to use.
@@ -105,7 +107,7 @@ RUN bazel build -c ${OPT_LEVEL} //cas && \
 
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
-FROM ubuntu:${OS_VERSION}
+FROM ubuntu:${OS_VERSION_EXEC}
 COPY --from=builder /root/turbo-cache-bin /usr/local/bin/turbo-cache
 # Install runtime packages.
 RUN apt-get update && \

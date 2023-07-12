@@ -14,7 +14,7 @@ jobs:
     strategy:
       matrix:
         # Which OS versions we will test on.
-        os_version: [ 20.04, 22.04 ]
+        os_version: [ 22.04 ]
     steps:
     - uses: actions/checkout@v3.5.3
       with:
@@ -41,7 +41,7 @@ jobs:
     strategy:
       matrix:
         # Which OS versions we will test on.
-        os_version: [ 20.04, 22.04 ]
+        os_version: [ 22.04 ]
     steps:
     - uses: actions/checkout@v3.5.3
       with:
@@ -52,9 +52,11 @@ jobs:
       with:
         context: .
         file: ./deployment-examples/docker-compose/Dockerfile
+        # For integration tests we only ensure the binary can work on specifc
+        # OS versions, not built on these versions.
         build-args: |
           OPT_LEVEL=fastbuild
-          OS_VERSION=${{ matrix.os_version }}
+          OS_VERSION_EXEC=${{ matrix.os_version }}
         # The `builder` stage is pointless to be cached because any change to the
         # PR invalidates it. So to save the limited cache space we skip it.
         no-cache-filters: |
