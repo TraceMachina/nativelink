@@ -59,7 +59,7 @@ pub trait StoreTrait: Sync + Send + Unpin {
         let data_len = data.len();
         let send_fut = async move {
             // Only send if we are not EOF.
-            if data.len() != 0 {
+            if !data.is_empty() {
                 tx.send(data)
                     .await
                     .err_tip(|| "Failed to write data in update_oneshot")?;

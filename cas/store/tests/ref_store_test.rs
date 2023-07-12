@@ -23,7 +23,6 @@ mod ref_store_tests {
     use error::Error;
 
     use common::DigestInfo;
-    use config;
     use memory_store::MemoryStore;
     use ref_store::RefStore;
     use store::{Store, StoreManager};
@@ -54,13 +53,13 @@ mod ref_store_tests {
         {
             // Insert data into memory store.
             Pin::new(memory_store_owned.as_ref())
-                .update_oneshot(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?, VALUE1.into())
+                .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, VALUE1.into())
                 .await?;
         }
         {
             // Now check if we check of ref_store has the data.
             let has_result = Pin::new(ref_store_owned.as_ref())
-                .has(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?)
+                .has(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?)
                 .await;
             assert_eq!(
                 has_result,
@@ -80,13 +79,13 @@ mod ref_store_tests {
         {
             // Insert data into memory store.
             Pin::new(memory_store_owned.as_ref())
-                .update_oneshot(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?, VALUE1.into())
+                .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, VALUE1.into())
                 .await?;
         }
         {
             // Now check if we read it from ref_store it has same data.
             let data = Pin::new(ref_store_owned.as_ref())
-                .get_part_unchunked(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, 0, None, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -107,13 +106,13 @@ mod ref_store_tests {
         {
             // Insert data into ref_store.
             Pin::new(ref_store_owned.as_ref())
-                .update_oneshot(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?, VALUE1.into())
+                .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, VALUE1.into())
                 .await?;
         }
         {
             // Now check if we read it from memory_store it has same data.
             let data = Pin::new(memory_store_owned.as_ref())
-                .get_part_unchunked(DigestInfo::try_new(&VALID_HASH1, VALUE1.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, 0, None, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(

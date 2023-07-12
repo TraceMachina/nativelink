@@ -17,7 +17,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hex;
 use sha2::{Digest, Sha256};
 
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
@@ -34,13 +33,13 @@ pub struct VerifyStore {
 impl VerifyStore {
     pub fn new(config: &config::stores::VerifyStore, inner_store: Arc<dyn StoreTrait>) -> Self {
         VerifyStore {
-            inner_store: inner_store,
+            inner_store,
             verify_size: config.verify_size,
             verify_hash: config.verify_hash,
         }
     }
 
-    fn pin_inner<'a>(&'a self) -> Pin<&'a dyn StoreTrait> {
+    fn pin_inner(&self) -> Pin<&dyn StoreTrait> {
         Pin::new(self.inner_store.as_ref())
     }
 }
@@ -59,7 +58,7 @@ async fn inner_check_update(
             .err_tip(|| "Failed to reach chunk in check_update in verify store")?;
         sum_size += chunk.len() as u64;
 
-        if chunk.len() == 0 {
+        if chunk.is_empty() {
             // Is EOF.
             if let UploadSizeInfo::ExactSize(expected_size) = size_info {
                 error_if!(

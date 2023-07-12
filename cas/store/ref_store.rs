@@ -21,7 +21,6 @@ use async_trait::async_trait;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
-use config;
 use error::{make_err, make_input_err, Code, Error};
 use store::StoreManager;
 use traits::{StoreTrait, UploadSizeInfo};
@@ -79,13 +78,13 @@ impl RefStore {
         if let Some(store) = self.store_manager.get_store(&self.ref_store_name) {
             unsafe {
                 *ref_store = Some(store.clone());
-                return Ok(&(*ref_store).as_ref().unwrap());
+                return Ok((*ref_store).as_ref().unwrap());
             }
         }
-        return Err(make_input_err!(
+        Err(make_input_err!(
             "Failed to find store '{}' in StoreManager in RefStore",
             self.ref_store_name
-        ));
+        ))
     }
 }
 
