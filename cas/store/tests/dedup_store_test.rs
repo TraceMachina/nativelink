@@ -16,7 +16,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use common::DigestInfo;
-use config;
 use dedup_store::DedupStore;
 use error::{Code, Error, ResultExt};
 use memory_store::MemoryStore;
@@ -60,7 +59,7 @@ mod dedup_store_tests {
         let store = Pin::new(&store_owned);
 
         let original_data = make_random_data(MEGABYTE_SZ);
-        let digest = DigestInfo::try_new(&VALID_HASH1, MEGABYTE_SZ).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
 
         store
             .update_oneshot(digest.clone(), original_data.clone().into())
@@ -87,7 +86,7 @@ mod dedup_store_tests {
         let store = Pin::new(&store_owned);
 
         let original_data = make_random_data(MEGABYTE_SZ);
-        let digest = DigestInfo::try_new(&VALID_HASH1, MEGABYTE_SZ).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
 
         store
             .update_oneshot(digest.clone(), original_data.into())
@@ -128,7 +127,7 @@ mod dedup_store_tests {
 
         const DATA_SIZE: usize = MEGABYTE_SZ / 4;
         let original_data = make_random_data(DATA_SIZE);
-        let digest = DigestInfo::try_new(&VALID_HASH1, DATA_SIZE).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
         store
             .update_oneshot(digest.clone(), original_data.clone().into())
@@ -167,7 +166,7 @@ mod dedup_store_tests {
 
         const DATA_SIZE: usize = MEGABYTE_SZ / 4;
         let original_data = make_random_data(DATA_SIZE);
-        let digest1 = DigestInfo::try_new(&VALID_HASH1, DATA_SIZE).unwrap();
+        let digest1 = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
         store_pin
             .update_oneshot(digest1.clone(), original_data.clone().into())
@@ -184,7 +183,7 @@ mod dedup_store_tests {
             // If we add one more it will evict a single item from that will still be indexed.
             // By doing this, we now check that it returns false when we call `.has()`.
             const DATA2: &str = "1234";
-            let digest2 = DigestInfo::try_new(&VALID_HASH2, DATA2.len()).unwrap();
+            let digest2 = DigestInfo::try_new(VALID_HASH2, DATA2.len()).unwrap();
             store_pin
                 .update_oneshot(digest2.clone(), DATA2.into())
                 .await
@@ -221,7 +220,7 @@ mod dedup_store_tests {
         let store_pin = Pin::new(&store);
 
         const DATA_SIZE: usize = 10;
-        let digest = DigestInfo::try_new(&VALID_HASH1, DATA_SIZE).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
         {
             let size_info = store_pin.has(digest.clone()).await.err_tip(|| "Failed to run .has")?;

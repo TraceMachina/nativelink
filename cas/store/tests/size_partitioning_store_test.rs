@@ -23,7 +23,6 @@ mod ref_store_tests {
     use error::Error;
 
     use common::DigestInfo;
-    use config;
     use memory_store::MemoryStore;
     use size_partitioning_store::SizePartitioningStore;
     use traits::StoreTrait;
@@ -59,18 +58,18 @@ mod ref_store_tests {
         {
             // Insert data into lower store.
             Pin::new(lower_memory_store.as_ref())
-                .update_oneshot(DigestInfo::try_new(&SMALL_HASH, SMALL_VALUE.len())?, SMALL_VALUE.into())
+                .update_oneshot(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, SMALL_VALUE.into())
                 .await?;
 
             // Insert data into upper store.
             Pin::new(upper_memory_store.as_ref())
-                .update_oneshot(DigestInfo::try_new(&BIG_HASH, BIG_VALUE.len())?, BIG_VALUE.into())
+                .update_oneshot(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, BIG_VALUE.into())
                 .await?;
         }
         {
             // Check if our partition store has small data.
             let small_has_result = Pin::new(&size_part_store)
-                .has(DigestInfo::try_new(&SMALL_HASH, SMALL_VALUE.len())?)
+                .has(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?)
                 .await;
             assert_eq!(
                 small_has_result,
@@ -82,7 +81,7 @@ mod ref_store_tests {
         {
             // Check if our partition store has big data.
             let small_has_result = Pin::new(&size_part_store)
-                .has(DigestInfo::try_new(&BIG_HASH, BIG_VALUE.len())?)
+                .has(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?)
                 .await;
             assert_eq!(
                 small_has_result,
@@ -101,18 +100,18 @@ mod ref_store_tests {
         {
             // Insert data into lower store.
             Pin::new(lower_memory_store.as_ref())
-                .update_oneshot(DigestInfo::try_new(&SMALL_HASH, SMALL_VALUE.len())?, SMALL_VALUE.into())
+                .update_oneshot(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, SMALL_VALUE.into())
                 .await?;
 
             // Insert data into upper store.
             Pin::new(upper_memory_store.as_ref())
-                .update_oneshot(DigestInfo::try_new(&BIG_HASH, BIG_VALUE.len())?, BIG_VALUE.into())
+                .update_oneshot(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, BIG_VALUE.into())
                 .await?;
         }
         {
             // Read the partition store small data.
             let data = Pin::new(&size_part_store)
-                .get_part_unchunked(DigestInfo::try_new(&SMALL_HASH, SMALL_VALUE.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, 0, None, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -125,7 +124,7 @@ mod ref_store_tests {
         {
             // Read the partition store big data.
             let data = Pin::new(&size_part_store)
-                .get_part_unchunked(DigestInfo::try_new(&BIG_HASH, BIG_VALUE.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, 0, None, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -145,18 +144,18 @@ mod ref_store_tests {
         {
             // Insert small data into ref_store.
             Pin::new(&size_part_store)
-                .update_oneshot(DigestInfo::try_new(&SMALL_HASH, SMALL_VALUE.len())?, SMALL_VALUE.into())
+                .update_oneshot(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, SMALL_VALUE.into())
                 .await?;
 
             // Insert small data into ref_store.
             Pin::new(&size_part_store)
-                .update_oneshot(DigestInfo::try_new(&BIG_HASH, BIG_VALUE.len())?, BIG_VALUE.into())
+                .update_oneshot(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, BIG_VALUE.into())
                 .await?;
         }
         {
             // Check if we read small data from size_partition_store it has same data.
             let data = Pin::new(lower_memory_store.as_ref())
-                .get_part_unchunked(DigestInfo::try_new(&SMALL_HASH, SMALL_VALUE.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, 0, None, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -169,7 +168,7 @@ mod ref_store_tests {
         {
             // Check if we read big data from size_partition_store it has same data.
             let data = Pin::new(upper_memory_store.as_ref())
-                .get_part_unchunked(DigestInfo::try_new(&BIG_HASH, BIG_VALUE.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, 0, None, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(

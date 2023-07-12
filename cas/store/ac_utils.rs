@@ -63,23 +63,21 @@ pub async fn get_and_decode_digest<T: Message + Default>(
 }
 
 /// Takes a proto message and will serialize it and upload it to the provided store.
-pub fn serialize_and_upload_message<'a, T: Message>(
+pub async fn serialize_and_upload_message<'a, T: Message>(
     message: &'a T,
     cas_store: Pin<&'a dyn Store>,
-) -> impl Future<Output = Result<DigestInfo, Error>> + 'a {
-    async move {
-        let mut buffer = BytesMut::new();
-        let digest = {
-            message
-                .encode(&mut buffer)
-                .err_tip(|| "Could not encode directory proto")?;
-            let mut hasher = Sha256::new();
-            hasher.update(&buffer);
-            DigestInfo::new(hasher.finalize().into(), buffer.len() as i64)
-        };
-        upload_to_store(cas_store, digest.clone(), &mut Cursor::new(buffer)).await?;
-        Ok(digest)
-    }
+) -> Result<DigestInfo, Error> {
+    let mut buffer = BytesMut::new();
+    let digest = {
+        message
+            .encode(&mut buffer)
+            .err_tip(|| "Could not encode directory proto")?;
+        let mut hasher = Sha256::new();
+        hasher.update(&buffer);
+        DigestInfo::new(hasher.finalize().into(), buffer.len() as i64)
+    };
+    upload_to_store(cas_store, digest.clone(), &mut Cursor::new(buffer)).await?;
+    Ok(digest)
 }
 
 /// Given a bytestream computes the digest for the data.
@@ -137,7 +135,7 @@ pub fn upload_to_store<'a, R: AsyncRead + Unpin>(
                 .read_buf(&mut chunk)
                 .await
                 .err_tip(|| "Could not read chunk during upload_to_store")?;
-            if chunk.len() == 0 {
+            if chunk.is_empty() {
                 break; // EOF.
             }
             tx.send(chunk.freeze())

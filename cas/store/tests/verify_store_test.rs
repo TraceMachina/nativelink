@@ -24,7 +24,6 @@ mod verify_store_tests {
 
     use buf_channel::make_buf_channel_pair;
     use common::DigestInfo;
-    use config;
     use error::{Error, ResultExt};
     use memory_store::MemoryStore;
     use traits::{StoreTrait, UploadSizeInfo};
@@ -46,7 +45,7 @@ mod verify_store_tests {
         let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "123";
-        let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let result = store.update_oneshot(digest.clone(), VALUE1.into()).await;
         assert_eq!(
             result,
@@ -76,7 +75,7 @@ mod verify_store_tests {
         let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "123";
-        let digest = DigestInfo::try_new(&VALID_HASH1, 100).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let (mut tx, rx) = make_buf_channel_pair();
         let send_fut = async move {
             tx.send(VALUE1.into()).await?;
@@ -117,7 +116,7 @@ mod verify_store_tests {
         let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "123";
-        let digest = DigestInfo::try_new(&VALID_HASH1, 3).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
         let result = store.update_oneshot(digest.clone(), VALUE1.into()).await;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
@@ -142,7 +141,7 @@ mod verify_store_tests {
 
         let (mut tx, rx) = make_buf_channel_pair();
 
-        let digest = DigestInfo::try_new(&VALID_HASH1, 6).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH1, 6).unwrap();
         let digest_clone = digest.clone();
         let future = tokio::spawn(async move {
             Pin::new(&store_owned)
@@ -178,7 +177,7 @@ mod verify_store_tests {
         /// This value is sha256("123").
         const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
         const VALUE: &str = "123";
-        let digest = DigestInfo::try_new(&HASH, 3).unwrap();
+        let digest = DigestInfo::try_new(HASH, 3).unwrap();
         let result = store.update_oneshot(digest.clone(), VALUE.into()).await;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
@@ -205,7 +204,7 @@ mod verify_store_tests {
         /// This value is sha256("12").
         const HASH: &str = "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918";
         const VALUE: &str = "123";
-        let digest = DigestInfo::try_new(&HASH, 3).unwrap();
+        let digest = DigestInfo::try_new(HASH, 3).unwrap();
         let result = store.update_oneshot(digest.clone(), VALUE.into()).await;
         let err = result.unwrap_err().to_string();
         const ACTUAL_HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";

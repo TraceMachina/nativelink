@@ -40,7 +40,6 @@ use traits::UploadSizeInfo;
 
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
 use common::{fs, DigestInfo};
-use config;
 use error::{Code, Error, ResultExt};
 use filesystem_store::{digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore};
 use traits::StoreTrait;
@@ -84,11 +83,11 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         ))
     }
 
-    fn get_file_size<'a>(&'a mut self) -> &'a mut u64 {
+    fn get_file_size(&mut self) -> &mut u64 {
         self.inner.as_mut().unwrap().get_file_size()
     }
 
-    fn get_encoded_file_path<'a>(&'a self) -> &'a RwLock<EncodedFilePath> {
+    fn get_encoded_file_path(&self) -> &RwLock<EncodedFilePath> {
         self.inner.as_ref().unwrap().get_encoded_file_path()
     }
 
@@ -175,7 +174,7 @@ async fn write_file(file_name: &str, data: &[u8]) -> Result<(), Error> {
     let mut file = fs::create_file(&file_name)
         .await
         .err_tip(|| format!("Failed to create file: {}", file_name))?;
-    Ok(file.write_all(&data).await?)
+    Ok(file.write_all(data).await?)
 }
 
 #[cfg(test)]
@@ -190,7 +189,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn valid_results_after_shutdown_test() -> Result<(), Error> {
-        let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
         {
@@ -234,7 +233,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
-        let digest1 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
 
@@ -293,7 +292,7 @@ mod filesystem_store_tests {
 
         while let Some(temp_dir_entry) = read_dir_stream.next().await {
             let path = temp_dir_entry?.path();
-            assert!(false, "No files should exist in temp directory, found: {:?}", path);
+            panic!("No files should exist in temp directory, found: {path:?}");
         }
 
         Ok(())
@@ -304,7 +303,7 @@ mod filesystem_store_tests {
     // temporary file (of the object that was deleted) is cleaned up.
     #[tokio::test]
     async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error> {
-        let digest1 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
 
@@ -401,7 +400,7 @@ mod filesystem_store_tests {
             let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
             while let Some(temp_dir_entry) = read_dir_stream.next().await {
                 let path = temp_dir_entry?.path();
-                assert!(false, "No files should exist in temp directory, found: {:?}", path);
+                panic!("No files should exist in temp directory, found: {path:?}");
             }
         }
 
@@ -413,8 +412,8 @@ mod filesystem_store_tests {
     // get deleted.
     #[tokio::test]
     async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
-        let digest1 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
-        let digest2 = DigestInfo::try_new(&HASH2, VALUE2.len())?;
+        let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+        let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
 
@@ -504,7 +503,7 @@ mod filesystem_store_tests {
             let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
             while let Some(temp_dir_entry) = read_dir_stream.next().await {
                 let path = temp_dir_entry?.path();
-                assert!(false, "No files should exist in temp directory, found: {:?}", path);
+                panic!("No files should exist in temp directory, found: {:?}", path);
             }
         }
 
@@ -513,7 +512,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn atime_updates_on_get_part_test() -> Result<(), Error> {
-        let digest1 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let store = Box::pin(
             FilesystemStore::<FileEntryImpl>::new(&config::stores::FilesystemStore {
@@ -560,8 +559,8 @@ mod filesystem_store_tests {
     #[tokio::test]
     async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(), Error> {
         // Note these are swapped to ensure they aren't in numerical order.
-        let digest1 = DigestInfo::try_new(&HASH2, VALUE2.len())?;
-        let digest2 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let digest1 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+        let digest2 = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let content_path = make_temp_path("content_path");
         fs::create_dir_all(&content_path).await?;
@@ -602,7 +601,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn eviction_drops_file_test() -> Result<(), Error> {
-        let digest1 = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let store = Box::pin(
             FilesystemStore::<FileEntryImpl>::new(&config::stores::FilesystemStore {
@@ -651,7 +650,7 @@ mod filesystem_store_tests {
     // `FileEntry` file contents should be immutable for the lifetime of the object.
     #[tokio::test]
     async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error> {
-        let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let store = Box::pin(
             FilesystemStore::<FileEntryImpl>::new(&config::stores::FilesystemStore {
@@ -690,8 +689,8 @@ mod filesystem_store_tests {
     #[tokio::test]
     async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
         const BIG_VALUE: &str = "0123";
-        let small_digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
-        let big_digest = DigestInfo::try_new(&HASH1, BIG_VALUE.len())?;
+        let small_digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+        let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
         lazy_static! {
             static ref UNREFED_DIGESTS: Mutex<Vec<DigestInfo>> = Mutex::new(Vec::new());
@@ -741,9 +740,10 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[allow(clippy::await_holding_refcell_ref)]
     #[tokio::test]
     async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens() -> Result<(), Error> {
-        let digest = DigestInfo::try_new(&HASH1, VALUE1.len())?;
+        let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");

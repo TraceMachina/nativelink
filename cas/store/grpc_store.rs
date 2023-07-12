@@ -17,13 +17,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{stream::unfold, Stream};
-use shellexpand;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
 use uuid::Uuid;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::{log, DigestInfo};
-use config;
 use error::{error_if, make_input_err, Error, ResultExt};
 use parking_lot::Mutex;
 use proto::build::bazel::remote::execution::v2::{
@@ -51,7 +49,7 @@ pub struct GrpcStore {
 
 impl GrpcStore {
     pub async fn new(config: &config::stores::GrpcStore) -> Result<Self, Error> {
-        error_if!(config.endpoints.len() == 0, "Expected at least 1 endpoint in GrpcStore");
+        error_if!(config.endpoints.is_empty(), "Expected at least 1 endpoint in GrpcStore");
         let mut endpoints = Vec::with_capacity(config.endpoints.len());
         for endpoint in &config.endpoints {
             // TODO(allada) This should be moved to be done in utils/serde_utils.rs like the others.
@@ -72,7 +70,7 @@ impl GrpcStore {
             instance_name: config.instance_name.clone(),
             cas_client: ContentAddressableStorageClient::new(conn.clone()),
             bytestream_client: ByteStreamClient::new(conn.clone()),
-            ac_client: ActionCacheClient::new(conn.clone()),
+            ac_client: ActionCacheClient::new(conn),
         })
     }
 
@@ -201,7 +199,7 @@ impl GrpcStore {
         if let Some(err) = error.lock().take() {
             return Err(err);
         }
-        return Ok(result);
+        Ok(result)
     }
 
     pub async fn query_write_status(
@@ -322,7 +320,7 @@ impl StoreTrait for GrpcStore {
                 Ok(WriteRequest {
                     resource_name: local_state.resource_name.clone(),
                     write_offset,
-                    finish_write: data.len() == 0, // EOF is when no data was polled.
+                    finish_write: data.is_empty(), // EOF is when no data was polled.
                     data,
                 }),
                 local_state,

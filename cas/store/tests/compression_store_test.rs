@@ -75,7 +75,7 @@ mod compression_store_tests {
         let store = Pin::new(&store_owned);
 
         const RAW_INPUT: &str = "123";
-        let digest = DigestInfo::try_new(&VALID_HASH, DUMMY_DATA_SIZE).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
         store.update_oneshot(digest.clone(), RAW_INPUT.into()).await?;
 
         let store_data = store
@@ -103,12 +103,12 @@ mod compression_store_tests {
         let store = Pin::new(&store_owned);
 
         const RAW_DATA: [u8; 30] = [
-            00, 01, 02, 03, 04, 05, 06, 07, 08, 09, // BR.
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, // BR.
             10, 11, 12, 13, 14, 15, 16, 17, 18, 19, // BR.
             20, 21, 22, 23, 24, 25, 26, 27, 28, 29, // BR.
         ];
 
-        let digest = DigestInfo::try_new(&VALID_HASH, DUMMY_DATA_SIZE).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
         store.update_oneshot(digest.clone(), RAW_DATA.as_ref().into()).await?;
 
         // Read through the store forcing lots of decompression steps at different offsets
@@ -154,7 +154,7 @@ mod compression_store_tests {
         let mut rng = SmallRng::seed_from_u64(1);
         rng.fill(&mut value[..]);
 
-        let digest = DigestInfo::try_new(&VALID_HASH, DUMMY_DATA_SIZE).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
         store.update_oneshot(digest.clone(), value.clone().into()).await?;
 
         let store_data = store
@@ -181,7 +181,7 @@ mod compression_store_tests {
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
 
-        let digest = DigestInfo::try_new(&VALID_HASH, DUMMY_DATA_SIZE).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
         store.update_oneshot(digest.clone(), vec![].into()).await?;
 
         let store_data = store
@@ -230,7 +230,7 @@ mod compression_store_tests {
         let store = Pin::new(&store_owned);
 
         const RAW_INPUT: &str = "123";
-        let digest = DigestInfo::try_new(&VALID_HASH, DUMMY_DATA_SIZE).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
 
         let (mut tx, rx) = make_buf_channel_pair();
         let send_fut = async move {
@@ -311,7 +311,7 @@ mod compression_store_tests {
         // Fill first half of data with random data that is not compressible.
         rng.fill(&mut value[..(data_len / 2)]);
 
-        let digest = DigestInfo::try_new(&VALID_HASH, DUMMY_DATA_SIZE).unwrap();
+        let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
         store.update_oneshot(digest.clone(), value.clone().into()).await?;
 
         let compressed_data = Pin::new(inner_store.as_ref())

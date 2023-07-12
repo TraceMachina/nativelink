@@ -22,7 +22,6 @@ use async_trait::async_trait;
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use bytes::{Bytes, BytesMut};
 use common::DigestInfo;
-use config;
 use error::{Code, Error, ResultExt};
 use evicting_map::{EvictingMap, LenEntry};
 use traits::{StoreTrait, UploadSizeInfo};
@@ -69,7 +68,7 @@ impl MemoryStore {
 #[async_trait]
 impl StoreTrait for MemoryStore {
     async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        Ok(self.map.size_for_key(&digest).await.map(|v| v as usize))
+        Ok(self.map.size_for_key(&digest).await)
     }
 
     async fn update(

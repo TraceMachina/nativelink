@@ -39,6 +39,12 @@ impl StoreManager {
         if let Some(store) = stores.get(name) {
             return Some(store.clone());
         }
-        return None;
+        None
+    }
+}
+
+impl Default for StoreManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
