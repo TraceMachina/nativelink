@@ -22,12 +22,12 @@ use async_trait::async_trait;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 
-use common::{log, DigestInfo, SerializableDigestInfo};
+use common::{log, DigestInfo};
 use config::stores::EvictionPolicy;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct SerializedLRU {
-    pub data: Vec<(SerializableDigestInfo, i32)>,
+    pub data: Vec<(DigestInfo, i32)>,
     pub anchor_time: u64,
 }
 
@@ -150,13 +150,7 @@ where
             anchor_time: self.anchor_time.unix_timestamp(),
         };
         for (digest, eviction_item) in state.lru.iter() {
-            let serialized_digest = SerializableDigestInfo {
-                hash: digest.packed_hash,
-                size_bytes: digest.size_bytes as u64,
-            };
-            serialized_lru
-                .data
-                .push((serialized_digest, eviction_item.seconds_since_anchor));
+            serialized_lru.data.push((*digest, eviction_item.seconds_since_anchor));
         }
         serialized_lru
     }
@@ -166,7 +160,6 @@ where
         self.anchor_time = I::from_secs(seiralized_lru.anchor_time);
         state.lru.clear();
         for (digest, seconds_since_anchor) in seiralized_lru.data {
-            let digest: DigestInfo = digest.into();
             let entry = entry_builder(&digest);
             state.lru.put(
                 digest,

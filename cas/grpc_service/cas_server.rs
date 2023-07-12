@@ -128,6 +128,7 @@ impl CasServer {
             return grpc_store.batch_update_blobs(Request::new(inner_request)).await;
         }
 
+<<<<<<< HEAD
         let store_pin = Pin::new(store.as_ref());
         let update_futures: FuturesUnordered<_> = inner_request
             .requests
@@ -150,6 +151,31 @@ impl CasServer {
                     .err_tip(|| "Error writing to store");
                 Ok::<_, Error>(batch_update_blobs_response::Response {
                     digest: Some(digest),
+=======
+        let mut futures = futures::stream::FuturesOrdered::new();
+        for request in inner_request.requests {
+            let store_clone = store.clone();
+            let digest: DigestInfo = request.digest.err_tip(|| "Digest not found in request")?.try_into()?;
+            let digest_copy = digest.clone();
+            let request_data = request.data;
+            futures.push_back(tokio::spawn(
+                async move {
+                    let size_bytes = usize::try_from(digest_copy.size_bytes)
+                        .err_tip(|| "Digest size_bytes was not convertible to usize")?;
+                    error_if!(
+                        size_bytes != request_data.len(),
+                        "Digest for upload had mismatching sizes, digest said {} data  said {}",
+                        size_bytes,
+                        request_data.len()
+                    );
+                    Pin::new(store_clone.as_ref())
+                        .update_oneshot(digest_copy, request_data)
+                        .await
+                        .err_tip(|| "Error writing to store")
+                }
+                .map(move |result| batch_update_blobs_response::Response {
+                    digest: Some(digest.into()),
+>>>>>>> 7d0d512 (Removes needless overoptimization of strings for DigestInfo)
                     status: Some(result.map_or_else(|e| e.into(), |_| GrpcStatus::default())),
                 })
             })
@@ -217,7 +243,44 @@ impl CasServer {
             .try_collect::<Vec<batch_read_blobs_response::Response>>()
             .await?;
 
-        Ok(Response::new(BatchReadBlobsResponse { responses }))
+            futures.push_back(tokio::spawn(
+                async move {
+                    let size_bytes = usize::try_from(digest_copy.size_bytes)
+                        .err_tip(|| "Digest size_bytes was not convertible to usize")?;
+                    // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
+                    let store_data = Pin::new(store_clone.as_ref())
+                        .get_part_unchunked(digest_copy, 0, None, Some(size_bytes))
+                        .await
+                        .err_tip(|| "Error reading from store")?;
+                    Ok(store_data)
+                }
+                .map(move |result: Result<Bytes, Error>| {
+                    let (status, data) = result.map_or_else(
+                        |mut e| {
+                            if e.code == Code::NotFound {
+                                // Trim the error code. Not Found is quite common and we don't want to send a large
+                                // error (debug) message for something that is common. We resize to just the last
+                                // message as it will be the most relevant.
+                                e.messages.resize_with(1, || "".to_string());
+                            }
+                            (e.into(), Bytes::new())
+                        },
+                        |v| (GrpcStatus::default(), v),
+                    );
+                    batch_read_blobs_response::Response {
+                        status: Some(status),
+                        digest: Some(digest.into()),
+                        data,
+                    }
+                }),
+            ));
+        }
+
+        let mut responses = Vec::with_capacity(futures.len());
+        while let Some(result) = futures.next().await {
+            responses.push(result.err_tip(|| "Internal error joining future")?);
+        }
+        Ok(Response::new(BatchReadBlobsResponse { responses: responses }))
     }
 
     async fn inner_get_tree(&self, grpc_request: Request<GetTreeRequest>) -> Result<Response<GetTreeStream>, Error> {
