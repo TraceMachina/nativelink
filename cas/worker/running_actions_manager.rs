@@ -28,7 +28,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 use filetime::{set_file_mtime, FileTime};
 use futures::future::{try_join, try_join3, try_join_all, BoxFuture, FutureExt, TryFutureExt};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
-use hex;
 use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
@@ -113,26 +112,26 @@ pub fn download_to_directory<'a>(
                         file_entry
                             .get_file_path_locked(|src| fs::hard_link(src, &dest))
                             .await
-                            .map_err(|e| make_err!(Code::Internal, "Could not make hardlink, {:?} : {}", e, dest))?;
+                            .map_err(|e| make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}"))?;
                         if is_executable {
                             unix_mode = Some(unix_mode.unwrap_or(0o444) | 0o111);
                         }
                         if let Some(unix_mode) = unix_mode {
                             fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
                                 .await
-                                .err_tip(|| format!("Could not set unix mode in download_to_directory {}", dest))?;
+                                .err_tip(|| format!("Could not set unix mode in download_to_directory {dest}"))?;
                         }
                         if let Some(mtime) = mtime {
                             spawn_blocking(move || {
                                 set_file_mtime(&dest, FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32))
-                                    .err_tip(|| format!("Failed to set mtime in download_to_directory {}", dest))
+                                    .err_tip(|| format!("Failed to set mtime in download_to_directory {dest}"))
                             })
                             .await
                             .err_tip(|| "Failed to launch spawn_blocking in download_to_directory")??;
                         }
                         Ok(())
                     })
-                    .map_err(move |e| e.append(format!("for digest {:?}", digest)))
+                    .map_err(move |e| e.append(format!("for digest {digest:?}")))
                     .boxed(),
             );
         }
@@ -148,10 +147,10 @@ pub fn download_to_directory<'a>(
                 async move {
                     fs::create_dir(&new_directory_path)
                         .await
-                        .err_tip(|| format!("Could not create directory {}", new_directory_path))?;
+                        .err_tip(|| format!("Could not create directory {new_directory_path}"))?;
                     download_to_directory(cas_store, filesystem_store, &digest, &new_directory_path)
                         .await
-                        .err_tip(|| format!("in download_to_directory : {}", new_directory_path))?;
+                        .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
                     Ok(())
                 }
                 .boxed(),
@@ -184,16 +183,16 @@ async fn upload_file<'a>(
 ) -> Result<FileInfo, Error> {
     let (digest, mut file_handle) = compute_digest(file_handle)
         .await
-        .err_tip(|| format!("for {:?}", full_path))?;
+        .err_tip(|| format!("for {full_path:?}"))?;
     file_handle.rewind().await.err_tip(|| "Could not rewind file")?;
     upload_to_store(cas_store, digest.clone(), &mut file_handle)
         .await
-        .err_tip(|| format!("for {:?}", full_path))?;
+        .err_tip(|| format!("for {full_path:?}"))?;
 
     let name = full_path
         .as_ref()
         .file_name()
-        .err_tip(|| format!("Expected file_name to exist on {:?}", full_path))?
+        .err_tip(|| format!("Expected file_name to exist on {full_path:?}"))?
         .to_str()
         .err_tip(|| make_err!(Code::Internal, "Could not convert {:?} to string", full_path))?
         .to_string();
@@ -201,7 +200,7 @@ async fn upload_file<'a>(
         .as_ref()
         .metadata()
         .await
-        .err_tip(|| format!("While reading metadata for {:?}", full_path))?;
+        .err_tip(|| format!("While reading metadata for {full_path:?}"))?;
     let is_executable = (metadata.mode() & 0o001) != 0;
     Ok(FileInfo {
         name_or_path: NameOrPath::Name(name),
@@ -216,7 +215,7 @@ async fn upload_symlink(
 ) -> Result<SymlinkInfo, Error> {
     let full_target_path = fs::read_link(full_path.as_ref())
         .await
-        .err_tip(|| format!("Could not get read_link path of {:?}", full_path))?;
+        .err_tip(|| format!("Could not get read_link path of {full_path:?}"))?;
 
     // Detect if our symlink is inside our work directory, if it is find the
     // relative path otherwise use the absolute path.
@@ -238,7 +237,7 @@ async fn upload_symlink(
     let name = full_path
         .as_ref()
         .file_name()
-        .err_tip(|| format!("Expected file_name to exist on {:?}", full_path))?
+        .err_tip(|| format!("Expected file_name to exist on {full_path:?}"))?
         .to_str()
         .err_tip(|| make_err!(Code::Internal, "Could not convert {:?} to string", full_path))?
         .to_string();
@@ -261,7 +260,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
         {
             let (_permit, dir_handle) = fs::read_dir(&full_dir_path)
                 .await
-                .err_tip(|| format!("Error reading dir for reading {:?}", full_dir_path))?
+                .err_tip(|| format!("Error reading dir for reading {full_dir_path:?}"))?
                 .into_inner();
             let mut dir_stream = ReadDirStream::new(dir_handle);
             // Note: Try very hard to not leave file descriptors open. Try to keep them as short
@@ -276,16 +275,16 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                 let file_type = entry
                     .file_type()
                     .await
-                    .err_tip(|| format!("Error running file_type() on {:?}", entry))?;
+                    .err_tip(|| format!("Error running file_type() on {entry:?}"))?;
                 let full_path = full_dir_path.as_ref().join(entry.path());
                 if file_type.is_dir() {
                     let full_dir_path = full_dir_path.clone();
                     dir_futures.push(
-                        upload_directory(cas_store, full_path.clone(), &full_work_directory)
+                        upload_directory(cas_store, full_path.clone(), full_work_directory)
                             .and_then(|(dir, all_dirs)| async move {
                                 let directory_name = full_path
                                     .file_name()
-                                    .err_tip(|| format!("Expected file_name to exist on {:?}", full_dir_path))?
+                                    .err_tip(|| format!("Expected file_name to exist on {full_dir_path:?}"))?
                                     .to_str()
                                     .err_tip(|| {
                                         make_err!(Code::Internal, "Could not convert {:?} to string", full_dir_path)
@@ -294,7 +293,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
 
                                 let digest = serialize_and_upload_message(&dir, cas_store)
                                     .await
-                                    .err_tip(|| format!("for {:?}", full_path))?;
+                                    .err_tip(|| format!("for {full_path:?}"))?;
 
                                 Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
                                     DirectoryNode {
@@ -310,13 +309,13 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                     file_futures.push(async move {
                         let file_handle = fs::open_file(&full_path)
                             .await
-                            .err_tip(|| format!("Could not open file {:?}", full_path))?;
+                            .err_tip(|| format!("Could not open file {full_path:?}"))?;
                         upload_file(file_handle, cas_store, full_path)
                             .map_ok(|v| v.into())
                             .await
                     });
                 } else if file_type.is_symlink() {
-                    symlink_futures.push(upload_symlink(full_path, &full_work_directory).map_ok(|v| v.into()));
+                    symlink_futures.push(upload_symlink(full_path, &full_work_directory).map_ok(Into::into));
                 }
             }
         }
@@ -460,11 +459,9 @@ impl RunningAction for RunningActionImpl {
             // Download and build out our input files/folders. Also fetch and decode our Command.
             let cas_store_pin = Pin::new(self.running_actions_manager.cas_store.as_ref());
             let command_fut = async {
-                Ok(
-                    get_and_decode_digest::<ProtoCommand>(cas_store_pin, &self.action_info.command_digest)
-                        .await
-                        .err_tip(|| "Converting command_digest to Command")?,
-                )
+                get_and_decode_digest::<ProtoCommand>(cas_store_pin, &self.action_info.command_digest)
+                    .await
+                    .err_tip(|| "Converting command_digest to Command")
             };
             let filesystem_store_pin = Pin::new(self.running_actions_manager.filesystem_store.as_ref());
             // Download the input files/folder and place them into the temp directory.
@@ -484,7 +481,7 @@ impl RunningAction for RunningActionImpl {
                 async move {
                     let full_parent_path = Path::new(&full_output_path)
                         .parent()
-                        .err_tip(|| format!("Parent path for {} has no parent", full_output_path))?;
+                        .err_tip(|| format!("Parent path for {full_output_path} has no parent"))?;
                     fs::create_dir_all(full_parent_path)
                         .await
                         .err_tip(|| format!("Error creating output directory {} (file)", full_parent_path.display()))?;
@@ -520,18 +517,18 @@ impl RunningAction for RunningActionImpl {
                     .fuse(),
             )
         };
-        if command_proto.arguments.len() < 1 {
+        if command_proto.arguments.is_empty() {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
         let args: Vec<&OsStr> = if let Some(entrypoint_cmd) = &self.entrypoint_cmd {
             std::iter::once(entrypoint_cmd.as_ref().as_ref())
-                .chain(command_proto.arguments.iter().map(|v| v.as_ref()))
+                .chain(command_proto.arguments.iter().map(AsRef::as_ref))
                 .collect()
         } else {
-            command_proto.arguments.iter().map(|v| v.as_ref()).collect()
+            command_proto.arguments.iter().map(AsRef::as_ref).collect()
         };
         log::info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
-        let mut command_builder = process::Command::new(&args[0]);
+        let mut command_builder = process::Command::new(args[0]);
         command_builder
             .args(&args[1..])
             .kill_on_drop(true)
@@ -663,7 +660,7 @@ impl RunningAction for RunningActionImpl {
             output_paths.append(&mut command_proto.output_files);
             output_paths.append(&mut command_proto.output_directories);
         }
-        for entry in output_paths.into_iter() {
+        for entry in output_paths {
             let full_path = format!("{}/{}", self.work_directory, entry);
             let work_directory = &self.work_directory;
             output_path_futures.push(async move {
@@ -676,14 +673,14 @@ impl RunningAction for RunningActionImpl {
                                 // execution spec, we simply ignore it continue.
                                 return Result::<OutputType, Error>::Ok(OutputType::None);
                             }
-                            return Err(e).err_tip(|| format!("Could not open file {}", full_path));
+                            return Err(e).err_tip(|| format!("Could not open file {full_path}"));
                         }
                     };
                     // We cannot rely on the file_handle's metadata, because it follows symlinks, so
                     // we need to instead use `symlink_metadata`.
                     let metadata = fs::symlink_metadata(&full_path)
                         .await
-                        .err_tip(|| format!("While querying symlink metadata for {}", entry))?;
+                        .err_tip(|| format!("While querying symlink metadata for {entry}"))?;
                     if metadata.is_file() {
                         return Ok(OutputType::File(
                             upload_file(file_handle, cas_store, full_path)
@@ -706,7 +703,7 @@ impl RunningAction for RunningActionImpl {
                                 };
                                 let tree_digest = serialize_and_upload_message(&tree, cas_store)
                                     .await
-                                    .err_tip(|| format!("While processing {}", entry))?;
+                                    .err_tip(|| format!("While processing {entry}"))?;
                                 Ok(DirectoryInfo {
                                     path: entry,
                                     tree_digest,
@@ -725,15 +722,14 @@ impl RunningAction for RunningActionImpl {
                         Ok(metadata) => {
                             if metadata.is_dir() {
                                 return Ok(OutputType::DirectorySymlink(output_symlink));
-                            } else {
-                                // Note: If it's anything but directory we put it as a file symlink.
-                                return Ok(OutputType::FileSymlink(output_symlink));
                             }
+                            // Note: If it's anything but directory we put it as a file symlink.
+                            return Ok(OutputType::FileSymlink(output_symlink));
                         }
                         Err(e) => {
                             if e.code != Code::NotFound {
                                 return Err(e)
-                                    .err_tip(|| format!("While querying target symlink metadata for {}", full_path));
+                                    .err_tip(|| format!("While querying target symlink metadata for {full_path}"));
                             }
                             // If the file doesn't exist, we consider it a file. Even though the
                             // file doesn't exist we still need to populate an entry.
@@ -777,10 +773,10 @@ impl RunningAction for RunningActionImpl {
                 output_directory_symlinks,
                 output_file_symlinks,
                 exit_code: execution_result.exit_code,
-                stdout_digest: stdout_digest.into(),
-                stderr_digest: stderr_digest.into(),
+                stdout_digest,
+                stderr_digest,
                 execution_metadata,
-                server_logs: Default::default(), // TODO(allada) Not implemented.
+                server_logs: HashMap::default(), // TODO(allada) Not implemented.
             });
         }
         Ok(self)
@@ -893,7 +889,7 @@ impl RunningActionsManagerImpl {
         let work_directory = format!("{}/{}", self.root_work_directory, hex::encode(action_id));
         fs::create_dir(&work_directory)
             .await
-            .err_tip(|| format!("Error creating work directory {}", work_directory))?;
+            .err_tip(|| format!("Error creating work directory {work_directory}"))?;
         Ok(work_directory)
     }
 
@@ -927,12 +923,9 @@ impl RunningActionsManagerImpl {
 
     fn cleanup_action(&self, action_id: &ActionId) -> Result<(), Error> {
         let mut running_actions = self.running_actions.lock();
-        running_actions.remove(action_id).err_tip(|| {
-            format!(
-                "Expected action id '{:?}' to exist in RunningActionsManagerImpl",
-                action_id
-            )
-        })?;
+        running_actions
+            .remove(action_id)
+            .err_tip(|| format!("Expected action id '{action_id:?}' to exist in RunningActionsManagerImpl"))?;
         Ok(())
     }
 
@@ -942,9 +935,8 @@ impl RunningActionsManagerImpl {
             action_state.kill_channel_tx.take()
         };
         if let Some(kill_channel_tx) = kill_channel_tx {
-            match kill_channel_tx.send(()) {
-                Err(_) => log::error!("Error sending kill to running action"),
-                _ => (),
+            if kill_channel_tx.send(()).is_err() {
+                log::error!("Error sending kill to running action");
             }
         }
     }
@@ -970,8 +962,8 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         let work_directory = self.make_work_directory(&action_id).await?;
         let execution_metadata = ExecutionMetadata {
             worker: worker_id,
-            queued_timestamp: action_info.insert_timestamp.clone(),
-            worker_start_timestamp: action_info.load_timestamp.clone(),
+            queued_timestamp: action_info.insert_timestamp,
+            worker_start_timestamp: action_info.load_timestamp,
             worker_completed_timestamp: SystemTime::UNIX_EPOCH,
             input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
             input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
@@ -1013,7 +1005,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         if let Some(grpc_store) = maybe_grpc_store {
             let update_action_request = UpdateActionResultRequest {
                 // This is populated by `update_action_result`.
-                instance_name: "".to_string(),
+                instance_name: String::new(),
                 action_digest: Some(action_digest.clone().into()),
                 action_result: Some(proto_action_result),
                 results_cache_policy: None,
@@ -1045,7 +1037,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 .collect()
         };
         for action in kill_actions {
-            Self::kill_action(action).await
+            Self::kill_action(action).await;
         }
     }
 }

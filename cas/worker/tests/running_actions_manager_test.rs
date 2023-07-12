@@ -29,7 +29,6 @@ use rand::{thread_rng, Rng};
 use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
 use action_messages::{ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use common::{fs, DigestInfo};
-use config;
 use error::{Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
@@ -89,9 +88,9 @@ async fn run_action(action: Arc<RunningActionImpl>) -> Result<ActionResult, Erro
     action
         .clone()
         .prepare_action()
-        .and_then(|action| action.execute())
-        .and_then(|action| action.upload_results())
-        .and_then(|action| action.get_finished_result())
+        .and_then(RunningAction::execute)
+        .and_then(RunningAction::upload_results)
+        .and_then(RunningAction::get_finished_result)
         .then(|result| async move {
             action.cleanup().await?;
             result
@@ -113,7 +112,7 @@ fn monotonic_clock(counter: &AtomicU64) -> SystemTime {
 }
 
 fn increment_clock(time: &mut SystemTime) -> SystemTime {
-    let previous_time = time.clone();
+    let previous_time = *time;
     *time = previous_time.checked_add(Duration::from_secs(1)).unwrap();
     previous_time
 }
@@ -125,8 +124,6 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
-
         const FILE1_NAME: &str = "file1.txt";
         const FILE1_CONTENT: &str = "HELLOFILE1";
         const FILE2_NAME: &str = "file2.exec";
@@ -134,20 +131,22 @@ mod running_actions_manager_tests {
         const FILE2_MODE: u32 = 0o710;
         const FILE2_MTIME: u64 = 5;
 
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
         let root_directory_digest = {
             // Make and insert (into store) our digest info needed to create our directory & files.
-            let file1_content_digest = DigestInfo::new([02u8; 32], 32);
+            let file1_content_digest = DigestInfo::new([2u8; 32], 32);
             slow_store
                 .as_ref()
                 .update_oneshot(file1_content_digest.clone(), FILE1_CONTENT.into())
                 .await?;
-            let file2_content_digest = DigestInfo::new([03u8; 32], 32);
+            let file2_content_digest = DigestInfo::new([3u8; 32], 32);
             slow_store
                 .as_ref()
                 .update_oneshot(file2_content_digest.clone(), FILE2_CONTENT.into())
                 .await?;
 
-            let root_directory_digest = DigestInfo::new([01u8; 32], 32);
+            let root_directory_digest = DigestInfo::new([1u8; 32], 32);
             let root_directory = Directory {
                 files: vec![
                     FileNode {
@@ -187,7 +186,7 @@ mod running_actions_manager_tests {
             let download_dir = make_temp_path("download_dir");
             fs::create_dir_all(&download_dir)
                 .await
-                .err_tip(|| format!("Could not make download_dir : {}", download_dir))?;
+                .err_tip(|| format!("Could not make download_dir : {download_dir}"))?;
             download_to_directory(
                 cas_store.as_ref(),
                 fast_store.as_ref(),
@@ -199,10 +198,10 @@ mod running_actions_manager_tests {
         };
         {
             // Now ensure that our download_dir has the files.
-            let file1_content = fs::read(format!("{}/{}", download_dir, FILE1_NAME)).await?;
+            let file1_content = fs::read(format!("{download_dir}/{FILE1_NAME}")).await?;
             assert_eq!(std::str::from_utf8(&file1_content)?, FILE1_CONTENT);
 
-            let file2_path = format!("{}/{}", download_dir, FILE2_NAME);
+            let file2_path = format!("{download_dir}/{FILE2_NAME}");
             let file2_content = fs::read(&file2_path).await?;
             assert_eq!(std::str::from_utf8(&file2_content)?, FILE2_CONTENT);
 
@@ -217,18 +216,18 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
-
         const DIRECTORY1_NAME: &str = "folder1";
         const FILE1_NAME: &str = "file1.txt";
         const FILE1_CONTENT: &str = "HELLOFILE1";
         const DIRECTORY2_NAME: &str = "folder2";
 
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
         let root_directory_digest = {
             // Make and insert (into store) our digest info needed to create our directory & files.
-            let directory1_digest = DigestInfo::new([01u8; 32], 32);
+            let directory1_digest = DigestInfo::new([1u8; 32], 32);
             {
-                let file1_content_digest = DigestInfo::new([02u8; 32], 32);
+                let file1_content_digest = DigestInfo::new([2u8; 32], 32);
                 slow_store
                     .as_ref()
                     .update_oneshot(file1_content_digest.clone(), FILE1_CONTENT.into())
@@ -246,7 +245,7 @@ mod running_actions_manager_tests {
                     .update_oneshot(directory1_digest.clone(), directory1.encode_to_vec().into())
                     .await?;
             }
-            let directory2_digest = DigestInfo::new([03u8; 32], 32);
+            let directory2_digest = DigestInfo::new([3u8; 32], 32);
             {
                 // Now upload an empty directory.
                 slow_store
@@ -254,7 +253,7 @@ mod running_actions_manager_tests {
                     .update_oneshot(directory2_digest.clone(), Directory::default().encode_to_vec().into())
                     .await?;
             }
-            let root_directory_digest = DigestInfo::new([05u8; 32], 32);
+            let root_directory_digest = DigestInfo::new([5u8; 32], 32);
             {
                 let root_directory = Directory {
                     directories: vec![
@@ -282,7 +281,7 @@ mod running_actions_manager_tests {
             let download_dir = make_temp_path("download_dir");
             fs::create_dir_all(&download_dir)
                 .await
-                .err_tip(|| format!("Could not make download_dir : {}", download_dir))?;
+                .err_tip(|| format!("Could not make download_dir : {download_dir}"))?;
             download_to_directory(
                 cas_store.as_ref(),
                 fast_store.as_ref(),
@@ -294,12 +293,12 @@ mod running_actions_manager_tests {
         };
         {
             // Now ensure that our download_dir has the files.
-            let file1_content = fs::read(format!("{}/{}/{}", download_dir, DIRECTORY1_NAME, FILE1_NAME))
+            let file1_content = fs::read(format!("{download_dir}/{DIRECTORY1_NAME}/{FILE1_NAME}"))
                 .await
                 .err_tip(|| "On file_1 read")?;
             assert_eq!(std::str::from_utf8(&file1_content)?, FILE1_CONTENT);
 
-            let folder2_path = format!("{}/{}", download_dir, DIRECTORY2_NAME);
+            let folder2_path = format!("{download_dir}/{DIRECTORY2_NAME}");
             let folder2_metadata = fs::metadata(&folder2_path)
                 .await
                 .err_tip(|| "On folder2_metadata metadata")?;
@@ -310,22 +309,22 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
-
         const FILE_NAME: &str = "file.txt";
         const FILE_CONTENT: &str = "HELLOFILE";
         const SYMLINK_NAME: &str = "symlink_file.txt";
         const SYMLINK_TARGET: &str = "file.txt";
 
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
         let root_directory_digest = {
             // Make and insert (into store) our digest info needed to create our directory & files.
-            let file_content_digest = DigestInfo::new([01u8; 32], 32);
+            let file_content_digest = DigestInfo::new([1u8; 32], 32);
             slow_store
                 .as_ref()
                 .update_oneshot(file_content_digest.clone(), FILE_CONTENT.into())
                 .await?;
 
-            let root_directory_digest = DigestInfo::new([02u8; 32], 32);
+            let root_directory_digest = DigestInfo::new([2u8; 32], 32);
             let root_directory = Directory {
                 files: vec![FileNode {
                     name: FILE_NAME.to_string(),
@@ -353,7 +352,7 @@ mod running_actions_manager_tests {
             let download_dir = make_temp_path("download_dir");
             fs::create_dir_all(&download_dir)
                 .await
-                .err_tip(|| format!("Could not make download_dir : {}", download_dir))?;
+                .err_tip(|| format!("Could not make download_dir : {download_dir}"))?;
             download_to_directory(
                 cas_store.as_ref(),
                 fast_store.as_ref(),
@@ -365,7 +364,7 @@ mod running_actions_manager_tests {
         };
         {
             // Now ensure that our download_dir has the files.
-            let symlink_path = format!("{}/{}", download_dir, SYMLINK_NAME);
+            let symlink_path = format!("{download_dir}/{SYMLINK_NAME}");
             let symlink_content = fs::read(&symlink_path).await.err_tip(|| "On symlink read")?;
             assert_eq!(std::str::from_utf8(&symlink_content)?, FILE_CONTENT);
 
@@ -379,14 +378,16 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn ensure_output_files_full_directories_are_created_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        const WORKER_ID: &str = "foo_worker_id";
 
         fn test_monotonic_clock() -> SystemTime {
             static CLOCK: AtomicU64 = AtomicU64::new(0);
             monotonic_clock(&CLOCK)
         }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
@@ -396,7 +397,6 @@ mod running_actions_manager_tests {
             config::cas_server::UploadCacheResultsStrategy::Never,
             test_monotonic_clock,
         )?);
-        const WORKER_ID: &str = "foo_worker_id";
         {
             const SALT: u64 = 55;
             let command = Command {
@@ -460,14 +460,16 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        const WORKER_ID: &str = "foo_worker_id";
 
         fn test_monotonic_clock() -> SystemTime {
             static CLOCK: AtomicU64 = AtomicU64::new(0);
             monotonic_clock(&CLOCK)
         }
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
@@ -477,7 +479,6 @@ mod running_actions_manager_tests {
             config::cas_server::UploadCacheResultsStrategy::Never,
             test_monotonic_clock,
         )?);
-        const WORKER_ID: &str = "foo_worker_id";
         let action_result = {
             const SALT: u64 = 55;
             let command = Command {
@@ -585,14 +586,16 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        const WORKER_ID: &str = "foo_worker_id";
 
         fn test_monotonic_clock() -> SystemTime {
             static CLOCK: AtomicU64 = AtomicU64::new(0);
             monotonic_clock(&CLOCK)
         }
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory,
@@ -602,7 +605,6 @@ mod running_actions_manager_tests {
             config::cas_server::UploadCacheResultsStrategy::Never,
             test_monotonic_clock,
         )?);
-        const WORKER_ID: &str = "foo_worker_id";
         let queued_timestamp = make_system_time(1000);
         let action_result = {
             const SALT: u64 = 55;
@@ -692,7 +694,6 @@ mod running_actions_manager_tests {
                     },
                     root_directory
                 ],
-                ..Default::default()
             }
         );
         let mut clock_time = make_system_time(0);
@@ -724,7 +725,7 @@ mod running_actions_manager_tests {
                 server_logs: HashMap::new(),
                 execution_metadata: ExecutionMetadata {
                     worker: WORKER_ID.to_string(),
-                    queued_timestamp: queued_timestamp,
+                    queued_timestamp,
                     worker_start_timestamp: increment_clock(&mut clock_time),
                     input_fetch_start_timestamp: increment_clock(&mut clock_time),
                     input_fetch_completed_timestamp: increment_clock(&mut clock_time),
@@ -741,14 +742,16 @@ mod running_actions_manager_tests {
 
     #[tokio::test]
     async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        const WORKER_ID: &str = "foo_worker_id";
 
         fn test_monotonic_clock() -> SystemTime {
             static CLOCK: AtomicU64 = AtomicU64::new(0);
             monotonic_clock(&CLOCK)
         }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
             root_work_directory.clone(),
@@ -758,7 +761,6 @@ mod running_actions_manager_tests {
             config::cas_server::UploadCacheResultsStrategy::Never,
             test_monotonic_clock,
         )?);
-        const WORKER_ID: &str = "foo_worker_id";
         let queued_timestamp = make_system_time(1000);
         let action_result = {
             const SALT: u64 = 55;
@@ -828,14 +830,16 @@ mod running_actions_manager_tests {
         let mut dir_stream = fs::read_dir(&root_work_directory).await?;
         assert!(
             dir_stream.as_mut().next_entry().await?.is_none(),
-            "Expected empty directory at {}",
-            root_work_directory
+            "Expected empty directory at {root_work_directory}"
         );
         Ok(())
     }
 
     #[tokio::test]
     async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const SALT: u64 = 55;
+
         let (_, _, cas_store, ac_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
@@ -847,8 +851,6 @@ mod running_actions_manager_tests {
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
         )?);
-        const WORKER_ID: &str = "foo_worker_id";
-        const SALT: u64 = 55;
         let command = Command {
             arguments: vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()],
             output_paths: vec![],
@@ -894,11 +896,15 @@ mod running_actions_manager_tests {
     // invoked and the actual command was invoked under the shell script.
     #[tokio::test]
     async fn entrypoint_cmd_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
+        const TEST_WRAPPER_SCRIPT: &str = "cas/worker/tests/wrapper_for_test.sh";
+        const WORKER_ID: &str = "foo_worker_id";
+        const SALT: u64 = 66;
+        const EXPECTED_STDOUT: &str = "Action did run";
+
         let (_, _, cas_store, ac_store) = setup_stores().await?;
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
-        const TEST_WRAPPER_SCRIPT: &str = "cas/worker/tests/wrapper_for_test.sh";
         let mut full_wrapper_script_path = env::current_dir()?;
         full_wrapper_script_path.push(TEST_WRAPPER_SCRIPT);
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
@@ -910,9 +916,6 @@ mod running_actions_manager_tests {
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
         )?);
-        const WORKER_ID: &str = "foo_worker_id";
-        const SALT: u64 = 66;
-        const EXPECTED_STDOUT: &str = "Action did run";
         let command = Command {
             arguments: vec!["printf".to_string(), EXPECTED_STDOUT.to_string()],
             working_directory: ".".to_string(),
@@ -958,14 +961,14 @@ mod running_actions_manager_tests {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            "".to_string(),
+            String::new(),
             None,
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
         )?);
 
-        let action_digest = DigestInfo::new([02u8; 32], 32);
+        let action_digest = DigestInfo::new([2u8; 32], 32);
         let action_result = ActionResult {
             output_files: vec![FileInfo {
                 name_or_path: NameOrPath::Path("test.txt".to_string()),
@@ -1009,14 +1012,14 @@ mod running_actions_manager_tests {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            "".to_string(),
+            String::new(),
             None,
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Everything,
         )?);
 
-        let action_digest = DigestInfo::new([02u8; 32], 32);
+        let action_digest = DigestInfo::new([2u8; 32], 32);
         let action_result = ActionResult {
             output_files: vec![FileInfo {
                 name_or_path: NameOrPath::Path("test.txt".to_string()),

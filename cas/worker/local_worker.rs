@@ -40,8 +40,8 @@ use worker_utils::make_supported_properties;
 /// before trying to connect.
 const CONNECTION_RETRY_DELAY_S: f32 = 0.5;
 
-/// Default endpoint timeout. If this value gets modified the documentation in cas_server.rs
-/// must also be updated.
+/// Default endpoint timeout. If this value gets modified the documentation in
+/// `cas_server.rs` must also be updated.
 const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
@@ -126,15 +126,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 "Got ConnectionResult in LocalWorker::run which should never happen"
                             ));
                         }
-                        Update::KeepAlive(()) => { /* Do nothing, we don't need to do anything to keep-alives. */ }
                         // TODO(allada) We should possibly do something with this notification.
-                        Update::Disconnect(()) => { /* Do nothing */ }
+                        Update::Disconnect(()) | Update::KeepAlive(()) => { /* Do nothing */ }
                         Update::StartAction(start_execute) => {
                             let add_future_channel = add_future_channel.clone();
                             let mut grpc_client = self.grpc_client.clone();
-                            let salt = start_execute.salt.clone();
+                            let salt = start_execute.salt;
                             let worker_id = self.worker_id.clone();
-                            let action_digest = start_execute.execute_request.as_ref().map_or(None, |v| v.action_digest.clone());
+                            let action_digest = start_execute.execute_request.as_ref().and_then(|v| v.action_digest.clone());
                             let start_action_fut = self
                                 .running_actions_manager
                                 .clone()
@@ -143,9 +142,9 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                     action
                                         .clone()
                                         .prepare_action()
-                                        .and_then(|action| action.execute())
-                                        .and_then(|action| action.upload_results())
-                                        .and_then(|action| action.get_finished_result())
+                                        .and_then(RunningAction::execute)
+                                        .and_then(RunningAction::upload_results)
+                                        .and_then(RunningAction::get_finished_result)
                                         // Note: We need ensure we run cleanup even if one of the other steps fail.
                                         .then(|result| async move {
                                             if let Err(e) = action.cleanup().await {
@@ -221,8 +220,8 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
 }
 
-/// Creates a new LocalWorker. The `cas_store` must be an instance of FastSlowStore and will be
-/// checked at runtime.
+/// Creates a new `LocalWorker`. The `cas_store` must be an instance of
+/// `FastSlowStore` and will be checked at runtime.
 pub async fn new_local_worker(
     config: Arc<LocalWorkerConfig>,
     cas_store: Arc<dyn Store>,
@@ -254,8 +253,7 @@ pub async fn new_local_worker(
         fast_slow_store,
         ac_store,
         config.ac_store_strategy,
-    )?)
-    .clone();
+    )?);
     Ok(LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
         running_actions_manager,
@@ -339,7 +337,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         let sleep_fn_pin = Pin::new(&sleep_fn);
         let error_handler = Box::pin(move |e: Error| async move {
             log::error!("{:?}", e);
-            (&sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
+            (sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
         });
 
         loop {

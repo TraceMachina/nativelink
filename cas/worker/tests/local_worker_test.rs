@@ -81,9 +81,7 @@ mod local_worker_tests {
         // Now wait for our client to send `.connect_worker()` (which has our platform properties).
         let mut supported_properties = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
         // It is undefined which order these will be returned in, so we sort it.
-        supported_properties
-            .properties
-            .sort_by(|a, b| a.encode_to_vec().cmp(&b.encode_to_vec()));
+        supported_properties.properties.sort_by_key(Message::encode_to_vec);
         assert_eq!(
             supported_properties,
             SupportedProperties {
@@ -170,6 +168,8 @@ mod local_worker_tests {
 
     #[tokio::test]
     async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Error>> {
+        const SALT: u64 = 1000;
+
         let mut test_context = setup_local_worker(HashMap::new()).await;
         let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -194,12 +194,11 @@ mod local_worker_tests {
                 .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
         }
 
-        const SALT: u64 = 1000;
-        let action_digest = DigestInfo::new([03u8; 32], 10);
+        let action_digest = DigestInfo::new([3u8; 32], 10);
         let action_info = ActionInfo {
             instance_name: "foo".to_string(),
-            command_digest: DigestInfo::new([01u8; 32], 10),
-            input_root_digest: DigestInfo::new([02u8; 32], 10),
+            command_digest: DigestInfo::new([1u8; 32], 10),
+            input_root_digest: DigestInfo::new([2u8; 32], 10),
             timeout: Duration::from_secs(1),
             platform_properties: PlatformProperties::default(),
             priority: 0,
@@ -263,7 +262,7 @@ mod local_worker_tests {
 
         // Expect the action to be updated in the action cache.
         let (stored_digest, stored_result) = test_context.actions_manager.expect_cache_action_result().await;
-        assert_eq!(stored_digest, action_digest.clone().into());
+        assert_eq!(stored_digest, action_digest.clone());
         assert_eq!(stored_result, action_result.clone());
 
         // Now our client should be notified that our runner finished.
