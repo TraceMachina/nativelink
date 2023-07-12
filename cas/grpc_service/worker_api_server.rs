@@ -54,7 +54,7 @@ impl WorkerApiServer {
             // This will protect us from holding a reference to the scheduler forever in the
             // event our ExecutionServer dies. Our scheduler is a weak ref, so the spawn will
             // eventually see the Arc went away and return.
-            let weak_scheduler = Arc::downgrade(&scheduler);
+            let weak_scheduler = Arc::downgrade(scheduler);
             tokio::spawn(async move {
                 let mut ticker = interval(Duration::from_secs(1));
                 loop {

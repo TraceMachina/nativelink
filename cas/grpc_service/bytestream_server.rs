@@ -55,12 +55,12 @@ impl ByteStreamServer {
         let mut stores = HashMap::with_capacity(config.cas_stores.len());
         for (instance_name, store_name) in &config.cas_stores {
             let store = store_manager
-                .get_store(&store_name)
+                .get_store(store_name)
                 .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", store_name))?;
             stores.insert(instance_name.to_string(), store);
         }
         Ok(ByteStreamServer {
-            stores: stores,
+            stores,
             max_bytes_per_stream: config.max_bytes_per_stream,
             active_uploads: Mutex::new(HashSet::new()),
         })
@@ -91,7 +91,7 @@ impl ByteStreamServer {
             return Ok(Response::new(Box::pin(stream)));
         }
 
-        let digest = DigestInfo::try_new(&resource_info.hash, resource_info.expected_size)?;
+        let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
 
         let (tx, rx) = buf_channel::make_buf_channel_pair();
 
@@ -111,11 +111,7 @@ impl ByteStreamServer {
         });
 
         Ok(Response::new(Box::pin(unfold(state, move |state| async {
-            let mut state = if let Some(state) = state {
-                state
-            } else {
-                return None; // Our stream is done.
-            };
+            let mut state = state?; // If None our stream is done.
 
             let read_result = state
                 .rx
@@ -124,7 +120,7 @@ impl ByteStreamServer {
                 .err_tip(|| "Error reading data from underlying store");
             match read_result {
                 Ok(bytes) => {
-                    if bytes.len() == 0 {
+                    if bytes.is_empty() {
                         // EOF.
                         return Some((Ok(ReadResponse { ..Default::default() }), None));
                     }
@@ -192,7 +188,7 @@ impl ByteStreamServer {
         };
 
         while let Some(write_request) = stream.next().await.err_tip(|| "Stream closed early")? {
-            if write_request.data.len() == 0 {
+            if write_request.data.is_empty() {
                 continue; // We don't want to send EOF, let the None option send it.
             }
             tx.send(write_request.data)
@@ -271,7 +267,7 @@ impl ByteStream for ByteStreamServer {
         let resp = self
             .inner_read(grpc_request)
             .await
-            .err_tip(|| format!("Failed on read() command"))
+            .err_tip(|| "Failed on read() command")
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = resp.as_ref() {
@@ -287,7 +283,7 @@ impl ByteStream for ByteStreamServer {
         let mut stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
             .await
             .err_tip(|| "Could not unwrap first stream message")
-            .map_err(|e| Into::<Status>::into(e))?;
+            .map_err(Into::<Status>::into)?;
         let hash = if log::log_enabled!(log::Level::Info) {
             Some(stream.hash.clone())
         } else {

@@ -25,7 +25,6 @@ use proto::google::rpc::Status as GrpcStatus;
 
 use cas_server::CasServer;
 use common::DigestInfo;
-use config;
 use default_store_factory::store_factory;
 use error::Error;
 use store::StoreManager;
@@ -56,7 +55,7 @@ fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
                 cas_store: "main_cas".to_string(),
             }
         },
-        &store_manager,
+        store_manager,
     )
 }
 
@@ -180,7 +179,7 @@ mod batch_update_blobs {
 
         let store = Pin::new(store_owned.as_ref());
         store
-            .update_oneshot(DigestInfo::try_new(&HASH1, VALUE1.len())?, VALUE1.into())
+            .update_oneshot(DigestInfo::try_new(HASH1, VALUE1.len())?, VALUE1.into())
             .await
             .expect("Update should have succeeded");
 
@@ -208,7 +207,7 @@ mod batch_update_blobs {
             }
         );
         let new_data = store
-            .get_part_unchunked(DigestInfo::try_new(&HASH1, VALUE1.len())?, 0, None, None)
+            .get_part_unchunked(DigestInfo::try_new(HASH1, VALUE1.len())?, 0, None, None)
             .await
             .expect("Get should have succeeded");
         assert_eq!(
@@ -251,11 +250,11 @@ mod batch_read_blobs {
             // Insert dummy data.
             let store = Pin::new(store_owned.as_ref());
             store
-                .update_oneshot(DigestInfo::try_new(&HASH1, VALUE1.len())?, VALUE1.into())
+                .update_oneshot(DigestInfo::try_new(HASH1, VALUE1.len())?, VALUE1.into())
                 .await
                 .expect("Update should have succeeded");
             store
-                .update_oneshot(DigestInfo::try_new(&HASH2, VALUE2.len())?, VALUE2.into())
+                .update_oneshot(DigestInfo::try_new(HASH2, VALUE2.len())?, VALUE2.into())
                 .await
                 .expect("Update should have succeeded");
         }

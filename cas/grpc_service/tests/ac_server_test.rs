@@ -24,7 +24,6 @@ use proto::build::bazel::remote::execution::v2::{action_cache_server::ActionCach
 
 use ac_server::AcServer;
 use common::DigestInfo;
-use config;
 use default_store_factory::store_factory;
 use error::Error;
 use store::{Store, StoreManager};
@@ -42,7 +41,7 @@ async fn insert_into_store<T: Message>(
     let mut store_data = BytesMut::new();
     action_result.encode(&mut store_data)?;
     let data_len = store_data.len();
-    let digest = DigestInfo::try_new(&hash, action_size)?;
+    let digest = DigestInfo::try_new(hash, action_size)?;
     store.update_oneshot(digest.clone(), store_data.freeze()).await?;
     Ok(data_len.try_into().unwrap())
 }
@@ -75,7 +74,7 @@ fn make_ac_server(store_manager: &StoreManager) -> Result<AcServer, Error> {
                 ac_store: "main_ac".to_string(),
             }
         },
-        &store_manager,
+        store_manager,
     )
 }
 
@@ -123,11 +122,13 @@ mod get_action_result {
         let ac_server = make_ac_server(&store_manager)?;
         let ac_store_owned = store_manager.get_store("main_ac").unwrap();
 
-        let mut action_result = ActionResult::default();
-        action_result.exit_code = 45;
+        let action_result = ActionResult {
+            exit_code: 45,
+            ..Default::default()
+        };
 
         let ac_store = Pin::new(ac_store_owned.as_ref());
-        insert_into_store(ac_store, &HASH1, HASH1_SIZE, &action_result).await?;
+        insert_into_store(ac_store, HASH1, HASH1_SIZE, &action_result).await?;
         let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
 
         assert!(raw_response.is_ok(), "Expected value, got error {:?}", raw_response);
@@ -141,11 +142,13 @@ mod get_action_result {
         let ac_server = make_ac_server(&store_manager)?;
         let ac_store_owned = store_manager.get_store("main_ac").unwrap();
 
-        let mut action_result = ActionResult::default();
-        action_result.exit_code = 45;
+        let action_result = ActionResult {
+            exit_code: 45,
+            ..Default::default()
+        };
 
         let ac_store = Pin::new(ac_store_owned.as_ref());
-        insert_into_store(ac_store, &HASH1, HASH1_SIZE, &action_result).await?;
+        insert_into_store(ac_store, HASH1, HASH1_SIZE, &action_result).await?;
         let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE - 1).await;
 
         let err = raw_response.unwrap_err();
@@ -192,8 +195,10 @@ mod update_action_result {
         let ac_server = make_ac_server(&store_manager)?;
         let ac_store_owned = store_manager.get_store("main_ac").unwrap();
 
-        let mut action_result = ActionResult::default();
-        action_result.exit_code = 45;
+        let action_result = ActionResult {
+            exit_code: 45,
+            ..Default::default()
+        };
 
         let size_bytes = get_encoded_proto_size(&action_result)? as i64;
 
@@ -201,7 +206,7 @@ mod update_action_result {
             &ac_server,
             Digest {
                 hash: HASH1.to_string(),
-                size_bytes: size_bytes,
+                size_bytes,
             },
             action_result.clone(),
         )
@@ -210,7 +215,7 @@ mod update_action_result {
         assert!(raw_response.is_ok(), "Expected success, got error {:?}", raw_response);
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
 
-        let digest = DigestInfo::try_new(&HASH1, size_bytes)?;
+        let digest = DigestInfo::try_new(HASH1, size_bytes)?;
         let ac_store = Pin::new(ac_store_owned.as_ref());
         let raw_data = ac_store.get_part_unchunked(digest, 0, None, None).await?;
 
