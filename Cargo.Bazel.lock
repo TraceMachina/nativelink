@@ -1,5 +1,5 @@
 {
-  "checksum": "ec1aaea79db6c8962a1718248f7b28b82eb70a7dee255529ea671dfed22e58a2",
+  "checksum": "4f921e8c24fd74362f4fa660db203c02dfdc564ae44a23e8d4526d28aab7aafb",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -2499,10 +2499,6 @@
             {
               "id": "json5 0.4.1",
               "target": "json5"
-            },
-            {
-              "id": "lazy-init 0.5.1",
-              "target": "lazy_init"
             },
             {
               "id": "lazy_static 1.4.0",
@@ -5245,36 +5241,6 @@
         "version": "0.4.1"
       },
       "license": "ISC"
-    },
-    "lazy-init 0.5.1": {
-      "name": "lazy-init",
-      "version": "0.5.1",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/lazy-init/0.5.1/download",
-          "sha256": "9f40963626ac12dcaf92afc15e4c3db624858c92fd9f8ba2125eaada3ac2706f"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "lazy_init",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "lazy_init",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "edition": "2015",
-        "version": "0.5.1"
-      },
-      "license": "Apache-2.0/MIT"
     },
     "lazy_static 1.4.0": {
       "name": "lazy_static",
