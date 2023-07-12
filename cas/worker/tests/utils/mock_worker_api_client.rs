@@ -57,6 +57,12 @@ impl MockWorkerApiClient {
     }
 }
 
+impl Default for MockWorkerApiClient {
+    fn default() -> Self {
+        unreachable!("We don't test this functionality")
+    }
+}
+
 impl MockWorkerApiClient {
     pub async fn expect_connect_worker(
         &mut self,
@@ -65,7 +71,9 @@ impl MockWorkerApiClient {
         let mut rx_call_lock = self.rx_call.lock().await;
         let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
             WorkerClientApiCalls::ConnectWorker(req) => req,
-            req => panic!("expect_connect_worker expected ConnectWorker, got : {:?}", req),
+            req @ WorkerClientApiCalls::ExecutionResponse(_) => {
+                panic!("expect_connect_worker expected ConnectWorker, got : {req:?}")
+            }
         };
         self.tx_resp
             .send(WorkerClientApiReturns::ConnectWorker(result))
@@ -77,7 +85,9 @@ impl MockWorkerApiClient {
         let mut rx_call_lock = self.rx_call.lock().await;
         let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
             WorkerClientApiCalls::ExecutionResponse(req) => req,
-            req => panic!("expect_execution_response expected ExecutionResponse, got : {:?}", req),
+            req @ WorkerClientApiCalls::ConnectWorker(_) => {
+                panic!("expect_execution_response expected ExecutionResponse, got : {req:?}")
+            }
         };
         self.tx_resp
             .send(WorkerClientApiReturns::ExecutionResponse(result))
@@ -98,7 +108,9 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock.recv().await.expect("Could not receive msg in mpsc") {
             WorkerClientApiReturns::ConnectWorker(result) => result,
-            resp => panic!("connect_worker expected ConnectWorker response, received {:?}", resp),
+            resp @ WorkerClientApiReturns::ExecutionResponse(_) => {
+                panic!("connect_worker expected ConnectWorker response, received {resp:?}")
+            }
         }
     }
 
@@ -117,10 +129,9 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock.recv().await.expect("Could not receive msg in mpsc") {
             WorkerClientApiReturns::ExecutionResponse(result) => result,
-            resp => panic!(
-                "execution_response expected ExecutionResponse response, received {:?}",
-                resp
-            ),
+            resp @ WorkerClientApiReturns::ConnectWorker(_) => {
+                panic!("execution_response expected ExecutionResponse response, received {resp:?}")
+            }
         }
     }
 }
