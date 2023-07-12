@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 use tokio_util::codec::FramedRead;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
-use common::{log, DigestInfo, JoinHandleDropGuard, SerializableDigestInfo};
+use common::{log, DigestInfo, JoinHandleDropGuard};
 use config;
 use error::{make_err, Code, Error, ResultExt};
 use fastcdc::FastCDC;
@@ -44,7 +44,7 @@ const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
 pub struct DedupIndex {
-    pub entries: Vec<SerializableDigestInfo>,
+    pub entries: Vec<DigestInfo>,
 }
 
 pub struct DedupStore {
@@ -138,7 +138,7 @@ impl StoreTrait for DedupStore {
             .map(move |index_entry| {
                 let content_store = self.content_store.clone();
                 async move {
-                    let digest = DigestInfo::new(index_entry.hash, index_entry.size_bytes as i64);
+                    let digest = DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes as i64);
                     Pin::new(content_store.as_ref())
                         .has(digest)
                         .await
@@ -184,10 +184,7 @@ impl StoreTrait for DedupStore {
                     let hash = Sha256::digest(&frame[..]);
 
                     let frame_len = frame.len();
-                    let index_entry = SerializableDigestInfo {
-                        hash: hash.into(),
-                        size_bytes: frame_len as u64,
-                    };
+                    let index_entry = DigestInfo::new(hash.into(), frame_len as i64);
 
                     let content_store_pin = Pin::new(content_store.as_ref());
                     let digest = DigestInfo::new(hash.clone().into(), frame.len() as i64);
@@ -287,10 +284,8 @@ impl StoreTrait for DedupStore {
                 let content_store = self.content_store.clone();
 
                 async move {
-                    let digest = DigestInfo::new(index_entry.hash, index_entry.size_bytes as i64);
-
                     let data = Pin::new(content_store.as_ref())
-                        .get_part_unchunked(digest, 0, None, Some(index_entry.size_bytes as usize))
+                        .get_part_unchunked(index_entry, 0, None, Some(index_entry.size_bytes as usize))
                         .await
                         .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
 

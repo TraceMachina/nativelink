@@ -156,7 +156,7 @@ impl CasServer {
                         .await
                         .err_tip(|| "Error writing to store")
                 }
-                .map(|result| batch_update_blobs_response::Response {
+                .map(move |result| batch_update_blobs_response::Response {
                     digest: Some(digest.into()),
                     status: Some(result.map_or_else(|e| e.into(), |_| GrpcStatus::default())),
                 }),
@@ -206,7 +206,7 @@ impl CasServer {
                         .err_tip(|| "Error reading from store")?;
                     Ok(store_data)
                 }
-                .map(|result: Result<Bytes, Error>| {
+                .map(move |result: Result<Bytes, Error>| {
                     let (status, data) = result.map_or_else(
                         |mut e| {
                             if e.code == Code::NotFound {
