@@ -136,7 +136,7 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = store_pin.has(digest.clone()).await;
+        let result = store_pin.has(digest).await;
         assert_eq!(result, Ok(Some(512)), "Expected to find item, got: {:?}", result);
         Ok(())
     }
@@ -168,7 +168,7 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = store_pin.has(digest.clone()).await;
+        let result = store_pin.has(digest).await;
         assert_eq!(result, Ok(None), "Expected to not find item, got: {:?}", result);
         Ok(())
     }
@@ -205,7 +205,7 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = store_pin.has(digest.clone()).await;
+        let result = store_pin.has(digest).await;
         assert_eq!(result, Ok(Some(111)), "Expected to find item, got: {:?}", result);
         Ok(())
     }

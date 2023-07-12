@@ -42,12 +42,7 @@ pub async fn get_and_decode_digest<T: Message + Default>(
     digest: &DigestInfo,
 ) -> Result<T, Error> {
     let mut store_data_resp = store
-        .get_part_unchunked(
-            digest.clone(),
-            0,
-            Some(MAX_ACTION_MSG_SIZE),
-            Some(ESTIMATED_DIGEST_SIZE),
-        )
+        .get_part_unchunked(*digest, 0, Some(MAX_ACTION_MSG_SIZE), Some(ESTIMATED_DIGEST_SIZE))
         .await;
     if let Err(err) = &mut store_data_resp {
         if err.code == Code::NotFound {
@@ -76,7 +71,7 @@ pub async fn serialize_and_upload_message<'a, T: Message>(
         hasher.update(&buffer);
         DigestInfo::new(hasher.finalize().into(), buffer.len() as i64)
     };
-    upload_to_store(cas_store, digest.clone(), &mut Cursor::new(buffer)).await?;
+    upload_to_store(cas_store, digest, &mut Cursor::new(buffer)).await?;
     Ok(digest)
 }
 
@@ -121,11 +116,7 @@ pub fn upload_to_store<'a, R: AsyncRead + Unpin>(
 ) -> impl Future<Output = Result<(), Error>> + 'a {
     let (mut tx, rx) = make_buf_channel_pair();
     let upload_to_store_fut = cas_store
-        .update(
-            digest.clone(),
-            rx,
-            UploadSizeInfo::ExactSize(digest.size_bytes as usize),
-        )
+        .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes as usize))
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_to_store"));
     let read_data_fut = async move {
         loop {

@@ -53,12 +53,12 @@ async fn check_data<S: StoreTrait>(
     debug_name: &str,
 ) -> Result<(), Error> {
     assert!(
-        check_store.has(digest.clone()).await?.is_some(),
+        check_store.has(digest).await?.is_some(),
         "Expected data to exist in {} store",
         debug_name
     );
 
-    let store_data = check_store.get_part_unchunked(digest.clone(), 0, None, None).await?;
+    let store_data = check_store.get_part_unchunked(digest, 0, None, None).await?;
     assert_eq!(
         store_data, original_data,
         "Expected data to match in {} store",
@@ -81,13 +81,11 @@ mod fast_slow_store_tests {
 
         let original_data = make_random_data(20 * MEGABYTE_SZ);
         let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
-        store
-            .update_oneshot(digest.clone(), original_data.clone().into())
-            .await?;
+        store.update_oneshot(digest, original_data.clone().into()).await?;
 
-        check_data(store, digest.clone(), &original_data, "fast_slow").await?;
-        check_data(Pin::new(fast_store.as_ref()), digest.clone(), &original_data, "fast").await?;
-        check_data(Pin::new(slow_store.as_ref()), digest.clone(), &original_data, "slow").await?;
+        check_data(store, digest, &original_data, "fast_slow").await?;
+        check_data(Pin::new(fast_store.as_ref()), digest, &original_data, "fast").await?;
+        check_data(Pin::new(slow_store.as_ref()), digest, &original_data, "slow").await?;
 
         Ok(())
     }
@@ -101,22 +99,18 @@ mod fast_slow_store_tests {
 
         let original_data = make_random_data(MEGABYTE_SZ);
         let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
-        slow_store
-            .update_oneshot(digest.clone(), original_data.clone().into())
-            .await?;
+        slow_store.update_oneshot(digest, original_data.clone().into()).await?;
 
-        assert_eq!(fast_slow_store.has(digest.clone()).await, Ok(Some(original_data.len())));
-        assert_eq!(fast_store.has(digest.clone()).await, Ok(None));
-        assert_eq!(slow_store.has(digest.clone()).await, Ok(Some(original_data.len())));
+        assert_eq!(fast_slow_store.has(digest).await, Ok(Some(original_data.len())));
+        assert_eq!(fast_store.has(digest).await, Ok(None));
+        assert_eq!(slow_store.has(digest).await, Ok(Some(original_data.len())));
 
         // This get() request should place the data in fast_store too.
-        fast_slow_store
-            .get_part_unchunked(digest.clone(), 0, None, None)
-            .await?;
+        fast_slow_store.get_part_unchunked(digest, 0, None, None).await?;
 
         // Now the data should exist in all the stores.
-        check_data(fast_store, digest.clone(), &original_data, "fast_store").await?;
-        check_data(slow_store, digest.clone(), &original_data, "slow_store").await?;
+        check_data(fast_store, digest, &original_data, "fast_store").await?;
+        check_data(slow_store, digest, &original_data, "slow_store").await?;
 
         Ok(())
     }
@@ -130,19 +124,15 @@ mod fast_slow_store_tests {
 
         let original_data = make_random_data(MEGABYTE_SZ);
         let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
-        slow_store
-            .update_oneshot(digest.clone(), original_data.clone().into())
-            .await?;
+        slow_store.update_oneshot(digest, original_data.clone().into()).await?;
 
         // This get() request should place the data in fast_store too.
-        fast_slow_store
-            .get_part_unchunked(digest.clone(), 0, Some(50), None)
-            .await?;
+        fast_slow_store.get_part_unchunked(digest, 0, Some(50), None).await?;
 
         // Data should not exist in fast store, but should exist in slow store because
         // it was a partial read.
-        assert_eq!(fast_store.has(digest.clone()).await, Ok(None));
-        check_data(slow_store, digest.clone(), &original_data, "slow_store").await?;
+        assert_eq!(fast_store.has(digest).await, Ok(None));
+        check_data(slow_store, digest, &original_data, "slow_store").await?;
 
         Ok(())
     }

@@ -76,7 +76,7 @@ mod compression_store_tests {
 
         const RAW_INPUT: &str = "123";
         let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
-        store.update_oneshot(digest.clone(), RAW_INPUT.into()).await?;
+        store.update_oneshot(digest, RAW_INPUT.into()).await?;
 
         let store_data = store
             .get_part_unchunked(digest, 0, None, None)
@@ -109,7 +109,7 @@ mod compression_store_tests {
         ];
 
         let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
-        store.update_oneshot(digest.clone(), RAW_DATA.as_ref().into()).await?;
+        store.update_oneshot(digest, RAW_DATA.as_ref().into()).await?;
 
         // Read through the store forcing lots of decompression steps at different offsets
         // and different window sizes. This will ensure we get most edge cases for when
@@ -117,7 +117,7 @@ mod compression_store_tests {
         for read_slice_size in 0..(RAW_DATA.len() + 5) {
             for offset in 0..(RAW_DATA.len() + 5) {
                 let store_data = store
-                    .get_part_unchunked(digest.clone(), offset, Some(read_slice_size), None)
+                    .get_part_unchunked(digest, offset, Some(read_slice_size), None)
                     .await
                     .err_tip(|| format!("Failed to get from inner store at {} - {}", offset, read_slice_size))?;
 
@@ -155,7 +155,7 @@ mod compression_store_tests {
         rng.fill(&mut value[..]);
 
         let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
-        store.update_oneshot(digest.clone(), value.clone().into()).await?;
+        store.update_oneshot(digest, value.clone().into()).await?;
 
         let store_data = store
             .get_part_unchunked(digest, 0, None, None)
@@ -182,10 +182,10 @@ mod compression_store_tests {
         let store = Pin::new(&store_owned);
 
         let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
-        store.update_oneshot(digest.clone(), vec![].into()).await?;
+        store.update_oneshot(digest, vec![].into()).await?;
 
         let store_data = store
-            .get_part_unchunked(digest.clone(), 0, None, None)
+            .get_part_unchunked(digest, 0, None, None)
             .await
             .err_tip(|| "Failed to get from inner store")?;
 
@@ -239,7 +239,7 @@ mod compression_store_tests {
         };
         let (res1, res2) = futures::join!(
             send_fut,
-            store.update(digest.clone(), rx, UploadSizeInfo::MaxSize(MAX_SIZE_INPUT))
+            store.update(digest, rx, UploadSizeInfo::MaxSize(MAX_SIZE_INPUT))
         );
         res1.merge(res2)?;
 
@@ -312,7 +312,7 @@ mod compression_store_tests {
         rng.fill(&mut value[..(data_len / 2)]);
 
         let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
-        store.update_oneshot(digest.clone(), value.clone().into()).await?;
+        store.update_oneshot(digest, value.clone().into()).await?;
 
         let compressed_data = Pin::new(inner_store.as_ref())
             .get_part_unchunked(digest, 0, None, None)

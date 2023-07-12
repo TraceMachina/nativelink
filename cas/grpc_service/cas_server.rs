@@ -87,7 +87,7 @@ impl CasServer {
                     Ok(digest_info) => digest_info,
                     Err(err) => return Some(Err(err)),
                 };
-                match store_pin.has(digest_info.clone()).await {
+                match store_pin.has(digest_info).await {
                     Ok(maybe_size) => maybe_size.map_or(Some(Ok(digest)), |_| None),
                     Err(err) => {
                         log::error!(

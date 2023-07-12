@@ -55,7 +55,7 @@ impl FastSlowStore {
     pub async fn populate_fast_store(self: Pin<&Self>, digest: DigestInfo) -> Result<(), Error> {
         let maybe_size_info = self
             .pin_fast_store()
-            .has(digest.clone())
+            .has(digest)
             .await
             .err_tip(|| "While querying in populate_fast_store")?;
         if maybe_size_info.is_some() {
@@ -87,7 +87,7 @@ impl StoreTrait for FastSlowStore {
     async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
         // TODO(blaise.bruer) Investigate if we should maybe ignore errors here instead of
         // forwarding the up.
-        if let Some(sz) = self.pin_fast_store().has(digest.clone()).await? {
+        if let Some(sz) = self.pin_fast_store().has(digest).await? {
             return Ok(Some(sz));
         }
         self.pin_slow_store().has(digest).await
@@ -140,7 +140,7 @@ impl StoreTrait for FastSlowStore {
             }
         };
 
-        let fast_store_fut = self.pin_slow_store().update(digest.clone(), fast_rx, size_info);
+        let fast_store_fut = self.pin_slow_store().update(digest, fast_rx, size_info);
         let slow_store_fut = self.pin_fast_store().update(digest, slow_rx, size_info);
 
         let (data_stream_res, fast_res, slow_res) = join!(data_stream_fut, fast_store_fut, slow_store_fut);
@@ -159,8 +159,8 @@ impl StoreTrait for FastSlowStore {
         // forwarding the up.
         let fast_store = self.pin_fast_store();
         let slow_store = self.pin_slow_store();
-        if fast_store.has(digest.clone()).await?.is_some() {
-            return fast_store.get_part(digest.clone(), writer, offset, length).await;
+        if fast_store.has(digest).await?.is_some() {
+            return fast_store.get_part(digest, writer, offset, length).await;
         }
         // We can only copy the data to our fast store if we are copying everything.
         if offset != 0 || length.is_some() {
@@ -168,7 +168,7 @@ impl StoreTrait for FastSlowStore {
         }
 
         let sz_result = slow_store
-            .has(digest.clone())
+            .has(digest)
             .await
             .err_tip(|| "Failed to run has() on slow store");
         let sz = match sz_result {
@@ -214,7 +214,7 @@ impl StoreTrait for FastSlowStore {
             }
         };
 
-        let slow_store_fut = slow_store.get(digest.clone(), slow_tx);
+        let slow_store_fut = slow_store.get(digest, slow_tx);
         let fast_store_fut = fast_store.update(digest, fast_rx, UploadSizeInfo::ExactSize(sz));
 
         let (data_stream_res, slow_res, fast_res) = join!(data_stream_fut, slow_store_fut, fast_store_fut);

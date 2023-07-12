@@ -138,12 +138,12 @@ mod running_actions_manager_tests {
             let file1_content_digest = DigestInfo::new([2u8; 32], 32);
             slow_store
                 .as_ref()
-                .update_oneshot(file1_content_digest.clone(), FILE1_CONTENT.into())
+                .update_oneshot(file1_content_digest, FILE1_CONTENT.into())
                 .await?;
             let file2_content_digest = DigestInfo::new([3u8; 32], 32);
             slow_store
                 .as_ref()
-                .update_oneshot(file2_content_digest.clone(), FILE2_CONTENT.into())
+                .update_oneshot(file2_content_digest, FILE2_CONTENT.into())
                 .await?;
 
             let root_directory_digest = DigestInfo::new([1u8; 32], 32);
@@ -176,7 +176,7 @@ mod running_actions_manager_tests {
 
             slow_store
                 .as_ref()
-                .update_oneshot(root_directory_digest.clone(), root_directory.encode_to_vec().into())
+                .update_oneshot(root_directory_digest, root_directory.encode_to_vec().into())
                 .await?;
             root_directory_digest
         };
@@ -230,7 +230,7 @@ mod running_actions_manager_tests {
                 let file1_content_digest = DigestInfo::new([2u8; 32], 32);
                 slow_store
                     .as_ref()
-                    .update_oneshot(file1_content_digest.clone(), FILE1_CONTENT.into())
+                    .update_oneshot(file1_content_digest, FILE1_CONTENT.into())
                     .await?;
                 let directory1 = Directory {
                     files: vec![FileNode {
@@ -242,7 +242,7 @@ mod running_actions_manager_tests {
                 };
                 slow_store
                     .as_ref()
-                    .update_oneshot(directory1_digest.clone(), directory1.encode_to_vec().into())
+                    .update_oneshot(directory1_digest, directory1.encode_to_vec().into())
                     .await?;
             }
             let directory2_digest = DigestInfo::new([3u8; 32], 32);
@@ -250,7 +250,7 @@ mod running_actions_manager_tests {
                 // Now upload an empty directory.
                 slow_store
                     .as_ref()
-                    .update_oneshot(directory2_digest.clone(), Directory::default().encode_to_vec().into())
+                    .update_oneshot(directory2_digest, Directory::default().encode_to_vec().into())
                     .await?;
             }
             let root_directory_digest = DigestInfo::new([5u8; 32], 32);
@@ -270,7 +270,7 @@ mod running_actions_manager_tests {
                 };
                 slow_store
                     .as_ref()
-                    .update_oneshot(root_directory_digest.clone(), root_directory.encode_to_vec().into())
+                    .update_oneshot(root_directory_digest, root_directory.encode_to_vec().into())
                     .await?;
             }
             root_directory_digest
@@ -321,7 +321,7 @@ mod running_actions_manager_tests {
             let file_content_digest = DigestInfo::new([1u8; 32], 32);
             slow_store
                 .as_ref()
-                .update_oneshot(file_content_digest.clone(), FILE_CONTENT.into())
+                .update_oneshot(file_content_digest, FILE_CONTENT.into())
                 .await?;
 
             let root_directory_digest = DigestInfo::new([2u8; 32], 32);
@@ -342,7 +342,7 @@ mod running_actions_manager_tests {
 
             slow_store
                 .as_ref()
-                .update_oneshot(root_directory_digest.clone(), root_directory.encode_to_vec().into())
+                .update_oneshot(root_directory_digest, root_directory.encode_to_vec().into())
                 .await?;
             root_directory_digest
         };
@@ -532,17 +532,17 @@ mod running_actions_manager_tests {
         };
         let file_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.output_files[0].digest.clone(), 0, None, None)
+            .get_part_unchunked(action_result.output_files[0].digest, 0, None, None)
             .await?;
         assert_eq!(from_utf8(&file_content)?, "123");
         let stdout_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.stdout_digest.clone(), 0, None, None)
+            .get_part_unchunked(action_result.stdout_digest, 0, None, None)
             .await?;
         assert_eq!(from_utf8(&stdout_content)?, "foo-stdout");
         let stderr_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.stderr_digest.clone(), 0, None, None)
+            .get_part_unchunked(action_result.stderr_digest, 0, None, None)
             .await?;
         assert_eq!(from_utf8(&stderr_content)?, "bar-stderr");
         let mut clock_time = make_system_time(0);
@@ -996,7 +996,7 @@ mod running_actions_manager_tests {
             },
         };
         running_actions_manager
-            .cache_action_result(action_digest.clone(), action_result.clone())
+            .cache_action_result(action_digest, action_result.clone())
             .await?;
 
         let retrieved_result = get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
@@ -1047,7 +1047,7 @@ mod running_actions_manager_tests {
             },
         };
         running_actions_manager
-            .cache_action_result(action_digest.clone(), action_result.clone())
+            .cache_action_result(action_digest, action_result.clone())
             .await?;
 
         let retrieved_result = get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
