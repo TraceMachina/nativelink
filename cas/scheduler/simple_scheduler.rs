@@ -43,8 +43,8 @@ const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 /// An action that is being awaited on and last known state.
 struct AwaitedAction {
     action_info: Arc<ActionInfo>,
-    current_state: Arc<ActionState>,
-    notify_channel: watch::Sender<Arc<ActionState>>,
+    current_state: ActionState,
+    notify_channel: watch::Sender<ActionState>,
 
     /// Number of attempts the job has been tried.
     attempts: usize,
@@ -175,11 +175,7 @@ impl SimpleSchedulerImpl {
     /// If the task cannot be executed immediately it will be queued for execution
     /// based on priority and other metrics.
     /// All further updates to the action will be provided through `listener`.
-    fn add_action(
-        &mut self,
-        name: String,
-        action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    fn add_action(&mut self, name: String, action_info: ActionInfo) -> Result<watch::Receiver<ActionState>, Error> {
         // Check to see if the action is running, if it is and cacheable, merge the actions.
         if let Some(running_action) = self.active_actions.get_mut(&action_info) {
             let rx = running_action.action.notify_channel.subscribe();
@@ -226,11 +222,11 @@ impl SimpleSchedulerImpl {
         // based on the name later. It cannot be the same index used as the workers though, because
         // we multiplex the same job requests from clients to the same worker, but one client should
         // not shutdown a job if another client is still waiting on it.
-        let current_state = Arc::new(ActionState {
+        let current_state = ActionState {
             name,
             stage: ActionStage::Queued,
             action_digest,
-        });
+        };
 
         let (tx, rx) = watch::channel(current_state.clone());
         self.queued_actions_set.insert(action_info.clone());
@@ -256,7 +252,7 @@ impl SimpleSchedulerImpl {
                 let send_result = if awaited_action.attempts >= self.max_job_retries {
                     let mut default_action_result = ActionResult::default();
                     default_action_result.execution_metadata.worker = format!("{}", worker_id);
-                    Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Error((
+                    awaited_action.current_state.stage = ActionStage::Error((
                         awaited_action.last_error.unwrap_or_else(|| {
                             make_err!(
                                 Code::Internal,
@@ -269,7 +265,7 @@ impl SimpleSchedulerImpl {
                     // Do not put the action back in the queue here, as this action attempted to run too many
                     // times.
                 } else {
-                    Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Queued;
+                    awaited_action.current_state.stage = ActionStage::Queued;
                     let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
                     self.queued_actions_set.insert(action_info.clone());
                     self.queued_actions.insert(action_info.clone(), awaited_action);
@@ -353,7 +349,7 @@ impl SimpleSchedulerImpl {
                 self.queued_actions_set.remove(&action_info),
                 "queued_actions_set should always have same keys as queued_actions"
             );
-            Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
+            awaited_action.current_state.stage = ActionStage::Executing;
             let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
             if send_result.is_err() {
                 // Don't remove this task, instead we keep them around for a bit just in case
@@ -467,17 +463,12 @@ impl SimpleSchedulerImpl {
             return Err(make_input_err!("{}", msg));
         }
 
-        let did_complete = match action_stage {
-            ActionStage::Completed(_) => true,
-            _ => false,
-        };
-
-        Arc::make_mut(&mut running_action.action.current_state).stage = action_stage;
+        running_action.action.current_state.stage = action_stage;
 
         let send_result = running_action
             .action
             .notify_channel
-            .send(running_action.action.current_state);
+            .send(running_action.action.current_state.clone());
         if send_result.is_err() {
             log::warn!(
                 "Action {} has no more listeners during update_action()",
@@ -485,15 +476,20 @@ impl SimpleSchedulerImpl {
             );
         }
 
-        if did_complete {
-            let worker = self
-                .workers
-                .workers
-                .get_mut(worker_id)
-                .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
-            worker.complete_action(&action_info);
-            self.tasks_or_workers_change_notify.notify_one();
+        if !running_action.action.current_state.stage.is_finished() {
+            // If the operation is not finished it means the worker is still working on it, so put it
+            // back or else we will loose track of the task.
+            self.active_actions.insert(action_info, running_action);
+            return Ok(());
         }
+
+        let worker = self
+            .workers
+            .workers
+            .get_mut(worker_id)
+            .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
+        worker.complete_action(&action_info);
+        self.tasks_or_workers_change_notify.notify_one();
 
         // TODO(allada) We should probably hold a small queue of recent actions for debugging.
         // Right now it will drop the action which also disconnects listeners here.
@@ -609,11 +605,7 @@ impl ActionScheduler for SimpleScheduler {
         Ok(self.platform_property_manager.clone())
     }
 
-    async fn add_action(
-        &self,
-        name: String,
-        action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(&self, name: String, action_info: ActionInfo) -> Result<watch::Receiver<ActionState>, Error> {
         let mut inner = self.inner.lock();
         inner.add_action(name, action_info)
     }

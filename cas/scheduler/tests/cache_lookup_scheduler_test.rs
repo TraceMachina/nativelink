@@ -122,11 +122,11 @@ mod cache_lookup_scheduler_tests {
                 action_result.encode_to_vec().into(),
             )
             .await?;
-        let (_forward_watch_channel_tx, forward_watch_channel_rx) = watch::channel(Arc::new(ActionState {
+        let (_forward_watch_channel_tx, forward_watch_channel_rx) = watch::channel(ActionState {
             name: "".to_string(),
             action_digest: action_info.unique_qualifier.digest,
             stage: ActionStage::Queued,
-        }));
+        });
         let _ = join!(
             context.cache_scheduler.add_action("name".to_string(), action_info),
             context.mock_scheduler.expect_add_action(Ok(forward_watch_channel_rx))
@@ -146,11 +146,11 @@ mod cache_lookup_scheduler_tests {
                 action_result.encode_to_vec().into(),
             )
             .await?;
-        let (_forward_watch_channel_tx, forward_watch_channel_rx) = watch::channel(Arc::new(ActionState {
+        let (_forward_watch_channel_tx, forward_watch_channel_rx) = watch::channel(ActionState {
             name: "".to_string(),
             action_digest: action_info.unique_qualifier.digest,
             stage: ActionStage::Queued,
-        }));
+        });
         let mut skip_cache_action = action_info.clone();
         skip_cache_action.skip_cache_lookup = true;
         let _ = join!(

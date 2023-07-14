@@ -132,21 +132,17 @@ impl ActionScheduler for CacheLookupScheduler {
         self.action_scheduler.get_platform_property_manager(instance_name).await
     }
 
-    async fn add_action(
-        &self,
-        name: String,
-        action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(&self, name: String, action_info: ActionInfo) -> Result<watch::Receiver<ActionState>, Error> {
         if action_info.skip_cache_lookup {
             // Cache lookup skipped, forward to the upstream.
             return self.action_scheduler.add_action(name, action_info).await;
         }
         let action_digest = action_info.digest();
-        let mut current_state = Arc::new(ActionState {
+        let mut current_state = ActionState {
             name: name.clone(),
             stage: ActionStage::CacheCheck,
             action_digest: *action_digest,
-        });
+        };
         let (tx, rx) = watch::channel(current_state.clone());
         let ac_store = self.ac_store.clone();
         let cas_store = self.cas_store.clone();
@@ -158,7 +154,7 @@ impl ActionScheduler for CacheLookupScheduler {
             {
                 if validate_outputs_exist(cas_store, &proto_action_result, instance_name).await {
                     // Found in the cache, return the result immediately.
-                    Arc::make_mut(&mut current_state).stage = ActionStage::CompletedFromCache(proto_action_result);
+                    current_state.stage = ActionStage::CompletedFromCache(proto_action_result);
                     let _ = tx.send(current_state);
                     return;
                 }
@@ -167,7 +163,7 @@ impl ActionScheduler for CacheLookupScheduler {
             let mut watch_stream = match action_scheduler.add_action(name, action_info).await {
                 Ok(rx) => WatchStream::new(rx),
                 Err(err) => {
-                    Arc::make_mut(&mut current_state).stage = ActionStage::Error((err, ActionResult::default()));
+                    current_state.stage = ActionStage::Error((err, ActionResult::default()));
                     let _ = tx.send(current_state);
                     return;
                 }

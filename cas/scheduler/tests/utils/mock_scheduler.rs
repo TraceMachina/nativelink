@@ -30,7 +30,7 @@ enum ActionSchedulerCalls {
 
 enum ActionSchedulerReturns {
     GetPlatformPropertyManager(Result<Arc<PlatformPropertyManager>, Error>),
-    AddAction(Result<watch::Receiver<Arc<ActionState>>, Error>),
+    AddAction(Result<watch::Receiver<ActionState>, Error>),
 }
 
 pub struct MockActionScheduler {
@@ -77,10 +77,7 @@ impl MockActionScheduler {
         req
     }
 
-    pub async fn expect_add_action(
-        &self,
-        result: Result<watch::Receiver<Arc<ActionState>>, Error>,
-    ) -> (String, ActionInfo) {
+    pub async fn expect_add_action(&self, result: Result<watch::Receiver<ActionState>, Error>) -> (String, ActionInfo) {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::AddAction(req) = rx_call_lock
             .recv()
@@ -111,11 +108,7 @@ impl ActionScheduler for MockActionScheduler {
         }
     }
 
-    async fn add_action(
-        &self,
-        name: String,
-        action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(&self, name: String, action_info: ActionInfo) -> Result<watch::Receiver<ActionState>, Error> {
         self.tx_call
             .send(ActionSchedulerCalls::AddAction((name, action_info)))
             .expect("Could not send request to mpsc");

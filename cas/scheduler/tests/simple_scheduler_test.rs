@@ -74,7 +74,7 @@ async fn setup_action(
     action_digest: DigestInfo,
     platform_properties: PlatformProperties,
     insert_timestamp: SystemTime,
-) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+) -> Result<watch::Receiver<ActionState>, Error> {
     let mut action_info = make_base_action_info(insert_timestamp);
     action_info.platform_properties = platform_properties;
     action_info.unique_qualifier.digest = action_digest;
@@ -129,7 +129,7 @@ mod scheduler_tests {
                 action_digest: action_digest.clone(),
                 stage: ActionStage::Executing,
             };
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         Ok(())
@@ -223,14 +223,14 @@ mod scheduler_tests {
             let action_state = client_rx1.borrow_and_update();
             // We now know the name of the action so populate it.
             expected_action_state1.name = action_state.name.clone();
-            assert_eq!(action_state.as_ref(), &expected_action_state1);
+            assert_eq!(*action_state, expected_action_state1);
         }
         {
             // Client should get notification saying it's being executed.
             let action_state = client_rx2.borrow_and_update();
             // We now know the name of the action so populate it.
             expected_action_state2.name = action_state.name.clone();
-            assert_eq!(action_state.as_ref(), &expected_action_state2);
+            assert_eq!(*action_state, expected_action_state2);
         }
 
         // Now remove worker.
@@ -251,13 +251,13 @@ mod scheduler_tests {
             // Client should get notification saying it's being executed.
             let action_state = client_rx1.borrow_and_update();
             expected_action_state1.stage = ActionStage::Executing;
-            assert_eq!(action_state.as_ref(), &expected_action_state1);
+            assert_eq!(*action_state, expected_action_state1);
         }
         {
             // Client should get notification saying it's being executed.
             let action_state = client_rx2.borrow_and_update();
             expected_action_state2.stage = ActionStage::Executing;
-            assert_eq!(action_state.as_ref(), &expected_action_state2);
+            assert_eq!(*action_state, expected_action_state2);
         }
         {
             // Worker2 should now see execution request.
@@ -308,7 +308,7 @@ mod scheduler_tests {
                 action_digest: action_digest.clone(),
                 stage: ActionStage::Queued,
             };
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, worker_properties).await?;
@@ -338,7 +338,7 @@ mod scheduler_tests {
                 action_digest: action_digest.clone(),
                 stage: ActionStage::Executing,
             };
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         // Our first worker should have no updates over this test.
@@ -374,8 +374,8 @@ mod scheduler_tests {
             let action_state2 = client2_rx.borrow_and_update();
             // Name is random so we set force it to be the same.
             expected_action_state.name = action_state1.name.to_string();
-            assert_eq!(action_state1.as_ref(), &expected_action_state);
-            assert_eq!(action_state2.as_ref(), &expected_action_state);
+            assert_eq!(*action_state1, expected_action_state);
+            assert_eq!(*action_state2, expected_action_state);
         }
 
         let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
@@ -403,8 +403,8 @@ mod scheduler_tests {
         {
             // Both client1 and client2 should be receiving the same updates.
             // Most importantly the `name` (which is random) will be the same.
-            assert_eq!(client1_rx.borrow_and_update().as_ref(), &expected_action_state);
-            assert_eq!(client2_rx.borrow_and_update().as_ref(), &expected_action_state);
+            assert_eq!(*client1_rx.borrow_and_update(), expected_action_state);
+            assert_eq!(*client2_rx.borrow_and_update(), expected_action_state);
         }
 
         {
@@ -412,7 +412,7 @@ mod scheduler_tests {
             let insert_timestamp3 = make_system_time(2);
             let mut client3_rx =
                 setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp3).await?;
-            assert_eq!(client3_rx.borrow_and_update().as_ref(), &expected_action_state);
+            assert_eq!(*client3_rx.borrow_and_update(), expected_action_state);
         }
 
         Ok(())
@@ -442,7 +442,7 @@ mod scheduler_tests {
                 action_digest: action_digest.clone(),
                 stage: ActionStage::Queued,
             };
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         Ok(())
@@ -501,7 +501,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             // We now know the name of the action so populate it.
             expected_action_state.name = action_state.name.clone();
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         // Keep worker 2 alive.
@@ -526,7 +526,7 @@ mod scheduler_tests {
             // Client should get notification saying it's being executed.
             let action_state = client_rx.borrow_and_update();
             expected_action_state.stage = ActionStage::Executing;
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
         {
             // Worker2 should now see execution request.
@@ -616,7 +616,7 @@ mod scheduler_tests {
                 action_digest: action_digest.clone(),
                 stage: ActionStage::Completed(action_result),
             };
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
         {
             // Update info for the action should now be closed (notification happens through Err).
@@ -755,7 +755,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             // We now know the name of the action so populate it.
             expected_action_state.name = action_state.name.clone();
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         let action_result = ActionResult {
@@ -795,7 +795,7 @@ mod scheduler_tests {
         {
             // Action should now be executing.
             expected_action_state.stage = ActionStage::Completed(action_result.clone());
-            assert_eq!(client_rx.borrow_and_update().as_ref(), &expected_action_state);
+            assert_eq!(*client_rx.borrow_and_update(), expected_action_state);
         }
 
         // Now we need to ensure that if we schedule another execution of the same job it doesn't
@@ -810,7 +810,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             // The name of the action changed (since it's a new action), so update it.
             expected_action_state.name = action_state.name.clone();
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         Ok(())
@@ -911,7 +911,7 @@ mod scheduler_tests {
             };
             // We now know the name of the action so populate it.
             expected_action_state.name = action_state.name.clone();
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         // At this stage it should have added back any platform_properties and the next
@@ -950,7 +950,7 @@ mod scheduler_tests {
             };
             // We now know the name of the action so populate it.
             expected_action_state.name = action_state.name.clone();
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         Ok(())
@@ -1055,7 +1055,7 @@ mod scheduler_tests {
                 action_digest: action_digest.clone(),
                 stage: ActionStage::Queued,
             };
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         // Now connect a new worker and it should pickup the action.
@@ -1112,7 +1112,7 @@ mod scheduler_tests {
                     },
                 )),
             };
-            assert_eq!(action_state.as_ref(), &expected_action_state);
+            assert_eq!(*action_state, expected_action_state);
         }
 
         Ok(())

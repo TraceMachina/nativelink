@@ -82,11 +82,7 @@ impl ActionScheduler for GrpcScheduler {
         Ok(platform_property_manager)
     }
 
-    async fn add_action(
-        &self,
-        _name: String,
-        action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(&self, _name: String, action_info: ActionInfo) -> Result<watch::Receiver<ActionState>, Error> {
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {
             None
         } else {
@@ -112,12 +108,12 @@ impl ActionScheduler for GrpcScheduler {
             .await
             .err_tip(|| "Recieving response from upstream scheduler")?
         {
-            let (tx, rx) = watch::channel(Arc::new(initial_response.try_into()?));
+            let (tx, rx) = watch::channel(initial_response.try_into()?);
             tokio::spawn(async move {
                 while let Ok(Some(response)) = result_stream.message().await {
                     match response.try_into() {
                         Ok(response) => {
-                            if let Err(err) = tx.send(Arc::new(response)) {
+                            if let Err(err) = tx.send(response) {
                                 log::info!("Client disconnected in GrpcScheduler: {}", err);
                                 return;
                             }
