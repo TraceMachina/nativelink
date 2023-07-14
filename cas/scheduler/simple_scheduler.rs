@@ -26,7 +26,6 @@ use tokio::time::Duration;
 
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState};
 use common::log;
-use config;
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
 use scheduler::{ActionScheduler, WorkerScheduler};
@@ -220,7 +219,7 @@ impl SimpleSchedulerImpl {
 
         // Action needs to be added to queue or is not cacheable.
         let action_info = Arc::new(action_info);
-        let action_digest = action_info.digest().clone();
+        let action_digest = *action_info.digest();
 
         // TODO(allada) This name field needs to be indexable. The client might perform operations
         // based on the name later. It cannot be the same index used as the workers though, because
@@ -255,7 +254,7 @@ impl SimpleSchedulerImpl {
                 let mut awaited_action = running_action.action;
                 let send_result = if awaited_action.attempts >= self.max_job_retries {
                     let mut default_action_result = ActionResult::default();
-                    default_action_result.execution_metadata.worker = format!("{}", worker_id);
+                    default_action_result.execution_metadata.worker = format!("{worker_id}");
                     Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Error((
                         awaited_action.last_error.unwrap_or_else(|| {
                             make_err!(
@@ -294,13 +293,13 @@ impl SimpleSchedulerImpl {
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
     fn immediate_evict_worker(&mut self, worker_id: &WorkerId) {
-        if let Some(mut worker) = self.workers.remove_worker(&worker_id) {
+        if let Some(mut worker) = self.workers.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
             // We create a temporary Vec to avoid doubt about a possible code
             // path touching the worker.running_action_infos elsewhere.
             for action_info in worker.running_action_infos.drain() {
-                self.retry_action(&action_info, &worker_id);
+                self.retry_action(&action_info, worker_id);
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
@@ -318,24 +317,19 @@ impl SimpleSchedulerImpl {
         // unstable feature [see: https://github.com/rust-lang/rust/issues/70530]).
         let action_infos: Vec<Arc<ActionInfo>> = self.queued_actions.keys().rev().cloned().collect();
         for action_info in action_infos {
-            let awaited_action = match self.queued_actions.get(action_info.as_ref()) {
-                Some(awaited_action) => awaited_action,
-                _ => {
-                    log::error!(
-                        "queued_actions out of sync with itself for action {}",
-                        action_info.digest().str()
-                    );
-                    continue;
-                }
+            let Some(awaited_action) = self.queued_actions.get(action_info.as_ref()) else {
+                log::error!(
+                    "queued_actions out of sync with itself for action {}",
+                    action_info.digest().str()
+                );
+                continue;
             };
-            let worker = if let Some(worker) = self.workers.find_worker_for_action_mut(&awaited_action) {
-                worker
-            } else {
+            let Some(worker) = self.workers.find_worker_for_action_mut(awaited_action) else {
                 // No worker found, check the next action to see if there's a
                 // matching one for that.
                 continue;
             };
-            let worker_id = worker.id.clone();
+            let worker_id = worker.id;
 
             // Try to notify our worker of the new action to run, if it fails remove the worker from the
             // pool and try to find another worker.
@@ -381,15 +375,9 @@ impl SimpleSchedulerImpl {
         action_info_hash_key: &ActionInfoHashKey,
         err: Error,
     ) {
-        let (action_info, mut running_action) = match self.active_actions.remove_entry(action_info_hash_key) {
-            Some((action_info, running_action)) => (action_info, running_action),
-            None => {
-                log::error!(
-                    "Could not find action info in active actions : {:?}",
-                    action_info_hash_key
-                );
-                return;
-            }
+        let Some((action_info, mut running_action)) = self.active_actions.remove_entry(action_info_hash_key) else {
+            log::error!("Could not find action info in active actions : {action_info_hash_key:?}");
+            return;
         };
 
         let due_to_backpressure = err.code == Code::ResourceExhausted;
@@ -398,15 +386,15 @@ impl SimpleSchedulerImpl {
             running_action.action.attempts -= 1;
         }
 
-        if running_action.worker_id != *worker_id {
+        if running_action.worker_id == *worker_id {
+            // Don't set the error on an action that's running somewhere else.
+            log::warn!("Internal error for worker {}: {}", worker_id, err);
+            running_action.action.last_error = Some(err);
+        } else {
             log::error!(
                 "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {}",
                     running_action.worker_id, worker_id
             );
-        } else {
-            // Don't set the error on an action that's running somewhere else.
-            log::warn!("Internal error for worker {}: {}", worker_id, err);
-            running_action.action.last_error = Some(err);
         }
 
         // Now put it back. retry_action() needs it to be there to send errors properly.
@@ -425,7 +413,7 @@ impl SimpleSchedulerImpl {
         }
 
         // Re-queue the action or fail on max attempts.
-        self.retry_action(&action_info, &worker_id);
+        self.retry_action(&action_info, worker_id);
     }
 
     fn update_action(
@@ -435,22 +423,16 @@ impl SimpleSchedulerImpl {
         action_stage: ActionStage,
     ) -> Result<(), Error> {
         if !action_stage.has_action_result() {
-            let msg = format!(
-                "Worker '{}' set the action_stage of running action {:?} to {:?}. Removing worker.",
-                worker_id, action_info_hash_key, action_stage
-            );
+            let msg = format!("Worker '{worker_id}' set the action_stage of running action {action_info_hash_key:?} to {action_stage:?}. Removing worker.");
             log::error!("{}", msg);
             self.immediate_evict_worker(worker_id);
             return Err(make_input_err!("{}", msg));
         }
 
-        let (action_info, mut running_action) =
-            self.active_actions.remove_entry(action_info_hash_key).err_tip(|| {
-                format!(
-                    "Could not find action info in active actions : {:?}",
-                    action_info_hash_key
-                )
-            })?;
+        let (action_info, mut running_action) = self
+            .active_actions
+            .remove_entry(action_info_hash_key)
+            .err_tip(|| format!("Could not find action info in active actions : {action_info_hash_key:?}"))?;
 
         if running_action.worker_id != *worker_id {
             let msg = format!(
@@ -462,7 +444,7 @@ impl SimpleSchedulerImpl {
             );
             log::error!("{}", msg);
             // First put it back in our active_actions or we will drop the task.
-            self.active_actions.insert(action_info.clone(), running_action);
+            self.active_actions.insert(action_info, running_action);
             self.immediate_evict_worker(worker_id);
             return Err(make_input_err!("{}", msg));
         }
@@ -512,6 +494,7 @@ pub struct SimpleScheduler {
 
 impl SimpleScheduler {
     #[inline]
+    #[must_use]
     pub fn new(scheduler_cfg: &config::schedulers::SimpleScheduler) -> Self {
         Self::new_with_callback(scheduler_cfg, || {
             // The cost of running `do_try_match()` is very high, but constant
@@ -530,10 +513,7 @@ impl SimpleScheduler {
         on_matching_engine_run: F,
     ) -> Self {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
-            scheduler_cfg
-                .supported_platform_properties
-                .clone()
-                .unwrap_or(HashMap::new()),
+            scheduler_cfg.supported_platform_properties.clone().unwrap_or_default(),
         ));
 
         let mut worker_timeout_s = scheduler_cfg.worker_timeout_s;
@@ -551,7 +531,7 @@ impl SimpleScheduler {
         let inner = Arc::new(Mutex::new(SimpleSchedulerImpl {
             queued_actions_set: HashSet::new(),
             queued_actions: BTreeMap::new(),
-            workers: Workers::new(scheduler_cfg.allocation_strategy.clone()),
+            workers: Workers::new(scheduler_cfg.allocation_strategy),
             active_actions: HashMap::new(),
             worker_timeout_s,
             max_job_retries,
@@ -559,7 +539,7 @@ impl SimpleScheduler {
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
-            inner: inner.clone(),
+            inner,
             platform_property_manager,
             task_worker_matching_future: tokio::spawn(async move {
                 // Break out of the loop only when the inner is dropped.
@@ -586,13 +566,14 @@ impl SimpleScheduler {
     }
 
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
-    pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
+    #[must_use]
+    pub fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
         let inner = self.inner.lock();
         inner.workers.workers.contains(worker_id)
     }
 
     /// A unit test function used to send the keep alive message to the worker from the server.
-    pub async fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
+    pub fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
         let mut inner = self.inner.lock();
         let worker = inner
             .workers
@@ -626,7 +607,7 @@ impl WorkerScheduler for SimpleScheduler {
     }
 
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
-        let worker_id = worker.id.clone();
+        let worker_id = worker.id;
         let mut inner = self.inner.lock();
         let res = inner
             .workers
@@ -646,7 +627,7 @@ impl WorkerScheduler for SimpleScheduler {
         err: Error,
     ) {
         let mut inner = self.inner.lock();
-        inner.update_action_with_internal_error(worker_id, action_info_hash_key, err)
+        inner.update_action_with_internal_error(worker_id, action_info_hash_key, err);
     }
 
     async fn update_action(
@@ -689,9 +670,9 @@ impl WorkerScheduler for SimpleScheduler {
                 }
             })
             .collect();
-        for worker_id in worker_ids_to_remove.iter() {
+        for worker_id in &worker_ids_to_remove {
             log::warn!("Worker {} timed out, removing from pool", worker_id);
-            inner.immediate_evict_worker(&worker_id);
+            inner.immediate_evict_worker(worker_id);
         }
         Ok(())
     }

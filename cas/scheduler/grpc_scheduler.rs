@@ -22,7 +22,6 @@ use tonic::{transport, Request};
 
 use action_messages::{ActionInfo, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use common::log;
-use config;
 use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
 use proto::build::bazel::remote::execution::v2::{

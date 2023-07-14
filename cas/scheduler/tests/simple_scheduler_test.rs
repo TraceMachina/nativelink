@@ -24,7 +24,6 @@ use action_messages::{
     SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
 };
 use common::DigestInfo;
-use config;
 use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
 use proto::build::bazel::remote::execution::v2::ExecuteRequest;
@@ -92,16 +91,21 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
-        const WORKER_ID: WorkerId = WorkerId(0x123456789111);
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler =
             SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
-        let mut client_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
 
         {
             // Worker should have been sent an execute command.
@@ -110,7 +114,7 @@ mod scheduler_tests {
                     execute_request: Some(ExecuteRequest {
                         instance_name: INSTANCE_NAME.to_string(),
                         skip_cache_lookup: true,
-                        action_digest: Some(action_digest.clone().into()),
+                        action_digest: Some(action_digest.into()),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -126,7 +130,7 @@ mod scheduler_tests {
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 name: action_state.name.clone(),
-                action_digest: action_digest.clone(),
+                action_digest,
                 stage: ActionStage::Executing,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -137,8 +141,8 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
-        const WORKER_ID1: WorkerId = WorkerId(0x111111);
-        const WORKER_ID2: WorkerId = WorkerId(0x222222);
+        const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
+        const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);
         let scheduler = SimpleScheduler::new_with_callback(
             &config::schedulers::SimpleScheduler {
                 worker_timeout_s: WORKER_TIMEOUT_S,
@@ -149,20 +153,20 @@ mod scheduler_tests {
         let action_digest1 = DigestInfo::new([99u8; 32], 512);
         let action_digest2 = DigestInfo::new([88u8; 32], 512);
 
-        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, Default::default()).await?;
+        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
         let insert_timestamp1 = make_system_time(1);
         let mut client_rx1 = setup_action(
             &scheduler,
-            action_digest1.clone(),
-            Default::default(),
+            action_digest1,
+            PlatformProperties::default(),
             insert_timestamp1,
         )
         .await?;
         let insert_timestamp2 = make_system_time(2);
         let mut client_rx2 = setup_action(
             &scheduler,
-            action_digest2.clone(),
-            Default::default(),
+            action_digest2,
+            PlatformProperties::default(),
             insert_timestamp2,
         )
         .await?;
@@ -170,13 +174,13 @@ mod scheduler_tests {
         let mut expected_action_state1 = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             name: "UNKNOWN_HERE".to_string(),
-            action_digest: action_digest1.clone(),
+            action_digest: action_digest1,
             stage: ActionStage::Executing,
         };
         let mut expected_action_state2 = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             name: "UNKNOWN_HERE".to_string(),
-            action_digest: action_digest2.clone(),
+            action_digest: action_digest2,
             stage: ActionStage::Executing,
         };
 
@@ -185,7 +189,7 @@ mod scheduler_tests {
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     skip_cache_lookup: true,
-                    action_digest: Some(action_digest1.clone().into()),
+                    action_digest: Some(action_digest1.into()),
                     ..Default::default()
                 }),
                 salt: 0,
@@ -202,7 +206,7 @@ mod scheduler_tests {
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     skip_cache_lookup: true,
-                    action_digest: Some(action_digest2.clone().into()),
+                    action_digest: Some(action_digest2.into()),
                     ..Default::default()
                 }),
                 salt: 0,
@@ -216,7 +220,7 @@ mod scheduler_tests {
         }
 
         // Add a second worker that can take jobs if the first dies.
-        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, Default::default()).await?;
+        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
 
         {
             // Client should get notification saying it's being executed.
@@ -275,6 +279,9 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), Error> {
+        const WORKER_ID1: WorkerId = WorkerId(0x0010_0001);
+        const WORKER_ID2: WorkerId = WorkerId(0x0010_0002);
+
         let scheduler =
             SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -287,17 +294,10 @@ mod scheduler_tests {
             .properties
             .insert("prop".to_string(), PlatformPropertyValue::Exact("2".to_string()));
 
-        const WORKER_ID1: WorkerId = WorkerId(0x100001);
-        const WORKER_ID2: WorkerId = WorkerId(0x100002);
         let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, platform_properties.clone()).await?;
         let insert_timestamp = make_system_time(1);
-        let mut client_rx = setup_action(
-            &scheduler,
-            action_digest.clone(),
-            worker_properties.clone(),
-            insert_timestamp,
-        )
-        .await?;
+        let mut client_rx =
+            setup_action(&scheduler, action_digest, worker_properties.clone(), insert_timestamp).await?;
 
         {
             // Client should get notification saying it's been queued.
@@ -305,7 +305,7 @@ mod scheduler_tests {
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 name: action_state.name.clone(),
-                action_digest: action_digest.clone(),
+                action_digest,
                 stage: ActionStage::Queued,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -319,7 +319,7 @@ mod scheduler_tests {
                     execute_request: Some(ExecuteRequest {
                         instance_name: INSTANCE_NAME.to_string(),
                         skip_cache_lookup: true,
-                        action_digest: Some(action_digest.clone().into()),
+                        action_digest: Some(action_digest.into()),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -335,7 +335,7 @@ mod scheduler_tests {
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 name: action_state.name.clone(),
-                action_digest: action_digest.clone(),
+                action_digest,
                 stage: ActionStage::Executing,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -349,24 +349,34 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
-        const WORKER_ID: WorkerId = WorkerId(0x100009);
+        const WORKER_ID: WorkerId = WorkerId(0x0010_0009);
 
         let scheduler =
             SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut expected_action_state = ActionState {
-            name: "".to_string(), // Will be filled later.
-            action_digest: action_digest.clone(),
+            name: String::new(), // Will be filled later.
+            action_digest,
             stage: ActionStage::Queued,
         };
 
         let insert_timestamp1 = make_system_time(1);
         let insert_timestamp2 = make_system_time(2);
-        let mut client1_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp1).await?;
-        let mut client2_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp2).await?;
+        let mut client1_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp1,
+        )
+        .await?;
+        let mut client2_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp2,
+        )
+        .await?;
 
         {
             // Clients should get notification saying it's been queued.
@@ -378,7 +388,7 @@ mod scheduler_tests {
             assert_eq!(action_state2.as_ref(), &expected_action_state);
         }
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
 
         {
             // Worker should have been sent an execute command.
@@ -387,7 +397,7 @@ mod scheduler_tests {
                     execute_request: Some(ExecuteRequest {
                         instance_name: INSTANCE_NAME.to_string(),
                         skip_cache_lookup: true,
-                        action_digest: Some(action_digest.clone().into()),
+                        action_digest: Some(action_digest.into()),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -410,8 +420,13 @@ mod scheduler_tests {
         {
             // Now if another action is requested it should also join with executing action.
             let insert_timestamp3 = make_system_time(2);
-            let mut client3_rx =
-                setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp3).await?;
+            let mut client3_rx = setup_action(
+                &scheduler,
+                action_digest,
+                PlatformProperties::default(),
+                insert_timestamp3,
+            )
+            .await?;
             assert_eq!(client3_rx.borrow_and_update().as_ref(), &expected_action_state);
         }
 
@@ -420,26 +435,31 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(), Error> {
-        const WORKER_ID: WorkerId = WorkerId(0x100010);
+        const WORKER_ID: WorkerId = WorkerId(0x0010_0010);
         let scheduler =
             SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
+        let rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
 
         // Now act like the worker disconnected.
         drop(rx_from_worker);
 
         let insert_timestamp = make_system_time(1);
-        let mut client_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
         {
             // Client should get notification saying it's being queued not executed.
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 name: action_state.name.clone(),
-                action_digest: action_digest.clone(),
+                action_digest,
                 stage: ActionStage::Queued,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -450,8 +470,8 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
-        const WORKER_ID1: WorkerId = WorkerId(0x111111);
-        const WORKER_ID2: WorkerId = WorkerId(0x222222);
+        const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
+        const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);
         let scheduler = SimpleScheduler::new_with_callback(
             &config::schedulers::SimpleScheduler {
                 worker_timeout_s: WORKER_TIMEOUT_S,
@@ -462,18 +482,23 @@ mod scheduler_tests {
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         // Note: This needs to stay in scope or a disconnect will trigger.
-        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, Default::default()).await?;
+        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
-        let mut client_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
 
         // Note: This needs to stay in scope or a disconnect will trigger.
-        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, Default::default()).await?;
+        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
 
         let mut expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             name: "UNKNOWN_HERE".to_string(),
-            action_digest: action_digest.clone(),
+            action_digest,
             stage: ActionStage::Executing,
         };
 
@@ -482,7 +507,7 @@ mod scheduler_tests {
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     skip_cache_lookup: true,
-                    action_digest: Some(action_digest.clone().into()),
+                    action_digest: Some(action_digest.into()),
                     ..Default::default()
                 }),
                 salt: 0,
@@ -539,29 +564,34 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn update_action_sends_completed_result_to_client_test() -> Result<(), Error> {
-        const WORKER_ID: WorkerId = WorkerId(0x123456789111);
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler =
             SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
-        let mut client_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
 
         {
             // Other tests check full data. We only care if we got StartAction.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {v:?}"),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
         }
 
         let action_info_hash_key = ActionInfoHashKey {
-            digest: action_digest.clone(),
+            digest: action_digest,
             salt: 0,
         };
         let action_result = ActionResult {
@@ -597,7 +627,7 @@ mod scheduler_tests {
                 output_upload_start_timestamp: make_system_time(12),
                 output_upload_completed_timestamp: make_system_time(13),
             },
-            server_logs: Default::default(),
+            server_logs: HashMap::default(),
         };
         scheduler
             .update_action(
@@ -613,7 +643,7 @@ mod scheduler_tests {
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 name: action_state.name.clone(),
-                action_digest: action_digest.clone(),
+                action_digest,
                 stage: ActionStage::Completed(action_result),
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -621,7 +651,7 @@ mod scheduler_tests {
         {
             // Update info for the action should now be closed (notification happens through Err).
             let result = client_rx.changed().await;
-            assert!(result.is_err(), "Expected result to be an error : {:?}", result);
+            assert!(result.is_err(), "Expected result to be an error : {result:?}");
         }
 
         Ok(())
@@ -629,37 +659,42 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
-        const GOOD_WORKER_ID: WorkerId = WorkerId(0x123456789111);
-        const ROGUE_WORKER_ID: WorkerId = WorkerId(0x987654321);
+        const GOOD_WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
+        const ROGUE_WORKER_ID: WorkerId = WorkerId(0x0009_8765_4321);
 
         let scheduler =
             SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, GOOD_WORKER_ID, Default::default()).await?;
+        let mut rx_from_worker = setup_new_worker(&scheduler, GOOD_WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
-        let mut client_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
 
         {
             // Other tests check full data. We only care if we got StartAction.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {v:?}"),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
         }
 
         let action_info_hash_key = ActionInfoHashKey {
-            digest: action_digest.clone(),
+            digest: action_digest,
             salt: 0,
         };
         let action_result = ActionResult {
-            output_files: Default::default(),
-            output_folders: Default::default(),
-            output_file_symlinks: Default::default(),
-            output_directory_symlinks: Default::default(),
+            output_files: Vec::default(),
+            output_folders: Vec::default(),
+            output_file_symlinks: Vec::default(),
+            output_directory_symlinks: Vec::default(),
             exit_code: 0,
             stdout_digest: DigestInfo::new([6u8; 32], 19),
             stderr_digest: DigestInfo::new([7u8; 32], 20),
@@ -675,7 +710,7 @@ mod scheduler_tests {
                 output_upload_start_timestamp: make_system_time(12),
                 output_upload_completed_timestamp: make_system_time(13),
             },
-            server_logs: Default::default(),
+            server_logs: HashMap::default(),
         };
         let update_action_result = scheduler
             .update_action(
@@ -686,19 +721,17 @@ mod scheduler_tests {
             .await;
 
         {
+            const EXPECTED_ERR: &str = "Got a result from a worker that should not be running the action";
             // Our request should have sent an error back.
             assert!(
                 update_action_result.is_err(),
                 "Expected error, got: {:?}",
                 &update_action_result
             );
-            const EXPECTED_ERR: &str = "Got a result from a worker that should not be running the action";
             let err = update_action_result.unwrap_err();
             assert!(
                 err.to_string().contains(EXPECTED_ERR),
-                "Error should contain '{}', got: {:?}",
-                EXPECTED_ERR,
-                err
+                "Error should contain '{EXPECTED_ERR}', got: {err:?}",
             );
         }
         {
@@ -715,22 +748,27 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Error> {
-        const WORKER_ID: WorkerId = WorkerId(0x10000f);
+        const WORKER_ID: WorkerId = WorkerId(0x0010_000f);
 
         let scheduler =
             SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         let mut expected_action_state = ActionState {
-            name: "".to_string(), // Will be filled later.
-            action_digest: action_digest.clone(),
+            name: String::new(), // Will be filled later.
+            action_digest,
             stage: ActionStage::Executing,
         };
 
         let insert_timestamp = make_system_time(1);
-        let mut client_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
 
         {
             // Worker should have been sent an execute command.
@@ -739,7 +777,7 @@ mod scheduler_tests {
                     execute_request: Some(ExecuteRequest {
                         instance_name: INSTANCE_NAME.to_string(),
                         skip_cache_lookup: true,
-                        action_digest: Some(action_digest.clone().into()),
+                        action_digest: Some(action_digest.into()),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -759,15 +797,15 @@ mod scheduler_tests {
         }
 
         let action_result = ActionResult {
-            output_files: Default::default(),
-            output_folders: Default::default(),
-            output_directory_symlinks: Default::default(),
-            output_file_symlinks: Default::default(),
+            output_files: Vec::default(),
+            output_folders: Vec::default(),
+            output_directory_symlinks: Vec::default(),
+            output_file_symlinks: Vec::default(),
             exit_code: Default::default(),
             stdout_digest: DigestInfo::new([1u8; 32], 512),
             stderr_digest: DigestInfo::new([2u8; 32], 512),
             execution_metadata: ExecutionMetadata {
-                worker: "".to_string(),
+                worker: String::new(),
                 queued_timestamp: SystemTime::UNIX_EPOCH,
                 worker_start_timestamp: SystemTime::UNIX_EPOCH,
                 worker_completed_timestamp: SystemTime::UNIX_EPOCH,
@@ -778,14 +816,14 @@ mod scheduler_tests {
                 output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
                 output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
             },
-            server_logs: Default::default(),
+            server_logs: HashMap::default(),
         };
 
         scheduler
             .update_action(
                 &WORKER_ID,
                 &ActionInfoHashKey {
-                    digest: action_digest.clone(),
+                    digest: action_digest,
                     salt: 0,
                 },
                 ActionStage::Completed(action_result.clone()),
@@ -803,8 +841,13 @@ mod scheduler_tests {
 
         {
             let insert_timestamp = make_system_time(1);
-            let mut client_rx =
-                setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
+            let mut client_rx = setup_action(
+                &scheduler,
+                action_digest,
+                PlatformProperties::default(),
+                insert_timestamp,
+            )
+            .await?;
             // We didn't disconnect our worker, so it will have scheduled it to the worker.
             expected_action_state.stage = ActionStage::Executing;
             let action_state = client_rx.borrow_and_update();
@@ -820,7 +863,7 @@ mod scheduler_tests {
     /// a job finished on a specific worker (eg: restore platform properties).
     #[tokio::test]
     async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> Result<(), Error> {
-        const WORKER_ID: WorkerId = WorkerId(0x123456789111);
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler =
             SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
@@ -834,23 +877,17 @@ mod scheduler_tests {
         let insert_timestamp1 = make_system_time(1);
         let mut client1_rx = setup_action(
             &scheduler,
-            action_digest1.clone(),
+            action_digest1,
             platform_properties.clone(),
             insert_timestamp1,
         )
         .await?;
         let insert_timestamp2 = make_system_time(1);
-        let mut client2_rx = setup_action(
-            &scheduler,
-            action_digest2.clone(),
-            platform_properties,
-            insert_timestamp2,
-        )
-        .await?;
+        let mut client2_rx = setup_action(&scheduler, action_digest2, platform_properties, insert_timestamp2).await?;
 
         match rx_from_worker.recv().await.unwrap().update {
             Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-            v => assert!(false, "Expected StartAction, got : {:?}", v),
+            v => panic!("Expected StartAction, got : {v:?}"),
         }
         {
             // First client should be in an Executing state.
@@ -860,10 +897,10 @@ mod scheduler_tests {
         }
 
         let action_result = ActionResult {
-            output_files: Default::default(),
-            output_folders: Default::default(),
-            output_file_symlinks: Default::default(),
-            output_directory_symlinks: Default::default(),
+            output_files: Vec::default(),
+            output_folders: Vec::default(),
+            output_file_symlinks: Vec::default(),
+            output_directory_symlinks: Vec::default(),
             exit_code: 0,
             stdout_digest: DigestInfo::new([6u8; 32], 19),
             stderr_digest: DigestInfo::new([7u8; 32], 20),
@@ -879,7 +916,7 @@ mod scheduler_tests {
                 output_upload_start_timestamp: make_system_time(12),
                 output_upload_completed_timestamp: make_system_time(13),
             },
-            server_logs: Default::default(),
+            server_logs: HashMap::default(),
         };
 
         // Tell scheduler our first task is completed.
@@ -887,7 +924,7 @@ mod scheduler_tests {
             .update_action(
                 &WORKER_ID,
                 &ActionInfoHashKey {
-                    digest: action_digest1.clone(),
+                    digest: action_digest1,
                     salt: 0,
                 },
                 ActionStage::Completed(action_result.clone()),
@@ -906,7 +943,7 @@ mod scheduler_tests {
             let mut expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 name: action_state.name.clone(),
-                action_digest: action_digest1.clone(),
+                action_digest: action_digest1,
                 stage: ActionStage::Completed(action_result.clone()),
             };
             // We now know the name of the action so populate it.
@@ -921,7 +958,7 @@ mod scheduler_tests {
             // Our second client should now executing.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {v:?}"),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client2_rx.borrow_and_update().stage, ActionStage::Executing);
@@ -932,7 +969,7 @@ mod scheduler_tests {
             .update_action(
                 &WORKER_ID,
                 &ActionInfoHashKey {
-                    digest: action_digest2.clone(),
+                    digest: action_digest2,
                     salt: 0,
                 },
                 ActionStage::Completed(action_result.clone()),
@@ -945,7 +982,7 @@ mod scheduler_tests {
             let mut expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 name: action_state.name.clone(),
-                action_digest: action_digest2.clone(),
+                action_digest: action_digest2,
                 stage: ActionStage::Completed(action_result.clone()),
             };
             // We now know the name of the action so populate it.
@@ -959,7 +996,7 @@ mod scheduler_tests {
     /// This tests that actions are performed in the order they were queued.
     #[tokio::test]
     async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
-        const WORKER_ID: WorkerId = WorkerId(0x123456789111);
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler =
             SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
@@ -975,7 +1012,7 @@ mod scheduler_tests {
         let insert_timestamp2 = make_system_time(2);
         let mut client2_rx = setup_action(
             &scheduler,
-            action_digest2.clone(),
+            action_digest2,
             platform_properties.clone(),
             insert_timestamp2,
         )
@@ -983,7 +1020,7 @@ mod scheduler_tests {
         let insert_timestamp1 = make_system_time(1);
         let mut client1_rx = setup_action(
             &scheduler,
-            action_digest1.clone(),
+            action_digest1,
             platform_properties.clone(),
             insert_timestamp1,
         )
@@ -994,7 +1031,7 @@ mod scheduler_tests {
 
         match rx_from_worker.recv().await.unwrap().update {
             Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-            v => assert!(false, "Expected StartAction, got : {:?}", v),
+            v => panic!("Expected StartAction, got : {v:?}"),
         }
         {
             // First client should be in an Executing state.
@@ -1008,7 +1045,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> {
-        const WORKER_ID: WorkerId = WorkerId(0x123456789111);
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
             &config::schedulers::SimpleScheduler {
@@ -1019,23 +1056,28 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
-        let mut client_rx =
-            setup_action(&scheduler, action_digest.clone(), Default::default(), insert_timestamp).await?;
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
 
         {
             // Other tests check full data. We only care if we got StartAction.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {v:?}"),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
         }
 
         let action_info_hash_key = ActionInfoHashKey {
-            digest: action_digest.clone(),
+            digest: action_digest,
             salt: 0,
         };
         scheduler
@@ -1052,19 +1094,19 @@ mod scheduler_tests {
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 name: action_state.name.clone(),
-                action_digest: action_digest.clone(),
+                action_digest,
                 stage: ActionStage::Queued,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
         }
 
         // Now connect a new worker and it should pickup the action.
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, Default::default()).await?;
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         {
             // Other tests check full data. We only care if we got StartAction.
             match rx_from_worker.recv().await.unwrap().update {
                 Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
-                v => assert!(false, "Expected StartAction, got : {:?}", v),
+                v => panic!("Expected StartAction, got : {v:?}"),
             }
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
@@ -1085,14 +1127,14 @@ mod scheduler_tests {
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 name: action_state.name.clone(),
-                action_digest: action_digest.clone(),
+                action_digest,
                 stage: ActionStage::Error((
                     make_err!(Code::Internal, "Some error"),
                     ActionResult {
-                        output_files: Default::default(),
-                        output_folders: Default::default(),
-                        output_file_symlinks: Default::default(),
-                        output_directory_symlinks: Default::default(),
+                        output_files: Vec::default(),
+                        output_folders: Vec::default(),
+                        output_file_symlinks: Vec::default(),
+                        output_directory_symlinks: Vec::default(),
                         exit_code: INTERNAL_ERROR_EXIT_CODE,
                         stdout_digest: DigestInfo::empty_digest(),
                         stderr_digest: DigestInfo::empty_digest(),
@@ -1108,7 +1150,7 @@ mod scheduler_tests {
                             output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
                             output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
                         },
-                        server_logs: Default::default(),
+                        server_logs: HashMap::default(),
                     },
                 )),
             };
