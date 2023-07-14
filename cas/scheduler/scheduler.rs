@@ -35,6 +35,9 @@ pub trait ActionScheduler: Sync + Send + Unpin {
         name: String,
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
+
+    /// Find an existing action by its name.
+    async fn find_existing_action(&self, name: &str) -> Option<watch::Receiver<Arc<ActionState>>>;
 }
 
 /// WorkerScheduler interface is responsible for interactions between the scheduler

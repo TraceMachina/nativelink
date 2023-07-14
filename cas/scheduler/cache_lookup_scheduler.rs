@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -26,12 +27,18 @@ use action_messages::{ActionInfo, ActionResult, ActionStage, ActionState};
 use common::DigestInfo;
 use error::Error;
 use grpc_store::GrpcStore;
+use parking_lot::Mutex;
 use platform_property_manager::PlatformPropertyManager;
 use proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, FindMissingBlobsRequest, GetActionResultRequest,
 };
 use scheduler::ActionScheduler;
 use store::Store;
+
+/// Actions that are having their cache checked or failed cache lookup and are
+/// being forwarded upstream.  Missing the skip_cache_check actions which are
+/// forwarded directly.
+type CheckActions = HashMap<String, Arc<watch::Sender<Arc<ActionState>>>>;
 
 pub struct CacheLookupScheduler {
     /// A reference to the CAS which is used to validate all the outputs of a
@@ -42,6 +49,8 @@ pub struct CacheLookupScheduler {
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
     action_scheduler: Arc<dyn ActionScheduler>,
+    /// Actions that are currently performing a CacheCheck.
+    cache_check_actions: Arc<Mutex<CheckActions>>,
 }
 
 async fn get_action_from_store(
@@ -122,6 +131,7 @@ impl CacheLookupScheduler {
             cas_store,
             ac_store,
             action_scheduler,
+            cache_check_actions: Default::default(),
         })
     }
 }
@@ -148,9 +158,12 @@ impl ActionScheduler for CacheLookupScheduler {
             action_digest: *action_digest,
         });
         let (tx, rx) = watch::channel(current_state.clone());
+        let tx = Arc::new(tx);
+        self.cache_check_actions.lock().insert(name.clone(), tx.clone());
         let ac_store = self.ac_store.clone();
         let cas_store = self.cas_store.clone();
         let action_scheduler = self.action_scheduler.clone();
+        let cache_check_actions = self.cache_check_actions.clone();
         tokio::spawn(async move {
             let instance_name = action_info.instance_name.to_string();
             if let Some(proto_action_result) =
@@ -160,24 +173,43 @@ impl ActionScheduler for CacheLookupScheduler {
                     // Found in the cache, return the result immediately.
                     Arc::make_mut(&mut current_state).stage = ActionStage::CompletedFromCache(proto_action_result);
                     let _ = tx.send(current_state);
+                    cache_check_actions.lock().remove(&name);
                     return;
                 }
             }
             // Not in cache, forward to upstream and proxy state.
-            let mut watch_stream = match action_scheduler.add_action(name, action_info).await {
-                Ok(rx) => WatchStream::new(rx),
+            match action_scheduler.add_action(name.clone(), action_info).await {
+                Ok(rx) => {
+                    let mut watch_stream = WatchStream::new(rx);
+                    while let Some(action_state) = watch_stream.next().await {
+                        if tx.send(action_state).is_err() {
+                            break;
+                        }
+                    }
+                }
                 Err(err) => {
                     Arc::make_mut(&mut current_state).stage = ActionStage::Error((err, ActionResult::default()));
                     let _ = tx.send(current_state);
-                    return;
-                }
-            };
-            while let Some(action_state) = watch_stream.next().await {
-                if tx.send(action_state).is_err() {
-                    break;
                 }
             }
+            cache_check_actions.lock().remove(&name);
         });
         Ok(rx)
+    }
+
+    async fn find_existing_action(&self, name: &str) -> Option<watch::Receiver<Arc<ActionState>>> {
+        {
+            let cache_check_actions = self.cache_check_actions.lock();
+            if let Some(tx) = cache_check_actions.get(name) {
+                let current_value = tx.borrow();
+                // Subscribe marks the current value as seen, so we have to
+                // re-send it to all receivers.
+                let rx = tx.subscribe();
+                let _ = tx.send(current_value.clone());
+                return Some(rx);
+            }
+        }
+        // Cache skipped may be in the upstream scheduler.
+        self.action_scheduler.find_existing_action(name).await
     }
 }
