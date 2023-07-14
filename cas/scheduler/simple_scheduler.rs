@@ -12,12 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Borrow;
 use std::cmp;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
+use hashbrown::{HashMap, HashSet};
 use lru::LruCache;
 use parking_lot::Mutex;
 use tokio::sync::{watch, Notify};
@@ -34,6 +38,10 @@ use worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
 /// Default timeout for workers in seconds.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
+
+/// Default timeout for recently completed actions in seconds.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
 
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
@@ -144,6 +152,32 @@ impl Workers {
     }
 }
 
+struct CompletedAction {
+    completed_time: SystemTime,
+    state: Arc<ActionState>,
+}
+
+impl Hash for CompletedAction {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        ActionInfoHashKey::hash(&self.state.unique_qualifier, state);
+    }
+}
+
+impl PartialEq for CompletedAction {
+    fn eq(&self, other: &Self) -> bool {
+        ActionInfoHashKey::eq(&self.state.unique_qualifier, &other.state.unique_qualifier)
+    }
+}
+
+impl Eq for CompletedAction {}
+
+impl Borrow<ActionInfoHashKey> for CompletedAction {
+    #[inline]
+    fn borrow(&self) -> &ActionInfoHashKey {
+        &self.state.unique_qualifier
+    }
+}
+
 struct SimpleSchedulerImpl {
     // BTreeMap uses `cmp` to do it's comparisons, this is a problem because we want to sort our
     // actions based on priority and insert timestamp but also want to find and join new actions
@@ -159,6 +193,13 @@ struct SimpleSchedulerImpl {
     queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction>,
     workers: Workers,
     active_actions: HashMap<Arc<ActionInfo>, RunningAction>,
+    // These actions completed recently but had no listener, they might have
+    // completed while the caller was thinking about calling wait_execution, so
+    // keep their completion state around for a while to send back.
+    // TODO(#192) Revisit if this is the best way to handle recently completed actions.
+    recently_completed_actions: HashSet<CompletedAction>,
+    /// The duration that actions are kept in recently_completed_actions for.
+    retain_completed_for: Duration,
     /// Timeout of how long to evict workers if no response in this given amount of time in seconds.
     worker_timeout_s: u64,
     /// Default times a job can retry before failing.
@@ -168,6 +209,16 @@ struct SimpleSchedulerImpl {
 }
 
 impl SimpleSchedulerImpl {
+    fn subscribe_to_channel(awaited_action: &AwaitedAction) -> watch::Receiver<Arc<ActionState>> {
+        let rx = awaited_action.notify_channel.subscribe();
+        // TODO: Fix this when fixed upstream tokio-rs/tokio#5871
+        awaited_action
+            .notify_channel
+            .send(awaited_action.current_state.clone())
+            .unwrap();
+        rx
+    }
+
     /// Attempts to find a worker to execute an action and begins executing it.
     /// If an action is already running that is cacheable it may merge this action
     /// with the results and state changes of the already running action.
@@ -177,13 +228,7 @@ impl SimpleSchedulerImpl {
     fn add_action(&mut self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         // Check to see if the action is running, if it is and cacheable, merge the actions.
         if let Some(running_action) = self.active_actions.get_mut(&action_info) {
-            let rx = running_action.action.notify_channel.subscribe();
-            running_action
-                .action
-                .notify_channel
-                .send(running_action.action.current_state.clone())
-                .unwrap();
-            return Ok(rx);
+            return Ok(Self::subscribe_to_channel(&running_action.action));
         }
 
         // Check to see if the action is queued, if it is and cacheable, merge the actions.
@@ -201,10 +246,8 @@ impl SimpleSchedulerImpl {
             Arc::make_mut(&mut arc_action_info).priority = new_priority;
 
             let rx = queued_action.notify_channel.subscribe();
-            queued_action
-                .notify_channel
-                .send(queued_action.current_state.clone())
-                .unwrap();
+            // TODO: Fix this when fixed upstream tokio-rs/tokio#5871
+            let _ = queued_action.notify_channel.send(queued_action.current_state.clone());
 
             // Even if we fail to send our action to the client, we need to add this action back to the
             // queue because it was remove earlier.
@@ -236,6 +279,33 @@ impl SimpleSchedulerImpl {
 
         self.tasks_or_workers_change_notify.notify_one();
         Ok(rx)
+    }
+
+    fn clean_recently_completed_actions(&mut self) {
+        let expiry_time = SystemTime::now().checked_sub(self.retain_completed_for).unwrap();
+        self.recently_completed_actions
+            .retain(|action| action.completed_time > expiry_time);
+    }
+
+    fn find_recently_completed_action(
+        &mut self,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Option<watch::Receiver<Arc<ActionState>>> {
+        self.recently_completed_actions
+            .get(unique_qualifier)
+            .map(|action| watch::channel(action.state.clone()).1)
+    }
+
+    fn find_existing_action(&self, unique_qualifier: &ActionInfoHashKey) -> Option<watch::Receiver<Arc<ActionState>>> {
+        self.queued_actions_set
+            .get(unique_qualifier)
+            .and_then(|action_info| self.queued_actions.get(action_info))
+            .or_else(|| {
+                self.active_actions
+                    .get(unique_qualifier)
+                    .map(|running_action| &running_action.action)
+            })
+            .map(Self::subscribe_to_channel)
     }
 
     fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId) {
@@ -445,19 +515,25 @@ impl SimpleSchedulerImpl {
             .action
             .notify_channel
             .send(running_action.action.current_state.clone());
-        if send_result.is_err() {
-            log::warn!(
-                "Action {} has no more listeners during update_action()",
-                action_info.digest().str()
-            );
-        }
 
         if !running_action.action.current_state.stage.is_finished() {
+            if send_result.is_err() {
+                log::warn!(
+                    "Action {} has no more listeners during update_action()",
+                    action_info.digest().str()
+                );
+            }
             // If the operation is not finished it means the worker is still working on it, so put it
             // back or else we will loose track of the task.
             self.active_actions.insert(action_info, running_action);
             return Ok(());
         }
+
+        // Keep in case this is asked for soon.
+        self.recently_completed_actions.insert(CompletedAction {
+            completed_time: SystemTime::now(),
+            state: running_action.action.current_state,
+        });
 
         let worker = self
             .workers
@@ -467,8 +543,6 @@ impl SimpleSchedulerImpl {
         worker.complete_action(&action_info);
         self.tasks_or_workers_change_notify.notify_one();
 
-        // TODO(allada) We should probably hold a small queue of recent actions for debugging.
-        // Right now it will drop the action which also disconnects listeners here.
         Ok(())
     }
 }
@@ -511,6 +585,11 @@ impl SimpleScheduler {
             worker_timeout_s = DEFAULT_WORKER_TIMEOUT_S;
         }
 
+        let mut retain_completed_for_s = scheduler_cfg.retain_completed_for_s;
+        if retain_completed_for_s == 0 {
+            retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
+        }
+
         let mut max_job_retries = scheduler_cfg.max_job_retries;
         if max_job_retries == 0 {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
@@ -523,6 +602,8 @@ impl SimpleScheduler {
             queued_actions: BTreeMap::new(),
             workers: Workers::new(scheduler_cfg.allocation_strategy),
             active_actions: HashMap::new(),
+            recently_completed_actions: HashSet::new(),
+            retain_completed_for: Duration::new(retain_completed_for_s, 0),
             worker_timeout_s,
             max_job_retries,
             tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
@@ -583,6 +664,20 @@ impl ActionScheduler for SimpleScheduler {
     async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let mut inner = self.inner.lock();
         inner.add_action(action_info)
+    }
+
+    async fn find_existing_action(
+        &self,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Option<watch::Receiver<Arc<ActionState>>> {
+        let mut inner = self.inner.lock();
+        inner
+            .find_existing_action(unique_qualifier)
+            .or_else(|| inner.find_recently_completed_action(unique_qualifier))
+    }
+
+    async fn clean_recently_completed_actions(&self) {
+        self.inner.lock().clean_recently_completed_actions();
     }
 }
 

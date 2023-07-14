@@ -83,6 +83,7 @@ rust_library(
         "//util:error",
         "@crate_index//:parking_lot",
         "@crate_index//:futures",
+        "@crate_index//:hashbrown",
         "@crate_index//:lru",
         "@crate_index//:tokio",
     ],
@@ -109,6 +110,7 @@ rust_library(
         "//util:common",
         "//util:error",
         "@crate_index//:futures",
+        "@crate_index//:parking_lot",
         "@crate_index//:tonic",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
@@ -176,6 +178,7 @@ rust_library(
         "//config",
         "//util:error",
         "@crate_index//:futures",
+        "@crate_index//:tokio",
     ],
 )
 

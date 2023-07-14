@@ -31,6 +31,15 @@ pub trait ActionScheduler: Sync + Send + Unpin {
 
     /// Adds an action to the scheduler for remote execution.
     async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
+
+    /// Find an existing action by its name.
+    async fn find_existing_action(
+        &self,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Option<watch::Receiver<Arc<ActionState>>>;
+
+    /// Cleans up the cache of recently completed actions.
+    async fn clean_recently_completed_actions(&self);
 }
 
 /// WorkerScheduler interface is responsible for interactions between the scheduler

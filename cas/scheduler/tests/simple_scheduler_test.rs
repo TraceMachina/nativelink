@@ -139,6 +139,63 @@ mod scheduler_tests {
     }
 
     #[tokio::test]
+    async fn find_executing_action() -> Result<(), Error> {
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
+
+        let scheduler =
+            SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
+        let action_digest = DigestInfo::new([99u8; 32], 512);
+
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+
+        // Drop our receiver and look up a new one.
+        let unique_qualifier = client_rx.borrow().unique_qualifier.clone();
+        drop(client_rx);
+        let mut client_rx = scheduler
+            .find_existing_action(&unique_qualifier)
+            .await
+            .err_tip(|| "Action not found")?;
+
+        {
+            // Worker should have been sent an execute command.
+            let expected_msg_for_worker = UpdateForWorker {
+                update: Some(update_for_worker::Update::StartAction(StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        instance_name: INSTANCE_NAME.to_string(),
+                        skip_cache_lookup: true,
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: 0,
+                    queued_timestamp: Some(insert_timestamp.into()),
+                })),
+            };
+            let msg_for_worker = rx_from_worker.recv().await.unwrap();
+            assert_eq!(msg_for_worker, expected_msg_for_worker);
+        }
+        {
+            // Client should get notification saying it's being executed.
+            let action_state = client_rx.borrow_and_update();
+            let expected_action_state = ActionState {
+                // Name is a random string, so we ignore it and just make it the same.
+                unique_qualifier: action_state.unique_qualifier.clone(),
+                stage: ActionStage::Executing,
+            };
+            assert_eq!(action_state.as_ref(), &expected_action_state);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
         const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);
@@ -658,6 +715,103 @@ mod scheduler_tests {
             // Update info for the action should now be closed (notification happens through Err).
             let result = client_rx.changed().await;
             assert!(result.is_err(), "Expected result to be an error : {result:?}");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_action_sends_completed_result_after_disconnect() -> Result<(), Error> {
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
+
+        let scheduler =
+            SimpleScheduler::new_with_callback(&config::schedulers::SimpleScheduler::default(), || async move {});
+        let action_digest = DigestInfo::new([99u8; 32], 512);
+
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+
+        // Drop our receiver and don't reconnect until completed.
+        let unique_qualifier = client_rx.borrow().unique_qualifier.clone();
+        drop(client_rx);
+
+        {
+            // Other tests check full data. We only care if we got StartAction.
+            match rx_from_worker.recv().await.unwrap().update {
+                Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+                v => panic!("Expected StartAction, got : {v:?}"),
+            }
+        }
+
+        let action_info_hash_key = ActionInfoHashKey {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest: action_digest,
+            salt: 0,
+        };
+        let action_result = ActionResult {
+            output_files: vec![FileInfo {
+                name_or_path: NameOrPath::Name("hello".to_string()),
+                digest: DigestInfo::new([5u8; 32], 18),
+                is_executable: true,
+            }],
+            output_folders: vec![DirectoryInfo {
+                path: "123".to_string(),
+                tree_digest: DigestInfo::new([9u8; 32], 100),
+            }],
+            output_file_symlinks: vec![SymlinkInfo {
+                name_or_path: NameOrPath::Name("foo".to_string()),
+                target: "bar".to_string(),
+            }],
+            output_directory_symlinks: vec![SymlinkInfo {
+                name_or_path: NameOrPath::Name("foo2".to_string()),
+                target: "bar2".to_string(),
+            }],
+            exit_code: 0,
+            stdout_digest: DigestInfo::new([6u8; 32], 19),
+            stderr_digest: DigestInfo::new([7u8; 32], 20),
+            execution_metadata: ExecutionMetadata {
+                worker: WORKER_ID.to_string(),
+                queued_timestamp: make_system_time(5),
+                worker_start_timestamp: make_system_time(6),
+                worker_completed_timestamp: make_system_time(7),
+                input_fetch_start_timestamp: make_system_time(8),
+                input_fetch_completed_timestamp: make_system_time(9),
+                execution_start_timestamp: make_system_time(10),
+                execution_completed_timestamp: make_system_time(11),
+                output_upload_start_timestamp: make_system_time(12),
+                output_upload_completed_timestamp: make_system_time(13),
+            },
+            server_logs: HashMap::default(),
+        };
+        scheduler
+            .update_action(
+                &WORKER_ID,
+                &action_info_hash_key,
+                ActionStage::Completed(action_result.clone()),
+            )
+            .await?;
+
+        // Now look up a channel after the action has completed.
+        let mut client_rx = scheduler
+            .find_existing_action(&unique_qualifier)
+            .await
+            .err_tip(|| "Action not found")?;
+        {
+            // Client should get notification saying it has been completed.
+            let action_state = client_rx.borrow_and_update();
+            let expected_action_state = ActionState {
+                // Name is a random string, so we ignore it and just make it the same.
+                unique_qualifier: action_state.unique_qualifier.clone(),
+                stage: ActionStage::Completed(action_result),
+            };
+            assert_eq!(action_state.as_ref(), &expected_action_state);
         }
 
         Ok(())
