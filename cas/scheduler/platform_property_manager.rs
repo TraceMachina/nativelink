@@ -31,29 +31,31 @@ pub struct PlatformProperties {
 }
 
 impl PlatformProperties {
-    pub fn new(map: HashMap<String, PlatformPropertyValue>) -> Self {
+    #[must_use]
+    pub const fn new(map: HashMap<String, PlatformPropertyValue>) -> Self {
         Self { properties: map }
     }
 
     /// Determines if the worker's `PlatformProperties` is satisfied by this struct.
-    pub fn is_satisfied_by(&self, worker_properties: &PlatformProperties) -> bool {
+    #[must_use]
+    pub fn is_satisfied_by(&self, worker_properties: &Self) -> bool {
         for (property, check_value) in &self.properties {
             if let Some(worker_value) = worker_properties.properties.get(property) {
-                if !check_value.is_satisfied_by(&worker_value) {
+                if !check_value.is_satisfied_by(worker_value) {
                     return false;
                 }
             } else {
                 return false;
             }
         }
-        return true;
+        true
     }
 }
 
 impl From<ProtoPlatform> for PlatformProperties {
     fn from(platform: ProtoPlatform) -> Self {
         let mut properties = HashMap::with_capacity(platform.properties.len());
-        for property in platform.properties.into_iter() {
+        for property in platform.properties {
             properties.insert(property.name, PlatformPropertyValue::Unknown(property.value));
         }
         Self { properties }
@@ -82,13 +84,14 @@ pub enum PlatformPropertyValue {
 
 impl PlatformPropertyValue {
     /// Same as `PlatformProperties::is_satisfied_by`, but on an individual value.
-    pub fn is_satisfied_by(&self, worker_value: &PlatformPropertyValue) -> bool {
+    #[must_use]
+    pub fn is_satisfied_by(&self, worker_value: &Self) -> bool {
         if self == worker_value {
             return true;
         }
         match self {
-            PlatformPropertyValue::Minimum(v) => {
-                if let PlatformPropertyValue::Minimum(worker_v) = worker_value {
+            Self::Minimum(v) => {
+                if let Self::Minimum(worker_v) = worker_value {
                     return worker_v >= v;
                 }
                 false
@@ -96,27 +99,27 @@ impl PlatformPropertyValue {
             // Priority is used to pass info to the worker and not restrict which
             // workers can be selected, but might be used to prefer certain workers
             // over others.
-            PlatformPropertyValue::Priority(_) => true,
+            Self::Priority(_) => true,
             // Success exact case is handled above.
-            PlatformPropertyValue::Exact(_) => false,
-            // Used mostly for transporting data. This should not be relied upon when this value.
-            PlatformPropertyValue::Unknown(_) => false,
+            Self::Exact(_) | Self::Unknown(_) => false,
         }
     }
 }
 
-/// Helps manage known properties and conversion into PlatformPropertyValue.
+/// Helps manage known properties and conversion into `PlatformPropertyValue`.
 pub struct PlatformPropertyManager {
     known_properties: HashMap<String, PropertyType>,
 }
 
 impl PlatformPropertyManager {
-    pub fn new(known_properties: HashMap<String, PropertyType>) -> Self {
+    #[must_use]
+    pub const fn new(known_properties: HashMap<String, PropertyType>) -> Self {
         Self { known_properties }
     }
 
     /// Returns the `known_properties` map.
-    pub fn get_known_properties(&self) -> &HashMap<String, PropertyType> {
+    #[must_use]
+    pub const fn get_known_properties(&self) -> &HashMap<String, PropertyType> {
         &self.known_properties
     }
 
@@ -126,14 +129,14 @@ impl PlatformPropertyManager {
     pub fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
         if let Some(prop_type) = self.known_properties.get(key) {
             return match prop_type {
-                PropertyType::Minimum => Ok(PlatformPropertyValue::Minimum(
-                    u64::from_str_radix(value, 10).err_tip_with_code(|e| {
+                PropertyType::Minimum => Ok(PlatformPropertyValue::Minimum(value.parse::<u64>().err_tip_with_code(
+                    |e| {
                         (
                             Code::InvalidArgument,
-                            format!("Cannot convert to platform property to u64: {} - {}", value, e),
+                            format!("Cannot convert to platform property to u64: {value} - {e}"),
                         )
-                    })?,
-                )),
+                    },
+                )?)),
                 PropertyType::Exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
                 PropertyType::Priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
             };

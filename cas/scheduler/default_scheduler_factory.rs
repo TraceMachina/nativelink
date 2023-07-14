@@ -34,7 +34,7 @@ pub fn scheduler_factory<'a>(
     Box::pin(async move {
         let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
             SchedulerConfig::simple(config) => {
-                let scheduler = Arc::new(SimpleScheduler::new(&config));
+                let scheduler = Arc::new(SimpleScheduler::new(config));
                 (Some(scheduler.clone()), Some(scheduler))
             }
             SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config).await?)), None),
