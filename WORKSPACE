@@ -34,7 +34,6 @@ rust_register_toolchains(
 
 load(
     "@rules_rust//crate_universe:defs.bzl",
-    "crate",
     "crates_repository",
     "render_config",
 )
@@ -69,5 +68,16 @@ http_archive(
 )
 
 load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
+
+# The version of utf8_range provided by com_google_protobuf raises warnings
+# which have been cleaned up in this slightly newer commit.
+http_archive(
+    name = "utf8_range",
+    sha256 = "568988b5f7261ca181468dba38849fabf59dd9200fb2ed4b2823da187ef84d8c",
+    strip_prefix = "utf8_range-d863bc33e15cba6d873c878dcca9e6fe52b2f8cb",
+    urls = [
+        "https://github.com/protocolbuffers/utf8_range/archive/d863bc33e15cba6d873c878dcca9e6fe52b2f8cb.zip",
+    ],
+)
 
 protobuf_deps()
