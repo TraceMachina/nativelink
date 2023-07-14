@@ -91,6 +91,12 @@ pub struct SimpleScheduler {
     /// config.
     pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
 
+    /// The amount of time to retain completed actions in memory for in case
+    /// a WaitExecution is called after the action has completed.
+    /// Default: 60 (seconds)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub retain_completed_for_s: u64,
+
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds.
     /// Default: 5 (seconds)

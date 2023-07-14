@@ -14,8 +14,10 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::Future;
+use tokio::time::interval;
 
 use cache_lookup_scheduler::CacheLookupScheduler;
 use config::schedulers::SchedulerConfig;
@@ -37,7 +39,7 @@ pub fn scheduler_factory<'a>(
                 let scheduler = Arc::new(SimpleScheduler::new(config));
                 (Some(scheduler.clone()), Some(scheduler))
             }
-            SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config).await?)), None),
+            SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
             SchedulerConfig::cache_lookup(config) => {
                 let cas_store = store_manager
                     .get_store(&config.cas_store)
@@ -54,6 +56,26 @@ pub fn scheduler_factory<'a>(
                 (Some(cache_lookup_scheduler), worker_scheduler)
             }
         };
+
+        if let Some(action_scheduler) = &scheduler.0 {
+            start_cleanup_timer(action_scheduler);
+        }
+
         Ok(scheduler)
     })
+}
+
+fn start_cleanup_timer(action_scheduler: &Arc<dyn ActionScheduler>) {
+    let weak_scheduler = Arc::downgrade(action_scheduler);
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(1));
+        loop {
+            ticker.tick().await;
+            match weak_scheduler.upgrade() {
+                Some(scheduler) => scheduler.clean_recently_completed_actions().await,
+                // If we fail to upgrade, our service is probably destroyed, so return.
+                None => return,
+            }
+        }
+    });
 }
