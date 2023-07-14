@@ -5,3 +5,8 @@ target/
 .config
 terraform.tfstate*
 .update_scheduler_ips.zip
+
+# These are handled by nix.
+.pre-commit-config.yaml
+.devenv/
+.direnv/

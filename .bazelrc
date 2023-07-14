@@ -49,3 +49,52 @@ build:tsan --config=nightly -c dbg
 build:tsan --@rules_rust//:extra_rustc_flags=-Zsanitizer=thread
 build:tsan --cache_test_results=no
 build:tsan --run_under=//tools:tsan.sh
+
+# Everything below custom rules_ll config.
+
+# Don't inherit PATH and LD_LIBRARY_PATH.
+build --incompatible_strict_action_env
+
+# Forbid network access unless explicitly enabled.
+build --sandbox_default_allow_network=false
+
+# Use correct runfile locations.
+build --nolegacy_external_runfiles
+
+# Enable sandboxing for exclusive tests like GPU performance tests.
+test --incompatible_exclusive_test_sandboxed
+
+# Make sure rules_cc uses the correct transition mechanism.
+build --incompatible_enable_cc_toolchain_resolution
+
+# Propagate tags such as no-remote for precompilations to downstream actions.
+common --incompatible_allow_tags_propagation
+
+# Bzlmod configuration.
+common --enable_bzlmod
+common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main/
+common --registry=https://raw.githubusercontent.com/eomii/bazel-eomii-registry/main/
+
+# Make sure to use the correct java runtime.
+build --java_runtime_version=rbe_jdk
+build --tool_java_runtime_version=rbe_jdk
+
+# Always act as if using remote execution.
+build --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+build --define=EXECUTOR=remote
+
+# Remote optimizations.
+build --experimental_remote_cache_compression
+build --experimental_remote_build_event_upload=minimal
+build --remote_download_minimal
+build --nolegacy_important_outputs
+
+# Smaller profiling. Careful. Disabling this might explode remote cache usage.
+build --slim_profile
+build --experimental_profile_include_target_label
+build --noexperimental_profile_include_primary_output
+
+# build --repo_env=OPENSSL_INCLUDE_DIR=/nix/store/nrqws25f1d7bjmnqqjwd6ady3343xvnh-openssl-3.0.9-dev/include
+
+# Allow user-side customization.
+try-import %workspace%/.bazelrc.user

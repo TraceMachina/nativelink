@@ -43,6 +43,18 @@ load(
 
 crates_repository(
     name = "crate_index",
+    annotations = {
+        # rules_ll forbids accessing the local OpenSSL. This workaround is not
+        # pretty, but it gives us a reproducible, hermetic variant of OpenSSL.
+        "openssl-sys": [
+            crate.annotation(
+                build_script_env = {
+                    "OPENSSL_INCLUDE_DIR": "/nix/store/m3is339s8da0bnr53kkpklzgjmi4bszs-openssl-3.0.9-dev/include",
+                    "OPENSSL_LIB_DIR": "/nix/store/k7in5f6zaglxlxm3a6bdy7gy1ms6shvc-openssl-3.0.9/lib",
+                },
+            ),
+        ],
+    },
     cargo_lockfile = "//:Cargo.lock",
     lockfile = "//:Cargo.Bazel.lock",
     manifests = ["//:Cargo.toml"],
