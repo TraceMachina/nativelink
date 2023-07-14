@@ -1,5 +1,5 @@
 {
-  "checksum": "4f921e8c24fd74362f4fa660db203c02dfdc564ae44a23e8d4526d28aab7aafb",
+  "checksum": "146b83c7f61fdc725e27cb65c3b745bcc2e021976de05d8c23773440299c028f",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -6742,6 +6742,13 @@
               }
             ]
           }
+        },
+        "build_script_env": {
+          "common": {
+            "OPENSSL_INCLUDE_DIR": "/nix/store/m3is339s8da0bnr53kkpklzgjmi4bszs-openssl-3.0.9-dev/include",
+            "OPENSSL_LIB_DIR": "/nix/store/k7in5f6zaglxlxm3a6bdy7gy1ms6shvc-openssl-3.0.9/lib"
+          },
+          "selects": {}
         },
         "links": "openssl"
       },
