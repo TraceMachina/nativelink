@@ -37,7 +37,7 @@ pub fn scheduler_factory<'a>(
                 let scheduler = Arc::new(SimpleScheduler::new(config));
                 (Some(scheduler.clone()), Some(scheduler))
             }
-            SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config).await?)), None),
+            SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
             SchedulerConfig::cache_lookup(config) => {
                 let cas_store = store_manager
                     .get_store(&config.cas_store)
