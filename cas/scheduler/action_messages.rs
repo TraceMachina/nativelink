@@ -558,9 +558,10 @@ pub enum ActionStage {
     /// Result was found from cache, don't decode the proto just to re-encode it.
     CompletedFromCache(ProtoActionResult),
     /// Error or action failed with an exit code on the worker.
-    /// This means that the job might have finished executing, but returned a non-zero
-    /// exit code (for example a test failing or file not compilable). The `ActionResult`
-    /// may contain better results than the `Error` message.
+    /// This means that the job might have finished executing, but the worker had an
+    /// internal error. This might have happened if the worker timed out, crashed,
+    /// action cleanup failure, out of memory or other kind of errors that are not
+    /// related to the action, but rather the environment.
     Error((Error, ActionResult)),
 }
 
@@ -570,6 +571,13 @@ impl ActionStage {
             Self::Unknown | Self::CacheCheck | Self::Queued | Self::Executing => false,
             Self::Completed(_) | Self::CompletedFromCache(_) | Self::Error(_) => true,
         }
+    }
+
+    /// Returns true if the worker considers the action done and no longer needs to be tracked.
+    // Note: This function is separate from `has_action_result()` to not mix the concept of
+    //       "finished" with "has a result".
+    pub const fn is_finished(&self) -> bool {
+        self.has_action_result()
     }
 }
 
