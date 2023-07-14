@@ -365,7 +365,7 @@ pub mod execution_response_tests {
             // Ensure our client thinks we are executing.
             client_action_state_receiver.changed().await?;
             let action_state = client_action_state_receiver.borrow();
-            assert_eq!(action_state.as_ref().stage, ActionStage::Executing);
+            assert_eq!(action_state.stage, ActionStage::Executing);
         }
 
         // Now send the result of our execution to the scheduler.

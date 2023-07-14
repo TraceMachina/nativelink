@@ -467,17 +467,12 @@ impl SimpleSchedulerImpl {
             return Err(make_input_err!("{}", msg));
         }
 
-        let did_complete = match action_stage {
-            ActionStage::Completed(_) => true,
-            _ => false,
-        };
-
         Arc::make_mut(&mut running_action.action.current_state).stage = action_stage;
 
         let send_result = running_action
             .action
             .notify_channel
-            .send(running_action.action.current_state);
+            .send(running_action.action.current_state.clone());
         if send_result.is_err() {
             log::warn!(
                 "Action {} has no more listeners during update_action()",
@@ -485,15 +480,20 @@ impl SimpleSchedulerImpl {
             );
         }
 
-        if did_complete {
-            let worker = self
-                .workers
-                .workers
-                .get_mut(worker_id)
-                .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
-            worker.complete_action(&action_info);
-            self.tasks_or_workers_change_notify.notify_one();
+        if !running_action.action.current_state.stage.is_finished() {
+            // If the operation is not finished it means the worker is still working on it, so put it
+            // back or else we will loose track of the task.
+            self.active_actions.insert(action_info, running_action);
+            return Ok(());
         }
+
+        let worker = self
+            .workers
+            .workers
+            .get_mut(worker_id)
+            .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
+        worker.complete_action(&action_info);
+        self.tasks_or_workers_change_notify.notify_one();
 
         // TODO(allada) We should probably hold a small queue of recent actions for debugging.
         // Right now it will drop the action which also disconnects listeners here.
