@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -51,7 +51,7 @@ mod action_messages_tests {
                 any.type_url,
                 "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse"
             ),
-            other => assert!(false, "Expected Some(Result(Any)), got: {:?}", other),
+            other => panic!("Expected Some(Result(Any)), got: {other:?}"),
         }
 
         Ok(())
@@ -79,7 +79,7 @@ mod action_messages_tests {
                 output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
                 output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
             },
-            server_logs: Default::default(),
+            server_logs: HashMap::default(),
         })
         .into();
 
@@ -127,13 +127,13 @@ mod action_messages_tests {
             },
             skip_cache_lookup: true,
         });
-        let mut action_map = BTreeMap::<Arc<ActionInfo>, ()>::new();
-        action_map.insert(lowest_priority_action.clone(), ());
-        action_map.insert(high_priority_action.clone(), ());
+        let mut action_set = BTreeSet::<Arc<ActionInfo>>::new();
+        action_set.insert(lowest_priority_action.clone());
+        action_set.insert(high_priority_action.clone());
 
         assert_eq!(
             vec![high_priority_action, lowest_priority_action],
-            action_map.keys().rev().cloned().collect::<Vec<Arc<ActionInfo>>>()
+            action_set.iter().rev().cloned().collect::<Vec<Arc<ActionInfo>>>()
         );
 
         Ok(())
@@ -177,13 +177,13 @@ mod action_messages_tests {
             },
             skip_cache_lookup: true,
         });
-        let mut action_map = BTreeMap::<Arc<ActionInfo>, ()>::new();
-        action_map.insert(current_action.clone(), ());
-        action_map.insert(first_action.clone(), ());
+        let mut action_set = BTreeSet::<Arc<ActionInfo>>::new();
+        action_set.insert(current_action.clone());
+        action_set.insert(first_action.clone());
 
         assert_eq!(
             vec![first_action, current_action],
-            action_map.keys().rev().cloned().collect::<Vec<Arc<ActionInfo>>>()
+            action_set.iter().rev().cloned().collect::<Vec<Arc<ActionInfo>>>()
         );
 
         Ok(())

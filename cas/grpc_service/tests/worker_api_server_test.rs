@@ -108,10 +108,7 @@ pub mod connect_worker_tests {
     pub async fn connect_worker_adds_worker_to_scheduler_test() -> Result<(), Box<dyn std::error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
-        let worker_exists = test_context
-            .scheduler
-            .contains_worker_for_test(&test_context.worker_id)
-            .await;
+        let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
         assert!(worker_exists, "Expected worker to exist in worker map");
 
         Ok(())
@@ -132,20 +129,14 @@ pub mod keep_alive_tests {
             // Now change time to 1 second before timeout and ensure the worker is still in the pool.
             now_timestamp += BASE_WORKER_TIMEOUT_S - 1;
             test_context.scheduler.remove_timedout_workers(now_timestamp).await?;
-            let worker_exists = test_context
-                .scheduler
-                .contains_worker_for_test(&test_context.worker_id)
-                .await;
+            let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
             assert!(worker_exists, "Expected worker to exist in worker map");
         }
         {
             // Now add 1 second and our worker should have been evicted due to timeout.
             now_timestamp += 1;
             test_context.scheduler.remove_timedout_workers(now_timestamp).await?;
-            let worker_exists = test_context
-                .scheduler
-                .contains_worker_for_test(&test_context.worker_id)
-                .await;
+            let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
             assert!(!worker_exists, "Expected worker to not exist in map");
         }
 
@@ -171,10 +162,7 @@ pub mod keep_alive_tests {
             // Now change time to 1 second before timeout and ensure the worker is still in the pool.
             let timestamp = add_and_return_timestamp(BASE_WORKER_TIMEOUT_S - 1);
             test_context.scheduler.remove_timedout_workers(timestamp).await?;
-            let worker_exists = test_context
-                .scheduler
-                .contains_worker_for_test(&test_context.worker_id)
-                .await;
+            let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
             assert!(worker_exists, "Expected worker to exist in worker map");
         }
         {
@@ -191,10 +179,7 @@ pub mod keep_alive_tests {
             // Now add 1 second and our worker should still exist in our map.
             let timestamp = add_and_return_timestamp(1);
             test_context.scheduler.remove_timedout_workers(timestamp).await?;
-            let worker_exists = test_context
-                .scheduler
-                .contains_worker_for_test(&test_context.worker_id)
-                .await;
+            let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
             assert!(worker_exists, "Expected worker to exist in map");
         }
 
@@ -209,7 +194,6 @@ pub mod keep_alive_tests {
         test_context
             .scheduler
             .send_keep_alive_to_worker_for_test(&test_context.worker_id)
-            .await
             .err_tip(|| "Could not send keep alive to worker")?;
 
         {
@@ -240,18 +224,12 @@ pub mod going_away_tests {
     pub async fn going_away_removes_worker_test() -> Result<(), Box<dyn std::error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
-        let worker_exists = test_context
-            .scheduler
-            .contains_worker_for_test(&test_context.worker_id)
-            .await;
+        let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
         assert!(worker_exists, "Expected worker to exist in worker map");
 
         test_context.scheduler.remove_worker(test_context.worker_id).await;
 
-        let worker_exists = test_context
-            .scheduler
-            .contains_worker_for_test(&test_context.worker_id)
-            .await;
+        let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
         assert!(!worker_exists, "Expected worker to be removed from worker map");
 
         Ok(())
