@@ -85,6 +85,16 @@ pub trait StoreTrait: Sync + Send + Unpin {
         self.get_part(digest, writer, 0, None).await
     }
 
+    async fn get_part_arc(
+        self: Arc<Self>,
+        digest: DigestInfo,
+        writer: DropCloserWriteHalf,
+        offset: usize,
+        length: Option<usize>,
+    ) -> Result<(), Error> {
+        Pin::new(self.as_ref()).get_part(digest, writer, offset, length).await
+    }
+
     // Utility that will return all the bytes at once instead of in a streaming manner.
     async fn get_part_unchunked(
         self: Pin<&Self>,
