@@ -22,7 +22,7 @@ use tokio::{self, join, sync::watch};
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::StreamExt;
 
-use action_messages::{ActionResult, ActionStage, ActionState, DirectoryInfo};
+use action_messages::{ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo};
 use cache_lookup_scheduler::CacheLookupScheduler;
 use common::DigestInfo;
 use error::{Error, ResultExt};
@@ -143,6 +143,23 @@ mod cache_lookup_scheduler_tests {
             context.cache_scheduler.add_action(skip_cache_action),
             context.mock_scheduler.expect_add_action(Ok(forward_watch_channel_rx))
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_existing_action_call_passed() -> Result<(), Error> {
+        let context = make_cache_scheduler()?;
+        let action_name = ActionInfoHashKey {
+            instance_name: "instance".to_string(),
+            digest: DigestInfo::new([8; 32], 1),
+            salt: 1000,
+        };
+        let (actual_result, actual_action_name) = join!(
+            context.cache_scheduler.find_existing_action(&action_name),
+            context.mock_scheduler.expect_find_existing_action(None),
+        );
+        assert_eq!(true, actual_result.is_none());
+        assert_eq!(action_name, actual_action_name);
         Ok(())
     }
 }
