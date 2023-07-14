@@ -18,7 +18,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::{stream::unfold, Stream};
+use futures::{stream::unfold, Future, Stream};
 use parking_lot::Mutex;
 use proto::google::bytestream::{
     byte_stream_server::ByteStream, byte_stream_server::ByteStreamServer as Server, QueryWriteStatusRequest,
@@ -34,12 +34,6 @@ use grpc_store::GrpcStore;
 use resource_info::ResourceInfo;
 use store::{Store, StoreManager, UploadSizeInfo};
 use write_request_stream_wrapper::WriteRequestStreamWrapper;
-
-struct ReaderState {
-    max_bytes_per_stream: usize,
-    rx: DropCloserReadHalf,
-    reading_future: tokio::task::JoinHandle<Result<(), Error>>,
-}
 
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
 
@@ -77,14 +71,14 @@ impl ByteStreamServer {
             usize::try_from(read_request.read_limit).err_tip(|| "read_limit has is not convertible to usize")?;
         let resource_info = ResourceInfo::new(&read_request.resource_name)?;
         let instance_name = resource_info.instance_name;
-        let store_clone = self
+        let store = self
             .stores
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
             .clone();
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store_clone.clone().as_any();
+        let any_store = store.clone().as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             let stream = grpc_store.read(Request::new(read_request)).await?.into_inner();
@@ -95,59 +89,70 @@ impl ByteStreamServer {
 
         let (tx, rx) = buf_channel::make_buf_channel_pair();
 
-        let reading_future = tokio::spawn(async move {
-            let read_limit = if read_limit != 0 { Some(read_limit) } else { None };
-            Pin::new(store_clone.as_ref())
-                .get_part(digest, tx, read_request.read_offset as usize, read_limit)
-                .await
-                .err_tip(|| "Error retrieving data from store")
-        });
+        struct ReaderState {
+            max_bytes_per_stream: usize,
+            rx: DropCloserReadHalf,
+            maybe_get_part_result: Option<Result<(), Error>>,
+            get_part_fut: Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>,
+        }
+
+        let read_limit = if read_limit != 0 { Some(read_limit) } else { None };
 
         // This allows us to call a destructor when the the object is dropped.
         let state = Some(ReaderState {
             rx,
             max_bytes_per_stream: self.max_bytes_per_stream,
-            reading_future,
+            maybe_get_part_result: None,
+            get_part_fut: store.get_part_arc(digest, tx, read_request.read_offset as usize, read_limit),
         });
 
         Ok(Response::new(Box::pin(unfold(state, move |state| async {
             let mut state = state?; // If None our stream is done.
-
-            let read_result = state
-                .rx
-                .take(state.max_bytes_per_stream)
-                .await
-                .err_tip(|| "Error reading data from underlying store");
-            match read_result {
-                Ok(bytes) => {
-                    if bytes.is_empty() {
-                        // EOF.
-                        return Some((Ok(ReadResponse { ..Default::default() }), None));
-                    }
-                    if bytes.len() > state.max_bytes_per_stream {
-                        let err = make_err!(Code::Internal, "Returned store size was larger than read size");
-                        return Some((Err(err.into()), None));
-                    }
-                    let response = ReadResponse { data: bytes };
-                    log::debug!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: {:?}", response);
-                    Some((Ok(response), Some(state)))
-                }
-                Err(mut e) => {
-                    // We may need to propagate the error from reading the data through first.
-                    // For example, the NotFound error will come through `reading_future`, and
-                    // will not be present in `e`, but we need to ensure we pass NotFound error
-                    // code or the client won't know why it failed.
-                    if let Ok(Err(err)) = state.reading_future.await {
-                        e = err.merge(e);
-                    }
-                    if e.code == Code::NotFound {
-                        // Trim the error code. Not Found is quite common and we don't want to send a large
-                        // error (debug) message for something that is common. We resize to just the last
-                        // message as it will be the most relevant.
-                        e.messages.resize_with(1, || "".to_string());
-                    }
-                    log::debug!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: Error {:?}", e);
-                    Some((Err(e.into()), None))
+            loop {
+                tokio::select! {
+                    read_result = state.rx.take(state.max_bytes_per_stream) => {
+                        match read_result {
+                            Ok(bytes) => {
+                                if bytes.is_empty() {
+                                    // EOF.
+                                    return Some((Ok(ReadResponse { ..Default::default() }), None));
+                                }
+                                if bytes.len() > state.max_bytes_per_stream {
+                                    let err = make_err!(Code::Internal, "Returned store size was larger than read size");
+                                    return Some((Err(err.into()), None));
+                                }
+                                let response = ReadResponse { data: bytes };
+                                log::debug!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: {:?}", response);
+                                return Some((Ok(response), Some(state)))
+                            }
+                            Err(mut e) => {
+                                // We may need to propagate the error from reading the data through first.
+                                // For example, the NotFound error will come through `get_part_fut`, and
+                                // will not be present in `e`, but we need to ensure we pass NotFound error
+                                // code or the client won't know why it failed.
+                                let get_part_result = if let Some(result) = state.maybe_get_part_result {
+                                    result
+                                } else {
+                                    state.get_part_fut.await
+                                };
+                                if let Err(err) = get_part_result {
+                                    e = err.merge(e);
+                                }
+                                if e.code == Code::NotFound {
+                                    // Trim the error code. Not Found is quite common and we don't want to send a large
+                                    // error (debug) message for something that is common. We resize to just the last
+                                    // message as it will be the most relevant.
+                                    e.messages.resize_with(1, || "".to_string());
+                                }
+                                log::debug!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: Error {:?}", e);
+                                return Some((Err(e.into()), None))
+                            }
+                        }
+                    },
+                    result = Pin::new(&mut state.get_part_fut) => {
+                        state.maybe_get_part_result = Some(result);
+                        state.get_part_fut = Box::pin(futures::future::pending());
+                    },
                 }
             }
         }))))
