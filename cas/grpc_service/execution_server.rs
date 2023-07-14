@@ -17,13 +17,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use futures::{Stream, StreamExt};
+use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
 use rand::{thread_rng, Rng};
+use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
 
 use ac_utils::get_and_decode_digest;
-use action_messages::{ActionInfo, ActionInfoHashKey, DEFAULT_EXECUTION_PRIORITY};
+use action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use common::{log, DigestInfo};
 use config::cas_server::{ExecutionConfig, InstanceName};
 use error::{make_input_err, Error, ResultExt};
@@ -163,6 +164,14 @@ impl ExecutionServer {
         Server::new(self)
     }
 
+    fn to_execute_stream(receiver: watch::Receiver<Arc<ActionState>>) -> Response<ExecuteStream> {
+        let receiver_stream = Box::pin(WatchStream::new(receiver).map(|action_update| {
+            log::info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
+            Ok(action_update.as_ref().clone().into())
+        }));
+        tonic::Response::new(receiver_stream)
+    }
+
     async fn inner_execute(&self, request: Request<ExecuteRequest>) -> Result<Response<ExecuteStream>, Error> {
         let execute_req = request.into_inner();
         let instance_name = execute_req.instance_name;
@@ -197,11 +206,41 @@ impl ExecutionServer {
             .await
             .err_tip(|| "Failed to schedule task")?;
 
-        let receiver_stream = Box::pin(WatchStream::new(rx).map(|action_update| {
-            log::info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
-            Ok(action_update.as_ref().clone().into())
-        }));
-        Ok(tonic::Response::new(receiver_stream))
+        Ok(Self::to_execute_stream(rx))
+    }
+
+    async fn filter_actions<'a, Fut, F, G, R, S>(&'a self, operation: F, mut filter: G) -> Result<S, Status>
+    where
+        F: FnMut(&'a InstanceInfo) -> Fut,
+        G: FnMut(R) -> Option<S>,
+        Fut: Future<Output = R>,
+    {
+        // Very innefficient having to search through all instances, however
+        // the protobuf spec doesn't state that the instance_name can be
+        // retrieved from the path.
+        let mut result_stream = self
+            .instance_infos
+            .values()
+            .map(operation)
+            .collect::<FuturesUnordered<_>>();
+        while let Some(result) = result_stream.next().await {
+            if let Some(result) = filter(result) {
+                return Ok(result);
+            }
+        }
+        Err(Status::not_found("Failed to find existing task"))
+    }
+
+    async fn inner_wait_execution(
+        &self,
+        request: Request<WaitExecutionRequest>,
+    ) -> Result<Response<ExecuteStream>, Status> {
+        let name = request.into_inner().name;
+        self.filter_actions(
+            |instance_info| instance_info.scheduler.find_existing_action(&name),
+            |result| result.map(Self::to_execute_stream),
+        )
+        .await
     }
 }
 
@@ -227,14 +266,11 @@ impl Execution for ExecutionServer {
         resp
     }
 
-    type WaitExecutionStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + Sync + 'static>>;
-    async fn wait_execution(
-        &self,
-        request: Request<WaitExecutionRequest>,
-    ) -> Result<Response<Self::WaitExecutionStream>, Status> {
-        use stdext::function_name;
-        let output = format!("{} not yet implemented", function_name!());
-        println!("{:?}", request);
-        Err(Status::unimplemented(output))
+    type WaitExecutionStream = ExecuteStream;
+    async fn wait_execution(&self, request: Request<WaitExecutionRequest>) -> Result<Response<ExecuteStream>, Status> {
+        self.inner_wait_execution(request)
+            .await
+            .err_tip(|| "Failed on wait_execution() command")
+            .map_err(|e| e.into())
     }
 }
