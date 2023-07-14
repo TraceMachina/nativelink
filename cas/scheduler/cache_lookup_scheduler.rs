@@ -12,26 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
+use tokio::select;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::Request;
 
 use ac_utils::get_and_decode_digest;
-use action_messages::{ActionInfo, ActionResult, ActionStage, ActionState};
+use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState};
 use common::DigestInfo;
 use error::Error;
 use grpc_store::GrpcStore;
+use parking_lot::{Mutex, MutexGuard};
 use platform_property_manager::PlatformPropertyManager;
 use proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, FindMissingBlobsRequest, GetActionResultRequest,
 };
 use scheduler::ActionScheduler;
 use store::Store;
+
+/// Actions that are having their cache checked or failed cache lookup and are
+/// being forwarded upstream.  Missing the skip_cache_check actions which are
+/// forwarded directly.
+type CheckActions = HashMap<ActionInfoHashKey, Arc<watch::Sender<Arc<ActionState>>>>;
 
 pub struct CacheLookupScheduler {
     /// A reference to the CAS which is used to validate all the outputs of a
@@ -42,6 +50,8 @@ pub struct CacheLookupScheduler {
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
     action_scheduler: Arc<dyn ActionScheduler>,
+    /// Actions that are currently performing a CacheCheck.
+    cache_check_actions: Arc<Mutex<CheckActions>>,
 }
 
 async fn get_action_from_store(
@@ -112,6 +122,21 @@ async fn validate_outputs_exist(
     }
 }
 
+fn subscribe_to_existing_action(
+    cache_check_actions: &MutexGuard<CheckActions>,
+    unique_qualifier: &ActionInfoHashKey,
+) -> Option<watch::Receiver<Arc<ActionState>>> {
+    cache_check_actions.get(unique_qualifier).map(|tx| {
+        let current_value = tx.borrow();
+        // Subscribe marks the current value as seen, so we have to
+        // re-send it to all receivers.
+        // TODO: Fix this when fixed upstream tokio-rs/tokio#5871
+        let rx = tx.subscribe();
+        let _ = tx.send(current_value.clone());
+        rx
+    })
+}
+
 impl CacheLookupScheduler {
     pub fn new(
         cas_store: Arc<dyn Store>,
@@ -122,6 +147,7 @@ impl CacheLookupScheduler {
             cas_store,
             ac_store,
             action_scheduler,
+            cache_check_actions: Default::default(),
         })
     }
 }
@@ -142,11 +168,22 @@ impl ActionScheduler for CacheLookupScheduler {
             stage: ActionStage::CacheCheck,
         });
         let (tx, rx) = watch::channel(current_state.clone());
+        let tx = Arc::new(tx);
+        {
+            let mut cache_check_actions = self.cache_check_actions.lock();
+            // Check this isn't a duplicate request first.
+            if let Some(rx) = subscribe_to_existing_action(&cache_check_actions, &action_info.unique_qualifier) {
+                return Ok(rx);
+            }
+            cache_check_actions.insert(action_info.unique_qualifier.clone(), tx.clone());
+        }
         let ac_store = self.ac_store.clone();
         let cas_store = self.cas_store.clone();
         let action_scheduler = self.action_scheduler.clone();
+        let cache_check_actions = self.cache_check_actions.clone();
         tokio::spawn(async move {
             let instance_name = action_info.instance_name().clone();
+            let unique_qualifier = action_info.unique_qualifier.clone();
             if let Some(proto_action_result) =
                 get_action_from_store(ac_store, current_state.action_digest(), instance_name.clone()).await
             {
@@ -154,24 +191,48 @@ impl ActionScheduler for CacheLookupScheduler {
                     // Found in the cache, return the result immediately.
                     Arc::make_mut(&mut current_state).stage = ActionStage::CompletedFromCache(proto_action_result);
                     let _ = tx.send(current_state);
+                    cache_check_actions.lock().remove(&unique_qualifier);
                     return;
                 }
             }
             // Not in cache, forward to upstream and proxy state.
-            let mut watch_stream = match action_scheduler.add_action(action_info).await {
-                Ok(rx) => WatchStream::new(rx),
+            match action_scheduler.add_action(action_info).await {
+                Ok(rx) => {
+                    let mut watch_stream = WatchStream::new(rx);
+                    loop {
+                        select!(
+                            Some(action_state) = watch_stream.next() => {
+                                if tx.send(action_state).is_err() {
+                                    break;
+                                }
+                            }
+                            _ = tx.closed() => {
+                                break;
+                            }
+                        )
+                    }
+                }
                 Err(err) => {
                     Arc::make_mut(&mut current_state).stage = ActionStage::Error((err, ActionResult::default()));
                     let _ = tx.send(current_state);
-                    return;
-                }
-            };
-            while let Some(action_state) = watch_stream.next().await {
-                if tx.send(action_state).is_err() {
-                    break;
                 }
             }
+            cache_check_actions.lock().remove(&unique_qualifier);
         });
         Ok(rx)
+    }
+
+    async fn find_existing_action(
+        &self,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Option<watch::Receiver<Arc<ActionState>>> {
+        {
+            let cache_check_actions = self.cache_check_actions.lock();
+            if let Some(rx) = subscribe_to_existing_action(&cache_check_actions, unique_qualifier) {
+                return Some(rx);
+            }
+        }
+        // Cache skipped may be in the upstream scheduler.
+        self.action_scheduler.find_existing_action(unique_qualifier).await
     }
 }
