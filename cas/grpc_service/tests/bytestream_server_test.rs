@@ -17,7 +17,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use bytestream_server::ByteStreamServer;
-use futures::{pin_mut, poll, task::Poll};
 use maplit::hashmap;
 use tokio::task::yield_now;
 use tonic::Request;
@@ -280,14 +279,8 @@ pub mod read_tests {
         yield_now().await;
         {
             let result_fut = read_stream.next();
-            pin_mut!(result_fut);
 
-            let result = if let Poll::Ready(r) = poll!(result_fut) {
-                r
-            } else {
-                None
-            };
-            let result = result.err_tip(|| "Expected result to be ready")?;
+            let result = result_fut.await.err_tip(|| "Expected result to be ready")?;
             let expected_err_str = concat!(
                 "status: NotFound, message: \"Hash 0123456789abcdef000000000000000000000000000000000123456789abcdef ",
                 "not found\", details: [], metadata: MetadataMap { headers: {} }",
