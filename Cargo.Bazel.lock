@@ -1,5 +1,5 @@
 {
-  "checksum": "4f921e8c24fd74362f4fa660db203c02dfdc564ae44a23e8d4526d28aab7aafb",
+  "checksum": "5fb139361c531ebf8263b94f2cf9d4ac159c5ae3616a08fc92e6e0089a8c6c19",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -189,6 +189,42 @@
         "version": "1.0.2"
       },
       "license": "Unlicense OR MIT"
+    },
+    "allocator-api2 0.2.16": {
+      "name": "allocator-api2",
+      "version": "0.2.16",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/allocator-api2/0.2.16/download",
+          "sha256": "0942ffc6dcaadf03badf6e6a2d0228460359d5e34b57ccdc720b7382dfbd5ec5"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "allocator_api2",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "allocator_api2",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "alloc"
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "0.2.16"
+      },
+      "license": "MIT OR Apache-2.0"
     },
     "android-tzdata 0.1.1": {
       "name": "android-tzdata",
@@ -2489,6 +2525,10 @@
               "target": "futures"
             },
             {
+              "id": "hashbrown 0.14.0",
+              "target": "hashbrown"
+            },
+            {
               "id": "hex 0.4.3",
               "target": "hex"
             },
@@ -4109,6 +4149,58 @@
         },
         "edition": "2021",
         "version": "0.13.2"
+      },
+      "license": "MIT OR Apache-2.0"
+    },
+    "hashbrown 0.14.0": {
+      "name": "hashbrown",
+      "version": "0.14.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/hashbrown/0.14.0/download",
+          "sha256": "2c6201b9ff9fd90a5a3bac2e56a830d0caa509576f0e503818ee82c181b3437a"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "hashbrown",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "hashbrown",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "ahash",
+            "allocator-api2",
+            "default",
+            "inline-more"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "ahash 0.8.3",
+              "target": "ahash"
+            },
+            {
+              "id": "allocator-api2 0.2.16",
+              "target": "allocator_api2"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.14.0"
       },
       "license": "MIT OR Apache-2.0"
     },
