@@ -19,11 +19,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::{Stream, StreamExt};
 use rand::{thread_rng, Rng};
+use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
 
 use ac_utils::get_and_decode_digest;
-use action_messages::{ActionInfo, ActionInfoHashKey, DEFAULT_EXECUTION_PRIORITY};
+use action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use common::{log, DigestInfo};
 use config::cas_server::{ExecutionConfig, InstanceName};
 use error::{make_input_err, Error, ResultExt};
@@ -163,6 +164,14 @@ impl ExecutionServer {
         Server::new(self)
     }
 
+    fn to_execute_stream(receiver: watch::Receiver<Arc<ActionState>>) -> Response<ExecuteStream> {
+        let receiver_stream = Box::pin(WatchStream::new(receiver).map(|action_update| {
+            log::info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
+            Ok(action_update.as_ref().clone().into())
+        }));
+        tonic::Response::new(receiver_stream)
+    }
+
     async fn inner_execute(&self, request: Request<ExecuteRequest>) -> Result<Response<ExecuteStream>, Error> {
         let execute_req = request.into_inner();
         let instance_name = execute_req.instance_name;
@@ -194,11 +203,22 @@ impl ExecutionServer {
             .await
             .err_tip(|| "Failed to schedule task")?;
 
-        let receiver_stream = Box::pin(WatchStream::new(rx).map(|action_update| {
-            log::info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
-            Ok(action_update.as_ref().clone().into())
-        }));
-        Ok(tonic::Response::new(receiver_stream))
+        Ok(Self::to_execute_stream(rx))
+    }
+
+    async fn inner_wait_execution(
+        &self,
+        request: Request<WaitExecutionRequest>,
+    ) -> Result<Response<ExecuteStream>, Status> {
+        let unique_qualifier = ActionInfoHashKey::try_from(request.into_inner().name.as_str())
+            .err_tip(|| "Decoding operation name into ActionInfoHashKey")?;
+        let Some(instance_info) = self.instance_infos.get(&unique_qualifier.instance_name) else {
+            return Err(Status::not_found(format!("No scheduler with the instance name {}", unique_qualifier.instance_name)));
+        };
+        let Some(rx) = instance_info.scheduler.find_existing_action(&unique_qualifier).await else {
+            return Err(Status::not_found("Failed to find existing task"));
+        };
+        Ok(Self::to_execute_stream(rx))
     }
 }
 
@@ -224,14 +244,11 @@ impl Execution for ExecutionServer {
         resp
     }
 
-    type WaitExecutionStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + Sync + 'static>>;
-    async fn wait_execution(
-        &self,
-        request: Request<WaitExecutionRequest>,
-    ) -> Result<Response<Self::WaitExecutionStream>, Status> {
-        use stdext::function_name;
-        let output = format!("{} not yet implemented", function_name!());
-        println!("{:?}", request);
-        Err(Status::unimplemented(output))
+    type WaitExecutionStream = ExecuteStream;
+    async fn wait_execution(&self, request: Request<WaitExecutionRequest>) -> Result<Response<ExecuteStream>, Status> {
+        self.inner_wait_execution(request)
+            .await
+            .err_tip(|| "Failed on wait_execution() command")
+            .map_err(|e| e.into())
     }
 }
