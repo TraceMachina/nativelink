@@ -16,10 +16,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::BytesMut;
 use futures::{stream::unfold, Stream};
+use prost::Message;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
 use uuid::Uuid;
 
+use ac_utils::ESTIMATED_DIGEST_SIZE;
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::{log, DigestInfo};
 use error::{error_if, make_input_err, Error, ResultExt};
@@ -45,6 +48,7 @@ pub struct GrpcStore {
     cas_client: ContentAddressableStorageClient<transport::Channel>,
     bytestream_client: ByteStreamClient<transport::Channel>,
     ac_client: ActionCacheClient<transport::Channel>,
+    store_type: config::stores::StoreType,
 }
 
 impl GrpcStore {
@@ -71,6 +75,7 @@ impl GrpcStore {
             cas_client: ContentAddressableStorageClient::new(conn.clone()),
             bytestream_client: ByteStreamClient::new(conn.clone()),
             ac_client: ActionCacheClient::new(conn),
+            store_type: config.store_type,
         })
     }
 
@@ -78,6 +83,11 @@ impl GrpcStore {
         &self,
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Error> {
+        error_if!(
+            matches!(self.store_type, config::stores::StoreType::ac),
+            "CAS operation on AC store"
+        );
+
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         let mut client = self.cas_client.clone();
@@ -91,6 +101,11 @@ impl GrpcStore {
         &self,
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
+        error_if!(
+            matches!(self.store_type, config::stores::StoreType::ac),
+            "CAS operation on AC store"
+        );
+
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         let mut client = self.cas_client.clone();
@@ -104,6 +119,11 @@ impl GrpcStore {
         &self,
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Error> {
+        error_if!(
+            matches!(self.store_type, config::stores::StoreType::ac),
+            "CAS operation on AC store"
+        );
+
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         let mut client = self.cas_client.clone();
@@ -117,6 +137,11 @@ impl GrpcStore {
         &self,
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Streaming<GetTreeResponse>>, Error> {
+        error_if!(
+            matches!(self.store_type, config::stores::StoreType::ac),
+            "CAS operation on AC store"
+        );
+
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         let mut client = self.cas_client.clone();
@@ -130,6 +155,11 @@ impl GrpcStore {
         &self,
         grpc_request: impl IntoRequest<ReadRequest>,
     ) -> Result<Response<Streaming<ReadResponse>>, Error> {
+        error_if!(
+            matches!(self.store_type, config::stores::StoreType::ac),
+            "CAS operation on AC store"
+        );
+
         let mut request = grpc_request.into_request().into_inner();
 
         // `resource_name` pattern is: "{instance_name}/blobs/{hash}/{size}".
@@ -155,6 +185,11 @@ impl GrpcStore {
         T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
         E: Into<Error> + 'static,
     {
+        error_if!(
+            matches!(self.store_type, config::stores::StoreType::ac),
+            "CAS operation on AC store"
+        );
+
         let mut client = self.bytestream_client.clone();
 
         let error = Arc::new(Mutex::new(None));
@@ -206,6 +241,11 @@ impl GrpcStore {
         &self,
         grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Error> {
+        error_if!(
+            matches!(self.store_type, config::stores::StoreType::ac),
+            "CAS operation on AC store"
+        );
+
         let mut request = grpc_request.into_inner();
 
         // `resource_name` pattern is: "{instance_name}/uploads/{uuid}/blobs/{hash}/{size}".
@@ -250,6 +290,71 @@ impl GrpcStore {
             .await
             .err_tip(|| "in GrpcStore::update_action_result")
     }
+
+    async fn get_action_result_from_digest(&self, digest: DigestInfo) -> Result<Response<ActionResult>, Error> {
+        let action_result_request = GetActionResultRequest {
+            instance_name: self.instance_name.clone(),
+            action_digest: Some(digest.into()),
+            inline_stdout: false,
+            inline_stderr: false,
+            inline_output_files: Vec::new(),
+        };
+        self.get_action_result(Request::new(action_result_request)).await
+    }
+
+    async fn get_action_result_as_part(
+        &self,
+        digest: DigestInfo,
+        mut writer: DropCloserWriteHalf,
+        offset: usize,
+        length: Option<usize>,
+    ) -> Result<(), Error> {
+        let action_result = self
+            .get_action_result_from_digest(digest)
+            .await
+            .map(|response| response.into_inner())
+            .ok()
+            .err_tip(|| "Action result not found")?;
+        // TODO: Would be create to avoid all the encoding and decoding in this
+        //       file, however there's no way to currently get raw bytes from a
+        //       generated prost request unfortunately.
+        let mut value = BytesMut::new();
+        action_result
+            .encode(&mut value)
+            .err_tip(|| "Could not encode upstream action result")?;
+
+        let default_len = value.len() - offset;
+        let length = length.unwrap_or(default_len).min(default_len);
+        if length > 0 {
+            writer
+                .send(value.freeze().slice(offset..(offset + length)))
+                .await
+                .err_tip(|| "Failed to write data in grpc store")?;
+        }
+        writer
+            .send_eof()
+            .await
+            .err_tip(|| "Failed to write EOF in grpc store get_action_result_as_part")?;
+        Ok(())
+    }
+
+    async fn update_action_result_from_bytes(
+        &self,
+        digest: DigestInfo,
+        reader: DropCloserReadHalf,
+    ) -> Result<(), Error> {
+        let action_result = ActionResult::decode(reader.collect_all_with_size_hint(ESTIMATED_DIGEST_SIZE).await?)
+            .err_tip(|| "Failed to decode ActionResult in update_action_result_from_bytes")?;
+        let update_action_request = UpdateActionResultRequest {
+            instance_name: self.instance_name.clone(),
+            action_digest: Some(digest.into()),
+            action_result: Some(action_result),
+            results_cache_policy: None,
+        };
+        self.update_action_result(Request::new(update_action_request))
+            .await
+            .map(|_| ())
+    }
 }
 
 #[async_trait]
@@ -257,6 +362,11 @@ impl StoreTrait for GrpcStore {
     // NOTE: This function can only be safely used on CAS stores. AC stores may return a size that
     // is incorrect.
     async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+        if matches!(self.store_type, config::stores::StoreType::ac) {
+            // The length of an AC is incorrect, so we don't figure out the length, just return 1.
+            return self.get_action_result_from_digest(digest).await.map(|_| Some(1));
+        }
+
         let digest_size =
             usize::try_from(digest.size_bytes).err_tip(|| "GrpcStore digest size cannot be converted to usize")?;
         let missing_blobs_response = self
@@ -278,6 +388,10 @@ impl StoreTrait for GrpcStore {
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        if matches!(self.store_type, config::stores::StoreType::ac) {
+            return self.update_action_result_from_bytes(digest, reader).await;
+        }
+
         let mut buf = Uuid::encode_buffer();
         let resource_name = format!(
             "{}/uploads/{}/blobs/{}/{}",
@@ -345,6 +459,10 @@ impl StoreTrait for GrpcStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        if matches!(self.store_type, config::stores::StoreType::ac) {
+            return self.get_action_result_as_part(digest, writer, offset, length).await;
+        }
+
         let resource_name = format!("{}/blobs/{}/{}", &self.instance_name, digest.str(), digest.size_bytes,);
 
         let mut stream = self

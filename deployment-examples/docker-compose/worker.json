@@ -4,7 +4,16 @@
       // Note: This file is used to test GRPC store.
       "grpc": {
         "instance_name": "main",
-        "endpoints": ["grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"]
+        "endpoints": ["grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"],
+        "store_type": "CAS"
+      }
+    },
+    "GRPC_LOCAL_AC_STORE": {
+      // Note: This file is used to test GRPC store.
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": ["grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"],
+        "store_type": "AC"
       }
     },
     "WORKER_FAST_SLOW_STORE": {
@@ -33,7 +42,7 @@
         "uri": "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
       },
       "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
-      "ac_store": "GRPC_LOCAL_STORE",
+      "ac_store": "GRPC_LOCAL_AC_STORE",
       "work_directory": "~/.cache/turbo-cache/work",
       "platform_properties": {
         "cpu_count": {
