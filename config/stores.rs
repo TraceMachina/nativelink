@@ -388,6 +388,15 @@ pub struct S3Store {
     pub additional_max_concurrent_requests: usize,
 }
 
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
+pub enum StoreType {
+    /// The store is content addressable storage.
+    #[default]
+    CAS,
+    /// The store is an action cache.
+    AC,
+}
+
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct GrpcStore {
     /// Instance name for GRPC calls. Proxy calls will have the instance_name changed to this.
@@ -397,6 +406,10 @@ pub struct GrpcStore {
     /// The endpoint of the grpc connection.
     #[serde(default)]
     pub endpoints: Vec<String>,
+
+    /// The type of the upstream store, this ensures that the correct server calls are made.
+    #[serde(default)]
+    pub store_type: StoreType,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
