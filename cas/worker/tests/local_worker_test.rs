@@ -42,6 +42,8 @@ use proto::com::github::allada::turbo_cache::remote_execution::{
     UpdateForWorker,
 };
 
+const INSTANCE_NAME: &str = "foo";
+
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
 /// not set.
 fn make_temp_path(data: &str) -> String {
@@ -198,7 +200,6 @@ mod local_worker_tests {
 
         let action_digest = DigestInfo::new([3u8; 32], 10);
         let action_info = ActionInfo {
-            instance_name: "foo".to_string(),
             command_digest: DigestInfo::new([1u8; 32], 10),
             input_root_digest: DigestInfo::new([2u8; 32], 10),
             timeout: Duration::from_secs(1),
@@ -207,6 +208,7 @@ mod local_worker_tests {
             load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
+                instance_name: INSTANCE_NAME.to_string(),
                 digest: action_digest,
                 salt: SALT,
             },
@@ -278,6 +280,7 @@ mod local_worker_tests {
             execution_response,
             ExecuteResult {
                 worker_id: expected_worker_id,
+                instance_name: INSTANCE_NAME.to_string(),
                 action_digest: Some(action_digest.into()),
                 salt: SALT,
                 result: Some(execute_result::Result::ExecuteResponse(
@@ -412,7 +415,6 @@ mod local_worker_tests {
         const SALT: u64 = 1000;
         let action_digest = DigestInfo::new([3u8; 32], 10);
         let action_info = ActionInfo {
-            instance_name: "foo".to_string(),
             command_digest: DigestInfo::new([1u8; 32], 10),
             input_root_digest: DigestInfo::new([2u8; 32], 10),
             timeout: Duration::from_secs(1),
@@ -421,6 +423,7 @@ mod local_worker_tests {
             load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
+                instance_name: INSTANCE_NAME.to_string(),
                 digest: action_digest,
                 salt: SALT,
             },
@@ -452,6 +455,7 @@ mod local_worker_tests {
             execution_response,
             ExecuteResult {
                 worker_id: expected_worker_id,
+                instance_name: INSTANCE_NAME.to_string(),
                 action_digest: Some(action_digest.into()),
                 salt: SALT,
                 result: Some(execute_result::Result::InternalError(

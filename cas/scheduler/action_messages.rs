@@ -14,6 +14,7 @@
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -45,6 +46,8 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 /// it's hashing functions.
 #[derive(Debug, Clone)]
 pub struct ActionInfoHashKey {
+    /// Name of instance group this action belongs to.
+    pub instance_name: String,
     /// Digest of the underlying `Action`.
     pub digest: DigestInfo,
     /// Salt that can be filled with a random number to ensure no `ActionInfo` will be a match
@@ -57,11 +60,46 @@ impl ActionInfoHashKey {
     /// Utility function used to make a unique hash of the digest including the salt.
     pub fn get_hash(&self) -> [u8; 32] {
         Sha256::new()
+            .chain(&self.instance_name)
             .chain(self.digest.packed_hash)
             .chain(self.digest.size_bytes.to_le_bytes())
             .chain(self.salt.to_le_bytes())
             .finalize()
             .into()
+    }
+
+    /// Returns the salt used for cache busting/hashing.
+    #[inline]
+    pub fn action_name(&self) -> String {
+        format!("{}/{}/{:X}", self.instance_name, self.digest.str(), self.salt)
+    }
+}
+
+impl TryFrom<&str> for ActionInfoHashKey {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let (instance_name, other) = value
+            .split_once('/')
+            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
+        let (digest_hash, other) = other
+            .split_once('-')
+            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
+        let (digest_size, salt) = other
+            .split_once('/')
+            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
+        let digest = DigestInfo::try_new(
+            digest_hash,
+            digest_size
+                .parse::<u64>()
+                .err_tip(|| "Expected digest size to be a number for ActionInfoHashKey")?,
+        )?;
+        let salt = u64::from_str_radix(salt, 16).err_tip(|| "Expected salt to be a hex string")?;
+        Ok(Self {
+            instance_name: instance_name.to_string(),
+            digest,
+            salt,
+        })
     }
 }
 
@@ -72,8 +110,6 @@ impl ActionInfoHashKey {
 /// except for the salt field.
 #[derive(Clone, Debug)]
 pub struct ActionInfo {
-    /// Instance name used to send the request.
-    pub instance_name: String,
     /// Digest of the underlying `Command`.
     pub command_digest: DigestInfo,
     /// Digest of the underlying `Directory`.
@@ -105,6 +141,11 @@ pub struct ActionInfo {
 }
 
 impl ActionInfo {
+    #[inline]
+    pub const fn instance_name(&self) -> &String {
+        &self.unique_qualifier.instance_name
+    }
+
     /// Returns the underlying digest of the `Action`.
     #[inline]
     pub const fn digest(&self) -> &DigestInfo {
@@ -125,7 +166,6 @@ impl ActionInfo {
         queued_timestamp: SystemTime,
     ) -> Result<Self, Error> {
         Ok(Self {
-            instance_name: execute_request.instance_name,
             command_digest: action
                 .command_digest
                 .err_tip(|| "Expected command_digest to exist on Action")?
@@ -144,6 +184,7 @@ impl ActionInfo {
             load_timestamp,
             insert_timestamp: queued_timestamp,
             unique_qualifier: ActionInfoHashKey {
+                instance_name: execute_request.instance_name,
                 digest: execute_request
                     .action_digest
                     .err_tip(|| "Expected action_digest to exist on ExecuteRequest")?
@@ -159,7 +200,7 @@ impl From<ActionInfo> for ExecuteRequest {
     fn from(val: ActionInfo) -> Self {
         let digest = val.digest().into();
         Self {
-            instance_name: val.instance_name,
+            instance_name: val.unique_qualifier.instance_name,
             action_digest: Some(digest),
             skip_cache_lookup: true,    // The worker should never cache lookup.
             execution_policy: None,     // Not used in the worker.
@@ -762,9 +803,23 @@ impl TryFrom<Operation> for ActionState {
             }
         };
 
+        let unique_qualifier = if let Ok(v) = operation.name.as_str().try_into() {
+            v
+        } else {
+            // This branch might happen in a case where we are forwarding an operation from
+            // one remote execution system to another that does not use our operation name
+            // format (ie: very unlikely, but possible).
+            let mut hasher = DefaultHasher::new();
+            operation.name.hash(&mut hasher);
+            ActionInfoHashKey {
+                instance_name: "UNKNOWN_INSTANCE_NAME_INOPERATION_CONVERSION".to_string(),
+                digest: action_digest,
+                salt: hasher.finish(),
+            }
+        };
+
         Ok(Self {
-            name: operation.name,
-            action_digest,
+            unique_qualifier,
             stage,
         })
     }
@@ -774,9 +829,15 @@ impl TryFrom<Operation> for ActionState {
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
 #[derive(PartialEq, Debug, Clone)]
 pub struct ActionState {
-    pub name: String,
-    pub action_digest: DigestInfo,
     pub stage: ActionStage,
+    pub unique_qualifier: ActionInfoHashKey,
+}
+
+impl ActionState {
+    #[inline]
+    pub fn action_digest(&self) -> &DigestInfo {
+        &self.unique_qualifier.digest
+    }
 }
 
 impl From<ActionState> for Operation {
@@ -793,14 +854,14 @@ impl From<ActionState> for Operation {
 
         let metadata = ExecuteOperationMetadata {
             stage,
-            action_digest: Some((&val.action_digest).into()),
+            action_digest: Some((&val.unique_qualifier.digest).into()),
             // TODO(blaise.bruer) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
         };
 
         Self {
-            name: val.name,
+            name: val.unique_qualifier.action_name(),
             metadata: Some(Any {
                 type_url: "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata".to_string(),
                 value: metadata.encode_to_vec(),
