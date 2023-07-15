@@ -143,7 +143,7 @@ mod async_fixed_buffer_tests {
 
         tx.write_all(&[255u8; 4]).await?;
 
-        let mut read_buffer = vec![0u8; 5];
+        let mut read_buffer = [0u8; 5];
         let read_fut = rx.read_exact(&mut read_buffer[..]);
         pin_mut!(read_fut);
 
@@ -180,7 +180,7 @@ mod async_fixed_buffer_tests {
         let raw_fixed_buffer = AsyncFixedBuf::new(vec![0u8; 32].into_boxed_slice());
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
-        let write_buffer = vec![0u8; 2];
+        let write_buffer = [0u8; 2];
         tx.write_all(&write_buffer[..])
             .await
             .err_tip(|| "Failed to write_all")?;
@@ -202,7 +202,7 @@ mod async_fixed_buffer_tests {
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
         let write_fut = async move {
-            let write_buffer = vec![0u8; 2];
+            let write_buffer = [0u8; 2];
             tx.write_all(&write_buffer[..])
                 .await
                 .err_tip(|| "Failed to write_all")?;
@@ -210,7 +210,7 @@ mod async_fixed_buffer_tests {
         };
         pin_mut!(write_fut);
 
-        let mut read_buffer = vec![0u8; 1];
+        let mut read_buffer = [0u8; 1];
 
         assert!(poll!(&mut write_fut).is_pending(), "Expecting to be pending");
         assert_eq!(
