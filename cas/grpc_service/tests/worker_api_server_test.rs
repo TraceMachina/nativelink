@@ -251,9 +251,9 @@ pub mod execution_response_tests {
 
         const SALT: u64 = 5;
         let action_digest = DigestInfo::new([7u8; 32], 123);
+        let instance_name = "instance_name".to_string();
 
         let action_info = ActionInfo {
-            instance_name: "instance_name".to_string(),
             command_digest: DigestInfo::new([0u8; 32], 0),
             input_root_digest: DigestInfo::new([0u8; 32], 0),
             timeout: Duration::MAX,
@@ -264,15 +264,13 @@ pub mod execution_response_tests {
             load_timestamp: make_system_time(0),
             insert_timestamp: make_system_time(0),
             unique_qualifier: ActionInfoHashKey {
+                instance_name: instance_name.clone(),
                 digest: action_digest,
                 salt: SALT,
             },
             skip_cache_lookup: true,
         };
-        let mut client_action_state_receiver = test_context
-            .scheduler
-            .add_action("name".to_string(), action_info)
-            .await?;
+        let mut client_action_state_receiver = test_context.scheduler.add_action(action_info).await?;
 
         let mut server_logs = HashMap::new();
         server_logs.insert(
@@ -283,6 +281,7 @@ pub mod execution_response_tests {
             },
         );
         let result = ExecuteResult {
+            instance_name,
             worker_id: test_context.worker_id.to_string(),
             action_digest: Some(action_digest.into()),
             salt: SALT,

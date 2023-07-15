@@ -55,6 +55,10 @@ pub struct ExecuteResult {
     /// / ID of the worker making the request.
     #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
+    /// / The `instance_name` this task was initially assigned to. This is set by the client
+    /// / that initially sent the job as part of the BRE protocol.
+    #[prost(string, tag = "6")]
+    pub instance_name: ::prost::alloc::string::String,
     /// / The original execution digest request for this response. The scheduler knows what it
     /// / should be, but we do safety checks to ensure it really is the request we expected.
     #[prost(message, optional, tag = "2")]

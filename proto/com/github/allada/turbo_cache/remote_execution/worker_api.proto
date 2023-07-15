@@ -95,6 +95,10 @@ message ExecuteResult {
     /// ID of the worker making the request.
     string worker_id = 1;
 
+    /// The `instance_name` this task was initially assigned to. This is set by the client
+    /// that initially sent the job as part of the BRE protocol.
+    string instance_name = 6;
+
     /// The original execution digest request for this response. The scheduler knows what it
     /// should be, but we do safety checks to ensure it really is the request we expected.
     build.bazel.remote.execution.v2.Digest action_digest = 2;
@@ -117,7 +121,7 @@ message ExecuteResult {
         google.rpc.Status internal_error = 5;
     }
 
-    reserved 6; // NextId.
+    reserved 7; // NextId.
 }
 
 /// Result sent back from the server when a node connects.

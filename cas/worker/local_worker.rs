@@ -166,6 +166,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         Update::StartAction(start_execute) => {
                             let add_future_channel = add_future_channel.clone();
                             let mut grpc_client = self.grpc_client.clone();
+                            let maybe_instance_name = start_execute.execute_request.as_ref().map(|v| v.instance_name.clone());
                             let salt = start_execute.salt;
                             let worker_id = self.worker_id.clone();
                             let action_digest = start_execute.execute_request.as_ref().and_then(|v| v.action_digest.clone());
@@ -193,6 +194,8 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
                             let running_actions_manager = self.running_actions_manager.clone();
                             let make_publish_future = move |res: Result<ActionResult, Error>| async move {
+                                let instance_name = maybe_instance_name
+                                    .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
                                 match res {
                                     Ok(action_result) => {
                                         // Save in the action cache before notifying the scheduler that we've completed.
@@ -204,6 +207,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         grpc_client.execution_response(
                                             ExecuteResult{
                                                 worker_id,
+                                                instance_name,
                                                 action_digest,
                                                 salt,
                                                 result: Some(execute_result::Result::ExecuteResponse(ActionStage::Completed(action_result).into())),
@@ -215,6 +219,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                     Err(e) => {
                                         grpc_client.execution_response(ExecuteResult{
                                             worker_id,
+                                            instance_name,
                                             action_digest,
                                             salt,
                                             result: Some(execute_result::Result::InternalError(e.into())),

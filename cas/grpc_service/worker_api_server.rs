@@ -181,6 +181,7 @@ impl WorkerApiServer {
             .err_tip(|| "Expected action_digest to exist")?
             .try_into()?;
         let action_info_hash_key = ActionInfoHashKey {
+            instance_name: execute_result.instance_name,
             digest: action_digest,
             salt: execute_result.salt,
         };

@@ -40,8 +40,11 @@ mod action_messages_tests {
     #[tokio::test]
     async fn action_state_any_url_test() -> Result<(), Error> {
         let operation: Operation = ActionState {
-            name: "test".to_string(),
-            action_digest: DigestInfo::new([1u8; 32], 5),
+            unique_qualifier: ActionInfoHashKey {
+                instance_name: "foo_instance".to_string(),
+                digest: DigestInfo::new([1u8; 32], 5),
+                salt: 0,
+            },
             stage: ActionStage::Unknown,
         }
         .into();
@@ -94,7 +97,6 @@ mod action_messages_tests {
         const INSTANCE_NAME: &str = "foobar_instance_name";
 
         let high_priority_action = Arc::new(ActionInfo {
-            instance_name: INSTANCE_NAME.to_string(),
             command_digest: DigestInfo::new([0u8; 32], 0),
             input_root_digest: DigestInfo::new([0u8; 32], 0),
             timeout: Duration::MAX,
@@ -105,13 +107,13 @@ mod action_messages_tests {
             load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
+                instance_name: INSTANCE_NAME.to_string(),
                 digest: DigestInfo::new([0u8; 32], 0),
                 salt: 0,
             },
             skip_cache_lookup: true,
         });
         let lowest_priority_action = Arc::new(ActionInfo {
-            instance_name: INSTANCE_NAME.to_string(),
             command_digest: DigestInfo::new([0u8; 32], 0),
             input_root_digest: DigestInfo::new([0u8; 32], 0),
             timeout: Duration::MAX,
@@ -122,6 +124,7 @@ mod action_messages_tests {
             load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
+                instance_name: INSTANCE_NAME.to_string(),
                 digest: DigestInfo::new([1u8; 32], 0),
                 salt: 0,
             },
@@ -144,7 +147,6 @@ mod action_messages_tests {
         const INSTANCE_NAME: &str = "foobar_instance_name";
 
         let first_action = Arc::new(ActionInfo {
-            instance_name: INSTANCE_NAME.to_string(),
             command_digest: DigestInfo::new([0u8; 32], 0),
             input_root_digest: DigestInfo::new([0u8; 32], 0),
             timeout: Duration::MAX,
@@ -155,13 +157,13 @@ mod action_messages_tests {
             load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
+                instance_name: INSTANCE_NAME.to_string(),
                 digest: DigestInfo::new([0u8; 32], 0),
                 salt: 0,
             },
             skip_cache_lookup: true,
         });
         let current_action = Arc::new(ActionInfo {
-            instance_name: INSTANCE_NAME.to_string(),
             command_digest: DigestInfo::new([0u8; 32], 0),
             input_root_digest: DigestInfo::new([0u8; 32], 0),
             timeout: Duration::MAX,
@@ -172,6 +174,7 @@ mod action_messages_tests {
             load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: make_system_time(0),
             unique_qualifier: ActionInfoHashKey {
+                instance_name: INSTANCE_NAME.to_string(),
                 digest: DigestInfo::new([1u8; 32], 0),
                 salt: 0,
             },

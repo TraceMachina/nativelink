@@ -80,15 +80,9 @@ mod cache_lookup_scheduler_tests {
         let action_result = ProtoActionResult::from(ActionResult::default());
         let store_pin = Pin::new(context.ac_store.as_ref());
         store_pin
-            .update_oneshot(
-                action_info.unique_qualifier.digest,
-                action_result.encode_to_vec().into(),
-            )
+            .update_oneshot(*action_info.digest(), action_result.encode_to_vec().into())
             .await?;
-        let watch_channel = context
-            .cache_scheduler
-            .add_action("name".to_string(), action_info.clone())
-            .await?;
+        let watch_channel = context.cache_scheduler.add_action(action_info.clone()).await?;
         let mut watch_stream = WatchStream::new(watch_channel);
         if watch_stream.next().await.err_tip(|| "Getting initial state")?.stage != ActionStage::CacheCheck {
             panic!("Not performing a cache check");
@@ -97,7 +91,7 @@ mod cache_lookup_scheduler_tests {
         let ActionStage::CompletedFromCache(proto_action_result) = cached_action_state.stage.clone() else {
             panic!("Did not complete from cache");
         };
-        assert_eq!(action_info.unique_qualifier.digest, cached_action_state.action_digest);
+        assert_eq!(action_info.digest(), cached_action_state.action_digest());
         assert_eq!(action_result, proto_action_result);
         Ok(())
     }
@@ -117,18 +111,14 @@ mod cache_lookup_scheduler_tests {
         let action_result = ProtoActionResult::from(action_result);
         let store_pin = Pin::new(context.ac_store.as_ref());
         store_pin
-            .update_oneshot(
-                action_info.unique_qualifier.digest,
-                action_result.encode_to_vec().into(),
-            )
+            .update_oneshot(*action_info.digest(), action_result.encode_to_vec().into())
             .await?;
         let (_forward_watch_channel_tx, forward_watch_channel_rx) = watch::channel(Arc::new(ActionState {
-            name: "".to_string(),
-            action_digest: action_info.unique_qualifier.digest,
+            unique_qualifier: action_info.unique_qualifier.clone(),
             stage: ActionStage::Queued,
         }));
         let _ = join!(
-            context.cache_scheduler.add_action("name".to_string(), action_info),
+            context.cache_scheduler.add_action(action_info),
             context.mock_scheduler.expect_add_action(Ok(forward_watch_channel_rx))
         );
         Ok(())
@@ -141,22 +131,16 @@ mod cache_lookup_scheduler_tests {
         let action_result = ProtoActionResult::from(ActionResult::default());
         let store_pin = Pin::new(context.ac_store.as_ref());
         store_pin
-            .update_oneshot(
-                action_info.unique_qualifier.digest,
-                action_result.encode_to_vec().into(),
-            )
+            .update_oneshot(*action_info.digest(), action_result.encode_to_vec().into())
             .await?;
         let (_forward_watch_channel_tx, forward_watch_channel_rx) = watch::channel(Arc::new(ActionState {
-            name: "".to_string(),
-            action_digest: action_info.unique_qualifier.digest,
+            unique_qualifier: action_info.unique_qualifier.clone(),
             stage: ActionStage::Queued,
         }));
         let mut skip_cache_action = action_info.clone();
         skip_cache_action.skip_cache_lookup = true;
         let _ = join!(
-            context
-                .cache_scheduler
-                .add_action("name".to_string(), skip_cache_action),
+            context.cache_scheduler.add_action(skip_cache_action),
             context.mock_scheduler.expect_add_action(Ok(forward_watch_channel_rx))
         );
         Ok(())

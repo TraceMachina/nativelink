@@ -106,7 +106,6 @@ impl InstanceInfo {
         }
 
         Ok(ActionInfo {
-            instance_name,
             command_digest,
             input_root_digest,
             timeout,
@@ -115,6 +114,7 @@ impl InstanceInfo {
             load_timestamp: UNIX_EPOCH,
             insert_timestamp: SystemTime::now(),
             unique_qualifier: ActionInfoHashKey {
+                instance_name,
                 digest: action_digest,
                 salt: if action.do_not_cache {
                     thread_rng().gen::<u64>()
@@ -188,12 +188,9 @@ impl ExecutionServer {
             .build_action_info(instance_name, digest, &action, priority, execute_req.skip_cache_lookup)
             .await?;
 
-        // Warning: This name is ignored by GrpcScheduler, so don't use it for
-        //          operations mapping here...
-        let name = format!("{:X}", thread_rng().gen::<u128>());
         let rx = instance_info
             .scheduler
-            .add_action(name, action_info)
+            .add_action(action_info)
             .await
             .err_tip(|| "Failed to schedule task")?;
 

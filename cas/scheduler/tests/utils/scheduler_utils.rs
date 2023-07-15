@@ -23,7 +23,6 @@ pub const INSTANCE_NAME: &str = "foobar_instance_name";
 
 pub fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
     ActionInfo {
-        instance_name: INSTANCE_NAME.to_string(),
         command_digest: DigestInfo::new([0u8; 32], 0),
         input_root_digest: DigestInfo::new([0u8; 32], 0),
         timeout: Duration::MAX,
@@ -34,6 +33,7 @@ pub fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
         load_timestamp: UNIX_EPOCH,
         insert_timestamp,
         unique_qualifier: ActionInfoHashKey {
+            instance_name: INSTANCE_NAME.to_string(),
             digest: DigestInfo::new([0u8; 32], 0),
             salt: 0,
         },
