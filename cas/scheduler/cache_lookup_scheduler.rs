@@ -132,20 +132,14 @@ impl ActionScheduler for CacheLookupScheduler {
         self.action_scheduler.get_platform_property_manager(instance_name).await
     }
 
-    async fn add_action(
-        &self,
-        name: String,
-        action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         if action_info.skip_cache_lookup {
             // Cache lookup skipped, forward to the upstream.
-            return self.action_scheduler.add_action(name, action_info).await;
+            return self.action_scheduler.add_action(action_info).await;
         }
-        let action_digest = action_info.digest();
         let mut current_state = Arc::new(ActionState {
-            name: name.clone(),
+            unique_qualifier: action_info.unique_qualifier,
             stage: ActionStage::CacheCheck,
-            action_digest: *action_digest,
         });
         let (tx, rx) = watch::channel(current_state.clone());
         let ac_store = self.ac_store.clone();
@@ -154,7 +148,7 @@ impl ActionScheduler for CacheLookupScheduler {
         tokio::spawn(async move {
             let instance_name = action_info.instance_name.to_string();
             if let Some(proto_action_result) =
-                get_action_from_store(ac_store, &current_state.action_digest, instance_name.clone()).await
+                get_action_from_store(ac_store, current_state.action_digest(), instance_name.clone()).await
             {
                 if validate_outputs_exist(cas_store, &proto_action_result, instance_name).await {
                     // Found in the cache, return the result immediately.
@@ -164,7 +158,7 @@ impl ActionScheduler for CacheLookupScheduler {
                 }
             }
             // Not in cache, forward to upstream and proxy state.
-            let mut watch_stream = match action_scheduler.add_action(name, action_info).await {
+            let mut watch_stream = match action_scheduler.add_action(action_info).await {
                 Ok(rx) => WatchStream::new(rx),
                 Err(err) => {
                     Arc::make_mut(&mut current_state).stage = ActionStage::Error((err, ActionResult::default()));

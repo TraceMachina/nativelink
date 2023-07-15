@@ -25,7 +25,7 @@ use scheduler::ActionScheduler;
 #[allow(clippy::large_enum_variant)]
 enum ActionSchedulerCalls {
     GetPlatformPropertyManager(String),
-    AddAction((String, ActionInfo)),
+    AddAction(ActionInfo),
 }
 
 enum ActionSchedulerReturns {
@@ -77,10 +77,7 @@ impl MockActionScheduler {
         req
     }
 
-    pub async fn expect_add_action(
-        &self,
-        result: Result<watch::Receiver<Arc<ActionState>>, Error>,
-    ) -> (String, ActionInfo) {
+    pub async fn expect_add_action(&self, result: Result<watch::Receiver<Arc<ActionState>>, Error>) -> ActionInfo {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::AddAction(req) = rx_call_lock
             .recv()
@@ -111,13 +108,9 @@ impl ActionScheduler for MockActionScheduler {
         }
     }
 
-    async fn add_action(
-        &self,
-        name: String,
-        action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         self.tx_call
-            .send(ActionSchedulerCalls::AddAction((name, action_info)))
+            .send(ActionSchedulerCalls::AddAction(action_info))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock.recv().await.expect("Could not receive msg in mpsc") {

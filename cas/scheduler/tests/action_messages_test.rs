@@ -40,8 +40,10 @@ mod action_messages_tests {
     #[tokio::test]
     async fn action_state_any_url_test() -> Result<(), Error> {
         let operation: Operation = ActionState {
-            name: "test".to_string(),
-            action_digest: DigestInfo::new([1u8; 32], 5),
+            unique_qualifier: ActionInfoHashKey {
+                digest: DigestInfo::new([1u8; 32], 5),
+                salt: 0,
+            },
             stage: ActionStage::Unknown,
         }
         .into();

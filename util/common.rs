@@ -67,7 +67,7 @@ impl DigestInfo {
         hex::encode(self.packed_hash)
     }
 
-    pub fn empty_digest() -> DigestInfo {
+    pub const fn empty_digest() -> DigestInfo {
         DigestInfo {
             size_bytes: 0,
             // Magic hash of a sha256 of empty string.

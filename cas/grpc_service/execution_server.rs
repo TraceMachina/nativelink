@@ -188,12 +188,9 @@ impl ExecutionServer {
             .build_action_info(instance_name, digest, &action, priority, execute_req.skip_cache_lookup)
             .await?;
 
-        // Warning: This name is ignored by GrpcScheduler, so don't use it for
-        //          operations mapping here...
-        let name = format!("{:X}", thread_rng().gen::<u128>());
         let rx = instance_info
             .scheduler
-            .add_action(name, action_info)
+            .add_action(action_info)
             .await
             .err_tip(|| "Failed to schedule task")?;
 

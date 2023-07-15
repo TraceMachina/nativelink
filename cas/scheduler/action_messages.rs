@@ -14,6 +14,7 @@
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -43,7 +44,7 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 /// Since the hashing only needs the digest and salt we can just alias them here
 /// and point the original `ActionInfo` structs to reference these structs for
 /// it's hashing functions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ActionInfoHashKey {
     /// Digest of the underlying `Action`.
     pub digest: DigestInfo,
@@ -62,6 +63,31 @@ impl ActionInfoHashKey {
             .chain(self.salt.to_le_bytes())
             .finalize()
             .into()
+    }
+
+    /// Returns the salt used for cache busting/hashing.
+    #[inline]
+    pub fn action_name(&self) -> String {
+        format!("{}-{:X}", self.digest.str(), self.salt)
+    }
+}
+
+impl TryFrom<String> for ActionInfoHashKey {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let mut parts = value.split('-');
+        let digest = DigestInfo::try_new(
+            parts.next().err_tip(|| "No digest hash")?,
+            parts
+                .next()
+                .err_tip(|| "No digest size")?
+                .parse::<u64>()
+                .err_tip(|| "Expected digest size to be a number")?,
+        )?;
+        let salt = u64::from_str_radix(parts.next().err_tip(|| "No salt part")?, 16)
+            .err_tip(|| "Expected salt to be a hex string")?;
+        Ok(Self { digest, salt })
     }
 }
 
@@ -762,9 +788,19 @@ impl TryFrom<Operation> for ActionState {
             }
         };
 
+        let unique_qualifier = if let Ok(v) = operation.name.clone().try_into() {
+            v
+        } else {
+            let mut hasher = DefaultHasher::new();
+            operation.name.hash(&mut hasher);
+            ActionInfoHashKey {
+                digest: action_digest,
+                salt: hasher.finish(),
+            }
+        };
+
         Ok(Self {
-            name: operation.name,
-            action_digest,
+            unique_qualifier,
             stage,
         })
     }
@@ -774,9 +810,15 @@ impl TryFrom<Operation> for ActionState {
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
 #[derive(PartialEq, Debug, Clone)]
 pub struct ActionState {
-    pub name: String,
-    pub action_digest: DigestInfo,
     pub stage: ActionStage,
+    pub unique_qualifier: ActionInfoHashKey,
+}
+
+impl ActionState {
+    #[inline]
+    pub fn action_digest(&self) -> &DigestInfo {
+        &self.unique_qualifier.digest
+    }
 }
 
 impl From<ActionState> for Operation {
@@ -793,14 +835,14 @@ impl From<ActionState> for Operation {
 
         let metadata = ExecuteOperationMetadata {
             stage,
-            action_digest: Some((&val.action_digest).into()),
+            action_digest: Some((&val.unique_qualifier.digest).into()),
             // TODO(blaise.bruer) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
         };
 
         Self {
-            name: val.name,
+            name: val.unique_qualifier.action_name(),
             metadata: Some(Any {
                 type_url: "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata".to_string(),
                 value: metadata.encode_to_vec(),

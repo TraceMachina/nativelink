@@ -269,10 +269,7 @@ pub mod execution_response_tests {
             },
             skip_cache_lookup: true,
         };
-        let mut client_action_state_receiver = test_context
-            .scheduler
-            .add_action("name".to_string(), action_info)
-            .await?;
+        let mut client_action_state_receiver = test_context.scheduler.add_action(action_info).await?;
 
         let mut server_logs = HashMap::new();
         server_logs.insert(

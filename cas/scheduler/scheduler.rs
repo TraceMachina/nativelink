@@ -30,11 +30,7 @@ pub trait ActionScheduler: Sync + Send + Unpin {
     async fn get_platform_property_manager(&self, instance_name: &str) -> Result<Arc<PlatformPropertyManager>, Error>;
 
     /// Adds an action to the scheduler for remote execution.
-    async fn add_action(
-        &self,
-        name: String,
-        action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
+    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
 }
 
 /// WorkerScheduler interface is responsible for interactions between the scheduler
