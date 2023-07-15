@@ -35,3 +35,16 @@ test --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
 # This will make rustfmt and clippy only run on `bazel test`.
 test --output_groups=+rustfmt_checks
 test --output_groups=+clippy_checks
+
+# Optional nightly toolchain. Mostly useful for running sanitizers.
+build:nightly --@rules_rust//rust/toolchain/channel=nightly
+
+# AddressSanitizer to detect memory leaks.
+build:asan --config=nightly -c dbg
+build:asan --@rules_rust//:extra_rustc_flags=-Zsanitizer=address
+
+# ThreadSanitizer to detect data races. Tests under tsan shouldn't be cached
+# since they tend to produce irreproducible false negatives.
+build:tsan --config=nightly -c dbg
+build:tsan --@rules_rust//:extra_rustc_flags=-Zsanitizer=thread
+test:tsan --cache_test_results=no
