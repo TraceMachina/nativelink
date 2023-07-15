@@ -257,6 +257,7 @@ rust_library(
         "//cas:__subpackages__",
     ],
     deps = [
+        ":ac_utils",
         ":traits",
         "//config",
         "//proto",
@@ -264,8 +265,10 @@ rust_library(
         "//util:common",
         "//util:error",
         "//util:write_request_stream_wrapper",
+        "@crate_index//:bytes",
         "@crate_index//:futures",
         "@crate_index//:parking_lot",
+        "@crate_index//:prost",
         "@crate_index//:shellexpand",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
