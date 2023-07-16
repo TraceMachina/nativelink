@@ -15,11 +15,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::Router;
 use clap::Parser;
-use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
+use futures::future::{ok, select_all, BoxFuture, OptionFuture, TryFutureExt};
+use hyper::service::make_service_fn;
 use runfiles::Runfiles;
 use tonic::codec::CompressionEncoding;
-use tonic::transport::Server;
+use tonic::transport::Server as TonicServer;
+use tower::util::ServiceExt;
 
 use ac_server::AcServer;
 use bytestream_server::ByteStreamServer;
@@ -153,13 +156,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     for server_cfg in cfg.servers {
-        let server = Server::builder();
         let services = server_cfg.services.ok_or("'services' must be configured")?;
 
-        let server = server
-            // TODO(allada) This is only used so we can get 200 status codes to know if our service
-            // is running.
-            .accept_http1(true)
+        let tonic_services = TonicServer::builder()
             .add_optional_service(
                 services
                     .ac
@@ -312,11 +311,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .err_tip(|| "Could not create WorkerApi service")?,
             );
 
+        let svc = Router::new()
+            // This is the default service that executes if no other endpoint matches.
+            .fallback_service(tonic_services.into_service().map_err(|e| panic!("{e}")));
+
         let addr = server_cfg.listen_address.parse()?;
+        let service = hyper::Server::bind(&addr);
+
+        let svc = axum::Router::new()
+            .fallback_service(svc.map_err(|e| panic!("{e}")))
+            // This is a generic endpoint used to check if the server is up.
+            .route_service("/status", axum::routing::get(move || async move {
+                "Ok".to_string()
+            }));
+
         futures.push(Box::pin(
             tokio::spawn(
-                server
-                    .serve(addr)
+                service
+                    .serve(make_service_fn(move |_conn| ok::<_, Error>(svc.clone())))
                     .map_err(|e| make_err!(Code::Internal, "Failed running service : {:?}", e)),
             )
             .map_ok_or_else(|e| Err(e.into()), |v| v),

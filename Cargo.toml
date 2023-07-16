@@ -56,6 +56,9 @@ uuid = { version = "1.4.0", features = ["v4"] }
 shlex = "1.1.0"
 relative-path = "1.8.0"
 parking_lot = "0.12.1"
+hyper = "0.14.27"
+axum = "0.6.18"
+tower = "0.4.13"
 
 [dev-dependencies]
 stdext = "0.3.1"
@@ -65,5 +68,4 @@ pretty_assertions = "1.4.0"
 maplit = "1.0.2"
 mock_instant = "0.3.1"
 rusoto_mock = "=0.48.0"
-hyper = "0.14.27"
 ctor = "0.2.3"
