@@ -1,4 +1,7 @@
-exports_files([".rustfmt.toml"])
+exports_files([
+    ".rustfmt.toml",
+    ".tsanignore",
+])
 
 genrule(
     name = "dummy_test_sh",

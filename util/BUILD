@@ -145,6 +145,7 @@ rust_library(
 rust_test(
     name = "resource_info_test",
     srcs = ["tests/resource_info_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":resource_info",
         "@crate_index//:pretty_assertions",
@@ -155,7 +156,10 @@ rust_test(
 rust_test(
     name = "fastcdc_test",
     srcs = ["tests/fastcdc_test.rs"],
-    data = ["tests/data/SekienAkashita.jpg"],
+    data = [
+        "tests/data/SekienAkashita.jpg",
+        "//:.tsanignore",
+    ],
     deps = [
         ":fastcdc",
         "//util:common",
@@ -173,6 +177,7 @@ rust_test(
 rust_test(
     name = "async_fixed_buffer_test",
     srcs = ["tests/async_fixed_buffer_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":async_fixed_buffer",
         ":error",
@@ -185,6 +190,7 @@ rust_test(
 rust_test(
     name = "evicting_map_test",
     srcs = ["tests/evicting_map_test.rs"],
+    data = ["//:.tsanignore"],
     proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":error",
@@ -201,6 +207,7 @@ rust_test(
 rust_test(
     name = "retry_test",
     srcs = ["tests/retry_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":error",
         ":retry",
@@ -213,6 +220,7 @@ rust_test(
 rust_test(
     name = "buf_channel_test",
     srcs = ["tests/buf_channel_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":buf_channel",
         ":error",

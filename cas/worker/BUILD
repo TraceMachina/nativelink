@@ -27,13 +27,13 @@ rust_library(
     srcs = ["running_actions_manager.rs"],
     proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
-        "//config",
         "//cas/scheduler:action_messages",
         "//cas/store",
         "//cas/store:ac_utils",
         "//cas/store:fast_slow_store",
         "//cas/store:filesystem_store",
         "//cas/store:grpc_store",
+        "//config",
         "//proto",
         "//util:common",
         "//util:error",
@@ -127,7 +127,10 @@ rust_library(
 rust_test(
     name = "running_actions_manager_test",
     srcs = ["tests/running_actions_manager_test.rs"],
-    data = ["tests/wrapper_for_test.sh"],
+    data = [
+        "tests/wrapper_for_test.sh",
+        "//:.tsanignore",
+    ],
     deps = [
         ":running_actions_manager",
         "//cas/scheduler:action_messages",
@@ -151,6 +154,7 @@ rust_test(
 rust_test(
     name = "local_worker_test",
     srcs = ["tests/local_worker_test.rs"],
+    data = ["//:.tsanignore"],
     proc_macro_deps = ["@crate_index//:ctor"],
     deps = [
         ":local_worker",

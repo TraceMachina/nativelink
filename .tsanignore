@@ -1,0 +1,2 @@
+# Rust doesn't support this.
+race:std::rt::lang_start_internal

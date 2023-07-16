@@ -276,6 +276,7 @@ rust_library(
 rust_test(
     name = "size_partitioning_store_test",
     srcs = ["tests/size_partitioning_store_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":memory_store",
         ":size_partitioning_store",
@@ -291,6 +292,7 @@ rust_test(
 rust_test(
     name = "ref_store_test",
     srcs = ["tests/ref_store_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":memory_store",
         ":ref_store",
@@ -306,6 +308,7 @@ rust_test(
 rust_test(
     name = "fast_slow_store_test",
     srcs = ["tests/fast_slow_store_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":fast_slow_store",
         ":memory_store",
@@ -322,6 +325,7 @@ rust_test(
 rust_test(
     name = "memory_store_test",
     srcs = ["tests/memory_store_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":memory_store",
         ":traits",
@@ -336,6 +340,7 @@ rust_test(
 rust_test(
     name = "verify_store_test",
     srcs = ["tests/verify_store_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":memory_store",
         ":traits",
@@ -353,6 +358,7 @@ rust_test(
 rust_test(
     name = "s3_store_test",
     srcs = ["tests/s3_store_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":s3_store",
         ":traits",
@@ -374,6 +380,7 @@ rust_test(
 rust_test(
     name = "compression_store_test",
     srcs = ["tests/compression_store_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":compression_store",
         ":memory_store",
@@ -393,6 +400,7 @@ rust_test(
 rust_test(
     name = "dedup_store_test",
     srcs = ["tests/dedup_store_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":dedup_store",
         ":memory_store",
@@ -409,6 +417,8 @@ rust_test(
 rust_test(
     name = "filesystem_store_test",
     srcs = ["tests/filesystem_store_test.rs"],
+    data = ["//:.tsanignore"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":filesystem_store",
         ":traits",
@@ -426,5 +436,4 @@ rust_test(
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
 )

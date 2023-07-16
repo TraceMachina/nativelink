@@ -43,8 +43,13 @@ build:nightly --@rules_rust//rust/toolchain/channel=nightly
 build:asan --config=nightly -c dbg
 build:asan --@rules_rust//:extra_rustc_flags=-Zsanitizer=address
 
-# ThreadSanitizer to detect data races. Tests under tsan shouldn't be cached
-# since they tend to produce irreproducible false negatives.
+# ThreadSanitizer to detect data races.
+#
+# Tests under tsan shouldn't be cached since they tend to produce irreproducible
+# false negatives. Tests in each file need to run in serial and a checks on a
+# few symbols need to be explicitly suppressed.
 build:tsan --config=nightly -c dbg
 build:tsan --@rules_rust//:extra_rustc_flags=-Zsanitizer=thread
 test:tsan --cache_test_results=no
+test:tsan --test_env=RUST_TEST_THREADS=1
+test:tsan --test_env=TSAN_OPTIONS="suppressions=.tsanignore"

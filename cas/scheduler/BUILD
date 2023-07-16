@@ -17,11 +17,11 @@ rust_library(
 rust_library(
     name = "scheduler",
     srcs = ["scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -35,11 +35,11 @@ rust_library(
     name = "mock_scheduler",
     testonly = True,
     srcs = ["tests/utils/mock_scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -53,11 +53,11 @@ rust_library(
     name = "scheduler_utils",
     testonly = True,
     srcs = ["tests/utils/scheduler_utils.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -68,11 +68,11 @@ rust_library(
 rust_library(
     name = "simple_scheduler",
     srcs = ["simple_scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -81,9 +81,9 @@ rust_library(
         "//config",
         "//util:common",
         "//util:error",
-        "@crate_index//:parking_lot",
         "@crate_index//:futures",
         "@crate_index//:lru",
+        "@crate_index//:parking_lot",
         "@crate_index//:tokio",
     ],
 )
@@ -91,11 +91,11 @@ rust_library(
 rust_library(
     name = "cache_lookup_scheduler",
     srcs = ["cache_lookup_scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -109,15 +109,16 @@ rust_library(
         "//util:common",
         "//util:error",
         "@crate_index//:futures",
-        "@crate_index//:tonic",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
+        "@crate_index//:tonic",
     ],
 )
 
 rust_test(
     name = "cache_lookup_scheduler_test",
     srcs = ["tests/cache_lookup_scheduler_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":action_messages",
         ":cache_lookup_scheduler",
@@ -141,11 +142,11 @@ rust_test(
 rust_library(
     name = "grpc_scheduler",
     srcs = ["grpc_scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -218,6 +219,7 @@ rust_library(
 rust_test(
     name = "action_messages_test",
     srcs = ["tests/action_messages_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -232,6 +234,7 @@ rust_test(
 rust_test(
     name = "simple_scheduler_test",
     srcs = ["tests/simple_scheduler_test.rs"],
+    data = ["//:.tsanignore"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",

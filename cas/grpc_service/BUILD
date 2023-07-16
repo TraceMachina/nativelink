@@ -118,6 +118,7 @@ rust_library(
 rust_test(
     name = "worker_api_server_test",
     srcs = ["tests/worker_api_server_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":worker_api_server",
         "//cas/scheduler",
@@ -139,6 +140,7 @@ rust_test(
 rust_test(
     name = "cas_server_test",
     srcs = ["tests/cas_server_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":cas_server",
         "//cas/store",
@@ -157,6 +159,7 @@ rust_test(
 rust_test(
     name = "ac_server_test",
     srcs = ["tests/ac_server_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":ac_server",
         "//cas/store",
@@ -177,6 +180,7 @@ rust_test(
 rust_test(
     name = "bytestream_server_test",
     srcs = ["tests/bytestream_server_test.rs"],
+    data = ["//:.tsanignore"],
     deps = [
         ":bytestream_server",
         "//cas/store",
