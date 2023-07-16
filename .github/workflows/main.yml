@@ -1,6 +1,6 @@
 name: CI
 
-# Controls when the workflow will run
+# Controls when the workflow will run.
 on:
   push:
     branches: [ master ]
@@ -9,7 +9,7 @@ on:
 
 jobs:
   unit-test:
-    # The type of runner that the job will run on
+    # The type of runner that the job will run on.
     runs-on: ubuntu-22.04
     strategy:
       matrix:
@@ -66,3 +66,34 @@ jobs:
 
     - name: Run tests
       run: ./run_integration_tests.sh
+
+  asan-tests:
+    # The type of runner that the job will run on.
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v3.5.3
+      with:
+        fetch-depth: 0
+
+    - uses: docker/setup-buildx-action@v2
+    - uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: ./deployment-examples/docker-compose/Dockerfile
+        build-args: |
+          ADDITIONAL_BAZEL_FLAGS=--config=asan
+        target: builder-externals-built
+        load: true # This brings the build into `docker images` from buildx.
+        tags: allada/turbo-cache:asan-test
+        cache-from: type=gha,scope=main
+        cache-to: type=gha,scope=main,mode=max
+
+    - name: Bazel test
+      run: |
+        docker run \
+          --rm \
+          -e CC=clang \
+          -v $PWD:/root/turbo-cache allada/turbo-cache:asan-test \
+          bazel test \
+            --config=asan \
+            //...

@@ -18,6 +18,8 @@ ARG OS_VERSION=22.04
 ARG OPT_LEVEL=opt
 # Compiler to use.
 ARG CC=clang
+# Additional bazel flags.
+ARG ADDITIONAL_BAZEL_FLAGS=
 
 
 # Builder that contains the OS dependencies.
@@ -90,17 +92,19 @@ FROM builder-with-externals as builder-externals-built
 WORKDIR /root/turbo-cache
 ARG OPT_LEVEL
 ARG CC
+ARG ADDITIONAL_BAZEL_FLAGS
 COPY proto/ proto/
 COPY --from=builder-external-deps /root/external-targets.txt /root/external-targets.txt
-RUN bazel build -c ${OPT_LEVEL} --target_pattern_file=/root/external-targets.txt
+RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} --target_pattern_file=/root/external-targets.txt
 
 
 # Builder to do the remaining build. At this point most of our externals should be built.
 FROM builder-externals-built as builder
 ARG OPT_LEVEL
 ARG CC
+ARG ADDITIONAL_BAZEL_FLAGS
 COPY . .
-RUN bazel build -c ${OPT_LEVEL} //cas && \
+RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} //cas && \
     cp ./bazel-bin/cas/cas /root/turbo-cache-bin
 
 
