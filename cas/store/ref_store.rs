@@ -14,10 +14,10 @@
 
 use std::cell::UnsafeCell;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
+use error::ResultExt;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
@@ -37,12 +37,12 @@ unsafe impl Sync for StoreReference {}
 
 pub struct RefStore {
     ref_store_name: String,
-    store_manager: Arc<StoreManager>,
+    store_manager: Weak<StoreManager>,
     ref_store: StoreReference,
 }
 
 impl RefStore {
-    pub fn new(config: &config::stores::RefStore, store_manager: Arc<StoreManager>) -> Self {
+    pub fn new(config: &config::stores::RefStore, store_manager: Weak<StoreManager>) -> Self {
         RefStore {
             ref_store_name: config.name.clone(),
             store_manager,
@@ -75,7 +75,8 @@ impl RefStore {
             .mux
             .lock()
             .map_err(|e| make_err!(Code::Internal, "Failed to lock mutex in ref_store : {:?}", e))?;
-        if let Some(store) = self.store_manager.get_store(&self.ref_store_name) {
+        let store_manager = self.store_manager.upgrade().err_tip(|| "Store manager is gone")?;
+        if let Some(store) = store_manager.get_store(&self.ref_store_name) {
             unsafe {
                 *ref_store = Some(store.clone());
                 return Ok((*ref_store).as_ref().unwrap());

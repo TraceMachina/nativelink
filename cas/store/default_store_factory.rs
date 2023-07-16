@@ -56,7 +56,7 @@ pub fn store_factory<'a>(backend: &'a StoreConfig, store_manager: &'a Arc<StoreM
                 store_factory(&config.slow, store_manager).await?,
             )),
             StoreConfig::filesystem(config) => Arc::new(<FilesystemStore>::new(config).await?),
-            StoreConfig::ref_store(config) => Arc::new(RefStore::new(config, store_manager.clone())),
+            StoreConfig::ref_store(config) => Arc::new(RefStore::new(config, Arc::downgrade(store_manager))),
             StoreConfig::size_partitioning(config) => Arc::new(SizePartitioningStore::new(
                 config,
                 store_factory(&config.lower_store, store_manager).await?,

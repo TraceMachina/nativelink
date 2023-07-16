@@ -29,7 +29,7 @@ mod ref_store_tests {
 
     const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
-    fn setup_stores() -> (Arc<MemoryStore>, Arc<RefStore>) {
+    fn setup_stores() -> (Arc<StoreManager>, Arc<MemoryStore>, Arc<RefStore>) {
         let store_manager = Arc::new(StoreManager::new());
 
         let memory_store_owned = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
@@ -39,15 +39,15 @@ mod ref_store_tests {
             &config::stores::RefStore {
                 name: "foo".to_string(),
             },
-            store_manager.clone(),
+            Arc::downgrade(&store_manager),
         ));
         store_manager.add_store("bar", ref_store_owned.clone());
-        (memory_store_owned, ref_store_owned)
+        (store_manager, memory_store_owned, ref_store_owned)
     }
 
     #[tokio::test]
     async fn has_test() -> Result<(), Error> {
-        let (memory_store_owned, ref_store_owned) = setup_stores();
+        let (_store_manager, memory_store_owned, ref_store_owned) = setup_stores();
 
         const VALUE1: &str = "13";
         {
@@ -73,7 +73,7 @@ mod ref_store_tests {
 
     #[tokio::test]
     async fn get_test() -> Result<(), Error> {
-        let (memory_store_owned, ref_store_owned) = setup_stores();
+        let (_store_manager, memory_store_owned, ref_store_owned) = setup_stores();
 
         const VALUE1: &str = "13";
         {
@@ -100,7 +100,7 @@ mod ref_store_tests {
 
     #[tokio::test]
     async fn update_test() -> Result<(), Error> {
-        let (memory_store_owned, ref_store_owned) = setup_stores();
+        let (_store_manager, memory_store_owned, ref_store_owned) = setup_stores();
 
         const VALUE1: &str = "13";
         {
