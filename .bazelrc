@@ -47,4 +47,5 @@ build:asan --@rules_rust//:extra_rustc_flags=-Zsanitizer=address
 # since they tend to produce irreproducible false negatives.
 build:tsan --config=nightly -c dbg
 build:tsan --@rules_rust//:extra_rustc_flags=-Zsanitizer=thread
-test:tsan --cache_test_results=no
+build:tsan --cache_test_results=no
+build:tsan --run_under=//tools:tsan.sh
