@@ -16,10 +16,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::join;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
-use error::Error;
+use error::{Error, ResultExt};
 use traits::{StoreTrait, UploadSizeInfo};
 
 pub struct SizePartitioningStore {
@@ -44,11 +45,41 @@ impl SizePartitioningStore {
 
 #[async_trait]
 impl StoreTrait for SizePartitioningStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        if digest.size_bytes < self.size {
-            return Pin::new(self.lower_store.as_ref()).has(digest).await;
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
+        let (lower_digests, upper_digests): (Vec<_>, Vec<_>) = digests
+            .iter()
+            .cloned()
+            .partition(|digest| digest.size_bytes < self.size);
+        let (lower_results, upper_results) = join!(
+            Pin::new(self.lower_store.as_ref()).has_many(&lower_digests),
+            Pin::new(self.upper_store.as_ref()).has_many(&upper_digests),
+        );
+        let mut lower_results = match lower_results {
+            Ok(lower_results) => lower_results.into_iter(),
+            Err(err) => match upper_results {
+                Ok(_) => return Err(err),
+                Err(upper_err) => return Err(err.merge(upper_err)),
+            },
+        };
+        let mut upper_digests = upper_digests.into_iter().peekable();
+        let mut upper_results = upper_results?.into_iter();
+        for (digest, result) in digests.iter().zip(results.iter_mut()) {
+            if Some(digest) == upper_digests.peek() {
+                upper_digests.next();
+                *result = upper_results
+                    .next()
+                    .err_tip(|| "upper_results out of sync with upper_digests")?;
+            } else {
+                *result = lower_results
+                    .next()
+                    .err_tip(|| "lower_results out of sync with lower_digests")?;
+            }
         }
-        Pin::new(self.upper_store.as_ref()).has(digest).await
+        Ok(())
     }
 
     async fn update(

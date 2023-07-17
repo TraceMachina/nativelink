@@ -21,7 +21,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::future::{try_join_all, FutureExt};
-use futures::stream::unfold;
+use futures::stream::{unfold, FuturesUnordered};
+use futures::TryStreamExt;
 use http::status::StatusCode;
 use lazy_static::lazy_static;
 use rand::{rngs::OsRng, Rng};
@@ -184,15 +185,12 @@ impl S3Store {
     fn make_s3_path(&self, digest: &DigestInfo) -> String {
         format!("{}{}-{}", self.key_prefix, digest.str(), digest.size_bytes)
     }
-}
 
-#[async_trait]
-impl StoreTrait for S3Store {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, digest: &DigestInfo) -> Result<Option<usize>, Error> {
         let retry_config = ExponentialBackoff::new(Duration::from_millis(self.retry.delay as u64))
             .map(|d| (self.jitter_fn)(d))
             .take(self.retry.max_retries); // Remember this is number of retries, so will run max_retries + 1.
-        let s3_path = &self.make_s3_path(&digest);
+        let s3_path = &self.make_s3_path(digest);
         self.retrier
             .retry(
                 retry_config,
@@ -237,6 +235,27 @@ impl StoreTrait for S3Store {
                 }),
             )
             .await
+    }
+}
+
+#[async_trait]
+impl StoreTrait for S3Store {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
+        digests
+            .iter()
+            .zip(results.iter_mut())
+            .map(|(digest, result)| async move {
+                *result = self.has(digest).await?;
+                Ok::<_, Error>(())
+            })
+            .collect::<FuturesUnordered<_>>()
+            .try_collect()
+            .await?;
+        Ok(())
     }
 
     async fn update(
