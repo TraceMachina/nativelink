@@ -97,8 +97,12 @@ async fn inner_check_update(
 
 #[async_trait]
 impl StoreTrait for VerifyStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        self.pin_inner().has(digest).await
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
+        self.pin_inner().has_with_results(digests, results).await
     }
 
     async fn update(

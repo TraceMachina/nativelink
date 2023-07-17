@@ -31,7 +31,7 @@ use tokio::task::{JoinError, JoinHandle};
 
 use error::{make_input_err, Error, ResultExt};
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[repr(C)]
 pub struct DigestInfo {
     /// Raw hash in packed form.

@@ -565,8 +565,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
 #[async_trait]
 impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        Ok(self.evicting_map.size_for_key(&digest).await)
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
+        self.evicting_map.sizes_for_keys(digests, results).await;
+        Ok(())
     }
 
     async fn update(
