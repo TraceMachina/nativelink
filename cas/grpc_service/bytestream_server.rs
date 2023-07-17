@@ -230,14 +230,13 @@ impl ByteStreamServer {
     ) -> Result<Response<QueryWriteStatusResponse>, Error> {
         let mut resource_info = ResourceInfo::new(&query_request.resource_name)?;
 
-        let store_clone = self
+        let store = self
             .stores
             .get(resource_info.instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", &resource_info.instance_name))?
-            .clone();
+            .err_tip(|| format!("'instance_name' not configured for '{}'", &resource_info.instance_name))?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store_clone.clone().as_any();
+        let any_store = store.clone().as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store.query_write_status(Request::new(query_request.clone())).await;
@@ -261,11 +260,11 @@ impl ByteStreamServer {
         }
 
         let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
-        let result = tokio::spawn(async move { Pin::new(store_clone.as_ref()).has(digest).await })
+        let result = Pin::new(store.as_ref())
+            .has(digest)
             .await
-            .err_tip(|| "Failed to join spawn")?;
-
-        if result.err_tip(|| "Failed to call .has() on store")?.is_none() {
+            .err_tip(|| "Failed to call .has() on store")?;
+        if result.is_none() {
             return Err(make_err!(Code::NotFound, "{}", "not found"));
         }
         Ok(Response::new(QueryWriteStatusResponse {

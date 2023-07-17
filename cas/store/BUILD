@@ -83,6 +83,7 @@ rust_library(
         "//util:buf_channel",
         "//util:common",
         "//util:error",
+        "@crate_index//:tokio",
     ],
 )
 
@@ -117,6 +118,7 @@ rust_library(
         "//util:error",
         "//util:evicting_map",
         "@crate_index//:bytes",
+        "@crate_index//:futures",
     ],
 )
 
