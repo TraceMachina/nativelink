@@ -67,8 +67,13 @@ impl MemoryStore {
 
 #[async_trait]
 impl StoreTrait for MemoryStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        Ok(self.map.size_for_key(&digest).await)
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
+        self.map.sizes_for_keys(digests, results).await;
+        Ok(())
     }
 
     async fn update(

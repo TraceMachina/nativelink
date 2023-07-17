@@ -81,6 +81,7 @@ rust_library(
         "//config",
         "//util:common",
         "@crate_index//:async-lock",
+        "@crate_index//:futures",
         "@crate_index//:lru",
         "@crate_index//:serde",
     ],

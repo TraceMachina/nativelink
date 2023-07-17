@@ -22,7 +22,7 @@ use bincode::{
     config::{FixintEncoding, WithOtherIntEncoding},
     DefaultOptions, Options,
 };
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use futures::{future::try_join_all, FutureExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -96,10 +96,7 @@ impl DedupStore {
     fn pin_index_store(&self) -> Pin<&dyn StoreTrait> {
         Pin::new(self.index_store.as_ref())
     }
-}
 
-#[async_trait]
-impl StoreTrait for DedupStore {
     async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
         // First we need to load the index that contains where the individual parts actually
         // can be fetched from.
@@ -133,31 +130,47 @@ impl StoreTrait for DedupStore {
             }
         };
 
-        let mut stream = stream::iter(index_entries.entries)
-            .map(move |index_entry| {
-                let content_store = self.content_store.clone();
-                async move {
-                    let digest = DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes);
-                    Pin::new(content_store.as_ref())
-                        .has(digest)
-                        .await
-                        .err_tip(|| "Failed to check .has() on content_store in dedup store")
-                }
-            })
-            .buffer_unordered(self.max_concurrent_fetch_per_get);
-
+        let digests: Vec<DigestInfo> = index_entries
+            .entries
+            .into_iter()
+            .map(|index_entry| DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes))
+            .collect();
         let mut sum = 0;
-        while let Some(result) = stream.next().await {
-            let maybe_size = result?;
-            if let Some(size) = maybe_size {
-                sum += size;
-                continue;
-            }
-            // A part is missing so return None meaning not-found.
-            // This will abort all in-flight queries related to this request.
-            return Ok(None);
+        for size in Pin::new(self.content_store.as_ref()).has_many(&digests).await? {
+            let Some(size) = size else {
+                // A part is missing so return None meaning not-found.
+                // This will abort all in-flight queries related to this request.
+                return Ok(None);
+            };
+            sum += size;
         }
         Ok(Some(sum))
+    }
+}
+
+#[async_trait]
+impl StoreTrait for DedupStore {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
+        digests
+            .iter()
+            .zip(results.iter_mut())
+            .map(|(digest, result)| async move {
+                match self.has(*digest).await {
+                    Ok(maybe_size) => {
+                        *result = maybe_size;
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
+                }
+            })
+            .collect::<FuturesOrdered<_>>()
+            .try_collect()
+            .await?;
+        Ok(())
     }
 
     async fn update(
