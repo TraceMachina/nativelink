@@ -84,13 +84,31 @@ impl FastSlowStore {
 
 #[async_trait]
 impl StoreTrait for FastSlowStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        // TODO(blaise.bruer) Investigate if we should maybe ignore errors here instead of
-        // forwarding the up.
-        if let Some(sz) = self.pin_fast_store().has(digest).await? {
-            return Ok(Some(sz));
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
+        self.pin_fast_store().has_with_results(digests, results).await?;
+        let missing_digests: Vec<DigestInfo> = results
+            .iter()
+            .zip(digests.iter())
+            .filter_map(|(result, digest)| result.map_or_else(|| Some(*digest), |_| None))
+            .collect();
+        if !missing_digests.is_empty() {
+            let mut slow_store_results = self.pin_slow_store().has_many(&missing_digests).await?.into_iter();
+            // We did not change our `result` order and the slow store's results are all the None
+            // entries in `results`. This means we can just iterate over the `results`, find the None
+            // items and put in whatever the next item in the results from `slow_store_results`.
+            for result in results.iter_mut() {
+                if result.is_none() {
+                    *result = slow_store_results
+                        .next()
+                        .err_tip(|| "slow_store_results out of sync with missing_digests")?;
+                }
+            }
         }
-        self.pin_slow_store().has(digest).await
+        Ok(())
     }
 
     async fn update(
@@ -170,16 +188,12 @@ impl StoreTrait for FastSlowStore {
         let sz_result = slow_store
             .has(digest)
             .await
-            .err_tip(|| "Failed to run has() on slow store");
-        let sz = match sz_result {
-            Ok(Some(sz)) => sz,
-            Ok(None) => {
-                return Err(make_err!(
-                    Code::NotFound,
-                    "Object not found in either fast or slow store"
-                ))
-            }
-            Err(err) => return Err(err),
+            .err_tip(|| "Failed to run has() on slow store")?;
+        let Some(sz) = sz_result else {
+            return Err(make_err!(
+                Code::NotFound,
+                "Object not found in either fast or slow store"
+            ));
         };
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
