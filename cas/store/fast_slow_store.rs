@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -55,10 +56,10 @@ impl FastSlowStore {
     pub async fn populate_fast_store(self: Pin<&Self>, digest: DigestInfo) -> Result<(), Error> {
         let maybe_size_info = self
             .pin_fast_store()
-            .has(digest)
+            .has(HashSet::from([digest]))
             .await
             .err_tip(|| "While querying in populate_fast_store")?;
-        if maybe_size_info.is_some() {
+        if !maybe_size_info.is_empty() {
             return Ok(());
         }
         // TODO(blaise.bruer) This is extremely inefficient, since we are just trying
@@ -84,13 +85,18 @@ impl FastSlowStore {
 
 #[async_trait]
 impl StoreTrait for FastSlowStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error> {
         // TODO(blaise.bruer) Investigate if we should maybe ignore errors here instead of
         // forwarding the up.
-        if let Some(sz) = self.pin_fast_store().has(digest).await? {
-            return Ok(Some(sz));
+        let mut fast_store_digests = self.pin_fast_store().has(digests.clone()).await?;
+        let missing_digests: HashSet<DigestInfo> = digests
+            .difference(&fast_store_digests.keys().cloned().collect())
+            .cloned()
+            .collect();
+        if !missing_digests.is_empty() {
+            fast_store_digests.extend(self.pin_slow_store().has(missing_digests).await?);
         }
-        self.pin_slow_store().has(digest).await
+        Ok(fast_store_digests)
     }
 
     async fn update(
@@ -159,7 +165,8 @@ impl StoreTrait for FastSlowStore {
         // forwarding the up.
         let fast_store = self.pin_fast_store();
         let slow_store = self.pin_slow_store();
-        if fast_store.has(digest).await?.is_some() {
+        let digest_set: HashSet<DigestInfo> = HashSet::from([digest]);
+        if !fast_store.has(digest_set.clone()).await?.is_empty() {
             return fast_store.get_part(digest, writer, offset, length).await;
         }
         // We can only copy the data to our fast store if we are copying everything.
@@ -168,18 +175,14 @@ impl StoreTrait for FastSlowStore {
         }
 
         let sz_result = slow_store
-            .has(digest)
+            .has(digest_set)
             .await
-            .err_tip(|| "Failed to run has() on slow store");
-        let sz = match sz_result {
-            Ok(Some(sz)) => sz,
-            Ok(None) => {
-                return Err(make_err!(
-                    Code::NotFound,
-                    "Object not found in either fast or slow store"
-                ))
-            }
-            Err(err) => return Err(err),
+            .err_tip(|| "Failed to run has() on slow store")?;
+        let Some((_digest, sz)) = sz_result.into_iter().next() else {
+            return Err(make_err!(
+                Code::NotFound,
+                "Object not found in either fast or slow store"
+            ));
         };
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();

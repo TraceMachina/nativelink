@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -175,8 +176,11 @@ mod dedup_store_tests {
 
         {
             // Check to ensure we our baseline `.has()` succeeds.
-            let size_info = store_pin.has(digest1).await.err_tip(|| "Failed to run .has")?;
-            assert_eq!(size_info, Some(DATA_SIZE), "Expected sizes to match");
+            let size_info = store_pin
+                .has(HashSet::from([digest1]))
+                .await
+                .err_tip(|| "Failed to run .has")?;
+            assert_eq!(size_info.get(&digest1), Some(&DATA_SIZE), "Expected sizes to match");
         }
         {
             // There will be exactly 10 entries in our content_store based on our random seed data.
@@ -191,13 +195,23 @@ mod dedup_store_tests {
 
             {
                 // Check our recently added entry is still valid.
-                let size_info = store_pin.has(digest2).await.err_tip(|| "Failed to run .has")?;
-                assert_eq!(size_info, Some(DATA2.len()), "Expected sizes to match");
+                let size_info = store_pin
+                    .has(HashSet::from([digest2]))
+                    .await
+                    .err_tip(|| "Failed to run .has")?;
+                assert_eq!(size_info.get(&digest2), Some(&DATA2.len()), "Expected sizes to match");
             }
             {
                 // Check our first added entry is now invalid (because part of it was evicted).
-                let size_info = store_pin.has(digest1).await.err_tip(|| "Failed to run .has")?;
-                assert_eq!(size_info, None, "Expected .has() to return None (not found)");
+                let size_info = store_pin
+                    .has(HashSet::from([digest1]))
+                    .await
+                    .err_tip(|| "Failed to run .has")?;
+                assert_eq!(
+                    size_info.get(&digest1),
+                    None,
+                    "Expected .has() to return None (not found)"
+                );
             }
         }
 
@@ -223,8 +237,16 @@ mod dedup_store_tests {
         let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
         {
-            let size_info = store_pin.has(digest).await.err_tip(|| "Failed to run .has")?;
-            assert_eq!(size_info, None, "Expected None to be returned, got {:?}", size_info);
+            let size_info = store_pin
+                .has(HashSet::from([digest]))
+                .await
+                .err_tip(|| "Failed to run .has")?;
+            assert_eq!(
+                size_info.get(&digest),
+                None,
+                "Expected None to be returned, got {:?}",
+                size_info
+            );
         }
         Ok(())
     }

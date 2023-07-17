@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -52,8 +53,9 @@ async fn check_data<S: StoreTrait>(
     original_data: &Vec<u8>,
     debug_name: &str,
 ) -> Result<(), Error> {
+    let result = check_store.has(HashSet::from([digest])).await?;
     assert!(
-        check_store.has(digest).await?.is_some(),
+        result.get(&digest).is_some(),
         "Expected data to exist in {} store",
         debug_name
     );
@@ -101,9 +103,12 @@ mod fast_slow_store_tests {
         let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
         slow_store.update_oneshot(digest, original_data.clone().into()).await?;
 
-        assert_eq!(fast_slow_store.has(digest).await, Ok(Some(original_data.len())));
-        assert_eq!(fast_store.has(digest).await, Ok(None));
-        assert_eq!(slow_store.has(digest).await, Ok(Some(original_data.len())));
+        let result = fast_slow_store.has(HashSet::from([digest])).await?;
+        assert_eq!(result.get(&digest), Some(&original_data.len()));
+        let result = fast_store.as_ref().has(HashSet::from([digest])).await?;
+        assert_eq!(result.get(&digest), None);
+        let result = slow_store.as_ref().has(HashSet::from([digest])).await?;
+        assert_eq!(result.get(&digest), Some(&original_data.len()));
 
         // This get() request should place the data in fast_store too.
         fast_slow_store.get_part_unchunked(digest, 0, None, None).await?;
@@ -131,7 +136,8 @@ mod fast_slow_store_tests {
 
         // Data should not exist in fast store, but should exist in slow store because
         // it was a partial read.
-        assert_eq!(fast_store.has(digest).await, Ok(None));
+        let result = fast_store.has(HashSet::from([digest])).await?;
+        assert_eq!(result.get(&digest), None);
         check_data(slow_store, digest, &original_data, "slow_store").await?;
 
         Ok(())

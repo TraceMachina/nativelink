@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -53,9 +54,10 @@ mod verify_store_tests {
             "Should have succeeded when verify_size = false, got: {:?}",
             result
         );
+        let found_digests = Pin::new(inner_store.as_ref()).has(HashSet::from([digest])).await?;
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
-            Ok(Some(VALUE1.len())),
+            found_digests.get(&digest),
+            Some(&VALUE1.len()),
             "Expected data to exist in store after update"
         );
         Ok(())
@@ -91,9 +93,10 @@ mod verify_store_tests {
             EXPECTED_ERR,
             err
         );
+        let found_digests = Pin::new(inner_store.as_ref()).has(HashSet::from([digest])).await?;
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
-            Ok(None),
+            found_digests.get(&digest),
+            None,
             "Expected data to not exist in store after update"
         );
         Ok(())
@@ -116,9 +119,10 @@ mod verify_store_tests {
         let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
         let result = store.update_oneshot(digest, VALUE1.into()).await;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
+        let found_digests = Pin::new(inner_store.as_ref()).has(HashSet::from([digest])).await?;
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
-            Ok(Some(VALUE1.len())),
+            found_digests.get(&digest),
+            Some(&VALUE1.len()),
             "Expected data to exist in store after update"
         );
         Ok(())
@@ -150,9 +154,10 @@ mod verify_store_tests {
         tx.send_eof().await?;
         let result = future.await.err_tip(|| "Failed to join spawn future")?;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
+        let found_digests = Pin::new(inner_store.as_ref()).has(HashSet::from([digest])).await?;
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
-            Ok(Some(6)),
+            found_digests.get(&digest),
+            Some(&6),
             "Expected data to exist in store after update"
         );
         Ok(())
@@ -177,9 +182,10 @@ mod verify_store_tests {
         let digest = DigestInfo::try_new(HASH, 3).unwrap();
         let result = store.update_oneshot(digest, VALUE.into()).await;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
+        let found_digests = Pin::new(inner_store.as_ref()).has(HashSet::from([digest])).await?;
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
-            Ok(Some(VALUE.len())),
+            found_digests.get(&digest),
+            Some(&VALUE.len()),
             "Expected data to exist in store after update"
         );
         Ok(())
@@ -212,9 +218,10 @@ mod verify_store_tests {
             expected_err,
             err
         );
+        let found_digests = Pin::new(inner_store.as_ref()).has(HashSet::from([digest])).await?;
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
-            Ok(None),
+            found_digests.get(&digest),
+            None,
             "Expected data to not exist in store after update"
         );
         Ok(())

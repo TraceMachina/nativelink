@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::cell::UnsafeCell;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -91,9 +92,9 @@ impl RefStore {
 
 #[async_trait]
 impl StoreTrait for RefStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error> {
         let store = self.get_store()?;
-        Pin::new(store.as_ref()).has(digest).await
+        Pin::new(store.as_ref()).has(digests).await
     }
 
     async fn update(

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::str::from_utf8;
 use std::time::Duration;
@@ -136,8 +137,13 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = store_pin.has(digest).await;
-        assert_eq!(result, Ok(Some(512)), "Expected to find item, got: {:?}", result);
+        let result = store_pin.has(HashSet::from([digest])).await?;
+        assert_eq!(
+            result.get(&digest),
+            Some(&512),
+            "Expected to find item, got: {:?}",
+            result
+        );
         Ok(())
     }
 
@@ -168,8 +174,13 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = store_pin.has(digest).await;
-        assert_eq!(result, Ok(None), "Expected to not find item, got: {:?}", result);
+        let result = store_pin.has(HashSet::from([digest])).await?;
+        assert_eq!(
+            result.get(&digest),
+            None,
+            "Expected to not find item, got: {:?}",
+            result
+        );
         Ok(())
     }
 
@@ -205,8 +216,13 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = store_pin.has(digest).await;
-        assert_eq!(result, Ok(Some(111)), "Expected to find item, got: {:?}", result);
+        let result = store_pin.has(HashSet::from([digest])).await?;
+        assert_eq!(
+            result.get(&digest),
+            Some(&111),
+            "Expected to find item, got: {:?}",
+            result
+        );
         Ok(())
     }
 

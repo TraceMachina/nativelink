@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,7 +23,7 @@ use async_lock::RwLock;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use filetime::{set_file_atime, FileTime};
-use futures::stream::{StreamExt, TryStreamExt};
+use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use futures::Future;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom, Take};
 use tokio::task::spawn_blocking;
@@ -565,8 +566,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
 #[async_trait]
 impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        Ok(self.evicting_map.size_for_key(&digest).await)
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error> {
+        Ok(digests
+            .into_iter()
+            .map(|digest| async move { self.evicting_map.size_for_key(&digest).await.map(|size| (digest, size)) })
+            .collect::<FuturesUnordered<_>>()
+            .filter_map(|result| async move { result })
+            .collect()
+            .await)
     }
 
     async fn update(

@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::join;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
@@ -44,11 +46,21 @@ impl SizePartitioningStore {
 
 #[async_trait]
 impl StoreTrait for SizePartitioningStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        if digest.size_bytes < self.size {
-            return Pin::new(self.lower_store.as_ref()).has(digest).await;
-        }
-        Pin::new(self.upper_store.as_ref()).has(digest).await
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error> {
+        let (lower_digests, upper_digests) = digests.into_iter().partition(|digest| digest.size_bytes < self.size);
+        let (lower_results, upper_results) = join!(
+            Pin::new(self.lower_store.as_ref()).has(lower_digests),
+            Pin::new(self.upper_store.as_ref()).has(upper_digests),
+        );
+        let mut lower_results = match lower_results {
+            Ok(lower_results) => lower_results,
+            Err(err) => match upper_results {
+                Ok(_) => return Err(err),
+                Err(upper_err) => return Err(err.merge(upper_err)),
+            },
+        };
+        lower_results.extend(upper_results?);
+        Ok(lower_results)
     }
 
     async fn update(

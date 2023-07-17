@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::cmp;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -22,7 +23,7 @@ use bincode::{
     config::{FixintEncoding, WithOtherIntEncoding},
     DefaultOptions, Options,
 };
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, FuturesUnordered, StreamExt, TryStreamExt};
 use futures::{future::try_join_all, FutureExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -96,10 +97,7 @@ impl DedupStore {
     fn pin_index_store(&self) -> Pin<&dyn StoreTrait> {
         Pin::new(self.index_store.as_ref())
     }
-}
 
-#[async_trait]
-impl StoreTrait for DedupStore {
     async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
         // First we need to load the index that contains where the individual parts actually
         // can be fetched from.
@@ -133,31 +131,37 @@ impl StoreTrait for DedupStore {
             }
         };
 
-        let mut stream = stream::iter(index_entries.entries)
-            .map(move |index_entry| {
-                let content_store = self.content_store.clone();
-                async move {
-                    let digest = DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes);
-                    Pin::new(content_store.as_ref())
-                        .has(digest)
-                        .await
-                        .err_tip(|| "Failed to check .has() on content_store in dedup store")
-                }
-            })
-            .buffer_unordered(self.max_concurrent_fetch_per_get);
-
-        let mut sum = 0;
-        while let Some(result) = stream.next().await {
-            let maybe_size = result?;
-            if let Some(size) = maybe_size {
-                sum += size;
-                continue;
-            }
+        let digests: HashSet<DigestInfo> = index_entries
+            .entries
+            .into_iter()
+            .map(|index_entry| DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes))
+            .collect();
+        let part_count = digests.len();
+        let part_sizes = Pin::new(self.content_store.as_ref()).has(digests).await?;
+        if part_sizes.len() != part_count {
             // A part is missing so return None meaning not-found.
             // This will abort all in-flight queries related to this request.
             return Ok(None);
         }
-        Ok(Some(sum))
+        Ok(Some(part_sizes.into_values().sum()))
+    }
+}
+
+#[async_trait]
+impl StoreTrait for DedupStore {
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error> {
+        digests
+            .into_iter()
+            .map(|digest| async move {
+                match self.has(digest).await {
+                    Ok(maybe_size) => maybe_size.map(|size| Ok((digest, size))),
+                    Err(err) => Some(Err(err)),
+                }
+            })
+            .collect::<FuturesUnordered<_>>()
+            .filter_map(|result| async move { result })
+            .try_collect()
+            .await
     }
 
     async fn update(
@@ -187,7 +191,7 @@ impl StoreTrait for DedupStore {
 
                     let content_store_pin = Pin::new(content_store.as_ref());
                     let digest = DigestInfo::new(hash.into(), frame.len() as i64);
-                    if content_store_pin.has(digest).await?.is_some() {
+                    if !content_store_pin.has(HashSet::from([digest])).await?.is_empty() {
                         // If our store has this digest, we don't need to upload it.
                         return Ok(index_entry);
                     }

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -58,12 +59,11 @@ mod ref_store_tests {
         }
         {
             // Now check if we check of ref_store has the data.
-            let has_result = Pin::new(ref_store_owned.as_ref())
-                .has(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?)
-                .await;
+            let digest = DigestInfo::try_new(VALID_HASH1, VALUE1.len())?;
+            let found_digests = Pin::new(ref_store_owned.as_ref()).has(HashSet::from([digest])).await?;
             assert_eq!(
-                has_result,
-                Ok(Some(VALUE1.len())),
+                found_digests.get(&digest),
+                Some(&VALUE1.len()),
                 "Expected ref store to have data in ref store : {}",
                 VALID_HASH1
             );

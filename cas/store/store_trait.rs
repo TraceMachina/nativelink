@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{HashMap, HashSet};
 use std::marker::Send;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -40,7 +41,10 @@ pub enum UploadSizeInfo {
 
 #[async_trait]
 pub trait StoreTrait: Sync + Send + Unpin {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error>;
+    /// Look up a list of digests in the store and return a mapping of the
+    /// digest to the size of the digest if it was in the store.  If it wasn't
+    /// in the store then it will not be in the output map.
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error>;
 
     async fn update(
         self: Pin<&Self>,

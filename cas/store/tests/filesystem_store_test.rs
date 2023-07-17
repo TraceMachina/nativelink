@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::env;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
@@ -205,9 +206,10 @@ mod filesystem_store_tests {
 
             // Insert dummy value into store.
             store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
+            let result = store.as_ref().has(HashSet::from([digest])).await?;
             assert_eq!(
-                store.as_ref().has(digest).await,
-                Ok(Some(VALUE1.len())),
+                result.get(&digest),
+                Some(&VALUE1.len()),
                 "Expected filesystem store to have hash: {}",
                 HASH1
             );
@@ -828,7 +830,8 @@ mod filesystem_store_tests {
         }
 
         // Finally ensure that our entry is not in the store.
-        assert_eq!(store.as_ref().has(digest).await?, None, "Entry should not be in store");
+        let result = store.as_ref().has(HashSet::from([digest])).await?;
+        assert_eq!(result.get(&digest), None, "Entry should not be in store");
 
         Ok(())
     }

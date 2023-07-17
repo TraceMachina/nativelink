@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::pin::Pin;
 
 #[cfg(test)]
@@ -38,9 +39,11 @@ mod memory_store_tests {
             store
                 .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, VALUE1.into())
                 .await?;
+            let digest = DigestInfo::try_new(VALID_HASH1, VALUE1.len())?;
+            let found_digests = store.has(HashSet::from([digest])).await?;
             assert_eq!(
-                store.has(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?).await,
-                Ok(Some(VALUE1.len())),
+                found_digests.get(&digest),
+                Some(&VALUE1.len()),
                 "Expected memory store to have hash: {}",
                 VALID_HASH1
             );
@@ -125,7 +128,7 @@ mod memory_store_tests {
             async fn has_should_fail(store: Pin<&MemoryStore>, hash: &str, expected_size: usize) {
                 let digest = DigestInfo::try_new(hash, expected_size);
                 assert!(
-                    digest.is_err() || store.has(digest.unwrap()).await.is_err(),
+                    digest.is_err() || store.has(HashSet::from([digest.unwrap()])).await.is_err(),
                     ".has() should have failed: {} {}",
                     hash,
                     expected_size

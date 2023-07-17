@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -140,7 +141,14 @@ pub mod write_tests {
             assert_eq!(committed_size, raw_data.len());
 
             // Now lets check our store to ensure it was written with proper data.
-            store.has(DigestInfo::try_new(HASH1, raw_data.len())?).await?;
+            assert_eq!(
+                false,
+                store
+                    .has(HashSet::from([DigestInfo::try_new(HASH1, raw_data.len())?]))
+                    .await?
+                    .is_empty(),
+                "Not found in store",
+            );
             let store_data = store
                 .get_part_unchunked(DigestInfo::try_new(HASH1, raw_data.len())?, 0, None, None)
                 .await?;

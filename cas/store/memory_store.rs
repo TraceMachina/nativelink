@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use futures::{stream::FuturesUnordered, StreamExt};
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use bytes::{Bytes, BytesMut};
@@ -67,8 +69,14 @@ impl MemoryStore {
 
 #[async_trait]
 impl StoreTrait for MemoryStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        Ok(self.map.size_for_key(&digest).await)
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error> {
+        Ok(digests
+            .into_iter()
+            .map(|digest| async move { self.map.size_for_key(&digest).await.map(|size| (digest, size)) })
+            .collect::<FuturesUnordered<_>>()
+            .filter_map(|result| async move { result })
+            .collect()
+            .await)
     }
 
     async fn update(

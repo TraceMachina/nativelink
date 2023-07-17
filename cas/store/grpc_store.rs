@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
-use futures::{stream::unfold, Stream};
+use futures::stream::{unfold, FuturesUnordered};
+use futures::{Stream, TryStreamExt};
 use prost::Message;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
 use uuid::Uuid;
@@ -361,30 +363,44 @@ impl GrpcStore {
 impl StoreTrait for GrpcStore {
     // NOTE: This function can only be safely used on CAS stores. AC stores may return a size that
     // is incorrect.
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error> {
         if matches!(self.store_type, config::stores::StoreType::AC) {
-            // The length of an AC is incorrect, so we don't figure out the
-            // length, instead the biggest possible result is returned in the
-            // hope that we detect incorrect usage.
-            return self
-                .get_action_result_from_digest(digest)
-                .await
-                .map(|_| Some(usize::MAX));
+            let check_futures: FuturesUnordered<_> = digests
+                .into_iter()
+                .map(|digest| async move {
+                    // The length of an AC is incorrect, so we don't figure out the
+                    // length, instead the biggest possible result is returned in the
+                    // hope that we detect incorrect usage.
+                    self.get_action_result_from_digest(digest)
+                        .await
+                        .map(|_| (digest, usize::MAX))
+                })
+                .collect();
+            return check_futures.try_collect::<HashMap<DigestInfo, usize>>().await;
         }
 
-        let digest_size =
-            usize::try_from(digest.size_bytes).err_tip(|| "GrpcStore digest size cannot be converted to usize")?;
+        let blob_digests = digests.iter().map(|digest| digest.into()).collect();
+        let mut sizes: HashMap<DigestInfo, usize> = HashMap::with_capacity(digests.len());
+        for digest in digests.into_iter() {
+            let size =
+                usize::try_from(digest.size_bytes).err_tip(|| "GrpcStore digest size cannot be converted to usize")?;
+            sizes.insert(digest, size);
+        }
+
         let missing_blobs_response = self
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
                 instance_name: self.instance_name.clone(),
-                blob_digests: vec![digest.into()],
+                blob_digests,
             }))
             .await?
             .into_inner();
-        if missing_blobs_response.missing_blob_digests.is_empty() {
-            return Ok(Some(digest_size));
+
+        for missing_digest in missing_blobs_response.missing_blob_digests {
+            let missing_digest = DigestInfo::try_from(missing_digest)?;
+            sizes.remove(&missing_digest);
         }
-        return Ok(None);
+
+        Ok(sizes)
     }
 
     async fn update(

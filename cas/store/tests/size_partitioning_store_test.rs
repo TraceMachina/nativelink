@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -68,24 +69,22 @@ mod ref_store_tests {
         }
         {
             // Check if our partition store has small data.
-            let small_has_result = Pin::new(&size_part_store)
-                .has(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?)
-                .await;
+            let digest = DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?;
+            let small_has_result = Pin::new(&size_part_store).has(HashSet::from([digest])).await?;
             assert_eq!(
-                small_has_result,
-                Ok(Some(SMALL_VALUE.len())),
+                small_has_result.get(&digest),
+                Some(&SMALL_VALUE.len()),
                 "Expected size part store to have data in ref store : {}",
                 SMALL_HASH
             );
         }
         {
             // Check if our partition store has big data.
-            let small_has_result = Pin::new(&size_part_store)
-                .has(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?)
-                .await;
+            let digest = DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?;
+            let big_has_result = Pin::new(&size_part_store).has(HashSet::from([digest])).await?;
             assert_eq!(
-                small_has_result,
-                Ok(Some(BIG_VALUE.len())),
+                big_has_result.get(&digest),
+                Some(&BIG_VALUE.len()),
                 "Expected size part store to have data in ref store : {}",
                 BIG_HASH
             );

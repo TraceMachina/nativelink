@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::cmp;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -233,8 +234,8 @@ impl CompressionStore {
 
 #[async_trait]
 impl StoreTrait for CompressionStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        Pin::new(self.inner_store.as_ref()).has(digest).await
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error> {
+        Pin::new(self.inner_store.as_ref()).has(digests).await
     }
 
     async fn update(

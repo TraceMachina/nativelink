@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -97,8 +98,8 @@ async fn inner_check_update(
 
 #[async_trait]
 impl StoreTrait for VerifyStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        self.pin_inner().has(digest).await
+    async fn has(self: Pin<&Self>, digests: HashSet<DigestInfo>) -> Result<HashMap<DigestInfo, usize>, Error> {
+        self.pin_inner().has(digests).await
     }
 
     async fn update(
