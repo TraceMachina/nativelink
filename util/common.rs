@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
@@ -85,6 +86,24 @@ impl fmt::Debug for DigestInfo {
             .field("size_bytes", &self.size_bytes)
             .field("hash", &self.str())
             .finish()
+    }
+}
+
+impl Ord for DigestInfo {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.packed_hash
+            .cmp(&other.packed_hash)
+            .then_with(|| self.size_bytes.cmp(&other.size_bytes))
+    }
+}
+
+impl PartialOrd for DigestInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        let cmp = self.cmp(other);
+        if cmp == Ordering::Equal {
+            return None;
+        }
+        Some(cmp)
     }
 }
 
