@@ -233,8 +233,14 @@ impl CompressionStore {
 
 #[async_trait]
 impl StoreTrait for CompressionStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
-        Pin::new(self.inner_store.as_ref()).has(digest).await
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
+        Pin::new(self.inner_store.as_ref())
+            .has_with_results(digests, results)
+            .await
     }
 
     async fn update(
