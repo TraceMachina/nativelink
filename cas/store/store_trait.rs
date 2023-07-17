@@ -40,7 +40,32 @@ pub enum UploadSizeInfo {
 
 #[async_trait]
 pub trait StoreTrait: Sync + Send + Unpin {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error>;
+    /// Look up a digest in the store and return None if it does not exist in
+    /// the store, or Some(size) if it does.
+    /// Note: On an AC store the size will be incorrect and should not be used!
+    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+        let mut result = [None];
+        self.has_with_results(&[digest], &mut result).await?;
+        Ok(result[0])
+    }
+
+    /// Look up a list of digests in the store and return a result for each in
+    /// the same order as input.  The result will either be None if it does not
+    /// exist in the store, or Some(size) if it does.
+    /// Note: On an AC store the size will be incorrect and should not be used!
+    async fn has_many(self: Pin<&Self>, digests: &[DigestInfo]) -> Result<Vec<Option<usize>>, Error> {
+        let mut results = vec![None; digests.len()];
+        self.has_with_results(digests, &mut results).await?;
+        Ok(results)
+    }
+
+    /// The implementation of the above has and has_many functions.  See their
+    /// documentation for details.
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error>;
 
     async fn update(
         self: Pin<&Self>,

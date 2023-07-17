@@ -91,9 +91,13 @@ impl RefStore {
 
 #[async_trait]
 impl StoreTrait for RefStore {
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
         let store = self.get_store()?;
-        Pin::new(store.as_ref()).has(digest).await
+        Pin::new(store.as_ref()).has_with_results(digests, results).await
     }
 
     async fn update(
