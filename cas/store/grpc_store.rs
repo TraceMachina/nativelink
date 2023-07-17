@@ -313,7 +313,6 @@ impl GrpcStore {
             .get_action_result_from_digest(digest)
             .await
             .map(|response| response.into_inner())
-            .ok()
             .err_tip(|| "Action result not found")?;
         // TODO: Would be better to avoid all the encoding and decoding in this
         //       file, however there's no way to currently get raw bytes from a
