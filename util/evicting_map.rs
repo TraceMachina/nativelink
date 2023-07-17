@@ -219,14 +219,35 @@ where
 
     pub async fn size_for_key(&self, digest: &DigestInfo) -> Option<usize> {
         let mut state = self.state.lock().await;
-        if let Some(entry) = state.lru.get_mut(digest) {
-            entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
-            let data = entry.data.clone();
-            drop(state);
+        let Some(entry) = state.lru.get_mut(digest) else {
+            return None;
+        };
+        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
+        let data = entry.data.clone();
+        drop(state);
+        data.touch().await;
+        Some(data.len())
+    }
+
+    pub async fn sizes_for_keys(&self, digests: &[DigestInfo], results: &mut [Option<usize>]) {
+        let mut state = self.state.lock().await;
+        let to_touch: Vec<T> = digests
+            .iter()
+            .zip(results.iter_mut())
+            .filter_map(|(digest, result)| {
+                let Some(entry) = state.lru.get_mut(digest) else {
+                    return None;
+                };
+                entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
+                let data = entry.data.clone();
+                *result = Some(data.len());
+                Some(data)
+            })
+            .collect();
+        drop(state);
+        for data in to_touch {
             data.touch().await;
-            return Some(data.len());
         }
-        None
     }
 
     pub async fn get(&self, digest: &DigestInfo) -> Option<T> {

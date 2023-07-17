@@ -17,7 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::stream::StreamExt;
 use tokio::select;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
@@ -30,9 +30,7 @@ use error::Error;
 use grpc_store::GrpcStore;
 use parking_lot::{Mutex, MutexGuard};
 use platform_property_manager::PlatformPropertyManager;
-use proto::build::bazel::remote::execution::v2::{
-    ActionResult as ProtoActionResult, FindMissingBlobsRequest, GetActionResultRequest,
-};
+use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, GetActionResultRequest};
 use scheduler::ActionScheduler;
 use store::Store;
 
@@ -85,10 +83,12 @@ async fn get_action_from_store(
 async fn validate_outputs_exist(
     cas_store: Arc<dyn Store>,
     action_result: &ProtoActionResult,
-    instance_name: String,
+    _instance_name: String,
 ) -> bool {
     // Verify that output_files and output_directories are available in the cas.
-    let required_digests = action_result
+    let mut required_digests =
+        Vec::with_capacity(action_result.output_files.len() + action_result.output_directories.len());
+    for digest in action_result
         .output_files
         .iter()
         .filter_map(|output_file| output_file.digest.clone())
@@ -98,28 +98,17 @@ async fn validate_outputs_exist(
                 .iter()
                 .filter_map(|output_directory| output_directory.tree_digest.clone()),
         )
-        .collect();
-
-    // If the CAS is a GrpcStore store we can check all the digests in one message.
-    let any_store = cas_store.clone().as_any();
-    let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
-    if let Some(grpc_store) = maybe_grpc_store {
-        grpc_store
-            .find_missing_blobs(Request::new(FindMissingBlobsRequest {
-                instance_name,
-                blob_digests: required_digests,
-            }))
-            .await
-            .is_ok_and(|find_result| find_result.into_inner().missing_blob_digests.is_empty())
-    } else {
-        let cas_pin = Pin::new(cas_store.as_ref());
-        required_digests
-            .into_iter()
-            .map(|digest| async move { cas_pin.has(DigestInfo::try_from(digest)?).await })
-            .collect::<FuturesUnordered<_>>()
-            .all(|result| async { result.is_ok_and(|result| result.is_some()) })
-            .await
+    {
+        let Ok(digest) = DigestInfo::try_from(digest) else {
+            return false;
+        };
+        required_digests.push(digest);
     }
+
+    let Ok(sizes) = Pin::new(cas_store.as_ref()).has_many(&required_digests).await else {
+        return false;
+    };
+    sizes.into_iter().all(|size| size.is_some())
 }
 
 fn subscribe_to_existing_action(

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
-use futures::{stream::FuturesUnordered, stream::Stream, StreamExt, TryStreamExt};
+use futures::{stream::FuturesUnordered, stream::Stream, TryStreamExt};
 use proto::google::rpc::Status as GrpcStatus;
 use tonic::{Request, Response, Status};
 
@@ -31,7 +31,7 @@ use proto::build::bazel::remote::execution::v2::{
     batch_read_blobs_response, batch_update_blobs_response,
     content_addressable_storage_server::ContentAddressableStorage,
     content_addressable_storage_server::ContentAddressableStorageServer as Server, BatchReadBlobsRequest,
-    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, Digest, FindMissingBlobsRequest,
+    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, FindMissingBlobsRequest,
     FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
 };
 use store::{Store, StoreManager};
@@ -71,39 +71,16 @@ impl CasServer {
             .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
             .clone();
 
-        // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.clone().as_any();
-        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
-        if let Some(grpc_store) = maybe_grpc_store {
-            return grpc_store.find_missing_blobs(Request::new(inner_request)).await;
+        let mut requested_blobs = Vec::with_capacity(inner_request.blob_digests.len());
+        for digest in inner_request.blob_digests.iter() {
+            requested_blobs.push(DigestInfo::try_from(digest.clone())?);
         }
-
-        let store_pin = Pin::new(store.as_ref());
-        let check_futures: FuturesUnordered<_> = inner_request
-            .blob_digests
+        let sizes = Pin::new(store.as_ref()).has_many(&requested_blobs).await?;
+        let missing_blob_digests = sizes
             .into_iter()
-            .map(|digest| async move {
-                let digest_info = match DigestInfo::try_from(digest.clone()) {
-                    Ok(digest_info) => digest_info,
-                    Err(err) => return Some(Err(err)),
-                };
-                match store_pin.has(digest_info).await {
-                    Ok(maybe_size) => maybe_size.map_or(Some(Ok(digest)), |_| None),
-                    Err(err) => {
-                        log::error!(
-                            "Error during .has() call in .find_missing_blobs() : {:?} - {}",
-                            err,
-                            digest_info.str()
-                        );
-                        Some(Ok(digest))
-                    }
-                }
-            })
+            .zip(inner_request.blob_digests.into_iter())
+            .filter_map(|(maybe_size, digest)| maybe_size.map_or_else(|| Some(digest), |_| None))
             .collect();
-        let missing_blob_digests = check_futures
-            .filter_map(|result| async move { result })
-            .try_collect::<Vec<Digest>>()
-            .await?;
 
         Ok(Response::new(FindMissingBlobsResponse { missing_blob_digests }))
     }
