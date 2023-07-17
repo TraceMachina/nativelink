@@ -85,6 +85,7 @@ rust_library(
         "//util:buf_channel",
         "//util:common",
         "//util:error",
+        "@crate_index//:tokio",
     ],
 )
 
