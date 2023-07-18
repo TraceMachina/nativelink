@@ -111,7 +111,7 @@ impl StoreTrait for MemoryStore {
             .map
             .get(&digest)
             .await
-            .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.str())))?;
+            .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.hash_str())))?;
 
         let default_len = value.len() - offset;
         let length = length.unwrap_or(default_len).min(default_len);

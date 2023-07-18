@@ -341,7 +341,7 @@ impl SimpleSchedulerImpl {
                     // again.
                     log::warn!(
                         "Action {} has no more listeners during evict_worker()",
-                        action_info.digest().str()
+                        action_info.digest().hash_str()
                     );
                 }
             }
@@ -380,7 +380,7 @@ impl SimpleSchedulerImpl {
             let Some(awaited_action) = self.queued_actions.get(action_info.as_ref()) else {
                 log::error!(
                     "queued_actions out of sync with itself for action {}",
-                    action_info.digest().str()
+                    action_info.digest().hash_str()
                 );
                 continue;
             };
@@ -415,7 +415,7 @@ impl SimpleSchedulerImpl {
                 // again.
                 log::warn!(
                     "Action {} has no more listeners",
-                    awaited_action.action_info.digest().str()
+                    awaited_action.action_info.digest().hash_str()
                 );
             }
             awaited_action.attempts += 1;
@@ -520,7 +520,7 @@ impl SimpleSchedulerImpl {
             if send_result.is_err() {
                 log::warn!(
                     "Action {} has no more listeners during update_action()",
-                    action_info.digest().str()
+                    action_info.digest().hash_str()
                 );
             }
             // If the operation is not finished it means the worker is still working on it, so put it

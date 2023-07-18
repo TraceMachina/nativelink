@@ -261,7 +261,7 @@ mod filesystem_store_tests {
         // Insert data into store.
         store.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
-        let expected_file_name = format!("{}/{}-{}", content_path, digest1.str(), digest1.size_bytes);
+        let expected_file_name = format!("{}/{}-{}", content_path, digest1.hash_str(), digest1.size_bytes);
         {
             // Check to ensure our file exists where it should and content matches.
             let data = read_file_contents(&expected_file_name).await?;
@@ -551,8 +551,8 @@ mod filesystem_store_tests {
         fs::create_dir_all(&content_path).await?;
 
         // Make the two files on disk before loading the store.
-        let file1 = format!("{}/{}-{}", content_path, digest1.str(), digest1.size_bytes);
-        let file2 = format!("{}/{}-{}", content_path, digest2.str(), digest2.size_bytes);
+        let file1 = format!("{}/{}-{}", content_path, digest1.hash_str(), digest1.size_bytes);
+        let file2 = format!("{}/{}-{}", content_path, digest2.hash_str(), digest2.size_bytes);
         write_file(&file1, VALUE1.as_bytes()).await?;
         write_file(&file2, VALUE2.as_bytes()).await?;
         set_file_atime(&file1, FileTime::from_unix_time(0, 0))?;

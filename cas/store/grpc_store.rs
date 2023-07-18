@@ -401,7 +401,7 @@ impl StoreTrait for GrpcStore {
             "{}/uploads/{}/blobs/{}/{}",
             &self.instance_name,
             Uuid::new_v4().hyphenated().encode_lower(&mut buf),
-            digest.str(),
+            digest.hash_str(),
             digest.size_bytes,
         );
 
@@ -467,7 +467,12 @@ impl StoreTrait for GrpcStore {
             return self.get_action_result_as_part(digest, writer, offset, length).await;
         }
 
-        let resource_name = format!("{}/blobs/{}/{}", &self.instance_name, digest.str(), digest.size_bytes,);
+        let resource_name = format!(
+            "{}/blobs/{}/{}",
+            &self.instance_name,
+            digest.hash_str(),
+            digest.size_bytes,
+        );
 
         let mut stream = self
             .read(Request::new(ReadRequest {

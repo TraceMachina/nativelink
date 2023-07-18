@@ -182,7 +182,7 @@ impl S3Store {
     }
 
     fn make_s3_path(&self, digest: &DigestInfo) -> String {
-        format!("{}{}-{}", self.key_prefix, digest.str(), digest.size_bytes)
+        format!("{}{}-{}", self.key_prefix, digest.hash_str(), digest.size_bytes)
     }
 }
 
@@ -267,7 +267,7 @@ impl StoreTrait for S3Store {
                 error_if!(
                     write_buf.len() > max_size,
                     "More data than provided max_size in s3_store {}",
-                    digest.str()
+                    digest.hash_str()
                 );
                 let content_length = write_buf.len();
                 (
