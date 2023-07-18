@@ -19,8 +19,10 @@ use axum::Router;
 use clap::Parser;
 use futures::future::{ok, select_all, BoxFuture, OptionFuture, TryFutureExt};
 use hyper::service::make_service_fn;
-use hyper::Server;
+use hyper::{Body, Response, Server};
+use prometheus_client::registry::Registry;
 use runfiles::Runfiles;
+use tokio::task::spawn_blocking;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
@@ -41,6 +43,9 @@ use worker_api_server::WorkerApiServer;
 
 const DEFAULT_CONFIG_FILE: &str = "<built-in example in config/examples/basic_cas.json>";
 
+/// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
+const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
+
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
 #[clap(
@@ -57,6 +62,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut root_metrics_registry = <Registry>::with_prefix("turbo_cache");
+
     let args = Args::parse();
     // Note: We cannot mutate args, so we create another variable for it here.
     let mut config_file = args.config_file;
@@ -95,11 +102,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     set_open_file_limit(global_cfg.max_open_files);
 
+    let root_store_metrics = root_metrics_registry.sub_registry_with_prefix("stores");
     let store_manager = Arc::new(StoreManager::new());
     for (name, store_cfg) in cfg.stores {
+        let store_metrics = root_store_metrics.sub_registry_with_prefix(&name);
         store_manager.add_store(
             &name,
-            store_factory(&store_cfg, &store_manager)
+            store_factory(&store_cfg, &store_manager, store_metrics)
                 .await
                 .err_tip(|| format!("Failed to create store '{}'", name))?,
         );
@@ -156,6 +165,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Lock our registry as immutable and clonable.
+    let root_metrics_registry = Arc::new(root_metrics_registry);
     for server_cfg in cfg.servers {
         let services = server_cfg.services.ok_or("'services' must be configured")?;
 
@@ -312,17 +323,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .err_tip(|| "Could not create WorkerApi service")?,
             );
 
-        let svc = Router::new()
+        let root_metrics_registry = root_metrics_registry.clone();
+
+        let mut svc = Router::new()
             // This is the default service that executes if no other endpoint matches.
             .fallback_service(tonic_services.into_service().map_err(|e| panic!("{e}")))
             // This is a generic endpoint used to check if the server is up.
             .route_service("/status", axum::routing::get(move || async move { "Ok".to_string() }));
 
-        let addr = server_cfg.listen_address.parse()?;
+        if let Some(prometheus_cfg) = services.prometheus {
+            fn error_to_response<E: std::error::Error>(e: E) -> hyper::Response<Body> {
+                hyper::Response::builder()
+                    .status(500)
+                    .body(format!("Error: {:?}", e).into())
+                    .unwrap()
+            }
+            let path = if prometheus_cfg.path.is_empty() {
+                DEFAULT_PROMETHEUS_METRICS_PATH
+            } else {
+                &prometheus_cfg.path
+            };
+            svc = svc.route_service(
+                path,
+                axum::routing::get(move |_request: hyper::Request<hyper::Body>| async move {
+                    // We spawn on a thread that can block to give more freedom to our metrics
+                    // collection. This allows it to call functions like `tokio::block_in_place`
+                    // if it needs to wait on a future.
+                    spawn_blocking(move || {
+                        let mut buf = String::new();
+                        prometheus_client::encoding::text::encode(&mut buf, &root_metrics_registry)
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            .map(|_| {
+                                let body = Body::from(buf);
+                                Response::builder()
+                                    .header(
+                                        hyper::header::CONTENT_TYPE,
+                                        // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
+                                        // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
+                                        // However, this makes debugging more difficult, so we use the old text/plain instead.
+                                        "text/plain; version=0.0.4; charset=utf-8",
+                                    )
+                                    .body(body)
+                                    .unwrap()
+                            })
+                            .unwrap_or_else(error_to_response)
+                    })
+                    .await
+                    .unwrap_or_else(error_to_response)
+                }),
+            )
+        }
 
         futures.push(Box::pin(
             tokio::spawn(
-                Server::bind(&addr)
+                Server::bind(&server_cfg.listen_address.parse()?)
                     .serve(make_service_fn(move |_conn| ok::<_, Error>(svc.clone())))
                     .map_err(|e| make_err!(Code::Internal, "Failed running service : {:?}", e)),
             )

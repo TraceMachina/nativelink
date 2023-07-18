@@ -24,6 +24,7 @@ use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf
 use bytes::Bytes;
 use common::DigestInfo;
 use error::{Error, ResultExt};
+use prometheus_utils::Registry;
 
 #[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum UploadSizeInfo {
@@ -119,4 +120,7 @@ pub trait StoreTrait: Sync + Send + Unpin {
 
     /// Expect the returned Any to be `Arc<Self>`.
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send>;
+
+    /// Register any metrics that this store wants to expose to the Prometheus.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }

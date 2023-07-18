@@ -19,6 +19,7 @@ use bytes::BytesMut;
 use maplit::hashmap;
 use tonic::{Code, Request, Response, Status};
 
+use prometheus_client::registry::Registry;
 use prost::Message;
 use proto::build::bazel::remote::execution::v2::{action_cache_server::ActionCache, ActionResult, Digest};
 
@@ -53,6 +54,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         store_factory(
             &config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
             &store_manager,
+            &mut <Registry>::default(),
         )
         .await?,
     );
@@ -61,6 +63,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         store_factory(
             &config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
             &store_manager,
+            &mut <Registry>::default(),
         )
         .await?,
     );

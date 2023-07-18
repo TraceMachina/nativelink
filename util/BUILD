@@ -31,6 +31,15 @@ rust_library(
     ],
 )
 
+rust_library(
+    name = "prometheus_utils",
+    srcs = ["prometheus_utils.rs"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:prometheus-client",
+    ],
+)
+
 # This crate should be accessed through `common::fs`.
 rust_library(
     name = "fs",
@@ -78,9 +87,11 @@ rust_library(
     proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = ["//visibility:public"],
     deps = [
+        ":prometheus_utils",
         "//config",
         "//util:common",
         "@crate_index//:async-lock",
+        "@crate_index//:futures",
         "@crate_index//:lru",
         "@crate_index//:serde",
     ],

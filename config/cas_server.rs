@@ -127,6 +127,17 @@ pub struct WorkerApiConfig {
     pub scheduler: SchedulerRefName,
 }
 
+#[derive(Deserialize, Debug, Default)]
+pub struct PrometheusConfig {
+    /// Path to register prometheus metrics. If path is "/metrics", and your
+    /// domain is "example.com", you can reach the endpoint with:
+    /// http://example.com/metrics.
+    ///
+    /// Default: "/metrics"
+    #[serde(default)]
+    pub path: String,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
@@ -162,6 +173,10 @@ pub struct ServicesConfig {
     /// risk, as workers have a different permission set than a client
     /// that makes the remote execution/cache requests.
     pub worker_api: Option<WorkerApiConfig>,
+
+    /// Prometheus metrics configuration. Metrics are gathered as a singleton
+    /// but may be served on multiple endpoints.
+    pub prometheus: Option<PrometheusConfig>,
 }
 
 #[derive(Deserialize, Debug)]
