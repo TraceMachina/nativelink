@@ -16,6 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use maplit::hashmap;
+use prometheus_client::registry::Registry;
 use tonic::Request;
 
 use proto::build::bazel::remote::execution::v2::{
@@ -42,6 +43,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         store_factory(
             &config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
             &store_manager,
+            &mut <Registry>::default(),
         )
         .await?,
     );

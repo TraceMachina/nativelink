@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use bytestream_server::ByteStreamServer;
 use maplit::hashmap;
+use prometheus_client::registry::Registry;
 use tokio::task::yield_now;
 use tonic::Request;
 
@@ -36,6 +37,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         store_factory(
             &config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
             &store_manager,
+            &mut <Registry>::default(),
         )
         .await?,
     );
