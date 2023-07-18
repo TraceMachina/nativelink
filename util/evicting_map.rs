@@ -207,7 +207,7 @@ where
             state.sum_store_size -= eviction_item.data.len() as u64;
             // Note: See comment in `unref()` requring global lock of insert/remove.
             eviction_item.data.unref().await;
-            log::info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.str());
+            log::info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.hash_str());
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry

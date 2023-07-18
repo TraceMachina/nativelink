@@ -123,7 +123,7 @@ impl StoreTrait for DedupStore {
                 Err(e) => {
                     log::warn!(
                         "Failed to deserialize index in dedup store : {} - {:?}",
-                        digest.str(),
+                        digest.hash_str(),
                         e
                     );
                     // We return the equivalent of NotFound here so the client is happy.

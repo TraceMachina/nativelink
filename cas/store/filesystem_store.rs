@@ -108,7 +108,7 @@ impl Drop for EncodedFilePath {
 
 #[inline]
 fn to_full_path_from_digest(folder: &str, digest: &DigestInfo) -> String {
-    format!("{}/{}-{}", folder, digest.str(), digest.size_bytes)
+    format!("{}/{}-{}", folder, digest.hash_str(), digest.size_bytes)
 }
 
 #[async_trait]
@@ -301,7 +301,7 @@ impl LenEntry for FileEntryImpl {
 
             log::info!(
                 "\x1b[0;31mFilesystem Store\x1b[0m: Unref {}, moving file {} to {}",
-                encoded_file_path.digest.str(),
+                encoded_file_path.digest.hash_str(),
                 &from_path,
                 &to_path
             );

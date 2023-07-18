@@ -63,7 +63,7 @@ impl DigestInfo {
         })
     }
 
-    pub fn str(&self) -> String {
+    pub fn hash_str(&self) -> String {
         hex::encode(self.packed_hash)
     }
 
@@ -83,7 +83,7 @@ impl fmt::Debug for DigestInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DigestInfo")
             .field("size_bytes", &self.size_bytes)
-            .field("hash", &self.str())
+            .field("hash", &self.hash_str())
             .finish()
     }
 }
@@ -104,7 +104,7 @@ impl TryFrom<Digest> for DigestInfo {
 impl From<DigestInfo> for Digest {
     fn from(val: DigestInfo) -> Self {
         Digest {
-            hash: val.str(),
+            hash: val.hash_str(),
             size_bytes: val.size_bytes,
         }
     }
@@ -113,7 +113,7 @@ impl From<DigestInfo> for Digest {
 impl From<&DigestInfo> for Digest {
     fn from(val: &DigestInfo) -> Self {
         Digest {
-            hash: val.str(),
+            hash: val.hash_str(),
             size_bytes: val.size_bytes,
         }
     }

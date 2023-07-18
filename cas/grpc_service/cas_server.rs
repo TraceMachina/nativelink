@@ -93,7 +93,7 @@ impl CasServer {
                         log::error!(
                             "Error during .has() call in .find_missing_blobs() : {:?} - {}",
                             err,
-                            digest_info.str()
+                            digest_info.hash_str()
                         );
                         Some(Ok(digest))
                     }
