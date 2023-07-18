@@ -1,5 +1,5 @@
 {
-  "checksum": "ede2ad6fc879a28275ce174d5f4e7010b13c85a51f7d70a742a4b8a88639dcb2",
+  "checksum": "461c6fc060010e68f913e54c1f63f256f3ff70f1bb37216541fd347b5f56be53",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -596,6 +596,66 @@
         "data_glob": [
           "**"
         ]
+      },
+      "license": "MIT OR Apache-2.0"
+    },
+    "arrayref 0.3.7": {
+      "name": "arrayref",
+      "version": "0.3.7",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/arrayref/0.3.7/download",
+          "sha256": "6b4930d2cb77ce62f89ee5d5289b4ac049559b1c45539271f5ed4fdc7db34545"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "arrayref",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "arrayref",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2015",
+        "version": "0.3.7"
+      },
+      "license": "BSD-2-Clause"
+    },
+    "arrayvec 0.7.4": {
+      "name": "arrayvec",
+      "version": "0.7.4",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/arrayvec/0.7.4/download",
+          "sha256": "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "arrayvec",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "arrayvec",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2018",
+        "version": "0.7.4"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -1276,6 +1336,96 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "blake3 1.4.1": {
+      "name": "blake3",
+      "version": "1.4.1",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/blake3/1.4.1/download",
+          "sha256": "199c42ab6972d92c9f8995f086273d25c42fc0f7b2a1fcefba465c1352d25ba5"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "blake3",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "blake3",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "default",
+            "digest",
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "arrayref 0.3.7",
+              "target": "arrayref"
+            },
+            {
+              "id": "arrayvec 0.7.4",
+              "target": "arrayvec"
+            },
+            {
+              "id": "blake3 1.4.1",
+              "target": "build_script_build"
+            },
+            {
+              "id": "cfg-if 1.0.0",
+              "target": "cfg_if"
+            },
+            {
+              "id": "constant_time_eq 0.3.0",
+              "target": "constant_time_eq"
+            },
+            {
+              "id": "digest 0.10.7",
+              "target": "digest"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "1.4.1"
+      },
+      "build_script_attrs": {
+        "data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "cc 1.0.79",
+              "target": "cc"
+            }
+          ],
+          "selects": {}
+        }
+      },
+      "license": "CC0-1.0 OR Apache-2.0"
+    },
     "block-buffer 0.10.4": {
       "name": "block-buffer",
       "version": "0.10.4",
@@ -1854,6 +2004,36 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "constant_time_eq 0.3.0": {
+      "name": "constant_time_eq",
+      "version": "0.3.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/constant_time_eq/0.3.0/download",
+          "sha256": "f7144d30dcf0fafbce74250a3963025d8d52177934239851c917d29f1df280c2"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "constant_time_eq",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "constant_time_eq",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2021",
+        "version": "0.3.0"
+      },
+      "license": "CC0-1.0 OR MIT-0 OR Apache-2.0"
+    },
     "core-foundation 0.9.3": {
       "name": "core-foundation",
       "version": "0.9.3",
@@ -2240,7 +2420,9 @@
             "block-buffer",
             "core-api",
             "default",
-            "std"
+            "mac",
+            "std",
+            "subtle"
           ],
           "selects": {}
         },
@@ -2253,6 +2435,10 @@
             {
               "id": "crypto-common 0.1.6",
               "target": "crypto_common"
+            },
+            {
+              "id": "subtle 2.4.1",
+              "target": "subtle"
             }
           ],
           "selects": {}
@@ -2501,6 +2687,36 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "dtoa 1.0.9": {
+      "name": "dtoa",
+      "version": "1.0.9",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/dtoa/1.0.9/download",
+          "sha256": "dcbb2bf8e87535c23f7a8a321e364ce21462d0ff10cb6407820e8e96dfff6653"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "dtoa",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "dtoa",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2018",
+        "version": "1.0.9"
+      },
+      "license": "MIT OR Apache-2.0"
+    },
     "dummy_name_to_make_cargo_tooling_happy 0.0.0": {
       "name": "dummy_name_to_make_cargo_tooling_happy",
       "version": "0.0.0",
@@ -2534,6 +2750,10 @@
             {
               "id": "bincode 1.3.3",
               "target": "bincode"
+            },
+            {
+              "id": "blake3 1.4.1",
+              "target": "blake3"
             },
             {
               "id": "byteorder 1.4.3",
@@ -2610,6 +2830,10 @@
             {
               "id": "pin-project-lite 0.2.10",
               "target": "pin_project_lite"
+            },
+            {
+              "id": "prometheus-client 0.21.2",
+              "target": "prometheus_client"
             },
             {
               "id": "prost 0.11.9",
@@ -7767,6 +7991,133 @@
         ]
       },
       "license": "MIT OR Apache-2.0"
+    },
+    "prometheus-client 0.21.2": {
+      "name": "prometheus-client",
+      "version": "0.21.2",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/prometheus-client/0.21.2/download",
+          "sha256": "3c99afa9a01501019ac3a14d71d9f94050346f55ca471ce90c799a15c58f61e2"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "prometheus_client",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "prometheus_client",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "default"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "dtoa 1.0.9",
+              "target": "dtoa"
+            },
+            {
+              "id": "itoa 1.0.9",
+              "target": "itoa"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
+            },
+            {
+              "id": "prometheus-client 0.21.2",
+              "target": "build_script_build"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "proc_macro_deps": {
+          "common": [
+            {
+              "id": "prometheus-client-derive-encode 0.4.1",
+              "target": "prometheus_client_derive_encode"
+            }
+          ],
+          "selects": {}
+        },
+        "version": "0.21.2"
+      },
+      "build_script_attrs": {
+        "data_glob": [
+          "**"
+        ]
+      },
+      "license": "Apache-2.0 OR MIT"
+    },
+    "prometheus-client-derive-encode 0.4.1": {
+      "name": "prometheus-client-derive-encode",
+      "version": "0.4.1",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/prometheus-client-derive-encode/0.4.1/download",
+          "sha256": "72b6a5217beb0ad503ee7fa752d451c905113d70721b937126158f3106a48cc1"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "prometheus_client_derive_encode",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "prometheus_client_derive_encode",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "proc-macro2 1.0.66",
+              "target": "proc_macro2"
+            },
+            {
+              "id": "quote 1.0.31",
+              "target": "quote"
+            },
+            {
+              "id": "syn 1.0.109",
+              "target": "syn"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.4.1"
+      },
+      "license": "Apache-2.0 OR MIT"
     },
     "prost 0.11.9": {
       "name": "prost",

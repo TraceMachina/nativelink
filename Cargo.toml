@@ -60,6 +60,8 @@ hashbrown = "0.14"
 hyper = "0.14.27"
 axum = "0.6.18"
 tower = "0.4.13"
+prometheus-client = "0.21.2"
+blake3 = "1.4.1"
 
 [dev-dependencies]
 stdext = "0.3.1"

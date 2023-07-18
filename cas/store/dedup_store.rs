@@ -25,7 +25,6 @@ use bincode::{
 use futures::stream::{self, StreamExt};
 use futures::{future::try_join_all, FutureExt};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio_util::codec::FramedRead;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
@@ -81,14 +80,14 @@ impl DedupStore {
         } else {
             config.max_concurrent_fetch_per_get as usize
         };
-        DedupStore {
+        Self {
             index_store,
             content_store,
             fast_cdc_decoder: FastCDC::new(min_size, normal_size, max_size),
             max_concurrent_fetch_per_get,
             // We add 30% because the normal_size is not super accurate and we'd prefer to
             // over estimate than under estimate.
-            upload_normal_size: (normal_size as f64 * 1.3) as usize,
+            upload_normal_size: (normal_size * 13) / 10,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
         }
     }
@@ -167,8 +166,7 @@ impl StoreTrait for DedupStore {
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let input_max_size = match size_info {
-            UploadSizeInfo::ExactSize(sz) => sz,
-            UploadSizeInfo::MaxSize(sz) => sz,
+            UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
         let est_spawns = (input_max_size / self.upload_normal_size) + 1;
         let mut spawns = Vec::with_capacity(est_spawns);
@@ -180,19 +178,17 @@ impl StoreTrait for DedupStore {
             // Create a new spawn here so we do the sha256 on possibly a new thread (when needed).
             spawns.push(
                 JoinHandleDropGuard::new(tokio::spawn(async move {
-                    let hash = Sha256::digest(&frame[..]);
-
-                    let frame_len = frame.len();
-                    let index_entry = DigestInfo::new(hash.into(), frame_len as i64);
-
+                    // let hash = Sha256::digest(&frame[..]);
+                    let hash = blake3::hash(&frame[..]);
+                    let index_entry = DigestInfo::new(hash.into(), frame.len() as i64);
                     let content_store_pin = Pin::new(content_store.as_ref());
-                    let digest = DigestInfo::new(hash.into(), frame.len() as i64);
+                    // let digest = DigestInfo::new(hash, frame.len() as i64);
                     if content_store_pin.has(digest).await?.is_some() {
                         // If our store has this digest, we don't need to upload it.
                         return Ok(index_entry);
                     }
                     content_store_pin
-                        .update_oneshot(digest, frame)
+                        .update_oneshot(index_entry, frame)
                         .await
                         .err_tip(|| "Failed to update content store in dedup_store")?;
                     Ok(index_entry)
@@ -254,10 +250,12 @@ impl StoreTrait for DedupStore {
                 let mut entries = Vec::with_capacity(index_entries.entries.len());
                 for entry in index_entries.entries {
                     let first_byte = current_entries_sum;
-                    current_entries_sum += entry.size_bytes as usize;
+                    current_entries_sum +=
+                        usize::try_from(entry.size_bytes).err_tip(|| "Failed to convert to usize in DedupStore")?;
                     // Filter any items who's end byte is before the first requested byte.
                     if length.is_some() && current_entries_sum < offset {
-                        start_byte_in_stream += entry.size_bytes as usize;
+                        start_byte_in_stream +=
+                            usize::try_from(entry.size_bytes).err_tip(|| "Failed to convert to usize in DedupStore")?;
                         continue;
                     }
                     // Filter any items who's start byte is after the last requested byte.
@@ -284,7 +282,15 @@ impl StoreTrait for DedupStore {
 
                 async move {
                     let data = Pin::new(content_store.as_ref())
-                        .get_part_unchunked(index_entry, 0, None, Some(index_entry.size_bytes as usize))
+                        .get_part_unchunked(
+                            index_entry,
+                            0,
+                            None,
+                            Some(
+                                usize::try_from(index_entry.size_bytes)
+                                    .err_tip(|| "Failed to convert to usize in DedupStore")?,
+                            ),
+                        )
                         .await
                         .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
 
