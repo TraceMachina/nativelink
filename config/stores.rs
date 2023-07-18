@@ -408,6 +408,10 @@ pub struct GrpcStore {
 
     /// The type of the upstream store, this ensures that the correct server calls are made.
     pub store_type: StoreType,
+
+    /// Retry configuration to use when a network request fails.
+    #[serde(default)]
+    pub retry: Retry,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
