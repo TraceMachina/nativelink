@@ -94,7 +94,7 @@ mod dedup_store_tests {
             .err_tip(|| "Failed to write data to dedup store")?;
 
         // This is the hash & size of the last chunk item in the content_store.
-        const LAST_CHUNK_HASH: &str = "9220cc441e3860a0a8f5ed984d5b2da69c09ca800dcfd7a93c755acf8561e7a5";
+        const LAST_CHUNK_HASH: &str = "7c8608f5b079bef66c45bd67f7d8ede15d2e1830ea38fd8ad4c6de08b6f21a0c";
         const LAST_CHUNK_SIZE: usize = 25779;
 
         let did_delete = content_store
