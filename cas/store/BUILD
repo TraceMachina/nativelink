@@ -170,7 +170,7 @@ rust_library(
         "@crate_index//:bincode",
         "@crate_index//:futures",
         "@crate_index//:serde",
-        "@crate_index//:sha2",
+        "@crate_index//:blake3",
         "@crate_index//:tokio",
         "@crate_index//:tokio-util",
     ],
