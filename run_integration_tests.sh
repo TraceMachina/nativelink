@@ -56,19 +56,17 @@ cd "$SELF_DIR/deployment-examples/docker-compose"
 export UNDER_TEST_RUNNER=1
 
 # Ensure our cache locations are empty.
-rm -rf ~/.cache/docker-bazel
 rm -rf ~/.cache/turbo-cache
-mkdir -p ~/.cache/docker-bazel
 mkdir -p ~/.cache/turbo-cache
 
 # Ensure our docker compose is not running.
-docker-compose down
+docker-compose rm --stop -f
 
 export TMPDIR=$HOME/.cache/turbo-cache/
 mkdir -p "$TMPDIR"
 export CACHE_DIR=$(mktemp -d --suffix="-turbo-cache-integration-test")
 export BAZEL_CACHE_DIR="$CACHE_DIR/bazel"
-trap "rm -rf $CACHE_DIR; docker-compose down" EXIT
+trap "rm -rf $CACHE_DIR; docker-compose rm --stop -f" EXIT
 
 echo "" # New line.
 
@@ -96,7 +94,7 @@ for pattern in "${TEST_PATTERNS[@]}"; do
       docker-compose logs
       exit $EXIT_CODE
     fi
-    docker-compose down
+    docker-compose rm --stop -f
     echo "" # New line.
   done
 done

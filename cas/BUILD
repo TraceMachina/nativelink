@@ -23,6 +23,7 @@ rust_binary(
         "@crate_index//:futures",
         "@crate_index//:hyper",
         "@crate_index//:json5",
+        "@crate_index//:prometheus-client",
         "@crate_index//:axum",
         "@crate_index//:tower",
         "@crate_index//:tokio",

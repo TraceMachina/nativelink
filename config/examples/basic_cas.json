@@ -18,7 +18,7 @@
     },
     "WORKER_FAST_SLOW_STORE": {
       "fast_slow": {
-        "fast": {
+        "slow": {
           "filesystem": {
             "content_path": "/tmp/turbo_cache/data-worker-test/content_path-cas",
             "temp_path": "/tmp/turbo_cache/data-worker-test/tmp_path-cas",
@@ -28,7 +28,7 @@
             }
           }
         },
-        "slow": {
+        "fast": {
           "ref_store": {
             "name": "CAS_MAIN_STORE",
           }
@@ -118,6 +118,9 @@
         },
         // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
         "max_bytes_per_stream": 64000, // 64kb.
+      },
+      "prometheus": {
+        "path": "/metrics"
       }
     }
   }, {
@@ -133,6 +136,6 @@
     }
   }],
   "global": {
-    "max_open_files": 512,
-  },
+    "max_open_files": 512
+  }
 }

@@ -1,9 +1,5 @@
 {
-<<<<<<< HEAD
-  "checksum": "5fb139361c531ebf8263b94f2cf9d4ac159c5ae3616a08fc92e6e0089a8c6c19",
-=======
-  "checksum": "fac64099cc9391276bc8c7944ea56794038cc3813a536be1606cf0525b6c456b",
->>>>>>> 91255c6 (Use Axum's router which supports multiple service types)
+  "checksum": "b977d87bc13ba4ea95f2b6bfc10269813db5f596b4e6d571e5f90078d8b60566",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -2500,6 +2496,36 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "dtoa 1.0.9": {
+      "name": "dtoa",
+      "version": "1.0.9",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/dtoa/1.0.9/download",
+          "sha256": "dcbb2bf8e87535c23f7a8a321e364ce21462d0ff10cb6407820e8e96dfff6653"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "dtoa",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "dtoa",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2018",
+        "version": "1.0.9"
+      },
+      "license": "MIT OR Apache-2.0"
+    },
     "dummy_name_to_make_cargo_tooling_happy 0.0.0": {
       "name": "dummy_name_to_make_cargo_tooling_happy",
       "version": "0.0.0",
@@ -2609,6 +2635,10 @@
             {
               "id": "pin-project-lite 0.2.10",
               "target": "pin_project_lite"
+            },
+            {
+              "id": "prometheus-client 0.21.2",
+              "target": "prometheus_client"
             },
             {
               "id": "prost 0.11.9",
@@ -7736,6 +7766,133 @@
         ]
       },
       "license": "MIT OR Apache-2.0"
+    },
+    "prometheus-client 0.21.2": {
+      "name": "prometheus-client",
+      "version": "0.21.2",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/prometheus-client/0.21.2/download",
+          "sha256": "3c99afa9a01501019ac3a14d71d9f94050346f55ca471ce90c799a15c58f61e2"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "prometheus_client",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "prometheus_client",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "default"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "dtoa 1.0.9",
+              "target": "dtoa"
+            },
+            {
+              "id": "itoa 1.0.8",
+              "target": "itoa"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
+            },
+            {
+              "id": "prometheus-client 0.21.2",
+              "target": "build_script_build"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "proc_macro_deps": {
+          "common": [
+            {
+              "id": "prometheus-client-derive-encode 0.4.1",
+              "target": "prometheus_client_derive_encode"
+            }
+          ],
+          "selects": {}
+        },
+        "version": "0.21.2"
+      },
+      "build_script_attrs": {
+        "data_glob": [
+          "**"
+        ]
+      },
+      "license": "Apache-2.0 OR MIT"
+    },
+    "prometheus-client-derive-encode 0.4.1": {
+      "name": "prometheus-client-derive-encode",
+      "version": "0.4.1",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/prometheus-client-derive-encode/0.4.1/download",
+          "sha256": "72b6a5217beb0ad503ee7fa752d451c905113d70721b937126158f3106a48cc1"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "prometheus_client_derive_encode",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "prometheus_client_derive_encode",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "proc-macro2 1.0.63",
+              "target": "proc_macro2"
+            },
+            {
+              "id": "quote 1.0.29",
+              "target": "quote"
+            },
+            {
+              "id": "syn 1.0.109",
+              "target": "syn"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.4.1"
+      },
+      "license": "Apache-2.0 OR MIT"
     },
     "prost 0.11.9": {
       "name": "prost",
