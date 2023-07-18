@@ -32,6 +32,7 @@ use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::{fs, log, DigestInfo};
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use evicting_map::{EvictingMap, LenEntry};
+use prometheus_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use traits::{StoreTrait, UploadSizeInfo};
 
 // Default size to allocate memory of the buffer when reading files.
@@ -629,5 +630,35 @@ impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
+    }
+
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        registry.register_collector(Box::new(Collector::new(&self)));
+    }
+}
+
+impl<Fe: FileEntry> MetricsComponent for FilesystemStore<Fe> {
+    fn gather_metrics(&self, collector: &mut CollectorState) {
+        collector.publish(
+            "read_buff_size",
+            self.read_buffer_size,
+            "Size of the configured read buffer size",
+        );
+        collector.publish(
+            "active_drop_spawns",
+            self.shared_context.active_drop_spawns.load(Ordering::Relaxed),
+            "Number of active drop spawns",
+        );
+        collector.publish_text(
+            "temp_path",
+            &self.shared_context.temp_path,
+            "Path to the configured temp path",
+        );
+        collector.publish_text(
+            "content_path",
+            &self.shared_context.content_path,
+            "Path to the configured content path",
+        );
+        collector.publish_child(Some("evicting_map"), &self.evicting_map);
     }
 }

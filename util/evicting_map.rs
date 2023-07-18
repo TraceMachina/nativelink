@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use common::{log, DigestInfo};
 use config::stores::EvictionPolicy;
+use prometheus_utils::{CollectorState, MetricsComponent};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct SerializedLRU {
@@ -33,7 +34,7 @@ pub struct SerializedLRU {
 
 /// Wrapper used to abstract away which underlying Instant impl we are using.
 /// This is needed for testing.
-pub trait InstantWrapper {
+pub trait InstantWrapper: 'static {
     fn from_secs(secs: u64) -> Self;
     fn unix_timestamp(&self) -> u64;
     fn elapsed(&self) -> Duration;
@@ -60,7 +61,7 @@ struct EvictionItem<T: LenEntry + Debug> {
 }
 
 #[async_trait]
-pub trait LenEntry {
+pub trait LenEntry: 'static {
     /// Length of referenced data.
     fn len(&self) -> usize;
 
@@ -113,6 +114,15 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
 struct State<T: LenEntry + Debug> {
     lru: LruCache<DigestInfo, EvictionItem<T>>,
     sum_store_size: u64,
+
+    // Metrics.
+    evicted_items: usize,
+    evicted_bytes: u64,
+    replaced_bytes: u64,
+    replaced_items: usize,
+    removed_bytes: u64,
+    removed_items: usize,
+    lifetime_inserted_bytes: u64,
 }
 
 pub struct EvictingMap<T: LenEntry + Debug, I: InstantWrapper> {
@@ -136,6 +146,13 @@ where
             state: Mutex::new(State {
                 lru: LruCache::unbounded(),
                 sum_store_size: 0,
+                evicted_items: 0,
+                evicted_bytes: 0,
+                replaced_bytes: 0,
+                replaced_items: 0,
+                removed_bytes: 0,
+                removed_items: 0,
+                lifetime_inserted_bytes: 0,
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -205,6 +222,8 @@ where
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
             let (key, eviction_item) = state.lru.pop_lru().expect("Tried to peek() then pop() but failed");
             state.sum_store_size -= eviction_item.data.len() as u64;
+            state.evicted_items += 1;
+            state.evicted_bytes += eviction_item.data.len() as u64;
             // Note: See comment in `unref()` requring global lock of insert/remove.
             eviction_item.data.unref().await;
             log::info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.str());
@@ -258,6 +277,8 @@ where
 
         let maybe_old_item = if let Some(old_item) = state.lru.put(digest, eviction_item) {
             state.sum_store_size -= old_item.data.len() as u64;
+            state.replaced_items += 1;
+            state.replaced_bytes += old_item.data.len() as u64;
             // Note: See comment in `unref()` requring global lock of insert/remove.
             old_item.data.unref().await;
             Some(old_item.data)
@@ -265,6 +286,7 @@ where
             None
         };
         state.sum_store_size += new_item_size;
+        state.lifetime_inserted_bytes += new_item_size;
         self.evict_items(state.deref_mut()).await;
         maybe_old_item
     }
@@ -276,7 +298,10 @@ where
 
     async fn inner_remove(&self, state: &mut State<T>, digest: &DigestInfo) -> bool {
         if let Some(entry) = state.lru.pop(digest) {
-            state.sum_store_size -= entry.data.len() as u64;
+            let data_len = entry.data.len() as u64;
+            state.sum_store_size -= data_len;
+            state.removed_items += 1;
+            state.removed_bytes += data_len;
             // Note: See comment in `unref()` requring global lock of insert/remove.
             entry.data.unref().await;
             return true;
@@ -295,5 +320,98 @@ where
             return self.inner_remove(&mut state, digest).await;
         }
         false
+    }
+}
+
+impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T, I> {
+    fn gather_metrics(&self, collector: &mut CollectorState) {
+        collector.publish("max_bytes", self.max_bytes, "Maximum size of the store in bytes");
+        collector.publish(
+            "evict_bytes",
+            self.evict_bytes,
+            "Number of bytes to evict when the store is full",
+        );
+        collector.publish(
+            "anchor_time",
+            self.anchor_time.unix_timestamp(),
+            "Anchor time for the store",
+        );
+        collector.publish(
+            "max_seconds",
+            self.max_seconds,
+            "Maximum number of seconds to keep an item in the store",
+        );
+        collector.publish(
+            "max_count",
+            self.max_count,
+            "Maximum number of items to keep in the store",
+        );
+        futures::executor::block_on(async move {
+            let state = self.state.lock().await;
+            collector.publish(
+                "sum_store_size",
+                state.sum_store_size,
+                "Total size of all items in the store",
+            );
+            collector.publish("items_in_store", state.lru.len(), "Mumber of items in the store");
+            collector.publish(
+                "oldest_item_timestamp",
+                state
+                    .lru
+                    .peek_lru()
+                    .map(|(_, v)| v.seconds_since_anchor as i64 + self.anchor_time.unix_timestamp() as i64)
+                    .unwrap_or(-1),
+                "Timestamp of the oldest item in the store",
+            );
+            collector.publish(
+                "oldest_item_age",
+                state
+                    .lru
+                    .peek_lru()
+                    .map(|(_, v)| v.seconds_since_anchor as i64 + self.anchor_time.elapsed().as_secs() as i64)
+                    .unwrap_or(-1),
+                "Age of the oldest item in the store in seconds",
+            );
+            collector.publish(
+                "evicted_items",
+                state.evicted_items,
+                "Number of items evicted from the store",
+            );
+            collector.publish(
+                "evicted_bytes",
+                state.evicted_bytes,
+                "Number of bytes evicted from the store",
+            );
+            collector.publish(
+                "lifetime_inserted_bytes",
+                state.lifetime_inserted_bytes,
+                "Number of bytes inserted into the store since it was created",
+            );
+            collector.publish(
+                "replaced_bytes",
+                state.replaced_bytes,
+                "Number of bytes replaced in the store",
+            );
+            collector.publish(
+                "replaced_items",
+                state.replaced_items,
+                "Number of items replaced in the store",
+            );
+            collector.publish(
+                "removed_bytes",
+                state.removed_bytes,
+                "Number of bytes explicitly removed from the store",
+            );
+            collector.publish(
+                "removed_items",
+                state.removed_items,
+                "Number of items explicitly removed from the store",
+            );
+            collector.publish_stats(
+                "item_size_stats",
+                state.lru.iter().take(10_000).map(|(_, v)| v.data.len()),
+                "Stats about the first 10_000 items in the store (these are oldest items in the store)",
+            );
+        });
     }
 }
