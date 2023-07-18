@@ -71,7 +71,13 @@ impl ActionInfoHashKey {
     /// Returns the salt used for cache busting/hashing.
     #[inline]
     pub fn action_name(&self) -> String {
-        format!("{}/{}/{:X}", self.instance_name, self.digest.str(), self.salt)
+        format!(
+            "{}/{}-{}/{:X}",
+            self.instance_name,
+            self.digest.str(),
+            self.digest.size_bytes,
+            self.salt
+        )
     }
 }
 
@@ -758,18 +764,49 @@ impl TryFrom<ExecuteResponse> for ActionStage {
     }
 }
 
+// TODO: Should be able to remove this after tokio-rs/prost#299
+trait TypeUrl: Message {
+    const TYPE_URL: &'static str;
+}
+
+impl TypeUrl for ExecuteResponse {
+    const TYPE_URL: &'static str = "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse";
+}
+
+impl TypeUrl for ExecuteOperationMetadata {
+    const TYPE_URL: &'static str = "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata";
+}
+
+fn from_any<T>(message: &Any) -> Result<T, Error>
+where
+    T: TypeUrl + Default,
+{
+    error_if!(
+        message.type_url != T::TYPE_URL,
+        "Incorrect type when decoding Any. {} != {}",
+        message.type_url,
+        T::TYPE_URL.to_string()
+    );
+    Ok(T::decode(message.value.as_slice())?)
+}
+
+fn to_any<T>(message: &T) -> Any
+where
+    T: TypeUrl,
+{
+    Any {
+        type_url: T::TYPE_URL.to_string(),
+        value: message.encode_to_vec(),
+    }
+}
+
 impl TryFrom<Operation> for ActionState {
     type Error = Error;
 
     fn try_from(operation: Operation) -> Result<ActionState, Error> {
-        let metadata_data = operation.metadata.err_tip(|| "No metadata in upstream operation")?;
-        error_if!(
-            metadata_data.type_url != "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse",
-            "Incorrect metadata structure in upstream operation. {} != type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse",
-            metadata_data.type_url
-        );
-        let metadata = ExecuteOperationMetadata::decode(metadata_data.value.as_slice())
-            .err_tip(|| "Could not decode metadata in upstream operation")?;
+        let metadata =
+            from_any::<ExecuteOperationMetadata>(&operation.metadata.err_tip(|| "No metadata in upstream operation")?)
+                .err_tip(|| "Could not decode metadata in upstream operation")?;
 
         let action_digest = metadata
             .action_digest
@@ -792,17 +829,15 @@ impl TryFrom<Operation> for ActionState {
                     LongRunningResult::Error(error) => ActionStage::Error((error.into(), ActionResult::default())),
                     LongRunningResult::Response(response) => {
                         // Could be Completed, CompletedFromCache or Error.
-                        error_if!(
-                            response.type_url != "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse",
-                            "Incorrect result structure for completed upstream action. {} != type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse",
-                            response.type_url
-                        );
-                        ExecuteResponse::decode(response.value.as_slice())?.try_into()?
+                        from_any::<ExecuteResponse>(&response)
+                            .err_tip(|| "Could not decode result structure for completed upstream action")?
+                            .try_into()?
                     }
                 }
             }
         };
 
+        println!("Operation name: {}", operation.name);
         let unique_qualifier = if let Ok(v) = operation.name.as_str().try_into() {
             v
         } else {
@@ -842,14 +877,13 @@ impl ActionState {
 
 impl From<ActionState> for Operation {
     fn from(val: ActionState) -> Self {
-        let has_action_result = val.stage.has_action_result();
         let stage = Into::<execution_stage::Value>::into(&val.stage) as i32;
-        let execute_response: ExecuteResponse = val.stage.into();
 
-        let serialized_response = if has_action_result {
-            execute_response.encode_to_vec()
+        let result = if val.stage.has_action_result() {
+            let execute_response: ExecuteResponse = val.stage.into();
+            Some(LongRunningResult::Response(to_any(&execute_response)))
         } else {
-            vec![]
+            None
         };
 
         let metadata = ExecuteOperationMetadata {
@@ -862,15 +896,9 @@ impl From<ActionState> for Operation {
 
         Self {
             name: val.unique_qualifier.action_name(),
-            metadata: Some(Any {
-                type_url: "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata".to_string(),
-                value: metadata.encode_to_vec(),
-            }),
-            done: has_action_result,
-            result: Some(LongRunningResult::Response(Any {
-                type_url: "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse".to_string(),
-                value: serialized_response,
-            })),
+            metadata: Some(to_any(&metadata)),
+            done: result.is_some(),
+            result,
         }
     }
 }

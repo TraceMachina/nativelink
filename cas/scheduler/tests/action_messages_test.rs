@@ -39,23 +39,27 @@ mod action_messages_tests {
 
     #[tokio::test]
     async fn action_state_any_url_test() -> Result<(), Error> {
-        let operation: Operation = ActionState {
+        let action_state = ActionState {
             unique_qualifier: ActionInfoHashKey {
                 instance_name: "foo_instance".to_string(),
                 digest: DigestInfo::new([1u8; 32], 5),
                 salt: 0,
             },
-            stage: ActionStage::Unknown,
-        }
-        .into();
+            // Result is only populated if has_action_result.
+            stage: ActionStage::Completed(ActionResult::default()),
+        };
+        let operation: Operation = action_state.clone().into();
 
-        match operation.result {
+        match &operation.result {
             Some(operation::Result::Response(any)) => assert_eq!(
                 any.type_url,
                 "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse"
             ),
             other => panic!("Expected Some(Result(Any)), got: {other:?}"),
         }
+
+        let action_state_round_trip: ActionState = operation.try_into()?;
+        assert_eq!(action_state, action_state_round_trip);
 
         Ok(())
     }
