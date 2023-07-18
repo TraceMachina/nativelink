@@ -764,8 +764,8 @@ impl TryFrom<Operation> for ActionState {
     fn try_from(operation: Operation) -> Result<ActionState, Error> {
         let metadata_data = operation.metadata.err_tip(|| "No metadata in upstream operation")?;
         error_if!(
-            metadata_data.type_url != "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse",
-            "Incorrect metadata structure in upstream operation. {} != type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse",
+            metadata_data.type_url != "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata",
+            "Incorrect metadata structure in upstream operation. {} != type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata",
             metadata_data.type_url
         );
         let metadata = ExecuteOperationMetadata::decode(metadata_data.value.as_slice())
