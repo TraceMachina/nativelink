@@ -1,5 +1,5 @@
 {
-  "checksum": "9a164ff0676dff67f67fa7c8cb35a6e37646855f5c9860591f4d3ad693d2283b",
+  "checksum": "592a0521477b3b38de59712a53011c24799242de7dd179e495ead4d53b3ad64c",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -629,13 +629,13 @@
       },
       "license": "BSD-2-Clause"
     },
-    "arrayvec 0.5.2": {
+    "arrayvec 0.7.4": {
       "name": "arrayvec",
-      "version": "0.5.2",
+      "version": "0.7.4",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/arrayvec/0.5.2/download",
-          "sha256": "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
+          "url": "https://crates.io/api/v1/crates/arrayvec/0.7.4/download",
+          "sha256": "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
         }
       },
       "targets": [
@@ -654,16 +654,10 @@
         "compile_data_glob": [
           "**"
         ],
-        "crate_features": {
-          "common": [
-            "array-sizes-33-128"
-          ],
-          "selects": {}
-        },
         "edition": "2018",
-        "version": "0.5.2"
+        "version": "0.7.4"
       },
-      "license": "MIT/Apache-2.0"
+      "license": "MIT OR Apache-2.0"
     },
     "async-lock 2.7.0": {
       "name": "async-lock",
@@ -1312,13 +1306,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "blake3 0.1.5": {
+    "blake3 1.4.1": {
       "name": "blake3",
-      "version": "0.1.5",
+      "version": "1.4.1",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/blake3/0.1.5/download",
-          "sha256": "46080006c1505f12f64dd2a09264b343381ed3190fa02c8005d5d662ac571c63"
+          "url": "https://crates.io/api/v1/crates/blake3/1.4.1/download",
+          "sha256": "199c42ab6972d92c9f8995f086273d25c42fc0f7b2a1fcefba465c1352d25ba5"
         }
       },
       "targets": [
@@ -1349,6 +1343,7 @@
         "crate_features": {
           "common": [
             "default",
+            "digest",
             "std"
           ],
           "selects": {}
@@ -1360,34 +1355,30 @@
               "target": "arrayref"
             },
             {
-              "id": "arrayvec 0.5.2",
+              "id": "arrayvec 0.7.4",
               "target": "arrayvec"
             },
             {
-              "id": "blake3 0.1.5",
+              "id": "blake3 1.4.1",
               "target": "build_script_build"
             },
             {
-              "id": "cfg-if 0.1.10",
+              "id": "cfg-if 1.0.0",
               "target": "cfg_if"
             },
             {
-              "id": "constant_time_eq 0.1.5",
+              "id": "constant_time_eq 0.3.0",
               "target": "constant_time_eq"
             },
             {
-              "id": "crypto-mac 0.7.0",
-              "target": "crypto_mac"
-            },
-            {
-              "id": "digest 0.8.1",
+              "id": "digest 0.10.7",
               "target": "digest"
             }
           ],
           "selects": {}
         },
-        "edition": "2018",
-        "version": "0.1.5"
+        "edition": "2021",
+        "version": "1.4.1"
       },
       "build_script_attrs": {
         "data_glob": [
@@ -1616,36 +1607,6 @@
         "version": "1.0.79"
       },
       "license": "MIT OR Apache-2.0"
-    },
-    "cfg-if 0.1.10": {
-      "name": "cfg-if",
-      "version": "0.1.10",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/cfg-if/0.1.10/download",
-          "sha256": "4785bdd1c96b2a846b2bd7cc02e86b6b3dbf14e7e53446c4f54c92a361040822"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "cfg_if",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "cfg_if",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "edition": "2018",
-        "version": "0.1.10"
-      },
-      "license": "MIT/Apache-2.0"
     },
     "cfg-if 1.0.0": {
       "name": "cfg-if",
@@ -2013,13 +1974,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "constant_time_eq 0.1.5": {
+    "constant_time_eq 0.3.0": {
       "name": "constant_time_eq",
-      "version": "0.1.5",
+      "version": "0.3.0",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/constant_time_eq/0.1.5/download",
-          "sha256": "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
+          "url": "https://crates.io/api/v1/crates/constant_time_eq/0.3.0/download",
+          "sha256": "f7144d30dcf0fafbce74250a3963025d8d52177934239851c917d29f1df280c2"
         }
       },
       "targets": [
@@ -2038,10 +1999,10 @@
         "compile_data_glob": [
           "**"
         ],
-        "edition": "2015",
-        "version": "0.1.5"
+        "edition": "2021",
+        "version": "0.3.0"
       },
-      "license": "CC0-1.0"
+      "license": "CC0-1.0 OR MIT-0 OR Apache-2.0"
     },
     "core-foundation 0.9.3": {
       "name": "core-foundation",
@@ -2325,49 +2286,6 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "crypto-mac 0.7.0": {
-      "name": "crypto-mac",
-      "version": "0.7.0",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/crypto-mac/0.7.0/download",
-          "sha256": "4434400df11d95d556bac068ddfedd482915eb18fe8bea89bc80b6e4b1c179e5"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "crypto_mac",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "crypto_mac",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "generic-array 0.12.4",
-              "target": "generic_array"
-            },
-            {
-              "id": "subtle 1.0.0",
-              "target": "subtle"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2015",
-        "version": "0.7.0"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
     "ctor 0.2.4": {
       "name": "ctor",
       "version": "0.2.4",
@@ -2472,7 +2390,9 @@
             "block-buffer",
             "core-api",
             "default",
-            "std"
+            "mac",
+            "std",
+            "subtle"
           ],
           "selects": {}
         },
@@ -2485,57 +2405,16 @@
             {
               "id": "crypto-common 0.1.6",
               "target": "crypto_common"
+            },
+            {
+              "id": "subtle 2.4.1",
+              "target": "subtle"
             }
           ],
           "selects": {}
         },
         "edition": "2018",
         "version": "0.10.7"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
-    "digest 0.8.1": {
-      "name": "digest",
-      "version": "0.8.1",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/digest/0.8.1/download",
-          "sha256": "f3d0c8c8752312f9713efd397ff63acb9f85585afbf179282e720e7704954dd5"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "digest",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "digest",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "std"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "generic-array 0.12.4",
-              "target": "generic_array"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2015",
-        "version": "0.8.1"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -2809,7 +2688,7 @@
               "target": "bincode"
             },
             {
-              "id": "blake3 0.1.5",
+              "id": "blake3 1.4.1",
               "target": "blake3"
             },
             {
@@ -4145,45 +4024,6 @@
         ]
       },
       "license": "MIT OR Apache-2.0"
-    },
-    "generic-array 0.12.4": {
-      "name": "generic-array",
-      "version": "0.12.4",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/generic-array/0.12.4/download",
-          "sha256": "ffdf9f34f1447443d37393cc6c2b8313aebddcd96906caf34e54c68d8e57d7bd"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "generic_array",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "generic_array",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "typenum 1.16.0",
-              "target": "typenum"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2015",
-        "version": "0.12.4"
-      },
-      "license": "MIT"
     },
     "generic-array 0.14.7": {
       "name": "generic-array",
@@ -10562,36 +10402,6 @@
         "version": "0.10.0"
       },
       "license": "MIT"
-    },
-    "subtle 1.0.0": {
-      "name": "subtle",
-      "version": "1.0.0",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/subtle/1.0.0/download",
-          "sha256": "2d67a5a62ba6e01cb2192ff309324cb4875d0c451d55fe2319433abe7a05a8ee"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "subtle",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "subtle",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "edition": "2015",
-        "version": "1.0.0"
-      },
-      "license": "BSD-3-Clause"
     },
     "subtle 2.4.1": {
       "name": "subtle",

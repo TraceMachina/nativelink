@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![warn(clippy::all, clippy::pedantic, clippy::nursery)]
-
 use std::cmp;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -89,7 +87,6 @@ impl DedupStore {
             max_concurrent_fetch_per_get,
             // We add 30% because the normal_size is not super accurate and we'd prefer to
             // over estimate than under estimate.
-            // Edit: Do it this way to avoid type conversions.
             upload_normal_size: (normal_size * 13) / 10,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
         }
@@ -183,8 +180,7 @@ impl StoreTrait for DedupStore {
                 JoinHandleDropGuard::new(tokio::spawn(async move {
                     // let hash = Sha256::digest(&frame[..]);
                     let hash = *blake3::hash(&frame[..]).as_bytes();
-                    let frame_len = frame.len();
-                    let index_entry = DigestInfo::new(hash, frame_len as i64);
+                    let index_entry = DigestInfo::new(hash, frame.len() as i64);
                     let content_store_pin = Pin::new(content_store.as_ref());
                     let digest = DigestInfo::new(hash, frame.len() as i64);
                     if content_store_pin.has(digest).await?.is_some() {
@@ -254,10 +250,12 @@ impl StoreTrait for DedupStore {
                 let mut entries = Vec::with_capacity(index_entries.entries.len());
                 for entry in index_entries.entries {
                     let first_byte = current_entries_sum;
-                    current_entries_sum += usize::try_from(entry.size_bytes).unwrap();
+                    current_entries_sum +=
+                        usize::try_from(entry.size_bytes).err_tip(|| "Failed to convert to usize in DedupStore")?;
                     // Filter any items who's end byte is before the first requested byte.
                     if length.is_some() && current_entries_sum < offset {
-                        start_byte_in_stream += usize::try_from(entry.size_bytes).unwrap();
+                        start_byte_in_stream +=
+                            usize::try_from(entry.size_bytes).err_tip(|| "Failed to convert to usize in DedupStore")?;
                         continue;
                     }
                     // Filter any items who's start byte is after the last requested byte.
@@ -288,7 +286,10 @@ impl StoreTrait for DedupStore {
                             index_entry,
                             0,
                             None,
-                            Some(usize::try_from(index_entry.size_bytes).unwrap()),
+                            Some(
+                                usize::try_from(index_entry.size_bytes)
+                                    .err_tip(|| "Failed to convert to usize in DedupStore")?,
+                            ),
                         )
                         .await
                         .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
