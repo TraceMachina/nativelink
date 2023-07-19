@@ -24,6 +24,7 @@ use bytes::{Bytes, BytesMut};
 use common::DigestInfo;
 use error::{Code, Error, ResultExt};
 use evicting_map::{EvictingMap, LenEntry};
+use prometheus_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use traits::{StoreTrait, UploadSizeInfo};
 
 #[derive(Clone)]
@@ -48,7 +49,7 @@ impl LenEntry for BytesWrapper {
 }
 
 pub struct MemoryStore {
-    map: EvictingMap<BytesWrapper, SystemTime>,
+    evicting_map: EvictingMap<BytesWrapper, SystemTime>,
 }
 
 impl MemoryStore {
@@ -56,12 +57,12 @@ impl MemoryStore {
         let empty_policy = config::stores::EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
         MemoryStore {
-            map: EvictingMap::new(eviction_policy, SystemTime::now()),
+            evicting_map: EvictingMap::new(eviction_policy, SystemTime::now()),
         }
     }
 
     pub async fn remove_entry(&self, digest: &DigestInfo) -> bool {
-        self.map.remove(digest).await
+        self.evicting_map.remove(digest).await
     }
 }
 
@@ -72,7 +73,7 @@ impl StoreTrait for MemoryStore {
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.map.sizes_for_keys(digests, results).await;
+        self.evicting_map.sizes_for_keys(digests, results).await;
         Ok(())
     }
 
@@ -101,7 +102,7 @@ impl StoreTrait for MemoryStore {
         } else {
             buffer
         };
-        self.map.insert(digest, BytesWrapper(buffer)).await;
+        self.evicting_map.insert(digest, BytesWrapper(buffer)).await;
         Ok(())
     }
 
@@ -113,7 +114,7 @@ impl StoreTrait for MemoryStore {
         length: Option<usize>,
     ) -> Result<(), Error> {
         let value = self
-            .map
+            .evicting_map
             .get(&digest)
             .await
             .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.hash_str())))?;
@@ -135,5 +136,15 @@ impl StoreTrait for MemoryStore {
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
+    }
+
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        registry.register_collector(Box::new(Collector::new(&self)));
+    }
+}
+
+impl MetricsComponent for MemoryStore {
+    fn gather_metrics(&self, collector: &mut CollectorState) {
+        collector.publish_child(Some("evicting_map"), &self.evicting_map);
     }
 }

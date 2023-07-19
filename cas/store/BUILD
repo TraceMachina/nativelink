@@ -119,6 +119,7 @@ rust_library(
         "//util:common",
         "//util:error",
         "//util:evicting_map",
+        "//util:prometheus_utils",
         "@crate_index//:bytes",
     ],
 )
