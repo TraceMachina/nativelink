@@ -26,9 +26,10 @@ use std::time::SystemTime;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use filetime::{set_file_mtime, FileTime};
-use futures::future::{try_join, try_join3, try_join_all, BoxFuture, FutureExt, TryFutureExt};
+use futures::future::{try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use parking_lot::Mutex;
+use prometheus_utils::{AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent};
 use prost::Message;
 use relative_path::RelativePath;
 use tokio::io::AsyncSeekExt;
@@ -431,25 +432,17 @@ impl RunningActionImpl {
             did_cleanup: AtomicBool::new(false),
         }
     }
-}
 
-impl Drop for RunningActionImpl {
-    fn drop(&mut self) {
-        assert!(
-            self.did_cleanup.load(Ordering::Relaxed),
-            "RunningActionImpl did not cleanup. This is a violation of how RunningActionImpl's requirements"
-        );
+    fn metrics(&self) -> &Arc<Metrics> {
+        &self.running_actions_manager.metrics
     }
-}
 
-#[async_trait]
-impl RunningAction for RunningActionImpl {
     /// Prepares any actions needed to execution this action. This action will do the following:
     /// * Download any files needed to execute the action
     /// * Build a folder with all files needed to execute the action.
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
-    async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+    async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         {
             let mut state = self.state.lock();
             state.execution_metadata.input_fetch_start_timestamp = (self.running_actions_manager.now_fn)();
@@ -457,19 +450,19 @@ impl RunningAction for RunningActionImpl {
         let command = {
             // Download and build out our input files/folders. Also fetch and decode our Command.
             let cas_store_pin = Pin::new(self.running_actions_manager.cas_store.as_ref());
-            let command_fut = async {
+            let command_fut = self.metrics().get_proto_command_from_store.wrap(async {
                 get_and_decode_digest::<ProtoCommand>(cas_store_pin, &self.action_info.command_digest)
                     .await
                     .err_tip(|| "Converting command_digest to Command")
-            };
+            });
             let filesystem_store_pin = Pin::new(self.running_actions_manager.filesystem_store.as_ref());
             // Download the input files/folder and place them into the temp directory.
-            let download_to_directory_fut = download_to_directory(
+            let download_to_directory_fut = self.metrics().download_to_directory.wrap(download_to_directory(
                 cas_store_pin,
                 filesystem_store_pin,
                 &self.action_info.input_root_digest,
                 &self.work_directory,
-            );
+            ));
             let (command, _) = try_join(command_fut, download_to_directory_fut).await?;
             command
         };
@@ -487,8 +480,18 @@ impl RunningAction for RunningActionImpl {
                     Result::<(), Error>::Ok(())
                 }
             };
-            try_join_all(command.output_files.iter().map(prepare_output_directories)).await?;
-            try_join_all(command.output_paths.iter().map(prepare_output_directories)).await?;
+            self.metrics()
+                .prepare_output_files
+                .wrap(try_join_all(
+                    command.output_files.iter().map(prepare_output_directories),
+                ))
+                .await?;
+            self.metrics()
+                .prepare_output_paths
+                .wrap(try_join_all(
+                    command.output_paths.iter().map(prepare_output_directories),
+                ))
+                .await?;
         }
         log::info!("\x1b[0;31mWorker Received Command\x1b[0m: {:?}", command);
         {
@@ -499,7 +502,7 @@ impl RunningAction for RunningActionImpl {
         Ok(self)
     }
 
-    async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+    async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
             state.execution_metadata.execution_start_timestamp = (self.running_actions_manager.now_fn)();
@@ -571,6 +574,8 @@ impl RunningAction for RunningActionImpl {
             Result::<Bytes, Error>::Ok(all_stderr.freeze())
         }));
         let mut killed_action = false;
+
+        let timer = self.metrics().child_process.begin_timer();
         loop {
             tokio::select! {
                 maybe_exit_status = child_process.wait() => {
@@ -578,17 +583,29 @@ impl RunningAction for RunningActionImpl {
                     // TODO(allada) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
                     let (stdout, stderr) = if killed_action {
+                        drop(timer);
                         (Bytes::new(), Bytes::new())
                     } else {
+                        timer.measure();
                         (all_stdout_fut.await.err_tip(|| "Internal error reading from stdout of worker task")??, all_stderr_fut.await.err_tip(|| "Internal error reading from stderr of worker task")??)
                     };
                     {
+                        let exit_code = if let Some(exit_code) = exit_status.code() {
+                            if exit_code == 0 {
+                                self.metrics().child_process_success_error_code.inc();
+                            } else {
+                                self.metrics().child_process_failure_error_code.inc();
+                            }
+                            exit_code
+                        } else {
+                            EXIT_CODE_FOR_SIGNAL
+                        };
                         let mut state = self.state.lock();
                         state.command_proto = Some(command_proto);
                         state.execution_result = Some(RunningActionImplExecutionResult{
                             stdout,
                             stderr,
-                            exit_code: exit_status.code().unwrap_or(EXIT_CODE_FOR_SIGNAL),
+                            exit_code,
                         });
                         state.execution_metadata.execution_completed_timestamp = (self.running_actions_manager.now_fn)();
                     }
@@ -605,7 +622,7 @@ impl RunningAction for RunningActionImpl {
         // Unreachable.
     }
 
-    async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+    async fn inner_upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         log::info!("\x1b[0;31mWorker Uploading Results\x1b[0m");
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
@@ -625,23 +642,26 @@ impl RunningAction for RunningActionImpl {
         let cas_store = Pin::new(self.running_actions_manager.cas_store.as_ref());
         let (stdout_digest, stderr_digest) = {
             // Upload our stdout/stderr to our CAS store.
-            try_join(
-                async {
-                    let cursor = Cursor::new(execution_result.stdout);
-                    let (digest, mut cursor) = compute_digest(cursor).await?;
-                    cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
-                    upload_to_store(cas_store, digest, &mut cursor).await?;
-                    Result::<DigestInfo, Error>::Ok(digest)
-                },
-                async {
-                    let cursor = Cursor::new(execution_result.stderr);
-                    let (digest, mut cursor) = compute_digest(cursor).await?;
-                    cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
-                    upload_to_store(cas_store, digest, &mut cursor).await?;
-                    Result::<DigestInfo, Error>::Ok(digest)
-                },
-            )
-            .await?
+            self.metrics()
+                .clone()
+                .upload_stderr_and_stdout
+                .wrap(try_join(
+                    self.metrics().clone().upload_stdout.wrap(async {
+                        let cursor = Cursor::new(execution_result.stdout);
+                        let (digest, mut cursor) = compute_digest(cursor).await?;
+                        cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
+                        upload_to_store(cas_store, digest, &mut cursor).await?;
+                        Result::<DigestInfo, Error>::Ok(digest)
+                    }),
+                    self.metrics().clone().upload_stderr.wrap(async {
+                        let cursor = Cursor::new(execution_result.stderr);
+                        let (digest, mut cursor) = compute_digest(cursor).await?;
+                        cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
+                        upload_to_store(cas_store, digest, &mut cursor).await?;
+                        Result::<DigestInfo, Error>::Ok(digest)
+                    }),
+                ))
+                .await?
         };
 
         enum OutputType {
@@ -781,7 +801,7 @@ impl RunningAction for RunningActionImpl {
         Ok(self)
     }
 
-    async fn cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+    async fn inner_cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         log::info!("\x1b[0;31mWorker Cleanup\x1b[0m");
         // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
         let remove_dir_result = fs::remove_dir_all(&self.work_directory)
@@ -794,12 +814,56 @@ impl RunningAction for RunningActionImpl {
         remove_dir_result.map(|_| self)
     }
 
-    async fn get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
+    async fn inner_get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
         let mut state = self.state.lock();
         state
             .action_result
             .take()
             .err_tip(|| "Expected action_result to exist in get_finished_result")
+    }
+}
+
+impl Drop for RunningActionImpl {
+    fn drop(&mut self) {
+        assert!(
+            self.did_cleanup.load(Ordering::Relaxed),
+            "RunningActionImpl did not cleanup. This is a violation of how RunningActionImpl's requirements"
+        );
+    }
+}
+
+#[async_trait]
+impl RunningAction for RunningActionImpl {
+    async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        self.metrics()
+            .clone()
+            .prepare_action
+            .wrap(Self::inner_prepare_action(self))
+            .await
+    }
+
+    async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        self.metrics().clone().execute.wrap(Self::inner_execute(self)).await
+    }
+
+    async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        self.metrics()
+            .clone()
+            .upload_results
+            .wrap(Self::inner_upload_results(self))
+            .await
+    }
+
+    async fn cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        self.metrics().clone().cleanup.wrap(Self::inner_cleanup(self)).await
+    }
+
+    async fn get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
+        self.metrics()
+            .clone()
+            .get_finished_result
+            .wrap(Self::inner_get_finished_result(self))
+            .await
     }
 
     fn get_work_directory(&self) -> &String {
@@ -812,7 +876,7 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     type RunningAction: RunningAction;
 
     async fn create_and_add_action(
-        self: Arc<Self>,
+        self: &Arc<Self>,
         worker_id: String,
         start_execute: StartExecute,
     ) -> Result<Arc<Self::RunningAction>, Error>;
@@ -820,6 +884,8 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     async fn cache_action_result(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error>;
 
     async fn kill_all(&self);
+
+    fn metrics(&self) -> &Arc<Metrics>;
 }
 
 /// A function to get the current system time, used to allow mocking for tests
@@ -836,6 +902,7 @@ pub struct RunningActionsManagerImpl {
     upload_strategy: UploadCacheResultsStrategy,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
     now_fn: NowFn,
+    metrics: Arc<Metrics>,
 }
 
 impl RunningActionsManagerImpl {
@@ -864,6 +931,7 @@ impl RunningActionsManagerImpl {
             upload_strategy,
             running_actions: Mutex::new(HashMap::new()),
             now_fn,
+            metrics: Arc::new(Metrics::default()),
         })
     }
 
@@ -884,40 +952,44 @@ impl RunningActionsManagerImpl {
         )
     }
 
-    async fn make_work_directory(&self, action_id: &ActionId) -> Result<String, Error> {
-        let work_directory = format!("{}/{}", self.root_work_directory, hex::encode(action_id));
-        fs::create_dir(&work_directory)
-            .await
-            .err_tip(|| format!("Error creating work directory {work_directory}"))?;
-        Ok(work_directory)
+    fn make_work_directory<'a>(&'a self, action_id: &'a ActionId) -> impl Future<Output = Result<String, Error>> + 'a {
+        self.metrics.make_work_directory.wrap(async move {
+            let work_directory = format!("{}/{}", self.root_work_directory, hex::encode(action_id));
+            fs::create_dir(&work_directory)
+                .await
+                .err_tip(|| format!("Error creating work directory {work_directory}"))?;
+            Ok(work_directory)
+        })
     }
 
-    async fn create_action_info(
+    fn create_action_info(
         &self,
         start_execute: StartExecute,
         queued_timestamp: SystemTime,
-    ) -> Result<ActionInfo, Error> {
-        let execute_request = start_execute
-            .execute_request
-            .err_tip(|| "Expected execute_request to exist in StartExecute")?;
-        let action_digest: DigestInfo = execute_request
-            .action_digest
-            .clone()
-            .err_tip(|| "Expected action_digest to exist on StartExecute")?
-            .try_into()?;
-        let load_start_timestamp = (self.now_fn)();
-        let action = get_and_decode_digest::<Action>(Pin::new(self.cas_store.as_ref()), &action_digest)
-            .await
-            .err_tip(|| "During start_action")?;
-        let action_info = ActionInfo::try_from_action_and_execute_request_with_salt(
-            execute_request,
-            action,
-            start_execute.salt,
-            load_start_timestamp,
-            queued_timestamp,
-        )
-        .err_tip(|| "Could not create ActionInfo in create_and_add_action()")?;
-        Ok(action_info)
+    ) -> impl Future<Output = Result<ActionInfo, Error>> + '_ {
+        self.metrics.create_action_info.wrap(async move {
+            let execute_request = start_execute
+                .execute_request
+                .err_tip(|| "Expected execute_request to exist in StartExecute")?;
+            let action_digest: DigestInfo = execute_request
+                .action_digest
+                .clone()
+                .err_tip(|| "Expected action_digest to exist on StartExecute")?
+                .try_into()?;
+            let load_start_timestamp = (self.now_fn)();
+            let action = get_and_decode_digest::<Action>(Pin::new(self.cas_store.as_ref()), &action_digest)
+                .await
+                .err_tip(|| "During start_action")?;
+            let action_info = ActionInfo::try_from_action_and_execute_request_with_salt(
+                execute_request,
+                action,
+                start_execute.salt,
+                load_start_timestamp,
+                queued_timestamp,
+            )
+            .err_tip(|| "Could not create ActionInfo in create_and_add_action()")?;
+            Ok(action_info)
+        })
     }
 
     fn cleanup_action(&self, action_id: &ActionId) -> Result<(), Error> {
@@ -928,6 +1000,7 @@ impl RunningActionsManagerImpl {
         Ok(())
     }
 
+    // Note: We do not capture metrics on this call, only `.kill_all()`.
     async fn kill_action(action: Arc<RunningActionImpl>) {
         let kill_channel_tx = {
             let mut action_state = action.state.lock();
@@ -946,97 +1019,234 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     type RunningAction = RunningActionImpl;
 
     async fn create_and_add_action(
-        self: Arc<Self>,
+        self: &Arc<Self>,
         worker_id: String,
         start_execute: StartExecute,
     ) -> Result<Arc<RunningActionImpl>, Error> {
-        let queued_timestamp = start_execute
-            .queued_timestamp
-            .clone()
-            .and_then(|time| time.try_into().ok())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
-        log::info!("\x1b[0;31mWorker Received Action\x1b[0m: {:?}", action_info);
-        let action_id = action_info.unique_qualifier.get_hash();
-        let work_directory = self.make_work_directory(&action_id).await?;
-        let execution_metadata = ExecutionMetadata {
-            worker: worker_id,
-            queued_timestamp: action_info.insert_timestamp,
-            worker_start_timestamp: action_info.load_timestamp,
-            worker_completed_timestamp: SystemTime::UNIX_EPOCH,
-            input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
-            input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
-            execution_start_timestamp: SystemTime::UNIX_EPOCH,
-            execution_completed_timestamp: SystemTime::UNIX_EPOCH,
-            output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
-            output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
-        };
-        let running_action = Arc::new(RunningActionImpl::new(
-            execution_metadata,
-            action_id,
-            work_directory,
-            self.entrypoint_cmd.clone(),
-            action_info,
-            self.clone(),
-        ));
-        {
-            let mut running_actions = self.running_actions.lock();
-            running_actions.insert(action_id, Arc::downgrade(&running_action));
-        }
-        Ok(running_action)
+        self.metrics
+            .create_and_add_action
+            .wrap(async move {
+                let queued_timestamp = start_execute
+                    .queued_timestamp
+                    .clone()
+                    .and_then(|time| time.try_into().ok())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
+                log::info!("\x1b[0;31mWorker Received Action\x1b[0m: {:?}", action_info);
+                let action_id = action_info.unique_qualifier.get_hash();
+                let work_directory = self.make_work_directory(&action_id).await?;
+                let execution_metadata = ExecutionMetadata {
+                    worker: worker_id,
+                    queued_timestamp: action_info.insert_timestamp,
+                    worker_start_timestamp: action_info.load_timestamp,
+                    worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+                    input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    execution_start_timestamp: SystemTime::UNIX_EPOCH,
+                    execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+                    output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+                    output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+                };
+                let running_action = Arc::new(RunningActionImpl::new(
+                    execution_metadata,
+                    action_id,
+                    work_directory,
+                    self.entrypoint_cmd.clone(),
+                    action_info,
+                    self.clone(),
+                ));
+                {
+                    let mut running_actions = self.running_actions.lock();
+                    running_actions.insert(action_id, Arc::downgrade(&running_action));
+                }
+                Ok(running_action)
+            })
+            .await
     }
 
     async fn cache_action_result(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error> {
-        match self.upload_strategy {
-            UploadCacheResultsStrategy::SuccessOnly => {
-                if action_result.exit_code != 0 {
-                    return Ok(());
+        self.metrics
+            .cache_action_result
+            .wrap(async move {
+                match self.upload_strategy {
+                    UploadCacheResultsStrategy::SuccessOnly => {
+                        if action_result.exit_code != 0 {
+                            return Ok(());
+                        }
+                    }
+                    UploadCacheResultsStrategy::Never => return Ok(()),
+                    UploadCacheResultsStrategy::Everything => {}
                 }
-            }
-            UploadCacheResultsStrategy::Never => return Ok(()),
-            UploadCacheResultsStrategy::Everything => {}
-        }
 
-        let proto_action_result: ProtoActionResult = action_result.into();
-        // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = self.ac_store.clone().as_any();
-        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
-        if let Some(grpc_store) = maybe_grpc_store {
-            let update_action_request = UpdateActionResultRequest {
-                // This is populated by `update_action_result`.
-                instance_name: String::new(),
-                action_digest: Some(action_digest.into()),
-                action_result: Some(proto_action_result),
-                results_cache_policy: None,
-            };
-            grpc_store
-                .update_action_result(Request::new(update_action_request))
-                .await
-                .map(|_| ())
-                .err_tip(|| "Caching ActionResult")?;
-        } else {
-            let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
-            proto_action_result
-                .encode(&mut store_data)
-                .err_tip(|| "Encoding ActionResult for caching")?;
-            Pin::new(self.ac_store.as_ref())
-                .update_oneshot(action_digest, store_data.freeze())
-                .await
-                .err_tip(|| "Caching ActionResult")?;
-        };
-        Ok(())
+                let proto_action_result: ProtoActionResult = action_result.into();
+                // If we are a GrpcStore we shortcut here, as this is a special store.
+                let any_store = self.ac_store.clone().as_any();
+                let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+                if let Some(grpc_store) = maybe_grpc_store {
+                    let update_action_request = UpdateActionResultRequest {
+                        // This is populated by `update_action_result`.
+                        instance_name: String::new(),
+                        action_digest: Some(action_digest.into()),
+                        action_result: Some(proto_action_result),
+                        results_cache_policy: None,
+                    };
+                    grpc_store
+                        .update_action_result(Request::new(update_action_request))
+                        .await
+                        .map(|_| ())
+                        .err_tip(|| "Caching ActionResult")?;
+                } else {
+                    let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
+                    proto_action_result
+                        .encode(&mut store_data)
+                        .err_tip(|| "Encoding ActionResult for caching")?;
+                    Pin::new(self.ac_store.as_ref())
+                        .update_oneshot(action_digest, store_data.freeze())
+                        .await
+                        .err_tip(|| "Caching ActionResult")?;
+                };
+                Ok(())
+            })
+            .await
     }
 
     async fn kill_all(&self) {
-        let kill_actions: Vec<Arc<RunningActionImpl>> = {
-            let running_actions = self.running_actions.lock();
-            running_actions
-                .iter()
-                .filter_map(|(_action_id, action)| action.upgrade())
-                .collect()
-        };
-        for action in kill_actions {
-            Self::kill_action(action).await;
-        }
+        self.metrics
+            .kill_all
+            .wrap_no_capture_result(async move {
+                let kill_actions: Vec<Arc<RunningActionImpl>> = {
+                    let running_actions = self.running_actions.lock();
+                    running_actions
+                        .iter()
+                        .filter_map(|(_action_id, action)| action.upgrade())
+                        .collect()
+                };
+                for action in kill_actions {
+                    Self::kill_action(action).await;
+                }
+            })
+            .await
+    }
+
+    #[inline]
+    fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
+    }
+}
+
+#[derive(Default)]
+pub struct Metrics {
+    create_and_add_action: AsyncCounterWrapper,
+    cache_action_result: AsyncCounterWrapper,
+    kill_all: AsyncCounterWrapper,
+    create_action_info: AsyncCounterWrapper,
+    make_work_directory: AsyncCounterWrapper,
+    prepare_action: AsyncCounterWrapper,
+    execute: AsyncCounterWrapper,
+    upload_results: AsyncCounterWrapper,
+    cleanup: AsyncCounterWrapper,
+    get_finished_result: AsyncCounterWrapper,
+    get_proto_command_from_store: AsyncCounterWrapper,
+    download_to_directory: AsyncCounterWrapper,
+    prepare_output_files: AsyncCounterWrapper,
+    prepare_output_paths: AsyncCounterWrapper,
+    child_process: AsyncCounterWrapper,
+    child_process_success_error_code: CounterWithTime,
+    child_process_failure_error_code: CounterWithTime,
+    upload_stderr_and_stdout: AsyncCounterWrapper,
+    upload_stdout: AsyncCounterWrapper,
+    upload_stderr: AsyncCounterWrapper,
+}
+
+impl MetricsComponent for Metrics {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish(
+            "create_and_add_action",
+            &self.create_and_add_action,
+            "Stats about the create_and_add_action command.",
+        );
+        c.publish(
+            "cache_action_result",
+            &self.cache_action_result,
+            "Stats about the cache_action_result command.",
+        );
+        c.publish("kill_all", &self.kill_all, "Stats about the kill_all command.");
+        c.publish(
+            "create_action_info",
+            &self.create_action_info,
+            "Stats about the create_action_info command.",
+        );
+        c.publish(
+            "make_work_directory",
+            &self.make_work_directory,
+            "Stats about the make_work_directory command.",
+        );
+        c.publish(
+            "prepare_action",
+            &self.prepare_action,
+            "Stats about the prepare_action command.",
+        );
+        c.publish("execute", &self.execute, "Stats about the execute command.");
+        c.publish(
+            "upload_results",
+            &self.upload_results,
+            "Stats about the upload_results command.",
+        );
+        c.publish("cleanup", &self.cleanup, "Stats about the cleanup command.");
+        c.publish(
+            "get_finished_result",
+            &self.get_finished_result,
+            "Stats about the get_finished_result command.",
+        );
+        c.publish(
+            "get_proto_command_from_store",
+            &self.get_proto_command_from_store,
+            "Stats about the get_proto_command_from_store command.",
+        );
+        c.publish(
+            "download_to_directory",
+            &self.download_to_directory,
+            "Stats about the download_to_directory command.",
+        );
+        c.publish(
+            "prepare_output_files",
+            &self.prepare_output_files,
+            "Stats about the prepare_output_files command.",
+        );
+        c.publish(
+            "prepare_output_paths",
+            &self.prepare_output_paths,
+            "Stats about the prepare_output_paths command.",
+        );
+        c.publish(
+            "child_process",
+            &self.child_process,
+            "Stats about the child_process command.",
+        );
+        c.publish(
+            "child_process_success_error_code",
+            &self.child_process_success_error_code,
+            "Stats about the child_process_success_error_code command.",
+        );
+        c.publish(
+            "child_process_failure_error_code",
+            &self.child_process_failure_error_code,
+            "Stats about the child_process_failure_error_code command.",
+        );
+        c.publish(
+            "upload_stderr_and_stdout",
+            &self.upload_stderr_and_stdout,
+            "Total time spent processing the upload of stderr and stdout (because they are in parallel).",
+        );
+        c.publish(
+            "upload_stdout",
+            &self.upload_stdout,
+            "Total time spent uploading stdout.",
+        );
+        c.publish(
+            "upload_stderr",
+            &self.upload_stderr,
+            "Total time spent uploading stderr.",
+        );
     }
 }

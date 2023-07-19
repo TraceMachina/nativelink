@@ -15,12 +15,15 @@
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::mem::forget;
 use std::sync::atomic::{
     AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize,
     Ordering,
 };
 use std::sync::{Arc, Weak};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use futures::Future;
 use prometheus_client::collector::Collector as PrometheusCollector;
 use prometheus_client::encoding::{EncodeMetric, MetricEncoder};
 use prometheus_client::metrics::info::Info;
@@ -41,13 +44,25 @@ pub trait MetricsComponent {
 
 type NameString = String;
 type HelpString = String;
-type Metric = (NameString, HelpString, MaybeOwned<'static, Box<dyn LocalMetric>>);
+type Metric = (
+    NameString,
+    HelpString,
+    MaybeOwned<'static, Box<dyn LocalMetric>>,
+    Vec<(Cow<'static, str>, Cow<'static, str>)>,
+);
+
+type TextMetric = (
+    NameString,
+    HelpString,
+    String,
+    Vec<(Cow<'static, str>, Cow<'static, str>)>,
+);
 
 #[derive(Default)]
 pub struct CollectorState {
     module_name: Option<NameString>,
     metrics: Vec<Metric>,
-    text: Vec<(NameString, HelpString, String)>,
+    text: Vec<TextMetric>,
     children: Vec<CollectorState>,
 }
 
@@ -62,21 +77,33 @@ impl CollectorState {
 
     /// Publish a numerical metric. Usually used by `MetricPublisher` to publish metrics.
     #[inline]
-    pub fn publish_number<N, T>(&mut self, name: impl Into<String>, value: T, help: impl Into<String>)
-    where
+    pub fn publish_number<N, T>(
+        &mut self,
+        name: impl Into<String>,
+        value: T,
+        help: impl Into<String>,
+        labels: impl Into<Vec<(Cow<'static, str>, Cow<'static, str>)>>,
+    ) where
         N: Debug + 'static,
         T: Into<NumericalMetric<N>>,
         NumericalMetric<N>: EncodeMetric,
     {
         let gague: Box<dyn LocalMetric> = Box::new(value.into());
-        self.metrics.push((name.into(), help.into(), MaybeOwned::Owned(gague)));
+        self.metrics
+            .push((name.into(), help.into(), MaybeOwned::Owned(gague), labels.into()));
     }
 
     /// Publish a static text metric. Generally these are used for labels and don't
     /// change during runtime. Usually used by `MetricPublisher` to publish metrics.
     #[inline]
-    pub fn publish_text(&mut self, name: impl Into<String>, value: impl Into<String>, help: impl Into<String>) {
-        self.text.push((name.into(), help.into(), value.into()));
+    pub fn publish_text(
+        &mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        help: impl Into<String>,
+        labels: impl Into<Vec<(Cow<'static, str>, Cow<'static, str>)>>,
+    ) {
+        self.text.push((name.into(), help.into(), value.into(), labels.into()));
     }
 
     /// Publish a histogram metric. Be careful not to have the iterator take too
@@ -85,9 +112,9 @@ impl CollectorState {
     #[inline]
     pub fn publish_stats<N, T>(
         &mut self,
-        name: impl std::fmt::Display,
+        name: impl Into<String> + Clone,
         data: impl Iterator<Item = T>,
-        help: impl std::fmt::Display,
+        help: impl Into<String> + Clone,
     ) where
         N: Debug + 'static,
         T: Into<NumericalMetric<N>> + Ord + Copy + std::fmt::Display,
@@ -99,11 +126,13 @@ impl CollectorState {
         }
         data.sort_unstable();
         let data_len = data.len() as f64;
-        for i in &[0.01, 0.03, 0.05, 0.10, 0.30, 0.50, 0.70, 0.90, 0.95, 0.97, 0.99] {
+        for i in &[
+            0.00, 0.01, 0.03, 0.05, 0.10, 0.30, 0.50, 0.70, 0.90, 0.95, 0.97, 0.99, 1.00,
+        ] {
             let index = (i * data_len) as usize;
-            let value = data.get(index).unwrap();
-            let p = i * 100.0;
-            self.publish_number(format!("{}_p{:02}", name, p), *value, format!("{} p{:02}", help, p));
+            let value = data.get(if index < data.len() { index } else { index - 1 }).unwrap();
+            let labels = vec![("quantile".into(), format!("{:.2}", i).into())];
+            self.publish_number(name.clone(), *value, help.clone(), labels);
         }
     }
 
@@ -113,24 +142,24 @@ impl CollectorState {
         Box::new(
             self.metrics
                 .into_iter()
-                .map(move |(name, help, metric)| {
+                .map(move |(name, help, metric, labels)| {
                     let mut prefix: Option<Prefix> = None;
                     if let Some(parent_prefix) = &module_name1 {
                         prefix = Some(Prefix::from(parent_prefix.clone()));
                     }
                     (
-                        Cow::Owned(Descriptor::new(name, help, None, prefix.as_ref(), vec![])),
+                        Cow::Owned(Descriptor::new(name, help, None, prefix.as_ref(), labels)),
                         metric,
                     )
                 })
-                .chain(self.text.into_iter().map(move |(name, help, value)| {
+                .chain(self.text.into_iter().map(move |(name, help, value, labels)| {
                     let info: Box<dyn LocalMetric> = Box::new(Info::new(vec![(name, value)]));
                     let mut prefix: Option<Prefix> = None;
                     if let Some(parent_prefix) = &module_name2 {
                         prefix = Some(Prefix::from(parent_prefix.clone()));
                     }
                     (
-                        Cow::Owned(Descriptor::new("labels", help, None, prefix.as_ref(), vec![])),
+                        Cow::Owned(Descriptor::new("labels", help, None, prefix.as_ref(), labels)),
                         MaybeOwned::Owned(info),
                     )
                 }))
@@ -140,6 +169,168 @@ impl CollectorState {
                         .flat_map(move |child_state| child_state.into_metrics()),
                 ),
         )
+    }
+}
+
+/// This is a utility that will only increment the referenced counter when it is dropped.
+/// This struct is zero cost and has a runtime cost only when it is dropped.
+/// This struct is very useful for tracking when futures are dropped.
+struct DropCounter<'a> {
+    counter: &'a AtomicU64,
+}
+
+impl<'a> DropCounter<'a> {
+    #[inline]
+    pub fn new(counter: &'a AtomicU64) -> Self {
+        Self { counter }
+    }
+}
+
+impl<'a> Drop for DropCounter<'a> {
+    #[inline]
+    fn drop(&mut self) {
+        self.counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub struct AsyncTimer<'a> {
+    start: Instant,
+    drop_counter: DropCounter<'a>,
+    counter: &'a AsyncCounterWrapper,
+}
+
+impl<'a> AsyncTimer<'a> {
+    #[inline]
+    pub fn measure(self) {
+        self.counter
+            .sum_func_duration_ns
+            .fetch_add(self.start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.counter.calls.fetch_add(1, Ordering::Relaxed);
+        self.counter.successes.fetch_add(1, Ordering::Relaxed);
+        // This causes DropCounter's drop to never be called.
+        forget(self.drop_counter);
+    }
+}
+
+/// Tracks the number of calls, successes, failures, and drops of an async function.
+/// call `.wrap(future)` to wrap a future and stats about the future are automatically
+/// tracked and can be published to a `CollectorState`.
+#[derive(Default)]
+pub struct AsyncCounterWrapper {
+    calls: AtomicU64,
+    successes: AtomicU64,
+    failures: AtomicU64,
+    drops: AtomicU64,
+    // Time spent in nano seconds in the future.
+    // 64 bit address space gives ~584 years of nanoseconds.
+    sum_func_duration_ns: AtomicU64,
+}
+
+impl AsyncCounterWrapper {
+    #[inline]
+    pub async fn wrap<'a, T, E, F: Future<Output = Result<T, E>> + 'a>(&'a self, future: F) -> Result<T, E> {
+        let result = self.wrap_no_capture_result(future).await;
+        if result.is_ok() {
+            self.successes.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.failures.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+
+    #[inline]
+    pub async fn wrap_no_capture_result<'a, T, F: Future<Output = T> + 'a>(&'a self, future: F) -> T {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let drop_counter = DropCounter::new(&self.drops);
+        let instant = Instant::now();
+        let result = future.await;
+        // By default `drop_counter` will increment the drop counter when it goes out of scope.
+        // This will ensure we don't increment the counter if we make it here with a zero cost.
+        forget(drop_counter);
+        self.sum_func_duration_ns
+            .fetch_add(instant.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        result
+    }
+
+    #[inline]
+    pub fn begin_timer(&self) -> AsyncTimer<'_> {
+        AsyncTimer {
+            start: Instant::now(),
+            drop_counter: DropCounter::new(&self.drops),
+            counter: self,
+        }
+    }
+}
+
+impl MetricPublisher for &AsyncCounterWrapper {
+    #[inline]
+    fn publish(&self, state: &mut CollectorState, name: String, help: String) {
+        let calls = self.calls.load(Ordering::Relaxed);
+        let successes = self.successes.load(Ordering::Relaxed);
+        let failures = self.failures.load(Ordering::Relaxed);
+        let drops = self.drops.load(Ordering::Relaxed);
+        let active = calls - successes - failures - drops;
+        let non_zero_calls = if calls == 0 { 1 } else { calls };
+        let avg_duration_ns = self.sum_func_duration_ns.load(Ordering::Relaxed) / non_zero_calls;
+        state.publish_number(
+            name.clone(),
+            drops,
+            format!("{help} The number of dropped futures."),
+            vec![("type".into(), "drop".into())],
+        );
+        state.publish_number(
+            name.clone(),
+            successes,
+            format!("{help} The number of successes."),
+            vec![("type".into(), "success".into())],
+        );
+        state.publish_number(
+            name.clone(),
+            failures,
+            format!("{help} The number of failures."),
+            vec![("type".into(), "failure".into())],
+        );
+        state.publish_number(
+            name.clone(),
+            active,
+            format!("{help} The number of active futures."),
+            vec![("type".into(), "active".into())],
+        );
+        state.publish(
+            format!("{name}_avg_duration_ns"),
+            &avg_duration_ns,
+            format!("{help} The average number of nanos spent in future."),
+        );
+    }
+}
+
+/// Tracks an counter through time and the last time the counter was changed.
+#[derive(Default)]
+pub struct CounterWithTime {
+    counter: AtomicU64,
+    last_time: AtomicI64,
+}
+
+impl CounterWithTime {
+    #[inline]
+    pub fn inc(&self) {
+        self.counter.fetch_add(1, Ordering::Relaxed);
+        self.last_time.store(
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64,
+            Ordering::Relaxed,
+        );
+    }
+}
+
+impl MetricPublisher for &CounterWithTime {
+    #[inline]
+    fn publish(&self, state: &mut CollectorState, name: String, help: String) {
+        state.publish(
+            format!("{name}_last_ts"),
+            &self.last_time,
+            format!("The timestamp of when {name} was last published"),
+        );
+        state.publish(name, &self.counter, help);
     }
 }
 
@@ -193,7 +384,7 @@ pub trait MetricPublisher {
 impl MetricPublisher for &String {
     #[inline]
     fn publish(&self, state: &mut CollectorState, name: String, help: String) {
-        state.publish_text(name, *self, help);
+        state.publish_text(name, *self, help, vec![]);
     }
 }
 
@@ -230,7 +421,7 @@ macro_rules! impl_publish_atomic {
             impl MetricPublisher for &$t {
                 #[inline]
                 fn publish(&self, state: &mut CollectorState, name: String, help: String) {
-                    state.publish_number(name, &self.load(Ordering::Relaxed), help);
+                    state.publish_number(name, &self.load(Ordering::Relaxed), help, vec![]);
                 }
             }
         )*
@@ -281,7 +472,7 @@ macro_rules! impl_numerical_metric {
             impl MetricPublisher for &$t {
                 #[inline]
                 fn publish(&self, state: &mut CollectorState, name: String, help: String) {
-                    state.publish_number(name, *self, help);
+                    state.publish_number(name, *self, help, vec![]);
                 }
             }
 
