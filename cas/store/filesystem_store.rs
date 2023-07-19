@@ -645,12 +645,12 @@ impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
 impl<Fe: FileEntry> MetricsComponent for FilesystemStore<Fe> {
     fn gather_metrics(&self, c: &mut CollectorState) {
         c.publish(
-            "read_buff_size",
+            "read_buff_size_bytes",
             &self.read_buffer_size,
             "Size of the configured read buffer size",
         );
         c.publish(
-            "active_drop_spawns",
+            "active_drop_spawns_total",
             &self.shared_context.active_drop_spawns,
             "Number of active drop spawns",
         );
