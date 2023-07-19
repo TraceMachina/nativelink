@@ -15,10 +15,10 @@
 use std::pin::Pin;
 use std::process::Stdio;
 use std::str;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use futures::{future::BoxFuture, select, stream::FuturesUnordered, FutureExt, StreamExt, TryFutureExt};
+use futures::{future::BoxFuture, select, stream::FuturesUnordered, Future, FutureExt, StreamExt, TryFutureExt};
 use tokio::process;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -30,11 +30,14 @@ use common::{fs, log};
 use config::cas_server::LocalWorkerConfig;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
+use prometheus_utils::{AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
 use proto::com::github::allada::turbo_cache::remote_execution::{
     execute_result, update_for_worker::Update, worker_api_client::WorkerApiClient, ExecuteResult, KeepAliveRequest,
     UpdateForWorker,
 };
-use running_actions_manager::{RunningAction, RunningActionsManager, RunningActionsManagerImpl};
+use running_actions_manager::{
+    Metrics as RunningActionManagerMetrics, RunningAction, RunningActionsManager, RunningActionsManagerImpl,
+};
 use store::Store;
 use worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use worker_utils::make_supported_properties;
@@ -53,6 +56,7 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
     grpc_client: T,
     worker_id: String,
     running_actions_manager: Arc<U>,
+    metrics: Arc<Metrics>,
 }
 
 async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Error> {
@@ -88,12 +92,19 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
 }
 
 impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, T, U> {
-    fn new(config: &'a LocalWorkerConfig, grpc_client: T, worker_id: String, running_actions_manager: Arc<U>) -> Self {
+    fn new(
+        config: &'a LocalWorkerConfig,
+        grpc_client: T,
+        worker_id: String,
+        running_actions_manager: Arc<U>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
         Self {
             config,
             grpc_client,
             worker_id,
             running_actions_manager,
+            metrics,
         }
     }
 
@@ -162,8 +173,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             ));
                         }
                         // TODO(allada) We should possibly do something with this notification.
-                        Update::Disconnect(()) | Update::KeepAlive(()) => { /* Do nothing */ }
+                        Update::Disconnect(()) => {
+                            self.metrics.disconnects_received.inc();
+                        }
+                        Update::KeepAlive(()) => {
+                            self.metrics.keep_alives_received.inc();
+                        }
                         Update::StartAction(start_execute) => {
+                            self.metrics.start_actions_received.inc();
                             let add_future_channel = add_future_channel.clone();
                             let mut grpc_client = self.grpc_client.clone();
                             let maybe_instance_name = start_execute.execute_request.as_ref().map(|v| v.instance_name.clone());
@@ -172,7 +189,9 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let action_digest = start_execute.execute_request.as_ref().and_then(|v| v.action_digest.clone());
                             let running_actions_manager = self.running_actions_manager.clone();
                             let worker_id_clone = worker_id.clone();
-                            let start_action_fut = preconditions_met(self.config.precondition_script.clone())
+                            let precondition_script_cfg = self.config.precondition_script.clone();
+                            let start_action_fut = self.metrics.clone().wrap(move |metrics| async move {
+                                metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
                                 .and_then(|_| async move {
                                     running_actions_manager.create_and_add_action(worker_id_clone, start_execute).await
                                 })
@@ -190,7 +209,8 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             }
                                             result
                                         })
-                                );
+                                ).await
+                            });
 
                             let running_actions_manager = self.running_actions_manager.clone();
                             let make_publish_future = move |res: Result<ActionResult, Error>| async move {
@@ -260,6 +280,7 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
     running_actions_manager: Arc<U>,
     connection_factory: ConnectionFactory<T>,
     sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
+    metrics: Arc<Metrics>,
 }
 
 /// Creates a new `LocalWorker`. The `cas_store` must be an instance of
@@ -336,12 +357,18 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         connection_factory: ConnectionFactory<T>,
         sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>,
     ) -> Self {
+        let metrics = Arc::new(Metrics::new(Arc::downgrade(running_actions_manager.metrics())));
         Self {
             config,
             running_actions_manager,
             connection_factory,
             sleep_fn: Some(sleep_fn),
+            metrics,
         }
+    }
+
+    pub fn name(&self) -> &String {
+        &self.config.name
     }
 
     async fn register_worker(&mut self, client: &mut T) -> Result<(String, Streaming<UpdateForWorker>), Error> {
@@ -399,7 +426,13 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                     continue; // Try to connect again.
                 }
                 Ok((worker_id, update_for_worker_stream)) => (
-                    LocalWorkerImpl::new(&self.config, client, worker_id, self.running_actions_manager.clone()),
+                    LocalWorkerImpl::new(
+                        &self.config,
+                        client,
+                        worker_id,
+                        self.running_actions_manager.clone(),
+                        self.metrics.clone(),
+                    ),
                     update_for_worker_stream,
                 ),
             };
@@ -415,5 +448,67 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             }
         }
         // Unreachable.
+    }
+
+    pub fn register_metrics(&self, registry: &mut Registry) {
+        registry.register_collector(Box::new(Collector::new(&self.metrics)));
+    }
+}
+
+struct Metrics {
+    start_actions_received: CounterWithTime,
+    disconnects_received: CounterWithTime,
+    keep_alives_received: CounterWithTime,
+    preconditions: AsyncCounterWrapper,
+    running_actions_manager_metrics: Weak<RunningActionManagerMetrics>,
+}
+
+impl Metrics {
+    fn new(running_actions_manager_metrics: Weak<RunningActionManagerMetrics>) -> Self {
+        Self {
+            start_actions_received: CounterWithTime::default(),
+            disconnects_received: CounterWithTime::default(),
+            keep_alives_received: CounterWithTime::default(),
+            preconditions: AsyncCounterWrapper::default(),
+            running_actions_manager_metrics,
+        }
+    }
+}
+
+impl Metrics {
+    async fn wrap<U, T: Future<Output = U>, F: FnOnce(Arc<Self>) -> T>(self: Arc<Self>, fut: F) -> U {
+        fut(self).await
+    }
+}
+
+impl MetricsComponent for Metrics {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish(
+            "start_actions_received",
+            &self.start_actions_received,
+            concat!(
+                "Total number of actions sent to this worker to process. This ",
+                "does not mean it started them, it just means it received a request ",
+                "to execute it."
+            ),
+        );
+        c.publish(
+            "disconnects_received",
+            &self.disconnects_received,
+            "Total number of disconnects received from the scheduler.",
+        );
+        c.publish(
+            "keep_alives_received",
+            &self.keep_alives_received,
+            "Total number of keep-alives received from the scheduler.",
+        );
+        c.publish(
+            "preconditions",
+            &self.preconditions,
+            "Stats about the calls to check if an action satisfies the config supplied script.", // Data is appended to this.
+        );
+        if let Some(running_actions_manager_metrics) = self.running_actions_manager_metrics.upgrade() {
+            c.publish("", running_actions_manager_metrics.as_ref(), "");
+        }
     }
 }

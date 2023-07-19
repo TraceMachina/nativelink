@@ -233,6 +233,12 @@ pub enum UploadCacheResultsStrategy {
 
 #[derive(Deserialize, Debug, Default)]
 pub struct LocalWorkerConfig {
+    /// Name of the worker. This is give a more friendly name to a worker for logging
+    /// and metric publishing.
+    /// Default: <Index position in the workers list>.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub name: String,
+
     /// Endpoint which the worker will connect to the scheduler's WorkerApiService.
     pub worker_api_endpoint: EndpointConfig,
 
