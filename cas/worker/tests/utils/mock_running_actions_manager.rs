@@ -22,7 +22,7 @@ use action_messages::ActionResult;
 use common::DigestInfo;
 use error::{make_input_err, Error};
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
-use running_actions_manager::{RunningAction, RunningActionsManager};
+use running_actions_manager::{Metrics, RunningAction, RunningActionsManager};
 
 #[derive(Debug)]
 enum RunningActionManagerCalls {
@@ -43,6 +43,7 @@ pub struct MockRunningActionsManager {
 
     rx_kill_all: Mutex<mpsc::UnboundedReceiver<()>>,
     tx_kill_all: mpsc::UnboundedSender<()>,
+    metrics: Arc<Metrics>,
 }
 
 impl Default for MockRunningActionsManager {
@@ -63,6 +64,7 @@ impl MockRunningActionsManager {
             tx_resp,
             rx_kill_all: Mutex::new(rx_kill_all),
             tx_kill_all,
+            metrics: Arc::new(Metrics::default()),
         }
     }
 }
@@ -133,6 +135,10 @@ impl RunningActionsManager for MockRunningActionsManager {
 
     async fn kill_all(&self) {
         self.tx_kill_all.send(()).expect("Could not send request to mpsc");
+    }
+
+    fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
     }
 }
 

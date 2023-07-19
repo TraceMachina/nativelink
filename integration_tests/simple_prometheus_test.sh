@@ -32,16 +32,16 @@ echo "$all_contents"
 
 # Check static metrics in some of the stores. These settings are set
 # in the config file of integration tests for the CAS.
-echo "Checking: turbo_cache_turbo_cache_stores_turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000"
-echo "$all_contents" | grep -q "turbo_cache_turbo_cache_stores_turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000"
-echo "Checking: turbo_cache_turbo_cache_stores_turbo_cache_stores_AC_MAIN_STORE_read_buff_size 32768"
-echo "$all_contents" | grep -q "turbo_cache_turbo_cache_stores_turbo_cache_stores_AC_MAIN_STORE_read_buff_size 32768"
-echo "Checking: turbo_cache_turbo_cache_stores_turbo_cache_stores_CAS_MAIN_STORE_evicting_map_max_bytes 10000000000"
-echo "$all_contents" | grep -q "turbo_cache_turbo_cache_stores_turbo_cache_stores_CAS_MAIN_STORE_evicting_map_max_bytes 10000000000"
+echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000'
+echo "$all_contents" | grep -q 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000'
+echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_read_buff_size_bytes 32768'
+echo "$all_contents" | grep -q 'turbo_cache_stores_AC_MAIN_STORE_read_buff_size_bytes 32768'
+echo 'Checking: turbo_cache_stores_CAS_MAIN_STORE_evicting_map_max_bytes 10000000000'
+echo "$all_contents" | grep -q 'turbo_cache_stores_CAS_MAIN_STORE_evicting_map_max_bytes 10000000000'
 
 # Check dynamic metrics in some of the stores.
 # These are the most stable settings to test that are dymaic.
-echo "Checking: turbo_cache_turbo_cache_stores_turbo_cache_stores_AC_MAIN_STORE_evicting_map_item_size_stats_p99"
-echo "$all_contents" | grep -q "turbo_cache_turbo_cache_stores_turbo_cache_stores_AC_MAIN_STORE_evicting_map_item_size_stats_p99"
-echo "Checking: turbo_cache_turbo_cache_stores_turbo_cache_stores_AC_MAIN_STORE_evicting_map_items_in_store 3"
-echo "$all_contents" | grep -q "turbo_cache_turbo_cache_stores_turbo_cache_stores_AC_MAIN_STORE_evicting_map_items_in_store 3"
+echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_evicting_map_item_size_bytes{quantile="0.99"}'
+echo "$all_contents" | grep -q 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_item_size_bytes{quantile="0.99"}'
+echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_evicting_map_items_in_store_total 3'
+echo "$all_contents" | grep -q 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_items_in_store_total 3'
