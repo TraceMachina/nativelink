@@ -36,6 +36,7 @@ rust_library(
     srcs = ["prometheus_utils.rs"],
     visibility = ["//visibility:public"],
     deps = [
+        "@crate_index//:futures",
         "@crate_index//:prometheus-client",
     ],
 )

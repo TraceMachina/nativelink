@@ -174,22 +174,22 @@ impl StoreTrait for VerifyStore {
 impl MetricsComponent for VerifyStore {
     fn gather_metrics(&self, c: &mut CollectorState) {
         c.publish(
-            "verify_size",
+            "verify_size_enabled",
             &self.verify_size,
             "If the verification store is verifying the size of the data",
         );
         c.publish(
-            "verify_hash",
+            "verify_hash_enabled",
             &self.verify_hash,
             "If the verification store is verifying the hash of the data",
         );
         c.publish(
-            "size_verification_failures",
+            "size_verification_failures_total",
             &self.size_verification_failures,
             "Number of failures the verification store had due to size mismatches",
         );
         c.publish(
-            "hash_verification_failures",
+            "hash_verification_failures_total",
             &self.hash_verification_failures,
             "Number of failures the verification store had due to hash mismatches",
         );

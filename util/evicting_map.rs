@@ -350,37 +350,37 @@ where
 }
 
 impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T, I> {
-    fn gather_metrics(&self, collector: &mut CollectorState) {
-        collector.publish("max_bytes", &self.max_bytes, "Maximum size of the store in bytes");
-        collector.publish(
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish("max_bytes", &self.max_bytes, "Maximum size of the store in bytes");
+        c.publish(
             "evict_bytes",
             &self.evict_bytes,
             "Number of bytes to evict when the store is full",
         );
-        collector.publish(
-            "anchor_time",
+        c.publish(
+            "anchor_time_timestamp",
             &self.anchor_time.unix_timestamp(),
             "Anchor time for the store",
         );
-        collector.publish(
+        c.publish(
             "max_seconds",
             &self.max_seconds,
             "Maximum number of seconds to keep an item in the store",
         );
-        collector.publish(
+        c.publish(
             "max_count",
             &self.max_count,
             "Maximum number of items to keep in the store",
         );
         futures::executor::block_on(async move {
             let state = self.state.lock().await;
-            collector.publish(
-                "sum_store_size",
+            c.publish(
+                "sum_store_size_bytes",
                 &state.sum_store_size,
                 "Total size of all items in the store",
             );
-            collector.publish("items_in_store", &state.lru.len(), "Mumber of items in the store");
-            collector.publish(
+            c.publish("items_in_store_total", &state.lru.len(), "Mumber of items in the store");
+            c.publish(
                 "oldest_item_timestamp",
                 &state
                     .lru
@@ -389,8 +389,8 @@ impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T,
                     .unwrap_or(-1),
                 "Timestamp of the oldest item in the store",
             );
-            collector.publish(
-                "oldest_item_age",
+            c.publish(
+                "oldest_item_age_nanos",
                 &state
                     .lru
                     .peek_lru()
@@ -398,43 +398,43 @@ impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T,
                     .unwrap_or(-1),
                 "Age of the oldest item in the store in seconds",
             );
-            collector.publish(
-                "evicted_items",
+            c.publish(
+                "evicted_items_total",
                 &state.evicted_items,
                 "Number of items evicted from the store",
             );
-            collector.publish(
+            c.publish(
                 "evicted_bytes",
                 &state.evicted_bytes,
                 "Number of bytes evicted from the store",
             );
-            collector.publish(
+            c.publish(
                 "lifetime_inserted_bytes",
                 &state.lifetime_inserted_bytes,
                 "Number of bytes inserted into the store since it was created",
             );
-            collector.publish(
+            c.publish(
                 "replaced_bytes",
                 &state.replaced_bytes,
                 "Number of bytes replaced in the store",
             );
-            collector.publish(
-                "replaced_items",
+            c.publish(
+                "replaced_items_total",
                 &state.replaced_items,
                 "Number of items replaced in the store",
             );
-            collector.publish(
+            c.publish(
                 "removed_bytes",
                 &state.removed_bytes,
                 "Number of bytes explicitly removed from the store",
             );
-            collector.publish(
-                "removed_items",
+            c.publish(
+                "removed_items_total",
                 &state.removed_items,
                 "Number of items explicitly removed from the store",
             );
-            collector.publish_stats(
-                "item_size_stats",
+            c.publish_stats(
+                "item_size_bytes",
                 state.lru.iter().take(10_000).map(|(_, v)| v.data.len()),
                 "Stats about the first 10_000 items in the store (these are oldest items in the store)",
             );
