@@ -144,7 +144,7 @@ impl StoreTrait for MemoryStore {
 }
 
 impl MetricsComponent for MemoryStore {
-    fn gather_metrics(&self, collector: &mut CollectorState) {
-        collector.publish_child(Some("evicting_map"), &self.evicting_map);
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish("evicting_map", &self.evicting_map, "");
     }
 }
