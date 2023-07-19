@@ -15,6 +15,10 @@
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::sync::atomic::{
+    AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize,
+    Ordering,
+};
 use std::sync::{Arc, Weak};
 
 use prometheus_client::collector::Collector as PrometheusCollector;
@@ -48,8 +52,17 @@ pub struct CollectorState {
 }
 
 impl CollectorState {
-    /// Publish a numerical metric.
-    pub fn publish<N, T>(&mut self, name: impl Into<String>, value: T, help: impl Into<String>)
+    /// Publishes a value. This should be the primary way a metric is published.
+    /// Any special types that want metrics published should implement `MetricPublisher`
+    /// for that type.
+    #[inline]
+    pub fn publish(&mut self, name: impl Into<String>, value: impl MetricPublisher, help: impl Into<String>) {
+        value.publish(self, name.into(), help.into());
+    }
+
+    /// Publish a numerical metric. Usually used by `MetricPublisher` to publish metrics.
+    #[inline]
+    pub fn publish_number<N, T>(&mut self, name: impl Into<String>, value: T, help: impl Into<String>)
     where
         N: Debug + 'static,
         T: Into<NumericalMetric<N>>,
@@ -60,33 +73,16 @@ impl CollectorState {
     }
 
     /// Publish a static text metric. Generally these are used for labels and don't
-    /// change during runtime.
+    /// change during runtime. Usually used by `MetricPublisher` to publish metrics.
+    #[inline]
     pub fn publish_text(&mut self, name: impl Into<String>, value: impl Into<String>, help: impl Into<String>) {
         self.text.push((name.into(), help.into(), value.into()));
-    }
-
-    /// Publish a child module. The child module must implement the `MetricsComponent`.
-    /// The child module will have all of its metrics published prefixed with the
-    /// parent's name.
-    pub fn publish_child(&mut self, module_name: Option<impl Into<String>>, module: &impl MetricsComponent) {
-        let mut state = CollectorState {
-            module_name: match (&self.module_name, module_name) {
-                (Some(parent), None) => Some(parent.clone()),
-                (Some(parent), Some(child)) => Some(format!("{parent}_{}", child.into())),
-                (None, Some(child)) => Some(child.into()),
-                (None, None) => None,
-            },
-            metrics: Vec::default(),
-            text: Vec::default(),
-            children: Vec::default(),
-        };
-        module.gather_metrics(&mut state);
-        self.children.push(state);
     }
 
     /// Publish a histogram metric. Be careful not to have the iterator take too
     /// much data or this will consume a lot of memory because we need to collect
     /// all the data and sort them to calculate the percentiles.
+    #[inline]
     pub fn publish_stats<N, T>(
         &mut self,
         name: impl std::fmt::Display,
@@ -107,7 +103,7 @@ impl CollectorState {
             let index = (i * data_len) as usize;
             let value = data.get(index).unwrap();
             let p = i * 100.0;
-            self.publish(format!("{}_p{:02}", name, p), *value, format!("{} p{:02}", help, p));
+            self.publish_number(format!("{}_p{:02}", name, p), *value, format!("{} p{:02}", help, p));
         }
     }
 
@@ -188,6 +184,72 @@ impl<S: MetricsComponent + Sync + Send + 'static> PrometheusCollector for Collec
     }
 }
 
+pub trait MetricPublisher {
+    /// Publish a gague metric.
+    fn publish(&self, state: &mut CollectorState, name: String, help: String);
+}
+
+/// Implements MetricPublisher for string types.
+impl MetricPublisher for &String {
+    #[inline]
+    fn publish(&self, state: &mut CollectorState, name: String, help: String) {
+        state.publish_text(name, *self, help);
+    }
+}
+
+/// Implements MetricPublisher for string types.
+impl<T> MetricPublisher for &T
+where
+    T: MetricsComponent,
+{
+    #[inline]
+    fn publish(&self, parent_state: &mut CollectorState, module_name: String, _help: String) {
+        let module_name = if module_name.is_empty() {
+            None
+        } else {
+            Some(module_name)
+        };
+        let mut state = CollectorState {
+            module_name: match (&parent_state.module_name, module_name) {
+                (Some(parent), None) => Some(parent.clone()),
+                (Some(parent), Some(child)) => Some(format!("{parent}_{}", child)),
+                (None, child) => child,
+            },
+            metrics: Vec::default(),
+            text: Vec::default(),
+            children: Vec::default(),
+        };
+        self.gather_metrics(&mut state);
+        parent_state.children.push(state);
+    }
+}
+
+macro_rules! impl_publish_atomic {
+    ($($t:ty),*) => {
+        $(
+            impl MetricPublisher for &$t {
+                #[inline]
+                fn publish(&self, state: &mut CollectorState, name: String, help: String) {
+                    state.publish_number(name, self.load(Ordering::Relaxed), help);
+                }
+            }
+        )*
+    };
+}
+
+impl_publish_atomic!(
+    AtomicU8,
+    AtomicU16,
+    AtomicU32,
+    AtomicU64,
+    AtomicUsize,
+    AtomicI8,
+    AtomicI16,
+    AtomicI32,
+    AtomicI64,
+    AtomicIsize
+);
+
 #[derive(Debug)]
 pub struct NumericalMetric<T>(T);
 
@@ -195,6 +257,7 @@ macro_rules! impl_numerical {
     ($($t:ty),*) => {
         $(
             impl From<$t> for NumericalMetric<$t> {
+                #[inline]
                 fn from(t: $t) -> Self {
                     NumericalMetric(t)
                 }
@@ -204,11 +267,18 @@ macro_rules! impl_numerical {
 }
 
 // Regsiter all the numerical types to be converted into Numerical.
-impl_numerical!(u8, bool, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+impl_numerical!(u8, bool, u16, u32, u64, usize, i8, i16, i32, i64, isize, f32, f64);
 
 macro_rules! impl_numerical_metric {
     ($u:ty,$($t:ty),*) => {
         $(
+            impl MetricPublisher for $t {
+                #[inline]
+                fn publish(&self, state: &mut CollectorState, name: String, help: String) {
+                    state.publish_number(name, *self, help);
+                }
+            }
+
             impl EncodeMetric for NumericalMetric<$t> {
                 fn encode(&self, mut encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
                     encoder.encode_gauge(&TryInto::<$u>::try_into(self.0).map_err(|_| std::fmt::Error::default())?)

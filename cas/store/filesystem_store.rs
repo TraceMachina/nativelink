@@ -643,27 +643,27 @@ impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
 }
 
 impl<Fe: FileEntry> MetricsComponent for FilesystemStore<Fe> {
-    fn gather_metrics(&self, collector: &mut CollectorState) {
-        collector.publish(
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish(
             "read_buff_size",
             self.read_buffer_size,
             "Size of the configured read buffer size",
         );
-        collector.publish(
+        c.publish(
             "active_drop_spawns",
-            self.shared_context.active_drop_spawns.load(Ordering::Relaxed),
+            &self.shared_context.active_drop_spawns,
             "Number of active drop spawns",
         );
-        collector.publish_text(
+        c.publish(
             "temp_path",
             &self.shared_context.temp_path,
             "Path to the configured temp path",
         );
-        collector.publish_text(
+        c.publish(
             "content_path",
             &self.shared_context.content_path,
             "Path to the configured content path",
         );
-        collector.publish_child(Some("evicting_map"), &self.evicting_map);
+        c.publish("evicting_map", &self.evicting_map, "");
     }
 }
