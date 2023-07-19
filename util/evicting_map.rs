@@ -351,38 +351,38 @@ where
 
 impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T, I> {
     fn gather_metrics(&self, collector: &mut CollectorState) {
-        collector.publish("max_bytes", self.max_bytes, "Maximum size of the store in bytes");
+        collector.publish("max_bytes", &self.max_bytes, "Maximum size of the store in bytes");
         collector.publish(
             "evict_bytes",
-            self.evict_bytes,
+            &self.evict_bytes,
             "Number of bytes to evict when the store is full",
         );
         collector.publish(
             "anchor_time",
-            self.anchor_time.unix_timestamp(),
+            &self.anchor_time.unix_timestamp(),
             "Anchor time for the store",
         );
         collector.publish(
             "max_seconds",
-            self.max_seconds,
+            &self.max_seconds,
             "Maximum number of seconds to keep an item in the store",
         );
         collector.publish(
             "max_count",
-            self.max_count,
+            &self.max_count,
             "Maximum number of items to keep in the store",
         );
         futures::executor::block_on(async move {
             let state = self.state.lock().await;
             collector.publish(
                 "sum_store_size",
-                state.sum_store_size,
+                &state.sum_store_size,
                 "Total size of all items in the store",
             );
-            collector.publish("items_in_store", state.lru.len(), "Mumber of items in the store");
+            collector.publish("items_in_store", &state.lru.len(), "Mumber of items in the store");
             collector.publish(
                 "oldest_item_timestamp",
-                state
+                &state
                     .lru
                     .peek_lru()
                     .map(|(_, v)| v.seconds_since_anchor as i64 + self.anchor_time.unix_timestamp() as i64)
@@ -391,7 +391,7 @@ impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T,
             );
             collector.publish(
                 "oldest_item_age",
-                state
+                &state
                     .lru
                     .peek_lru()
                     .map(|(_, v)| v.seconds_since_anchor as i64 + self.anchor_time.elapsed().as_secs() as i64)
@@ -400,37 +400,37 @@ impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T,
             );
             collector.publish(
                 "evicted_items",
-                state.evicted_items,
+                &state.evicted_items,
                 "Number of items evicted from the store",
             );
             collector.publish(
                 "evicted_bytes",
-                state.evicted_bytes,
+                &state.evicted_bytes,
                 "Number of bytes evicted from the store",
             );
             collector.publish(
                 "lifetime_inserted_bytes",
-                state.lifetime_inserted_bytes,
+                &state.lifetime_inserted_bytes,
                 "Number of bytes inserted into the store since it was created",
             );
             collector.publish(
                 "replaced_bytes",
-                state.replaced_bytes,
+                &state.replaced_bytes,
                 "Number of bytes replaced in the store",
             );
             collector.publish(
                 "replaced_items",
-                state.replaced_items,
+                &state.replaced_items,
                 "Number of items replaced in the store",
             );
             collector.publish(
                 "removed_bytes",
-                state.removed_bytes,
+                &state.removed_bytes,
                 "Number of bytes explicitly removed from the store",
             );
             collector.publish(
                 "removed_items",
-                state.removed_items,
+                &state.removed_items,
                 "Number of items explicitly removed from the store",
             );
             collector.publish_stats(
