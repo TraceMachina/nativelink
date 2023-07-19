@@ -133,6 +133,7 @@ rust_library(
         "//util:buf_channel",
         "//util:common",
         "//util:error",
+        "//util:prometheus_utils",
         "@crate_index//:hex",
         "@crate_index//:sha2",
         "@crate_index//:tokio",

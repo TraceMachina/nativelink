@@ -204,7 +204,7 @@ macro_rules! impl_numerical {
 }
 
 // Regsiter all the numerical types to be converted into Numerical.
-impl_numerical!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+impl_numerical!(u8, bool, u16, u32, u64, usize, i8, i16, i32, i64, isize);
 
 macro_rules! impl_numerical_metric {
     ($u:ty,$($t:ty),*) => {
@@ -222,7 +222,7 @@ macro_rules! impl_numerical_metric {
     };
 }
 // Implement metrics for all the numerical integer types by trying to cast it to i64.
-impl_numerical_metric!(i64, u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+impl_numerical_metric!(i64, bool, u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
 
 // Implement metrics for all float types by trying to cast it to f64.
 impl_numerical_metric!(f64, f64, f32);
