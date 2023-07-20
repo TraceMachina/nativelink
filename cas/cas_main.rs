@@ -21,7 +21,6 @@ use clap::Parser;
 use futures::future::{ok, select_all, BoxFuture, OptionFuture, TryFutureExt};
 use hyper::service::make_service_fn;
 use hyper::{Body, Response, Server};
-use prometheus_client::registry::Registry;
 use runfiles::Runfiles;
 use tokio::task::spawn_blocking;
 use tonic::codec::CompressionEncoding;
@@ -39,6 +38,7 @@ use default_store_factory::store_factory;
 use error::{make_err, Code, Error, ResultExt};
 use execution_server::ExecutionServer;
 use local_worker::new_local_worker;
+use prometheus_utils::{set_metrics_enabled_for_this_thread, Registry};
 use store::StoreManager;
 use worker_api_server::WorkerApiServer;
 
@@ -46,6 +46,9 @@ const DEFAULT_CONFIG_FILE: &str = "<built-in example in config/examples/basic_ca
 
 /// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
 const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
+
+/// Name of environment variable to disable metrics.
+const METRICS_DISABLE_ENV: &str = "TURBO_CACHE_DISABLE_METRICS";
 
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
@@ -61,51 +64,8 @@ struct Args {
     config_file: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
     let mut root_metrics_registry = <Registry>::with_prefix("turbo_cache");
-
-    let cfg: CasConfig = {
-        let args = Args::parse();
-        // Note: We cannot mutate args, so we create another variable for it here.
-        let mut config_file = args.config_file;
-        if config_file.eq(DEFAULT_CONFIG_FILE) {
-            let r = Runfiles::create().err_tip(|| "Failed to create runfiles lookup object")?;
-            config_file = r
-                .rlocation("turbo_cache/config/examples/basic_cas.json")
-                .into_os_string()
-                .into_string()
-                .unwrap();
-        }
-
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
-            .format_timestamp_millis()
-            .init();
-
-        let json_contents = String::from_utf8(
-            tokio::fs::read(&config_file)
-                .await
-                .err_tip(|| format!("Could not open config file {}", config_file))?,
-        )?;
-        json5::from_str(&json_contents)?
-    };
-
-    {
-        // Note: If the default changes make sure you update the documentation in
-        // `config/cas_server.rs`.
-        const DEFAULT_MAX_OPEN_FILES: usize = 512;
-        let global_cfg = if let Some(mut global_cfg) = cfg.global {
-            if global_cfg.max_open_files == 0 {
-                global_cfg.max_open_files = DEFAULT_MAX_OPEN_FILES;
-            }
-            global_cfg
-        } else {
-            GlobalConfig {
-                max_open_files: DEFAULT_MAX_OPEN_FILES,
-            }
-        };
-        set_open_file_limit(global_cfg.max_open_files);
-    }
 
     let store_manager = Arc::new(StoreManager::new());
     {
@@ -419,4 +379,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         panic!("{:?}", e);
     }
     unreachable!("None of the futures should resolve in main()");
+}
+
+async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    // Note: We cannot mutate args, so we create another variable for it here.
+    let mut config_file = args.config_file;
+    if config_file.eq(DEFAULT_CONFIG_FILE) {
+        let r = Runfiles::create().err_tip(|| "Failed to create runfiles lookup object")?;
+        config_file = r
+            .rlocation("turbo_cache/config/examples/basic_cas.json")
+            .into_os_string()
+            .into_string()
+            .unwrap();
+    }
+
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .format_timestamp_millis()
+        .init();
+
+    let json_contents = String::from_utf8(
+        std::fs::read(&config_file).err_tip(|| format!("Could not open config file {}", config_file))?,
+    )?;
+    Ok(json5::from_str(&json_contents)?)
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cfg = futures::executor::block_on(get_config())?;
+
+    let mut metrics_enabled = {
+        // Note: If the default changes make sure you update the documentation in
+        // `config/cas_server.rs`.
+        const DEFAULT_MAX_OPEN_FILES: usize = 512;
+        let global_cfg = if let Some(global_cfg) = &mut cfg.global {
+            if global_cfg.max_open_files == 0 {
+                global_cfg.max_open_files = DEFAULT_MAX_OPEN_FILES;
+            }
+            global_cfg
+        } else {
+            &GlobalConfig {
+                max_open_files: DEFAULT_MAX_OPEN_FILES,
+                disable_metrics: false,
+            }
+        };
+        set_open_file_limit(global_cfg.max_open_files);
+        !global_cfg.disable_metrics
+    };
+    // Override metrics enabled if the environment variable is set.
+    if std::env::var(METRICS_DISABLE_ENV).is_ok() {
+        metrics_enabled = false;
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
+        .build()?;
+    runtime.block_on(inner_main(cfg))
 }
