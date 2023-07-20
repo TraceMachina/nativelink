@@ -23,6 +23,7 @@ use cache_lookup_scheduler::CacheLookupScheduler;
 use config::schedulers::SchedulerConfig;
 use error::{Error, ResultExt};
 use grpc_scheduler::GrpcScheduler;
+use property_modifier_scheduler::PropertyModifierScheduler;
 use scheduler::{ActionScheduler, WorkerScheduler};
 use simple_scheduler::SimpleScheduler;
 use store::StoreManager;
@@ -47,13 +48,25 @@ pub fn scheduler_factory<'a>(
                 let ac_store = store_manager
                     .get_store(&config.ac_store)
                     .err_tip(|| format!("'ac_store': '{}' does not exist", config.ac_store))?;
-                let (action_scheduler, worker_scheduler) = scheduler_factory(&config.scheduler, store_manager).await?;
+                let (action_scheduler, worker_scheduler) = scheduler_factory(&config.scheduler, store_manager)
+                    .await
+                    .err_tip(|| "In nested CacheLookupScheduler construction")?;
                 let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
                     cas_store,
                     ac_store,
                     action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
                 )?);
                 (Some(cache_lookup_scheduler), worker_scheduler)
+            }
+            SchedulerConfig::property_modifier(config) => {
+                let (action_scheduler, worker_scheduler) = scheduler_factory(&config.scheduler, store_manager)
+                    .await
+                    .err_tip(|| "In nested PropertyModifierScheduler construction")?;
+                let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
+                    config,
+                    action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
+                ));
+                (Some(property_modifier_scheduler), worker_scheduler)
             }
         };
 
