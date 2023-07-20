@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use common::{log, DigestInfo};
 use config::stores::EvictionPolicy;
-use prometheus_utils::{CollectorState, MetricsComponent};
+use prometheus_utils::{CollectorState, Counter, CounterWithTime, MetricsComponent};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct SerializedLRU {
@@ -117,13 +117,13 @@ struct State<T: LenEntry + Debug> {
     sum_store_size: u64,
 
     // Metrics.
-    evicted_items: usize,
-    evicted_bytes: u64,
-    replaced_bytes: u64,
-    replaced_items: usize,
-    removed_bytes: u64,
-    removed_items: usize,
-    lifetime_inserted_bytes: u64,
+    evicted_bytes: Counter,
+    evicted_items: CounterWithTime,
+    replaced_bytes: Counter,
+    replaced_items: CounterWithTime,
+    removed_bytes: Counter,
+    removed_items: CounterWithTime,
+    lifetime_inserted_bytes: Counter,
 }
 
 pub struct EvictingMap<T: LenEntry + Debug, I: InstantWrapper> {
@@ -147,13 +147,13 @@ where
             state: Mutex::new(State {
                 lru: LruCache::unbounded(),
                 sum_store_size: 0,
-                evicted_items: 0,
-                evicted_bytes: 0,
-                replaced_bytes: 0,
-                replaced_items: 0,
-                removed_bytes: 0,
-                removed_items: 0,
-                lifetime_inserted_bytes: 0,
+                evicted_bytes: Counter::default(),
+                evicted_items: CounterWithTime::default(),
+                replaced_bytes: Counter::default(),
+                replaced_items: CounterWithTime::default(),
+                removed_bytes: Counter::default(),
+                removed_items: CounterWithTime::default(),
+                lifetime_inserted_bytes: Counter::default(),
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -223,8 +223,8 @@ where
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
             let (key, eviction_item) = state.lru.pop_lru().expect("Tried to peek() then pop() but failed");
             state.sum_store_size -= eviction_item.data.len() as u64;
-            state.evicted_items += 1;
-            state.evicted_bytes += eviction_item.data.len() as u64;
+            state.evicted_items.inc();
+            state.evicted_bytes.add(eviction_item.data.len() as u64);
             // Note: See comment in `unref()` requring global lock of insert/remove.
             eviction_item.data.unref().await;
             log::info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.hash_str());
@@ -303,8 +303,8 @@ where
 
         let maybe_old_item = if let Some(old_item) = state.lru.put(digest, eviction_item) {
             state.sum_store_size -= old_item.data.len() as u64;
-            state.replaced_items += 1;
-            state.replaced_bytes += old_item.data.len() as u64;
+            state.replaced_items.inc();
+            state.replaced_bytes.add(old_item.data.len() as u64);
             // Note: See comment in `unref()` requring global lock of insert/remove.
             old_item.data.unref().await;
             Some(old_item.data)
@@ -312,7 +312,7 @@ where
             None
         };
         state.sum_store_size += new_item_size;
-        state.lifetime_inserted_bytes += new_item_size;
+        state.lifetime_inserted_bytes.add(new_item_size);
         self.evict_items(state.deref_mut()).await;
         maybe_old_item
     }
@@ -326,8 +326,8 @@ where
         if let Some(entry) = state.lru.pop(digest) {
             let data_len = entry.data.len() as u64;
             state.sum_store_size -= data_len;
-            state.removed_items += 1;
-            state.removed_bytes += data_len;
+            state.removed_items.inc();
+            state.removed_bytes.add(data_len);
             // Note: See comment in `unref()` requring global lock of insert/remove.
             entry.data.unref().await;
             return true;

@@ -14,7 +14,6 @@
 
 use std::convert::TryFrom;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -23,7 +22,7 @@ use sha2::{Digest, Sha256};
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
 use error::{make_input_err, Error, ResultExt};
-use prometheus_utils::{Collector, CollectorState, MetricsComponent, Registry};
+use prometheus_utils::{Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
 use traits::{StoreTrait, UploadSizeInfo};
 
 pub struct VerifyStore {
@@ -32,8 +31,8 @@ pub struct VerifyStore {
     verify_hash: bool,
 
     // Metrics.
-    size_verification_failures: AtomicU64,
-    hash_verification_failures: AtomicU64,
+    size_verification_failures: CounterWithTime,
+    hash_verification_failures: CounterWithTime,
 }
 
 impl VerifyStore {
@@ -42,8 +41,8 @@ impl VerifyStore {
             inner_store,
             verify_size: config.verify_size,
             verify_hash: config.verify_hash,
-            size_verification_failures: AtomicU64::new(0),
-            hash_verification_failures: AtomicU64::new(0),
+            size_verification_failures: CounterWithTime::default(),
+            hash_verification_failures: CounterWithTime::default(),
         }
     }
 
@@ -70,7 +69,7 @@ impl VerifyStore {
                 // Is EOF.
                 if let UploadSizeInfo::ExactSize(expected_size) = size_info {
                     if sum_size != expected_size as u64 {
-                        self.size_verification_failures.fetch_add(1, Ordering::Relaxed);
+                        self.size_verification_failures.inc();
                         return Err(make_input_err!(
                             "Expected size {} but got size {} on insert",
                             expected_size,
@@ -81,7 +80,7 @@ impl VerifyStore {
                 if let Some((original_hash, hasher)) = maybe_hasher {
                     let hash_result: [u8; 32] = hasher.finalize().into();
                     if original_hash != hash_result {
-                        self.hash_verification_failures.fetch_add(1, Ordering::Relaxed);
+                        self.hash_verification_failures.inc();
                         return Err(make_input_err!(
                             "Hashes do not match, got: {} but digest hash was {}",
                             hex::encode(original_hash),
@@ -128,7 +127,7 @@ impl StoreTrait for VerifyStore {
             usize::try_from(digest.size_bytes).err_tip(|| "Digest size_bytes was not convertible to usize")?;
         if let UploadSizeInfo::ExactSize(expected_size) = size_info {
             if self.verify_size && expected_size != digest_size {
-                self.size_verification_failures.fetch_add(1, Ordering::Relaxed);
+                self.size_verification_failures.inc();
                 return Err(make_input_err!(
                     "Expected size to match. Got {} but digest says {} on update",
                     expected_size,
