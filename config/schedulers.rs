@@ -25,6 +25,7 @@ pub enum SchedulerConfig {
     simple(SimpleScheduler),
     grpc(GrpcScheduler),
     cache_lookup(CacheLookupScheduler),
+    property_modifier(PropertyModifierScheduler),
 }
 
 /// When the scheduler matches tasks to workers that are capable of running
@@ -141,5 +142,34 @@ pub struct CacheLookupScheduler {
     pub cas_store: StoreRefName,
 
     /// The nested scheduler to use if cache lookup fails.
+    pub scheduler: Box<SchedulerConfig>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct PlatformPropertyAddition {
+    /// The name of the property to add.
+    pub name: String,
+    /// The value to assign to the property.
+    pub value: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub enum PropertyModification {
+    /// Add a property to the action properties.
+    Add(PlatformPropertyAddition),
+    /// Remove a named property from the action.
+    Remove(String),
+}
+
+#[derive(Deserialize, Debug)]
+pub struct PropertyModifierScheduler {
+    /// A list of modifications to perform to incoming actions for the nested
+    /// scheduler.  These are performed in order and blindly, so removing a
+    /// property that doesn't exist is fine and overwriting an existing property
+    /// is also fine.  If adding properties that do not exist in the nested
+    /// scheduler is not supported and will likely cause unexpected behaviour.
+    pub modifications: Vec<PropertyModification>,
+
+    /// The nested scheduler to use after modifying the properties.
     pub scheduler: Box<SchedulerConfig>,
 }
