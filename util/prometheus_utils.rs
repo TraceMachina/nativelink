@@ -17,10 +17,11 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem::forget;
 use std::sync::atomic::{
-    AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize,
-    Ordering,
+    AtomicBool, AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32, AtomicU64, AtomicU8,
+    AtomicUsize, Ordering,
 };
 use std::sync::{Arc, Weak};
+use std::thread_local;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use futures::Future;
@@ -40,6 +41,35 @@ pub trait MetricsComponent {
     ///
     /// It is safe to block in this function.
     fn gather_metrics(&self, collector: &mut CollectorState);
+}
+
+thread_local! {
+    /// This is a thread local variable that will enable or disable metrics for
+    /// the current thread. This does not mean that metrics are "disabled"
+    /// everywhere. It only means that metrics gathering for this specific thread
+    /// will be disabled. Because tokio uses thread pools, if you change this
+    /// value you'll need to change it on every thread tokio is using, often using
+    /// the `tokio::runtime::Builder::on_thread_start` function. This field also
+    /// does not mean that metrics cannot be pulled from the registry. It only
+    /// removes the ability for metrics that are collected at runtime (hot path)
+    /// from being collected.
+    pub static METRICS_ENABLED: AtomicBool = const { AtomicBool::new(true) };
+}
+
+#[inline]
+pub fn metrics_enabled() -> bool {
+    METRICS_ENABLED.with(
+        #[inline]
+        |v| v.load(Ordering::Relaxed),
+    )
+}
+
+/// This function will enable or disable metrics for the current thread.
+/// WARNING: This will only happen for this thread. Tokio uses thread pools
+/// so you'd need to run this function on every thread in the thread pool in
+/// order to enable it everywhere.
+pub fn set_metrics_enabled_for_this_thread(enabled: bool) {
+    METRICS_ENABLED.with(|v| v.store(enabled, Ordering::Relaxed));
 }
 
 type NameString = String;
@@ -189,6 +219,9 @@ impl<'a> DropCounter<'a> {
 impl<'a> Drop for DropCounter<'a> {
     #[inline]
     fn drop(&mut self) {
+        if !metrics_enabled() {
+            return;
+        }
         self.counter.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -202,6 +235,9 @@ pub struct AsyncTimer<'a> {
 impl<'a> AsyncTimer<'a> {
     #[inline]
     pub fn measure(self) {
+        if !metrics_enabled() {
+            return;
+        }
         self.counter
             .sum_func_duration_ns
             .fetch_add(self.start.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -229,6 +265,9 @@ pub struct AsyncCounterWrapper {
 impl AsyncCounterWrapper {
     #[inline]
     pub async fn wrap<'a, T, E, F: Future<Output = Result<T, E>> + 'a>(&'a self, future: F) -> Result<T, E> {
+        if !metrics_enabled() {
+            return future.await;
+        }
         let result = self.wrap_no_capture_result(future).await;
         if result.is_ok() {
             self.successes.fetch_add(1, Ordering::Relaxed);
@@ -240,6 +279,9 @@ impl AsyncCounterWrapper {
 
     #[inline]
     pub async fn wrap_no_capture_result<'a, T, F: Future<Output = T> + 'a>(&'a self, future: F) -> T {
+        if !metrics_enabled() {
+            return future.await;
+        }
         self.calls.fetch_add(1, Ordering::Relaxed);
         let drop_counter = DropCounter::new(&self.drops);
         let instant = Instant::now();
@@ -304,6 +346,40 @@ impl MetricPublisher for &AsyncCounterWrapper {
     }
 }
 
+/// Tracks an number.
+#[derive(Default)]
+pub struct Counter(AtomicU64);
+
+impl Counter {
+    #[inline]
+    pub fn inc(&self) {
+        self.add(1);
+    }
+
+    #[inline]
+    pub fn add(&self, value: u64) {
+        if !metrics_enabled() {
+            return;
+        }
+        self.0.fetch_add(value, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn sub(&self, value: u64) {
+        if !metrics_enabled() {
+            return;
+        }
+        self.0.fetch_sub(value, Ordering::Relaxed);
+    }
+}
+
+impl MetricPublisher for &Counter {
+    #[inline]
+    fn publish(&self, state: &mut CollectorState, name: String, help: String) {
+        state.publish(name, &self.0, help);
+    }
+}
+
 /// Tracks an counter through time and the last time the counter was changed.
 #[derive(Default)]
 pub struct CounterWithTime {
@@ -314,6 +390,9 @@ pub struct CounterWithTime {
 impl CounterWithTime {
     #[inline]
     pub fn inc(&self) {
+        if !metrics_enabled() {
+            return;
+        }
         self.counter.fetch_add(1, Ordering::Relaxed);
         self.last_time.store(
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64,

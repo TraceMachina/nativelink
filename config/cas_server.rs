@@ -302,7 +302,7 @@ pub enum WorkerConfig {
     local(LocalWorkerConfig),
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone, Copy)]
 pub struct GlobalConfig {
     /// Maximum number of open files that can be opened at one time.
     /// This value is not strictly enforced, it is a best effort. Some internal libraries
@@ -316,6 +316,19 @@ pub struct GlobalConfig {
     /// Default: 512
     #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_open_files: usize,
+
+    /// This flag can be used to prevent metrics from being collected at runtime.
+    /// Metrics are still able to be collected, but this flag prevents metrics that
+    /// are collected at runtime (performance metrics) from being tallied. The
+    /// overhead of collecting metrics is very low, so this flag should only be
+    /// used if there is a very good reason to disable metrics.
+    /// This flag can be forcably set using the `TURBO_CACHE_DISABLE_METRICS` variable.
+    /// If the variable is set it will always disable metrics regardless of what
+    /// this flag is set to.
+    ///
+    /// Default: <true (disabled) if no prometheus service enabled, false otherwise>
+    #[serde(default)]
+    pub disable_metrics: bool,
 }
 
 #[derive(Deserialize, Debug)]
