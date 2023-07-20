@@ -23,6 +23,7 @@ use cache_lookup_scheduler::CacheLookupScheduler;
 use config::schedulers::SchedulerConfig;
 use error::{Error, ResultExt};
 use grpc_scheduler::GrpcScheduler;
+use property_modifier_scheduler::PropertyModifierScheduler;
 use scheduler::{ActionScheduler, WorkerScheduler};
 use simple_scheduler::SimpleScheduler;
 use store::StoreManager;
@@ -54,6 +55,14 @@ pub fn scheduler_factory<'a>(
                     action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
                 )?);
                 (Some(cache_lookup_scheduler), worker_scheduler)
+            }
+            SchedulerConfig::property_modifier(config) => {
+                let (action_scheduler, worker_scheduler) = scheduler_factory(&config.scheduler, store_manager).await?;
+                let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
+                    config,
+                    action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
+                ));
+                (Some(property_modifier_scheduler), worker_scheduler)
             }
         };
 

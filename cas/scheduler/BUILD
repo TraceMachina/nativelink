@@ -141,6 +141,42 @@ rust_test(
 )
 
 rust_library(
+    name = "property_modifier_scheduler",
+    srcs = ["property_modifier_scheduler.rs"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    deps = [
+        ":action_messages",
+        ":platform_property_manager",
+        ":scheduler",
+        "//config",
+        "//util:error",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_test(
+    name = "property_modifier_scheduler_test",
+    srcs = ["tests/property_modifier_scheduler_test.rs"],
+    deps = [
+        ":action_messages",
+        ":property_modifier_scheduler",
+        ":mock_scheduler",
+        ":platform_property_manager",
+        ":scheduler",
+        ":scheduler_utils",
+        "//config",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_library(
     name = "grpc_scheduler",
     srcs = ["grpc_scheduler.rs"],
     visibility = [
@@ -172,6 +208,7 @@ rust_library(
     deps = [
         ":cache_lookup_scheduler",
         ":grpc_scheduler",
+        ":property_modifier_scheduler",
         ":scheduler",
         ":simple_scheduler",
         "//cas/store",
