@@ -99,7 +99,7 @@ RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} --target_pattern_file=
 
 
 # Builder to do the remaining build. At this point most of our externals should be built.
-FROM builder-externals-built as builder
+FROM builder-externals-built as builder-final
 ARG OPT_LEVEL
 ARG CC
 ARG ADDITIONAL_BAZEL_FLAGS
@@ -110,7 +110,7 @@ RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} //cas && \
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
 FROM ubuntu:${OS_VERSION}
-COPY --from=builder /root/turbo-cache-bin /usr/local/bin/turbo-cache
+COPY --from=builder-final /root/turbo-cache-bin /usr/local/bin/turbo-cache
 # Install runtime packages.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
