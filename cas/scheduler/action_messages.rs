@@ -27,6 +27,7 @@ use sha2::{digest::Update as _, Digest as _, Sha256};
 use common::{DigestInfo, HashMapExt, VecExt};
 use error::{error_if, make_input_err, Error, ResultExt};
 use platform_property_manager::PlatformProperties;
+use prometheus_utils::{CollectorState, MetricsComponent};
 use prost::bytes::Bytes;
 use proto::build::bazel::remote::execution::v2::{
     execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
@@ -644,6 +645,25 @@ impl ActionStage {
     }
 }
 
+impl MetricsComponent for ActionStage {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        let (stage, maybe_exit_code) = match self {
+            ActionStage::Unknown => ("Unknown", None),
+            ActionStage::CacheCheck => ("CacheCheck", None),
+            ActionStage::Queued => ("Queued", None),
+            ActionStage::Executing => ("Executing", None),
+            ActionStage::Completed(action_result) => ("Completed", Some(action_result.exit_code)),
+            ActionStage::CompletedFromCache(proto_action_result) => {
+                ("CompletedFromCache", Some(proto_action_result.exit_code))
+            }
+        };
+        c.publish("stage", &stage.to_string(), "The state of the action.");
+        if let Some(exit_code) = maybe_exit_code {
+            c.publish("exit_code", &exit_code, "The exit code of the action.");
+        }
+    }
+}
+
 impl From<&ActionStage> for execution_stage::Value {
     fn from(val: &ActionStage) -> Self {
         match val {
@@ -882,6 +902,12 @@ impl ActionState {
     #[inline]
     pub fn action_digest(&self) -> &DigestInfo {
         &self.unique_qualifier.digest
+    }
+}
+
+impl MetricsComponent for ActionState {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish("stage", &self.stage, "");
     }
 }
 

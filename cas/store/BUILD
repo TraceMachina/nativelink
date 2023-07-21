@@ -36,8 +36,8 @@ rust_library(
         ":verify_store",
         "//config",
         "//util:error",
+        "//util:prometheus_utils",
         "@crate_index//:futures",
-        "@crate_index//:prometheus-client",
     ],
 )
 
