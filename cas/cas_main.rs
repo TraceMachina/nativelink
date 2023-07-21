@@ -84,10 +84,13 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
     let mut action_schedulers = HashMap::new();
     let mut worker_schedulers = HashMap::new();
     if let Some(schedulers_cfg) = cfg.schedulers {
+        let root_scheduler_metrics = root_metrics_registry.sub_registry_with_prefix("schedulers");
         for (name, scheduler_cfg) in schedulers_cfg {
-            let (maybe_action_scheduler, maybe_worker_scheduler) = scheduler_factory(&scheduler_cfg, &store_manager)
-                .await
-                .err_tip(|| format!("Failed to create scheduler '{}'", name))?;
+            let scheduler_metrics = root_scheduler_metrics.sub_registry_with_prefix(&name);
+            let (maybe_action_scheduler, maybe_worker_scheduler) =
+                scheduler_factory(&scheduler_cfg, &store_manager, scheduler_metrics)
+                    .await
+                    .err_tip(|| format!("Failed to create scheduler '{}'", name))?;
             if let Some(action_scheduler) = maybe_action_scheduler {
                 action_schedulers.insert(name.clone(), action_scheduler);
             }
