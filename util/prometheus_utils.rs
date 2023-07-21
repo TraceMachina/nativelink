@@ -22,7 +22,7 @@ use std::sync::atomic::{
 };
 use std::sync::{Arc, Weak};
 use std::thread_local;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::Future;
 use prometheus_client::collector::Collector as PrometheusCollector;
@@ -74,26 +74,22 @@ pub fn set_metrics_enabled_for_this_thread(enabled: bool) {
 
 type NameString = String;
 type HelpString = String;
+type Labels = Vec<(Cow<'static, str>, Cow<'static, str>)>;
 type Metric = (
     NameString,
     HelpString,
     MaybeOwned<'static, Box<dyn LocalMetric>>,
-    Vec<(Cow<'static, str>, Cow<'static, str>)>,
+    Labels,
 );
 
-type TextMetric = (
-    NameString,
-    HelpString,
-    String,
-    Vec<(Cow<'static, str>, Cow<'static, str>)>,
-);
+type TextMetric = (NameString, HelpString, String, Labels);
 
 #[derive(Default)]
 pub struct CollectorState {
     module_name: Option<NameString>,
     metrics: Vec<Metric>,
     text: Vec<TextMetric>,
-    children: Vec<CollectorState>,
+    children: Vec<(CollectorState, Labels)>,
 }
 
 impl CollectorState {
@@ -102,7 +98,19 @@ impl CollectorState {
     /// for that type.
     #[inline]
     pub fn publish(&mut self, name: impl Into<String>, value: impl MetricPublisher, help: impl Into<String>) {
-        value.publish(self, name.into(), help.into());
+        value.publish(self, name.into(), help.into(), vec![]);
+    }
+
+    /// Same as publish() but with labels.
+    #[inline]
+    pub fn publish_with_labels(
+        &mut self,
+        name: impl Into<String>,
+        value: impl MetricPublisher,
+        help: impl Into<String>,
+        labels: Labels,
+    ) {
+        value.publish(self, name.into(), help.into(), labels);
     }
 
     /// Publish a numerical metric. Usually used by `MetricPublisher` to publish metrics.
@@ -112,7 +120,7 @@ impl CollectorState {
         name: impl Into<String>,
         value: T,
         help: impl Into<String>,
-        labels: impl Into<Vec<(Cow<'static, str>, Cow<'static, str>)>>,
+        labels: impl Into<Labels>,
     ) where
         N: Debug + 'static,
         T: Into<NumericalMetric<N>>,
@@ -131,7 +139,7 @@ impl CollectorState {
         name: impl Into<String>,
         value: impl Into<String>,
         help: impl Into<String>,
-        labels: impl Into<Vec<(Cow<'static, str>, Cow<'static, str>)>>,
+        labels: impl Into<Labels>,
     ) {
         self.text.push((name.into(), help.into(), value.into(), labels.into()));
     }
@@ -166,39 +174,89 @@ impl CollectorState {
         }
     }
 
-    fn into_metrics<'a>(self) -> CollectorResult<'a> {
+    fn into_metrics<'a>(self, parent_labels: Labels) -> CollectorResult<'a> {
         let module_name1 = self.module_name.clone();
         let module_name2 = self.module_name.clone();
+        let parent_labels1 = parent_labels.clone();
+        let parent_labels2 = parent_labels.clone();
+        let parent_labels3 = parent_labels;
         Box::new(
             self.metrics
                 .into_iter()
                 .map(move |(name, help, metric, labels)| {
+                    let mut combined_labels = parent_labels1.clone();
+                    combined_labels.extend_from_slice(&labels);
                     let mut prefix: Option<Prefix> = None;
                     if let Some(parent_prefix) = &module_name1 {
                         prefix = Some(Prefix::from(parent_prefix.clone()));
                     }
                     (
-                        Cow::Owned(Descriptor::new(name, help, None, prefix.as_ref(), labels)),
+                        Cow::Owned(Descriptor::new(name, help, None, prefix.as_ref(), combined_labels)),
                         metric,
                     )
                 })
                 .chain(self.text.into_iter().map(move |(name, help, value, labels)| {
+                    let mut combined_labels = parent_labels2.clone();
+                    combined_labels.extend_from_slice(&labels);
                     let info: Box<dyn LocalMetric> = Box::new(Info::new(vec![(name, value)]));
                     let mut prefix: Option<Prefix> = None;
                     if let Some(parent_prefix) = &module_name2 {
                         prefix = Some(Prefix::from(parent_prefix.clone()));
                     }
                     (
-                        Cow::Owned(Descriptor::new("labels", help, None, prefix.as_ref(), labels)),
+                        Cow::Owned(Descriptor::new("labels", help, None, prefix.as_ref(), combined_labels)),
                         MaybeOwned::Owned(info),
                     )
                 }))
-                .chain(
-                    self.children
-                        .into_iter()
-                        .flat_map(move |child_state| child_state.into_metrics()),
-                ),
+                .chain(self.children.into_iter().flat_map(move |(child_state, labels)| {
+                    let mut combined_labels = parent_labels3.clone();
+                    combined_labels.extend_from_slice(&labels);
+                    child_state.into_metrics(combined_labels)
+                })),
         )
+    }
+}
+
+#[derive(Default)]
+pub struct FuncCounterWrapper {
+    pub successes: AtomicU64,
+    pub failures: AtomicU64,
+}
+
+impl FuncCounterWrapper {
+    #[inline]
+    pub fn wrap<T, E>(&self, func: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        let result = (func)();
+        if result.is_ok() {
+            self.successes.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.failures.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+}
+
+impl MetricPublisher for &FuncCounterWrapper {
+    #[inline]
+    fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
+        let successes = self.successes.load(Ordering::Relaxed);
+        let failures = self.failures.load(Ordering::Relaxed);
+        let mut success_labels = labels.clone();
+        success_labels.extend_from_slice(&[("type".into(), "success".into())]);
+        state.publish_number(
+            name.clone(),
+            successes,
+            format!("{help} The number of successes."),
+            success_labels,
+        );
+        let mut failure_labels = labels;
+        failure_labels.extend_from_slice(&[("type".into(), "failure".into())]);
+        state.publish_number(
+            name,
+            failures,
+            format!("{help} The number of failures."),
+            failure_labels,
+        );
     }
 }
 
@@ -253,16 +311,28 @@ impl<'a> AsyncTimer<'a> {
 /// tracked and can be published to a `CollectorState`.
 #[derive(Default)]
 pub struct AsyncCounterWrapper {
-    calls: AtomicU64,
-    successes: AtomicU64,
-    failures: AtomicU64,
-    drops: AtomicU64,
+    pub calls: AtomicU64,
+    pub successes: AtomicU64,
+    pub failures: AtomicU64,
+    pub drops: AtomicU64,
     // Time spent in nano seconds in the future.
     // 64 bit address space gives ~584 years of nanoseconds.
-    sum_func_duration_ns: AtomicU64,
+    pub sum_func_duration_ns: AtomicU64,
 }
 
 impl AsyncCounterWrapper {
+    #[inline]
+    pub fn wrap_fn<'a, T: 'a, E>(&'a self, func: impl FnOnce() -> Result<T, E> + 'a) -> Result<T, E> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let result = (func)();
+        if result.is_ok() {
+            self.successes.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.failures.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+
     #[inline]
     pub async fn wrap<'a, T, E, F: Future<Output = Result<T, E>> + 'a>(&'a self, future: F) -> Result<T, E> {
         if !metrics_enabled() {
@@ -306,7 +376,7 @@ impl AsyncCounterWrapper {
 
 impl MetricPublisher for &AsyncCounterWrapper {
     #[inline]
-    fn publish(&self, state: &mut CollectorState, name: String, help: String) {
+    fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
         let calls = self.calls.load(Ordering::Relaxed);
         let successes = self.successes.load(Ordering::Relaxed);
         let failures = self.failures.load(Ordering::Relaxed);
@@ -314,34 +384,51 @@ impl MetricPublisher for &AsyncCounterWrapper {
         let active = calls - successes - failures - drops;
         let non_zero_calls = if calls == 0 { 1 } else { calls };
         let avg_duration_ns = self.sum_func_duration_ns.load(Ordering::Relaxed) / non_zero_calls;
-        state.publish_number(
-            name.clone(),
-            drops,
-            format!("{help} The number of dropped futures."),
-            vec![("type".into(), "drop".into())],
-        );
-        state.publish_number(
-            name.clone(),
-            successes,
-            format!("{help} The number of successes."),
-            vec![("type".into(), "success".into())],
-        );
-        state.publish_number(
-            name.clone(),
-            failures,
-            format!("{help} The number of failures."),
-            vec![("type".into(), "failure".into())],
-        );
-        state.publish_number(
-            name.clone(),
-            active,
-            format!("{help} The number of active futures."),
-            vec![("type".into(), "active".into())],
-        );
-        state.publish(
+        {
+            let mut labels = labels.clone();
+            labels.extend_from_slice(&[("type".into(), "drop".into())]);
+            state.publish_number(
+                name.clone(),
+                drops,
+                format!("{help} The number of dropped futures."),
+                labels,
+            );
+        }
+        {
+            let mut labels = labels.clone();
+            labels.extend_from_slice(&[("type".into(), "success".into())]);
+            state.publish_number(
+                name.clone(),
+                successes,
+                format!("{help} The number of successes."),
+                labels,
+            );
+        }
+        {
+            let mut labels = labels.clone();
+            labels.extend_from_slice(&[("type".into(), "failure".into())]);
+            state.publish_number(
+                name.clone(),
+                failures,
+                format!("{help} The number of failures."),
+                labels,
+            );
+        }
+        {
+            let mut labels = labels.clone();
+            labels.extend_from_slice(&[("type".into(), "active".into())]);
+            state.publish_number(
+                name.clone(),
+                active,
+                format!("{help} The number of active futures."),
+                labels,
+            );
+        }
+        state.publish_with_labels(
             format!("{name}_avg_duration_ns"),
             &avg_duration_ns,
             format!("{help} The average number of nanos spent in future."),
+            labels,
         );
     }
 }
@@ -375,16 +462,16 @@ impl Counter {
 
 impl MetricPublisher for &Counter {
     #[inline]
-    fn publish(&self, state: &mut CollectorState, name: String, help: String) {
-        state.publish(name, &self.0, help);
+    fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
+        state.publish_with_labels(name, &self.0, help, labels);
     }
 }
 
 /// Tracks an counter through time and the last time the counter was changed.
 #[derive(Default)]
 pub struct CounterWithTime {
-    counter: AtomicU64,
-    last_time: AtomicI64,
+    pub counter: AtomicU64,
+    pub last_time: AtomicI64,
 }
 
 impl CounterWithTime {
@@ -403,13 +490,14 @@ impl CounterWithTime {
 
 impl MetricPublisher for &CounterWithTime {
     #[inline]
-    fn publish(&self, state: &mut CollectorState, name: String, help: String) {
-        state.publish(
+    fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
+        state.publish_with_labels(
             format!("{name}_last_ts"),
             &self.last_time,
             format!("The timestamp of when {name} was last published"),
+            labels.clone(),
         );
-        state.publish(name, &self.counter, help);
+        state.publish_with_labels(name, &self.counter, help, labels);
     }
 }
 
@@ -450,30 +538,30 @@ impl<S: MetricsComponent + Sync + Send + 'static> PrometheusCollector for Collec
 
         let mut state = CollectorState::default();
         handle.gather_metrics(&mut state);
-        state.into_metrics()
+        state.into_metrics(vec![])
     }
 }
 
 pub trait MetricPublisher {
     /// Publish a gague metric.
-    fn publish(&self, state: &mut CollectorState, name: String, help: String);
+    fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels);
 }
 
 /// Implements MetricPublisher for string types.
 impl MetricPublisher for &String {
     #[inline]
-    fn publish(&self, state: &mut CollectorState, name: String, help: String) {
-        state.publish_text(name, *self, help, vec![]);
+    fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
+        state.publish_text(name, *self, help, labels);
     }
 }
 
-/// Implements MetricPublisher for string types.
+/// Implements MetricPublisher for MetricsComponent.
 impl<T> MetricPublisher for &T
 where
     T: MetricsComponent,
 {
     #[inline]
-    fn publish(&self, parent_state: &mut CollectorState, module_name: String, _help: String) {
+    fn publish(&self, parent_state: &mut CollectorState, module_name: String, _help: String, labels: Labels) {
         let module_name = if module_name.is_empty() {
             None
         } else {
@@ -490,7 +578,46 @@ where
             children: Vec::default(),
         };
         self.gather_metrics(&mut state);
-        parent_state.children.push(state);
+        parent_state.children.push((state, labels));
+    }
+}
+
+impl MetricPublisher for &SystemTime {
+    #[inline]
+    fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
+        state.publish_number(
+            name,
+            NumericalMetric(self.duration_since(UNIX_EPOCH).unwrap().as_secs_f64()),
+            help,
+            labels,
+        );
+    }
+}
+
+impl EncodeMetric for NumericalMetric<SystemTime> {
+    fn encode(&self, mut encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
+        encoder.encode_gauge(&self.0.duration_since(UNIX_EPOCH).unwrap().as_secs_f64())
+    }
+
+    fn metric_type(&self) -> MetricType {
+        MetricType::Gauge
+    }
+}
+
+impl MetricPublisher for &Duration {
+    #[inline]
+    fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
+        state.publish_number(name, NumericalMetric(self.as_secs_f64()), help, labels);
+    }
+}
+
+impl EncodeMetric for NumericalMetric<Duration> {
+    fn encode(&self, mut encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
+        encoder.encode_gauge(&self.0.as_secs_f64())
+    }
+
+    fn metric_type(&self) -> MetricType {
+        MetricType::Gauge
     }
 }
 
@@ -499,8 +626,8 @@ macro_rules! impl_publish_atomic {
         $(
             impl MetricPublisher for &$t {
                 #[inline]
-                fn publish(&self, state: &mut CollectorState, name: String, help: String) {
-                    state.publish_number(name, &self.load(Ordering::Relaxed), help, vec![]);
+                fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
+                    state.publish_number(name, &self.load(Ordering::Relaxed), help, labels);
                 }
             }
         )*
@@ -550,8 +677,8 @@ macro_rules! impl_numerical_metric {
         $(
             impl MetricPublisher for &$t {
                 #[inline]
-                fn publish(&self, state: &mut CollectorState, name: String, help: String) {
-                    state.publish_number(name, *self, help, vec![]);
+                fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
+                    state.publish_number(name, *self, help, labels);
                 }
             }
 

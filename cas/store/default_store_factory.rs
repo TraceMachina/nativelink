@@ -15,7 +15,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use prometheus_client::registry::Registry;
+use futures::Future;
 
 use compression_store::CompressionStore;
 use config::{self, stores::StoreConfig};
@@ -23,9 +23,9 @@ use dedup_store::DedupStore;
 use error::Error;
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
-use futures::Future;
 use grpc_store::GrpcStore;
 use memory_store::MemoryStore;
+use prometheus_utils::Registry;
 use ref_store::RefStore;
 use s3_store::S3Store;
 use size_partitioning_store::SizePartitioningStore;

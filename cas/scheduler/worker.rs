@@ -15,11 +15,14 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use uuid::Uuid;
 
 use action_messages::ActionInfo;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
+use prometheus_utils::{CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent};
 use proto::com::github::allada::turbo_cache::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
@@ -92,6 +95,29 @@ pub struct Worker {
 
     /// Whether the worker rejected the last action due to back pressure.
     pub is_paused: bool,
+
+    /// Stats about the worker.
+    metrics: Arc<Metrics>,
+}
+
+fn send_msg_to_worker(tx: &mut UnboundedSender<UpdateForWorker>, msg: update_for_worker::Update) -> Result<(), Error> {
+    tx.send(UpdateForWorker { update: Some(msg) })
+        .map_err(|_| make_err!(Code::Internal, "Worker disconnected"))
+}
+
+/// Reduces the platform properties available on the worker based on the platform properties provided.
+/// This is used because we allow more than 1 job to run on a worker at a time, and this is how the
+/// scheduler knows if more jobs can run on a given worker.
+fn reduce_platform_properties(parent_props: &mut PlatformProperties, reduction_props: &PlatformProperties) {
+    debug_assert!(reduction_props.is_satisfied_by(parent_props));
+    for (property, prop_value) in &reduction_props.properties {
+        if let PlatformPropertyValue::Minimum(value) = prop_value {
+            let worker_props = &mut parent_props.properties;
+            if let &mut PlatformPropertyValue::Minimum(worker_value) = &mut worker_props.get_mut(property).unwrap() {
+                *worker_value -= value;
+            }
+        }
+    }
 }
 
 impl Worker {
@@ -108,15 +134,25 @@ impl Worker {
             running_action_infos: HashSet::new(),
             last_update_timestamp: timestamp,
             is_paused: false,
+            metrics: Arc::new(Metrics {
+                connected_timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                actions_completed: CounterWithTime::default(),
+                run_action: FuncCounterWrapper::default(),
+                keep_alive: FuncCounterWrapper::default(),
+                notify_disconnect: CounterWithTime::default(),
+            }),
         }
     }
 
     /// Sends the initial connection information to the worker. This generally is just meta info.
     /// This should only be sent once and should always be the first item in the stream.
     pub fn send_initial_connection_result(&mut self) -> Result<(), Error> {
-        self.send_msg_to_worker(update_for_worker::Update::ConnectionResult(ConnectionResult {
-            worker_id: self.id.to_string(),
-        }))
+        send_msg_to_worker(
+            &mut self.tx,
+            update_for_worker::Update::ConnectionResult(ConnectionResult {
+                worker_id: self.id.to_string(),
+            }),
+        )
         .err_tip(|| format!("Failed to send ConnectionResult to worker : {}", self.id))
     }
 
@@ -124,56 +160,50 @@ impl Worker {
     pub fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
         match worker_update {
             WorkerUpdate::RunAction(action_info) => self.run_action(action_info),
-            WorkerUpdate::Disconnect => self.send_msg_to_worker(update_for_worker::Update::Disconnect(())),
+            WorkerUpdate::Disconnect => {
+                self.metrics.notify_disconnect.inc();
+                send_msg_to_worker(&mut self.tx, update_for_worker::Update::Disconnect(()))
+            }
         }
     }
 
     pub fn keep_alive(&mut self) -> Result<(), Error> {
-        self.send_msg_to_worker(update_for_worker::Update::KeepAlive(()))
-            .err_tip(|| format!("Failed to send KeepAlive to worker : {}", self.id))
-    }
-
-    fn send_msg_to_worker(&mut self, msg: update_for_worker::Update) -> Result<(), Error> {
-        self.tx
-            .send(UpdateForWorker { update: Some(msg) })
-            .map_err(|_| make_err!(Code::Internal, "Worker disconnected"))
+        let tx = &mut self.tx;
+        let id = self.id;
+        self.metrics.keep_alive.wrap(move || {
+            send_msg_to_worker(tx, update_for_worker::Update::KeepAlive(()))
+                .err_tip(|| format!("Failed to send KeepAlive to worker : {}", id))
+        })
     }
 
     fn run_action(&mut self, action_info: Arc<ActionInfo>) -> Result<(), Error> {
-        let action_info_clone = action_info.as_ref().clone();
-        self.running_action_infos.insert(action_info.clone());
-        self.reduce_platform_properties(&action_info.platform_properties);
-        self.send_msg_to_worker(update_for_worker::Update::StartAction(StartExecute {
-            execute_request: Some(action_info_clone.into()),
-            salt: *action_info.salt(),
-            queued_timestamp: Some(action_info.insert_timestamp.into()),
-        }))
+        let tx = &mut self.tx;
+        let worker_platform_properties = &mut self.platform_properties;
+        let running_action_infos = &mut self.running_action_infos;
+        self.metrics.run_action.wrap(move || {
+            let action_info_clone = action_info.as_ref().clone();
+            running_action_infos.insert(action_info.clone());
+            reduce_platform_properties(worker_platform_properties, &action_info.platform_properties);
+            send_msg_to_worker(
+                tx,
+                update_for_worker::Update::StartAction(StartExecute {
+                    execute_request: Some(action_info_clone.into()),
+                    salt: *action_info.salt(),
+                    queued_timestamp: Some(action_info.insert_timestamp.into()),
+                }),
+            )
+        })
     }
 
     pub fn complete_action(&mut self, action_info: &Arc<ActionInfo>) {
         self.running_action_infos.remove(action_info);
         self.restore_platform_properties(&action_info.platform_properties);
         self.is_paused = false;
+        self.metrics.actions_completed.inc();
     }
 
     pub fn has_actions(&self) -> bool {
         !self.running_action_infos.is_empty()
-    }
-
-    /// Reduces the platform properties available on the worker based on the platform properties provided.
-    /// This is used because we allow more than 1 job to run on a worker at a time, and this is how the
-    /// scheduler knows if more jobs can run on a given worker.
-    fn reduce_platform_properties(&mut self, props: &PlatformProperties) {
-        debug_assert!(props.is_satisfied_by(&self.platform_properties));
-        for (property, prop_value) in &props.properties {
-            if let PlatformPropertyValue::Minimum(value) = prop_value {
-                let worker_props = &mut self.platform_properties.properties;
-                if let &mut PlatformPropertyValue::Minimum(worker_value) = &mut worker_props.get_mut(property).unwrap()
-                {
-                    *worker_value -= value;
-                }
-            }
-        }
     }
 
     fn restore_platform_properties(&mut self, props: &PlatformProperties) {
@@ -199,5 +229,112 @@ impl Eq for Worker {}
 impl Hash for Worker {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+    }
+}
+
+#[derive(Default)]
+struct Metrics {
+    connected_timestamp: u64,
+    actions_completed: CounterWithTime,
+    run_action: FuncCounterWrapper,
+    keep_alive: FuncCounterWrapper,
+    notify_disconnect: CounterWithTime,
+}
+
+impl MetricsComponent for Worker {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish_with_labels(
+            "connected_timestamp",
+            &self.metrics.connected_timestamp,
+            "The timestamp of when this worker connected.",
+            vec![("worker_id".into(), format!("{}", self.id).into())],
+        );
+        c.publish_with_labels(
+            "actions_completed",
+            &self.metrics.actions_completed,
+            "The number of actions completed for this worker.",
+            vec![("worker_id".into(), format!("{}", self.id).into())],
+        );
+        c.publish_with_labels(
+            "run_action",
+            &self.metrics.run_action,
+            "The number of actions started for this worker.",
+            vec![("worker_id".into(), format!("{}", self.id).into())],
+        );
+        c.publish_with_labels(
+            "keep_alive",
+            &self.metrics.keep_alive,
+            "The number of keep_alive sent to this worker.",
+            vec![("worker_id".into(), format!("{}", self.id).into())],
+        );
+        c.publish_with_labels(
+            "notify_disconnect",
+            &self.metrics.notify_disconnect,
+            "The number of notify_disconnect sent to this worker.",
+            vec![("worker_id".into(), format!("{}", self.id).into())],
+        );
+
+        // Publish info about current state of worker.
+        c.publish_with_labels(
+            "is_paused",
+            &self.is_paused,
+            "If this worker is paused.",
+            vec![("worker_id".into(), format!("{}", self.id).into())],
+        );
+        for action_info in self.running_action_infos.iter() {
+            let action_name = action_info.unique_qualifier.action_name().to_string();
+            c.publish_with_labels(
+                "timeout",
+                &action_info.timeout,
+                "Timeout of the running action.",
+                vec![("digest".into(), action_name.clone().into())],
+            );
+            c.publish_with_labels(
+                "priority",
+                &action_info.priority,
+                "Priority of the running action.",
+                vec![("digest".into(), action_name.clone().into())],
+            );
+            c.publish_with_labels(
+                "load_timestamp",
+                &action_info.load_timestamp,
+                "When this action started to be loaded from the CAS.",
+                vec![("digest".into(), action_name.clone().into())],
+            );
+            c.publish_with_labels(
+                "insert_timestamp",
+                &action_info.insert_timestamp,
+                "When this action was created.",
+                vec![("digest".into(), action_name.clone().into())],
+            );
+            c.publish_with_labels(
+                "skip_cache_lookup",
+                &action_info.skip_cache_lookup,
+                "Weather this action should skip cache lookup.",
+                vec![("digest".into(), action_name.clone().into())],
+            );
+        }
+        for (prop_name, prop_type_and_value) in &self.platform_properties.properties {
+            match prop_type_and_value {
+                PlatformPropertyValue::Exact(value)
+                | PlatformPropertyValue::Priority(value)
+                | PlatformPropertyValue::Unknown(value) => {
+                    c.publish_with_labels(
+                        "platform_properties",
+                        value,
+                        "The platform properties state.",
+                        vec![("property_name".into(), prop_name.to_string().into())],
+                    );
+                }
+                PlatformPropertyValue::Minimum(value) => {
+                    c.publish_with_labels(
+                        "platform_properties",
+                        value,
+                        "The platform properties state.",
+                        vec![("property_name".into(), prop_name.to_string().into())],
+                    );
+                }
+            };
+        }
     }
 }

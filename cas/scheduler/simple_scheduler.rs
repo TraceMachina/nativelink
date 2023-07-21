@@ -16,14 +16,16 @@ use std::borrow::Borrow;
 use std::cmp;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
 use hashbrown::{HashMap, HashSet};
 use lru::LruCache;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -32,6 +34,9 @@ use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, 
 use common::log;
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
+use prometheus_utils::{
+    AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent, Registry,
+};
 use scheduler::{ActionScheduler, WorkerScheduler};
 use worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
 
@@ -206,6 +211,7 @@ struct SimpleSchedulerImpl {
     max_job_retries: usize,
     /// Notify task<->worker matching engine that work needs to be done.
     tasks_or_workers_change_notify: Arc<Notify>,
+    metrics: Arc<Metrics>,
 }
 
 impl SimpleSchedulerImpl {
@@ -228,6 +234,7 @@ impl SimpleSchedulerImpl {
     fn add_action(&mut self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         // Check to see if the action is running, if it is and cacheable, merge the actions.
         if let Some(running_action) = self.active_actions.get_mut(&action_info) {
+            self.metrics.add_action_joined_running_action.inc();
             return Ok(Self::subscribe_to_channel(&running_action.action));
         }
 
@@ -237,6 +244,7 @@ impl SimpleSchedulerImpl {
                 .queued_actions
                 .remove_entry(&arc_action_info)
                 .err_tip(|| "Internal error queued_actions and queued_actions_set should match")?;
+            self.metrics.add_action_joined_queued_action.inc();
 
             let new_priority = cmp::max(original_action_info.priority, action_info.priority);
             drop(original_action_info); // This increases the chance Arc::make_mut won't copy.
@@ -256,6 +264,7 @@ impl SimpleSchedulerImpl {
             return Ok(rx);
         }
 
+        self.metrics.add_action_new_action_created.inc();
         // Action needs to be added to queue or is not cacheable.
         let action_info = Arc::new(action_info);
 
@@ -313,6 +322,7 @@ impl SimpleSchedulerImpl {
             Some(running_action) => {
                 let mut awaited_action = running_action.action;
                 let send_result = if awaited_action.attempts >= self.max_job_retries {
+                    self.metrics.retry_action_max_attempts_reached.inc();
                     Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Completed(ActionResult {
                         execution_metadata: ExecutionMetadata {
                             worker: format!("{worker_id}"),
@@ -328,6 +338,7 @@ impl SimpleSchedulerImpl {
                     // Do not put the action back in the queue here, as this action attempted to run too many
                     // times.
                 } else {
+                    self.metrics.retry_action.inc();
                     Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Queued;
                     let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
                     self.queued_actions_set.insert(action_info.clone());
@@ -336,6 +347,7 @@ impl SimpleSchedulerImpl {
                 };
 
                 if send_result.is_err() {
+                    self.metrics.retry_action_no_more_listeners.inc();
                     // Don't remove this task, instead we keep them around for a bit just in case
                     // the client disconnected and will reconnect and ask for same job to be executed
                     // again.
@@ -346,6 +358,7 @@ impl SimpleSchedulerImpl {
                 }
             }
             None => {
+                self.metrics.retry_action_but_action_missing.inc();
                 log::error!("Worker stated it was running an action, but it was not in the active_actions : Worker: {:?}, ActionInfo: {:?}", worker_id, action_info);
             }
         }
@@ -354,11 +367,13 @@ impl SimpleSchedulerImpl {
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
     fn immediate_evict_worker(&mut self, worker_id: &WorkerId, err: Error) {
         if let Some(mut worker) = self.workers.remove_worker(worker_id) {
+            self.metrics.workers_evicted.inc();
             // We don't care if we fail to send message to worker, this is only a best attempt.
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
             // We create a temporary Vec to avoid doubt about a possible code
             // path touching the worker.running_action_infos elsewhere.
             for action_info in worker.running_action_infos.drain() {
+                self.metrics.workers_evicted_with_running_action.inc();
                 self.retry_action(&action_info, worker_id, err.clone());
             }
         }
@@ -436,7 +451,9 @@ impl SimpleSchedulerImpl {
         action_info_hash_key: &ActionInfoHashKey,
         err: Error,
     ) {
+        self.metrics.update_action_with_internal_error.inc();
         let Some((action_info, mut running_action)) = self.active_actions.remove_entry(action_info_hash_key) else {
+            self.metrics.update_action_with_internal_error_no_action.inc();
             log::error!("Could not find action info in active actions : {action_info_hash_key:?}");
             return;
         };
@@ -444,6 +461,7 @@ impl SimpleSchedulerImpl {
         let due_to_backpressure = err.code == Code::ResourceExhausted;
         // Don't count a backpressure failure as an attempt for an action.
         if due_to_backpressure {
+            self.metrics.update_action_with_internal_error_backpressure.inc();
             running_action.action.attempts -= 1;
         }
 
@@ -452,6 +470,7 @@ impl SimpleSchedulerImpl {
             log::warn!("Internal error for worker {}: {}", worker_id, err);
             running_action.action.last_error = Some(err.clone());
         } else {
+            self.metrics.update_action_with_internal_error_from_wrong_worker.inc();
             log::error!(
                 "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {}",
                     running_action.worker_id, worker_id
@@ -484,6 +503,7 @@ impl SimpleSchedulerImpl {
         action_stage: ActionStage,
     ) -> Result<(), Error> {
         if !action_stage.has_action_result() {
+            self.metrics.update_action_missing_action_result.inc();
             let err = make_err!(
                 Code::Internal,
                 "Worker '{worker_id}' set the action_stage of running action {action_info_hash_key:?} to {action_stage:?}. Removing worker.",
@@ -499,6 +519,7 @@ impl SimpleSchedulerImpl {
             .err_tip(|| format!("Could not find action info in active actions : {action_info_hash_key:?}"))?;
 
         if running_action.worker_id != *worker_id {
+            self.metrics.update_action_from_wrong_worker.inc();
             let err = make_err!(
                 Code::Internal,
                 "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {worker_id}",
@@ -520,6 +541,7 @@ impl SimpleSchedulerImpl {
 
         if !running_action.action.current_state.stage.is_finished() {
             if send_result.is_err() {
+                self.metrics.update_action_no_more_listeners.inc();
                 log::warn!(
                     "Action {} has no more listeners during update_action()",
                     action_info.digest().hash_str()
@@ -556,6 +578,7 @@ pub struct SimpleScheduler {
     inner: Arc<Mutex<SimpleSchedulerImpl>>,
     platform_property_manager: Arc<PlatformPropertyManager>,
     task_worker_matching_future: JoinHandle<()>,
+    metrics: Arc<Metrics>,
 }
 
 impl SimpleScheduler {
@@ -599,6 +622,8 @@ impl SimpleScheduler {
 
         let tasks_or_workers_change_notify = Arc::new(Notify::new());
 
+        let metrics = Arc::new(Metrics::default());
+        let metrics_for_do_try_match = metrics.clone();
         let inner = Arc::new(Mutex::new(SimpleSchedulerImpl {
             queued_actions_set: HashSet::new(),
             queued_actions: BTreeMap::new(),
@@ -609,6 +634,7 @@ impl SimpleScheduler {
             worker_timeout_s,
             max_job_retries,
             tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
+            metrics: metrics.clone(),
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
@@ -625,7 +651,9 @@ impl SimpleScheduler {
                         // starving other threads too much.
                         Some(inner_mux) => {
                             let mut inner = inner_mux.lock();
+                            let timer = metrics_for_do_try_match.do_try_match.begin_timer();
                             inner.do_try_match();
+                            timer.measure();
                         }
                         // If the inner went away it means the scheduler is shutting
                         // down, so we need to resolve our future.
@@ -635,25 +663,38 @@ impl SimpleScheduler {
                 }
                 // Unreachable.
             }),
+            metrics,
         }
     }
 
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
     #[must_use]
     pub fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
-        let inner = self.inner.lock();
+        let inner = self.get_inner_lock();
         inner.workers.workers.contains(worker_id)
     }
 
     /// A unit test function used to send the keep alive message to the worker from the server.
     pub fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.get_inner_lock();
         let worker = inner
             .workers
             .workers
             .get_mut(worker_id)
             .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
         worker.keep_alive()
+    }
+
+    fn get_inner_lock(&self) -> MutexGuard<'_, SimpleSchedulerImpl> {
+        // We don't use one of the wrappers because we only want to capture the time spent,
+        // nothing else beacuse this is a hot path.
+        let start = Instant::now();
+        let lock = self.inner.lock();
+        self.metrics
+            .lock_stall_time
+            .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.metrics.lock_stall_time_counter.fetch_add(1, Ordering::Relaxed);
+        lock
     }
 }
 
@@ -664,22 +705,33 @@ impl ActionScheduler for SimpleScheduler {
     }
 
     async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-        let mut inner = self.inner.lock();
-        inner.add_action(action_info)
+        let mut inner = self.get_inner_lock();
+        self.metrics.add_action.wrap(move || inner.add_action(action_info))
     }
 
     async fn find_existing_action(
         &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        let mut inner = self.inner.lock();
-        inner
+        let mut inner = self.get_inner_lock();
+        let result = inner
             .find_existing_action(unique_qualifier)
-            .or_else(|| inner.find_recently_completed_action(unique_qualifier))
+            .or_else(|| inner.find_recently_completed_action(unique_qualifier));
+        if result.is_some() {
+            self.metrics.existing_actions_found.inc();
+        } else {
+            self.metrics.existing_actions_not_found.inc();
+        }
+        result
     }
 
     async fn clean_recently_completed_actions(&self) {
-        self.inner.lock().clean_recently_completed_actions();
+        self.get_inner_lock().clean_recently_completed_actions();
+        self.metrics.clean_recently_completed_actions.inc()
+    }
+
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        registry.register_collector(Box::new(Collector::new(&self)));
     }
 }
 
@@ -691,16 +743,18 @@ impl WorkerScheduler for SimpleScheduler {
 
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id;
-        let mut inner = self.inner.lock();
-        let res = inner
-            .workers
-            .add_worker(worker)
-            .err_tip(|| "Error while adding worker, removing from pool");
-        if let Err(err) = &res {
-            inner.immediate_evict_worker(&worker_id, err.clone());
-        }
-        inner.tasks_or_workers_change_notify.notify_one();
-        res
+        let mut inner = self.get_inner_lock();
+        self.metrics.add_worker.wrap(move || {
+            let res = inner
+                .workers
+                .add_worker(worker)
+                .err_tip(|| "Error while adding worker, removing from pool");
+            if let Err(err) = &res {
+                inner.immediate_evict_worker(&worker_id, err.clone());
+            }
+            inner.tasks_or_workers_change_notify.notify_one();
+            res
+        })
     }
 
     async fn update_action_with_internal_error(
@@ -709,7 +763,7 @@ impl WorkerScheduler for SimpleScheduler {
         action_info_hash_key: &ActionInfoHashKey,
         err: Error,
     ) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.get_inner_lock();
         inner.update_action_with_internal_error(worker_id, action_info_hash_key, err);
     }
 
@@ -719,12 +773,14 @@ impl WorkerScheduler for SimpleScheduler {
         action_info_hash_key: &ActionInfoHashKey,
         action_stage: ActionStage,
     ) -> Result<(), Error> {
-        let mut inner = self.inner.lock();
-        inner.update_action(worker_id, action_info_hash_key, action_stage)
+        let mut inner = self.get_inner_lock();
+        self.metrics
+            .update_action
+            .wrap(move || inner.update_action(worker_id, action_info_hash_key, action_stage))
     }
 
     async fn worker_keep_alive_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp) -> Result<(), Error> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.get_inner_lock();
         inner
             .workers
             .refresh_lifetime(worker_id, timestamp)
@@ -732,7 +788,7 @@ impl WorkerScheduler for SimpleScheduler {
     }
 
     async fn remove_worker(&self, worker_id: WorkerId) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.get_inner_lock();
         inner.immediate_evict_worker(
             &worker_id,
             make_err!(Code::Internal, "Received request to remove worker"),
@@ -740,33 +796,349 @@ impl WorkerScheduler for SimpleScheduler {
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        let mut inner = self.inner.lock();
-        // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
-        // map most of the time.
-        let worker_ids_to_remove: Vec<WorkerId> = inner
-            .workers
-            .workers
-            .iter()
-            .rev()
-            .map_while(|(worker_id, worker)| {
-                if worker.last_update_timestamp <= now_timestamp - inner.worker_timeout_s {
-                    Some(*worker_id)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for worker_id in &worker_ids_to_remove {
-            let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool",);
-            log::warn!("{:?}", err);
-            inner.immediate_evict_worker(worker_id, err);
-        }
-        Ok(())
+        let mut inner = self.get_inner_lock();
+        self.metrics.remove_timedout_workers.wrap(move || {
+            // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
+            // map most of the time.
+            let worker_ids_to_remove: Vec<WorkerId> = inner
+                .workers
+                .workers
+                .iter()
+                .rev()
+                .map_while(|(worker_id, worker)| {
+                    if worker.last_update_timestamp <= now_timestamp - inner.worker_timeout_s {
+                        Some(*worker_id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for worker_id in &worker_ids_to_remove {
+                let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool",);
+                log::warn!("{:?}", err);
+                inner.immediate_evict_worker(worker_id, err);
+            }
+            Ok(())
+        })
+    }
+
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
+        // We do not register anything here because we only want to register metrics
+        // once and we rely on the `ActionScheduler::register_metrics()` to do that.
     }
 }
 
 impl Drop for SimpleScheduler {
     fn drop(&mut self) {
         self.task_worker_matching_future.abort();
+    }
+}
+
+impl MetricsComponent for SimpleScheduler {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        self.metrics.gather_metrics(c);
+        {
+            // We use the raw lock because we dont gather stats about gathering stats.
+            let inner = self.inner.lock();
+            c.publish(
+                "queued_actions_total",
+                &inner.queued_actions.len(),
+                "The number actions in the queue.",
+            );
+            c.publish(
+                "workers_total",
+                &inner.workers.workers.len(),
+                "The number workers active.",
+            );
+            c.publish(
+                "active_actions_total",
+                &inner.active_actions.len(),
+                "The number of running actions.",
+            );
+            c.publish(
+                "recently_completed_actions_total",
+                &inner.recently_completed_actions.len(),
+                "The number of recently completed actions in the buffer.",
+            );
+            c.publish(
+                "retain_completed_for_seconds",
+                &inner.retain_completed_for,
+                "The duration completed actions are retained for.",
+            );
+            c.publish(
+                "worker_timeout_seconds",
+                &inner.worker_timeout_s,
+                "The configured timeout if workers have not responded for a while.",
+            );
+            c.publish(
+                "max_job_retries",
+                &inner.max_job_retries,
+                "The amount of times a job is allowed to retry from an internal error before it is dropped.",
+            );
+            for (_worker_id, worker) in inner.workers.workers.iter() {
+                c.publish_with_labels(
+                    "workers",
+                    worker,
+                    "",
+                    vec![("worker_id".into(), worker.id.to_string().into())],
+                );
+            }
+            for (_, active_action) in inner.active_actions.iter() {
+                let action_name = active_action.action.action_info.unique_qualifier.action_name().into();
+                c.publish_with_labels(
+                    "active_actions",
+                    active_action,
+                    "",
+                    vec![
+                        ("worker_id".into(), active_action.worker_id.to_string().into()),
+                        ("digest".into(), action_name),
+                    ],
+                );
+            }
+            // Note: We don't publish queued_actions because it can be very large.
+            // Note: We don't publish recently completed actions because it can be very large.
+        }
+    }
+}
+
+impl MetricsComponent for CompletedAction {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish(
+            "completed_timestamp",
+            &self.completed_time,
+            "The timestamp this action was completed",
+        );
+        c.publish("current_state", self.state.as_ref(), "The current stage of the action.");
+    }
+}
+
+impl MetricsComponent for RunningAction {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish("action", &self.action, "");
+    }
+}
+
+impl MetricsComponent for AwaitedAction {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish(
+            "action_digest",
+            &self.action_info.unique_qualifier.action_name(),
+            "The digest of the action.",
+        );
+        c.publish(
+            "current_state",
+            self.current_state.as_ref(),
+            "The current stage of the action.",
+        );
+        c.publish(
+            "attempts",
+            &self.attempts,
+            "The number of attempts this action has tried.",
+        );
+        c.publish(
+            "last_error",
+            &format!("{:?}", self.last_error),
+            "The last error this action caused from a retry (if any).",
+        );
+    }
+}
+
+#[derive(Default)]
+struct Metrics {
+    add_action: FuncCounterWrapper,
+    existing_actions_found: CounterWithTime,
+    existing_actions_not_found: CounterWithTime,
+    clean_recently_completed_actions: CounterWithTime,
+    remove_timedout_workers: FuncCounterWrapper,
+    update_action: FuncCounterWrapper,
+    update_action_missing_action_result: CounterWithTime,
+    update_action_from_wrong_worker: CounterWithTime,
+    update_action_no_more_listeners: CounterWithTime,
+    update_action_with_internal_error: CounterWithTime,
+    update_action_with_internal_error_no_action: CounterWithTime,
+    update_action_with_internal_error_backpressure: CounterWithTime,
+    update_action_with_internal_error_from_wrong_worker: CounterWithTime,
+    workers_evicted: CounterWithTime,
+    workers_evicted_with_running_action: CounterWithTime,
+    retry_action: CounterWithTime,
+    retry_action_max_attempts_reached: CounterWithTime,
+    retry_action_no_more_listeners: CounterWithTime,
+    retry_action_but_action_missing: CounterWithTime,
+    add_action_joined_running_action: CounterWithTime,
+    add_action_joined_queued_action: CounterWithTime,
+    add_action_new_action_created: CounterWithTime,
+    add_worker: FuncCounterWrapper,
+    timedout_workers: CounterWithTime,
+    lock_stall_time: AtomicU64,
+    lock_stall_time_counter: AtomicU64,
+    do_try_match: AsyncCounterWrapper,
+}
+
+impl Metrics {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish(
+            "add_action",
+            &self.add_action,
+            "The number of times add_action was called.",
+        );
+        c.publish_with_labels(
+            "find_existing_action",
+            &self.existing_actions_found,
+            "The number of times existing_actions_found had an action found.",
+            vec![("result".into(), "found".into())],
+        );
+        c.publish_with_labels(
+            "find_existing_action",
+            &self.existing_actions_not_found,
+            "The number of times existing_actions_found had an action not found.",
+            vec![("result".into(), "not_found".into())],
+        );
+        c.publish(
+            "clean_recently_completed_actions",
+            &self.clean_recently_completed_actions,
+            "The number of times clean_recently_completed_actions was triggered.",
+        );
+        c.publish(
+            "remove_timedout_workers",
+            &self.remove_timedout_workers,
+            "The number of times remove_timedout_workers was triggered.",
+        );
+        {
+            c.publish_with_labels(
+                "update_action",
+                &self.update_action,
+                "Stats about errors when worker sends update_action() to scheduler.",
+                vec![("result".into(), "missing_action_result".into())],
+            );
+            c.publish_with_labels(
+                "update_action_errors",
+                &self.update_action_missing_action_result,
+                "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
+                vec![("result".into(), "missing_action_result".into())],
+            );
+            c.publish_with_labels(
+                "update_action_errors",
+                &self.update_action_from_wrong_worker,
+                "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
+                vec![("result".into(), "from_wrong_worker".into())],
+            );
+            c.publish_with_labels(
+                "update_action_errors",
+                &self.update_action_no_more_listeners,
+                "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
+                vec![("result".into(), "no_more_listeners".into())],
+            );
+        }
+        c.publish(
+            "update_action_with_internal_error",
+            &self.update_action_with_internal_error,
+            "The number of times update_action_with_internal_error was triggered.",
+        );
+        {
+            c.publish_with_labels(
+                "update_action_with_internal_error_errors",
+                &self.update_action_with_internal_error_no_action,
+                "Stats about what errors caused update_action_with_internal_error() in scheduler.",
+                vec![("result".into(), "no_action".into())],
+            );
+            c.publish_with_labels(
+                "update_action_with_internal_error_errors",
+                &self.update_action_with_internal_error_backpressure,
+                "Stats about what errors caused update_action_with_internal_error() in scheduler.",
+                vec![("result".into(), "backpressure".into())],
+            );
+            c.publish_with_labels(
+                "update_action_with_internal_error_errors",
+                &self.update_action_with_internal_error_from_wrong_worker,
+                "Stats about what errors caused update_action_with_internal_error() in scheduler.",
+                vec![("result".into(), "from_wrong_worker".into())],
+            );
+        }
+        c.publish(
+            "workers_evicted_total",
+            &self.workers_evicted,
+            "The number of workers evicted from scheduler.",
+        );
+        c.publish(
+            "workers_evicted_with_running_action",
+            &self.workers_evicted_with_running_action,
+            "The number of jobs cancelled because worker was evicted from scheduler.",
+        );
+        {
+            c.publish_with_labels(
+                "retry_action",
+                &self.retry_action,
+                "Stats about retry_action().",
+                vec![("result".into(), "success".into())],
+            );
+            c.publish_with_labels(
+                "retry_action",
+                &self.retry_action_max_attempts_reached,
+                "Stats about retry_action().",
+                vec![("result".into(), "max_attempts_reached".into())],
+            );
+            c.publish_with_labels(
+                "retry_action",
+                &self.retry_action_no_more_listeners,
+                "Stats about retry_action().",
+                vec![("result".into(), "no_more_listeners".into())],
+            );
+            c.publish_with_labels(
+                "retry_action",
+                &self.retry_action_but_action_missing,
+                "Stats about retry_action().",
+                vec![("result".into(), "action_missing".into())],
+            );
+        }
+        {
+            c.publish_with_labels(
+                "add_action",
+                &self.add_action_joined_running_action,
+                "Stats about add_action().",
+                vec![("result".into(), "joined_running_action".into())],
+            );
+            c.publish_with_labels(
+                "add_action",
+                &self.add_action_joined_queued_action,
+                "Stats about add_action().",
+                vec![("result".into(), "joined_queued_action".into())],
+            );
+            c.publish_with_labels(
+                "add_action",
+                &self.add_action_new_action_created,
+                "Stats about add_action().",
+                vec![("result".into(), "new_action_created".into())],
+            );
+        }
+        c.publish(
+            "add_worker",
+            &self.add_worker,
+            "Stats about add_worker() being called on the scheduler.",
+        );
+        c.publish(
+            "timedout_workers",
+            &self.timedout_workers,
+            "The number of workers that timed out.",
+        );
+        c.publish(
+            "lock_stall_time_nanos_total",
+            &self.lock_stall_time,
+            "The total number of nanos spent waiting on the lock in the scheduler.",
+        );
+        c.publish(
+            "lock_stall_time_total",
+            &self.lock_stall_time_counter,
+            "The number of times a lock request was made in the scheduler.",
+        );
+        c.publish(
+            "lock_stall_time_avg_nanos",
+            &(self.lock_stall_time.load(Ordering::Relaxed) / self.lock_stall_time_counter.load(Ordering::Relaxed)),
+            "The average time the scheduler stalled waiting on the lock to release in nanos.",
+        );
+        c.publish(
+            "matching_engine",
+            &self.do_try_match,
+            "The job<->worker matching engine stats. This is a very expensive operation, so it is not run every time (often called do_try_match).",
+        );
     }
 }
