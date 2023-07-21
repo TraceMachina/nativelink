@@ -20,6 +20,7 @@ use tokio::sync::watch;
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState};
 use error::Error;
 use platform_property_manager::PlatformPropertyManager;
+use prometheus_utils::Registry;
 use worker::{Worker, WorkerId, WorkerTimestamp};
 
 /// ActionScheduler interface is responsible for interactions between the scheduler
@@ -40,6 +41,9 @@ pub trait ActionScheduler: Sync + Send + Unpin {
 
     /// Cleans up the cache of recently completed actions.
     async fn clean_recently_completed_actions(&self);
+
+    /// Register the metrics for the action scheduler.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }
 
 /// WorkerScheduler interface is responsible for interactions between the scheduler
@@ -78,4 +82,7 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error>;
+
+    /// Register the metrics for the worker scheduler.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }
