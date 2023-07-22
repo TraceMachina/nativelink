@@ -26,7 +26,7 @@ fi
 MOUNT_LOCATION="$1"
 shift
 
-DEVICES=( $(lsblk --fs --json | jq -r '.blockdevices[] | select(.children == null and .fstype == null) | .name') )
+DEVICES=( $(lsblk --fs --json | jq -r '.blockdevices[] | select(.children == null and .fstype == null and .mountpoints[0] == null) | .name') )
 DEVICES_FULLNAME=()
 for DEVICE in "${DEVICES[@]}"; do
   DEVICES_FULLNAME+=("/dev/$DEVICE")
