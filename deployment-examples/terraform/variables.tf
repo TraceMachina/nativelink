@@ -14,12 +14,12 @@
 
 variable "build_base_ami_arm" {
   description = "Base AMI for building Turbo Cache for ARM"
-  default     = "ami-075200050e2c8899b"
+  default     = "ami-0c79a55dda52434da"
 }
 
 variable "build_base_ami_x86" {
   description = "Base AMI for building Turbo Cache for x86"
-  default     = "ami-0ddf424f81ddb0720"
+  default     = "ami-03f65b8614a860c29"
 }
 
 variable "build_arm_instance_type" {
