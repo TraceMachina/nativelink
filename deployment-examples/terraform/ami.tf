@@ -62,7 +62,7 @@ resource "aws_instance" "build_turbo_cache_instance" {
       cd ../../
       rm -rf $SELF_DIR/.terraform-turbo-cache-builder
       mkdir -p $SELF_DIR/.terraform-turbo-cache-builder
-      find . ! -ipath '*/target*' -and ! -ipath '*/.*' -and ! -ipath './bazel-*' -type f -print0 | tar cvf $SELF_DIR/.terraform-turbo-cache-builder/file.tar.gz --null -T -
+      find . ! -ipath '*/target*' -and ! \( -ipath '*/.*' -and ! -name '.rustfmt.toml' -and ! -name '.bazelrc' \) -and ! -ipath './bazel-*' -type f -print0 | tar cvf $SELF_DIR/.terraform-turbo-cache-builder/file.tar.gz --null -T -
     EOT
   }
 
@@ -84,8 +84,8 @@ resource "aws_instance" "build_turbo_cache_instance" {
         `# When the instance first starts up AWS may have not finished add the certs to the` &&
         `# apt servers, so we sleep for a few seconds` &&
         sleep 5 &&
-        sudo apt update &&
-        sudo apt install -y jq &&
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update &&
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y jq libssl-dev &&
         sudo mv ~/create_filesystem.sh /root/create_filesystem.sh &&
         sudo chmod +x /root/create_filesystem.sh &&
         sudo /root/create_filesystem.sh /mnt/data &&
@@ -113,9 +113,10 @@ resource "aws_instance" "build_turbo_cache_instance" {
         mkdir -p /tmp/turbo-cache &&
         cd /tmp/turbo-cache &&
         tar xvf /tmp/file.tar.gz &&
-        sudo apt install -y docker.io awscli &&
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io awscli &&
         cd /tmp/turbo-cache &&
-        sudo docker build -t turbo-cache-runner -f ./deployment-examples/docker-compose/Dockerfile . &&
+        . /etc/lsb-release &&
+        sudo docker build --build-arg OS_VERSION=$DISTRIB_RELEASE -t turbo-cache-runner -f ./deployment-examples/docker-compose/Dockerfile . &&
         container_id=$(sudo docker create turbo-cache-runner) &&
         `# Copy the compiled binary out of the container` &&
         sudo docker cp $container_id:/usr/local/bin/turbo-cache /usr/local/bin/turbo-cache &&
