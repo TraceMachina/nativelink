@@ -234,6 +234,14 @@ impl StoreTrait for DedupStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        // Special case for if a client tries to read zero bytes.
+        if length == Some(0) {
+            writer
+                .send_eof()
+                .await
+                .err_tip(|| "Failed to write EOF out from get_part dedup")?;
+            return Ok(());
+        }
         // First we need to download the index that contains where the individual parts actually
         // can be fetched from.
         let index_entries = {
@@ -261,17 +269,19 @@ impl StoreTrait for DedupStore {
                 let mut entries = Vec::with_capacity(index_entries.entries.len());
                 for entry in index_entries.entries {
                     let first_byte = current_entries_sum;
-                    current_entries_sum +=
+                    let entry_size =
                         usize::try_from(entry.size_bytes).err_tip(|| "Failed to convert to usize in DedupStore")?;
+                    current_entries_sum += entry_size;
                     // Filter any items who's end byte is before the first requested byte.
-                    if length.is_some() && current_entries_sum < offset {
-                        start_byte_in_stream +=
-                            usize::try_from(entry.size_bytes).err_tip(|| "Failed to convert to usize in DedupStore")?;
+                    if current_entries_sum <= offset {
+                        start_byte_in_stream = current_entries_sum;
                         continue;
                     }
-                    // Filter any items who's start byte is after the last requested byte.
-                    if length.is_some() && first_byte > offset + length.unwrap() {
-                        continue;
+                    // If we are not going to read any bytes past the length we are done.
+                    if let Some(length) = length {
+                        if first_byte >= offset + length {
+                            break;
+                        }
                     }
                     entries.push(entry);
                 }
@@ -305,7 +315,7 @@ impl StoreTrait for DedupStore {
                         .await
                         .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
 
-                    Ok(data)
+                    Result::<_, Error>::Ok(data)
                 }
             })
             .buffered(self.max_concurrent_fetch_per_get);
@@ -315,29 +325,25 @@ impl StoreTrait for DedupStore {
         // streamed data.
         // Note: Need to take special care to ensure we send the proper slice of data requested.
         let mut bytes_to_skip = offset - start_byte_in_stream;
-        let mut bytes_to_send = length.unwrap_or(usize::MAX);
+        let mut bytes_to_send = length.unwrap_or(usize::MAX - offset);
         while let Some(result) = entries_stream.next().await {
-            match result {
-                Err(err) => return Err(err),
-                Ok(mut data) => {
-                    assert!(
-                        bytes_to_skip <= data.len(),
-                        "Formula above must be wrong, {} > {}",
-                        bytes_to_skip,
-                        data.len()
-                    );
-                    let end_pos = cmp::min(data.len(), bytes_to_send + bytes_to_skip);
-                    if bytes_to_skip != 0 || data.len() > bytes_to_send {
-                        data = data.slice(bytes_to_skip..end_pos);
-                    }
-                    writer
-                        .send(data)
-                        .await
-                        .err_tip(|| "Failed to write data to get_part dedup")?;
-                    bytes_to_send -= end_pos - bytes_to_skip;
-                    bytes_to_skip -= bytes_to_skip;
-                }
+            let mut data = result.err_tip(|| "Inner store iterator closed early in DedupStore")?;
+            assert!(
+                bytes_to_skip <= data.len(),
+                "Formula above must be wrong, {} > {}",
+                bytes_to_skip,
+                data.len()
+            );
+            let end_pos = cmp::min(data.len(), bytes_to_send + bytes_to_skip);
+            if bytes_to_skip != 0 || data.len() > bytes_to_send {
+                data = data.slice(bytes_to_skip..end_pos);
             }
+            writer
+                .send(data)
+                .await
+                .err_tip(|| "Failed to write data to get_part dedup")?;
+            bytes_to_send -= end_pos - bytes_to_skip;
+            bytes_to_skip = 0;
         }
 
         // Finish our stream by writing our EOF and shutdown the stream.
