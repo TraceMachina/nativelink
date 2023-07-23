@@ -17,10 +17,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use bytestream_server::ByteStreamServer;
+use hyper::body::Sender;
 use maplit::hashmap;
 use prometheus_client::registry::Registry;
-use tokio::task::yield_now;
-use tonic::Request;
+use tokio::task::{yield_now, JoinHandle};
+use tonic::{Request, Response};
+
+use proto::google::bytestream::WriteResponse;
 
 use common::{encode_stream_proto, DigestInfo};
 use default_store_factory::store_factory;
@@ -50,6 +53,7 @@ fn make_bytestream_server(store_manager: &StoreManager) -> Result<ByteStreamServ
             cas_stores: hashmap! {
                 "foo_instance_name".to_string() => "main_cas".to_string(),
             },
+            persist_stream_on_disconnect_timeout: 0,
             max_bytes_per_stream: 1024,
         },
         store_manager,
@@ -154,6 +158,222 @@ pub mod write_tests {
                 std::str::from_utf8(raw_data),
                 "Expected store to have been updated to new value"
             );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
+        let store_manager = make_store_manager().await?;
+        let bs_server = make_bytestream_server(store_manager.as_ref())?;
+        let store_owned = store_manager.get_store("main_cas").unwrap();
+
+        let store = Pin::new(store_owned.as_ref());
+
+        async fn setup_stream(
+            bs_server: ByteStreamServer,
+        ) -> Result<
+            (
+                Sender,
+                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+            ),
+            Error,
+        > {
+            let (tx, body) = Body::channel();
+            let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
+            // Note: This is an undocumented function.
+            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+
+            let join_handle = tokio::spawn(async move {
+                let response_future = bs_server.write(Request::new(stream));
+                (response_future.await, bs_server)
+            });
+            Ok((tx, join_handle))
+        }
+        let (mut tx, join_handle) = setup_stream(bs_server).await?;
+        const WRITE_DATA: &str = "12456789abcdefghijk";
+
+        // Chunk our data into two chunks to simulate something a client
+        // might do.
+        const BYTE_SPLIT_OFFSET: usize = 8;
+
+        let resource_name = format!(
+            "{}/uploads/{}/blobs/{}/{}",
+            INSTANCE_NAME,
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
+            HASH1,
+            WRITE_DATA.len()
+        );
+        let mut write_request = WriteRequest {
+            resource_name,
+            write_offset: 0,
+            finish_write: false,
+            data: vec![].into(),
+        };
+        {
+            // Write first chunk of data.
+            write_request.write_offset = 0;
+            write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
+            tx.send_data(encode_stream_proto(&write_request)?).await?;
+        }
+        let bs_server = {
+            // Now disconnect our stream.
+            drop(tx);
+            let (result, bs_server) = join_handle.await?;
+            assert_eq!(result.is_err(), true, "Expected error to be returned");
+            bs_server
+        };
+        // Now reconnect.
+        let (mut tx, join_handle) = setup_stream(bs_server).await?;
+        {
+            // Write the remainder of our data.
+            write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+            write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
+            tx.send_data(encode_stream_proto(&write_request)?).await?;
+        }
+        {
+            // Now disconnect our stream.
+            drop(tx);
+            let (result, _bs_server) = join_handle.await?;
+            assert!(result.is_ok(), "Expected success to be returned");
+        }
+        {
+            // Check to make sure our store recorded the data properly.
+            let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
+            assert_eq!(
+                store.get_part_unchunked(digest, 0, None, None).await?,
+                WRITE_DATA,
+                "Data written to store did not match expected data",
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let store_manager = make_store_manager().await?;
+        let bs_server = make_bytestream_server(store_manager.as_ref())?;
+
+        async fn setup_stream(
+            bs_server: ByteStreamServer,
+        ) -> Result<
+            (
+                Sender,
+                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+            ),
+            Error,
+        > {
+            let (tx, body) = Body::channel();
+            let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
+            // Note: This is an undocumented function.
+            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+
+            let join_handle = tokio::spawn(async move {
+                let response_future = bs_server.write(Request::new(stream));
+                (response_future.await, bs_server)
+            });
+            Ok((tx, join_handle))
+        }
+        let (mut tx, join_handle) = setup_stream(bs_server).await?;
+        const WRITE_DATA: &str = "12456789abcdefghijk";
+
+        // Chunk our data into two chunks to simulate something a client
+        // might do.
+        const BYTE_SPLIT_OFFSET: usize = 8;
+
+        let resource_name = format!(
+            "{}/uploads/{}/blobs/{}/{}",
+            INSTANCE_NAME,
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
+            HASH1,
+            WRITE_DATA.len()
+        );
+        let mut write_request = WriteRequest {
+            resource_name,
+            write_offset: 0,
+            finish_write: false,
+            data: vec![].into(),
+        };
+        {
+            // Write first chunk of data.
+            write_request.write_offset = 0;
+            write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
+            tx.send_data(encode_stream_proto(&write_request)?).await?;
+        }
+        {
+            // Write data it already has.
+            write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
+            write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
+            tx.send_data(encode_stream_proto(&write_request)?).await?;
+        }
+        assert!(join_handle.await?.0.is_err(), "Expected error to be returned");
+        {
+            // Make sure stream was closed.
+            write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
+            write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
+            assert!(
+                tx.send_data(encode_stream_proto(&write_request)?).await.is_err(),
+                "Expected error to be returned"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> {
+        let store_manager = make_store_manager().await?;
+        let bs_server = make_bytestream_server(store_manager.as_ref())?;
+        let store_owned = store_manager.get_store("main_cas").unwrap();
+        let store = Pin::new(store_owned.as_ref());
+
+        async fn setup_stream(
+            bs_server: ByteStreamServer,
+        ) -> Result<
+            (
+                Sender,
+                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+            ),
+            Error,
+        > {
+            let (tx, body) = Body::channel();
+            let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
+            // Note: This is an undocumented function.
+            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+
+            let join_handle = tokio::spawn(async move {
+                let response_future = bs_server.write(Request::new(stream));
+                (response_future.await, bs_server)
+            });
+            Ok((tx, join_handle))
+        }
+        let (mut tx, join_handle) = setup_stream(bs_server).await?;
+
+        let resource_name = format!(
+            "{}/uploads/{}/blobs/{}/{}",
+            INSTANCE_NAME,
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
+            HASH1,
+            0
+        );
+        let write_request = WriteRequest {
+            resource_name,
+            write_offset: 0,
+            finish_write: true,
+            data: vec![].into(),
+        };
+
+        {
+            // Write our zero byte data.
+            tx.send_data(encode_stream_proto(&write_request)?).await?;
+            // Wait for stream to finish.
+            join_handle.await?.0?;
+        }
+        {
+            // Check to make sure our store recorded the data properly.
+            let data = store
+                .get_part_unchunked(DigestInfo::try_new(HASH1, 0)?, 0, None, None)
+                .await?;
+            assert_eq!(data, "", "Expected data to exist and be empty");
         }
         Ok(())
     }
@@ -381,7 +601,7 @@ pub mod query_tests {
             assert_eq!(
                 data.into_inner(),
                 QueryWriteStatusResponse {
-                    committed_size: 0,
+                    committed_size: write_request.data.len() as i64,
                     complete: false,
                 }
             );
@@ -402,7 +622,7 @@ pub mod query_tests {
             assert_eq!(
                 data.into_inner(),
                 QueryWriteStatusResponse {
-                    committed_size: 0,
+                    committed_size: raw_data.len() as i64,
                     complete: true,
                 }
             );
