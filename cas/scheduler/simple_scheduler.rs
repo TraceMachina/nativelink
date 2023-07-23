@@ -448,7 +448,7 @@ impl SimpleSchedulerImpl {
 
         if running_action.worker_id == *worker_id {
             // Don't set the error on an action that's running somewhere else.
-            log::warn!("Internal error for worker {}: {}", worker_id, err);
+            log::error!("Internal error for worker {}: {}", worker_id, err);
             running_action.action.last_error = Some(err);
         } else {
             log::error!(
