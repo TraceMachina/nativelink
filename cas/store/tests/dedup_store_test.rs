@@ -149,6 +149,116 @@ mod dedup_store_tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test() -> Result<(), Error> {
+        let store_owned = DedupStore::new(
+            &config::stores::DedupStore {
+                index_store: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                content_store: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                min_size: 5,
+                normal_size: 6,
+                max_size: 7,
+                max_concurrent_fetch_per_get: 10,
+            },
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())), // Index store.
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())), // Content store.
+        );
+        let store = Pin::new(&store_owned);
+
+        const DATA_SIZE: usize = 30;
+        let original_data = make_random_data(DATA_SIZE);
+        let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
+
+        store
+            .update_oneshot(digest, original_data.clone().into())
+            .await
+            .err_tip(|| "Failed to write data to dedup store")?;
+
+        // This value must be larger than `max_size` in the config above.
+        const START_READ_BYTE: usize = 7;
+        let rt_data = store
+            .get_part_unchunked(digest, START_READ_BYTE, None, None)
+            .await
+            .err_tip(|| "Failed to get_part from dedup store")?;
+
+        assert_eq!(
+            rt_data.len(),
+            DATA_SIZE - START_READ_BYTE,
+            "Expected round trip sizes to match"
+        );
+        assert_eq!(
+            rt_data,
+            original_data[START_READ_BYTE..],
+            "Expected round trip data to match"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
+        let store_owned = DedupStore::new(
+            &config::stores::DedupStore {
+                index_store: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                content_store: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                min_size: 5,
+                normal_size: 6,
+                max_size: 7,
+                max_concurrent_fetch_per_get: 10,
+            },
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())), // Index store.
+            Arc::new(MemoryStore::new(&config::stores::MemoryStore::default())), // Content store.
+        );
+        let store = Pin::new(&store_owned);
+
+        const DATA_SIZE: usize = 30;
+        let original_data = make_random_data(DATA_SIZE);
+        let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
+        store
+            .update_oneshot(digest, original_data.clone().into())
+            .await
+            .err_tip(|| "Failed to write data to dedup store")?;
+
+        for offset in 0..=DATA_SIZE {
+            for len in 0..DATA_SIZE {
+                // If reading at DATA_SIZE, we will set len to None to check that edge case.
+                let maybe_len = if offset == DATA_SIZE { None } else { Some(len) };
+                let len = if maybe_len.is_none() { DATA_SIZE } else { len };
+
+                let rt_data = store
+                    .get_part_unchunked(digest, offset, maybe_len, None)
+                    .await
+                    .err_tip(|| "Failed to get_part from dedup store")?;
+
+                let len_fenced = std::cmp::min(len, rt_data.len());
+                assert_eq!(rt_data.len(), len_fenced, "Expected round trip sizes to match");
+                assert_eq!(
+                    rt_data,
+                    original_data[offset..(offset + len_fenced)],
+                    "Expected round trip data to match"
+                );
+            }
+        }
+
+        // This value must be larger than `max_size` in the config above.
+        const START_READ_BYTE: usize = 10;
+        let rt_data = store
+            .get_part_unchunked(digest, START_READ_BYTE, None, None)
+            .await
+            .err_tip(|| "Failed to get_part from dedup store")?;
+
+        assert_eq!(
+            rt_data.len(),
+            DATA_SIZE - START_READ_BYTE,
+            "Expected round trip sizes to match"
+        );
+        assert_eq!(
+            rt_data,
+            original_data[START_READ_BYTE..],
+            "Expected round trip data to match"
+        );
+        Ok(())
+    }
+
     /// Ensure that when we run a `.has()` on a dedup store it will check to ensure all indexed
     /// content items exist instead of just checking the entry in the index store.
     #[tokio::test]
