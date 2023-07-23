@@ -12,21 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::TryFrom;
+use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use futures::{future::pending, stream::unfold, Future, Stream};
+use futures::future::{pending, BoxFuture};
+use futures::stream::unfold;
+use futures::{try_join, Future, Stream, TryFutureExt};
 use parking_lot::Mutex;
 use proto::google::bytestream::{
     byte_stream_server::ByteStream, byte_stream_server::ByteStreamServer as Server, QueryWriteStatusRequest,
     QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
 };
+use tokio::task::AbortHandle;
+use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
 
-use buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
+use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use common::{log, DigestInfo};
 use config::cas_server::ByteStreamConfig;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
@@ -35,17 +41,127 @@ use resource_info::ResourceInfo;
 use store::{Store, StoreManager, UploadSizeInfo};
 use write_request_stream_wrapper::WriteRequestStreamWrapper;
 
+/// If this value changes update the documentation in the config definition.
+const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
+type StoreUpdateFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
+
+struct StreamState {
+    uuid: String,
+    tx: DropCloserWriteHalf,
+    store_update_fut: StoreUpdateFuture,
+}
+
+impl Debug for StreamState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamState").field("uuid", &self.uuid).finish()
+    }
+}
+
+/// If a stream is in this state, it will automatically be put back into an `IdleStream` and
+/// placed back into the `active_uploads` map as an `IdleStream` after it is dropped.
+/// To prevent it from being put back into an `IdleStream` you must call `.forget()`.
+struct ActiveStreamGuard<'a> {
+    stream_state: Option<StreamState>,
+    bytes_received: Arc<AtomicU64>,
+    bytestream_server: &'a ByteStreamServer,
+    sleep_fn: &'a SleepFn,
+}
+
+impl<'a> ActiveStreamGuard<'a> {
+    /// Consumes the guard and returns the inner state. The stream will be considered
+    /// "finished", will remove it from the active_uploads.
+    fn forget(mut self) -> (DropCloserWriteHalf, StoreUpdateFuture) {
+        let stream_state = self.stream_state.take().unwrap();
+        self.bytestream_server.active_uploads.lock().remove(&stream_state.uuid);
+        (stream_state.tx, stream_state.store_update_fut)
+    }
+}
+
+impl<'a> Drop for ActiveStreamGuard<'a> {
+    fn drop(&mut self) {
+        let Some(stream_state) = self.stream_state.take() else {
+            return; // If None it means we don't want it put back into an IdleStream.
+        };
+        let weak_active_uploads = Arc::downgrade(&self.bytestream_server.active_uploads);
+        let mut active_uploads = self.bytestream_server.active_uploads.lock();
+        let uuid = stream_state.uuid.clone();
+        let Some(active_uploads_slot) = active_uploads.get_mut(&uuid) else {
+            log::error!("Failed to find active upload for UUID: {}. This should never happen.", uuid);
+            return;
+        };
+        let self_fn = self.sleep_fn.clone();
+        active_uploads_slot.1 = Some(IdleStream {
+            stream_state,
+            abort_timeout_handle: tokio::spawn(async move {
+                (*self_fn)().await;
+                if let Some(active_uploads) = weak_active_uploads.upgrade() {
+                    let mut active_uploads = active_uploads.lock();
+                    log::debug!("Removing idle stream {uuid}");
+                    active_uploads.remove(&uuid);
+                }
+            })
+            .abort_handle(),
+        });
+    }
+}
+
+/// Represents a stream that is in the "idle" state. this means it is not currently being used
+/// by a client. If it is not used within a certain amount of time it will be removed from the
+/// `active_uploads` map automatically.
+#[derive(Debug)]
+struct IdleStream {
+    stream_state: StreamState,
+    abort_timeout_handle: AbortHandle,
+}
+
+impl IdleStream {
+    fn into_active_stream(
+        self,
+        bytes_received: Arc<AtomicU64>,
+        bytestream_server: &ByteStreamServer,
+    ) -> ActiveStreamGuard<'_> {
+        self.abort_timeout_handle.abort();
+        ActiveStreamGuard {
+            stream_state: Some(self.stream_state),
+            bytes_received,
+            bytestream_server,
+            sleep_fn: &bytestream_server.sleep_fn,
+        }
+    }
+}
+
+type BytesWrittenAndIdleStream = (Arc<AtomicU64>, Option<IdleStream>);
+type SleepFn = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
 
 pub struct ByteStreamServer {
     stores: HashMap<String, Arc<dyn Store>>,
     // Max number of bytes to send on each grpc stream chunk.
     max_bytes_per_stream: usize,
-    active_uploads: Mutex<HashSet<String>>,
+    active_uploads: Arc<Mutex<HashMap<String, BytesWrittenAndIdleStream>>>,
+    sleep_fn: SleepFn,
 }
 
 impl ByteStreamServer {
     pub fn new(config: &ByteStreamConfig, store_manager: &StoreManager) -> Result<Self, Error> {
+        let mut persist_stream_on_disconnect_timeout =
+            Duration::from_secs(config.persist_stream_on_disconnect_timeout as u64);
+        if config.persist_stream_on_disconnect_timeout == 0 {
+            persist_stream_on_disconnect_timeout = DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT;
+        }
+        Self::new_with_sleep_fn(
+            config,
+            store_manager,
+            Arc::new(move || Box::pin(sleep(persist_stream_on_disconnect_timeout))),
+        )
+    }
+
+    pub fn new_with_sleep_fn(
+        config: &ByteStreamConfig,
+        store_manager: &StoreManager,
+        sleep_fn: SleepFn,
+    ) -> Result<Self, Error> {
         let mut stores = HashMap::with_capacity(config.cas_stores.len());
         for (instance_name, store_name) in &config.cas_stores {
             let store = store_manager
@@ -56,12 +172,57 @@ impl ByteStreamServer {
         Ok(ByteStreamServer {
             stores,
             max_bytes_per_stream: config.max_bytes_per_stream,
-            active_uploads: Mutex::new(HashSet::new()),
+            active_uploads: Arc::new(Mutex::new(HashMap::new())),
+            sleep_fn,
         })
     }
 
-    pub fn into_service(self) -> Server<ByteStreamServer> {
+    pub fn into_service(self) -> Server<Self> {
         Server::new(self)
+    }
+
+    fn create_or_join_upload_stream(
+        &self,
+        uuid: String,
+        store: Arc<dyn Store>,
+        digest: DigestInfo,
+    ) -> Result<ActiveStreamGuard<'_>, Error> {
+        // Check to see if request is already being uploaded and if it is error, otherwise insert entry.
+        let mut active_uploads = self.active_uploads.lock();
+        if let Some(maybe_idle_stream) = active_uploads.get_mut(&uuid) {
+            if let Some(idle_stream) = maybe_idle_stream.1.take() {
+                log::debug!("Joining existing stream {uuid}");
+                return Ok(idle_stream.into_active_stream(maybe_idle_stream.0.clone(), self));
+            }
+            return Err(make_input_err!("Cannot upload same UUID simultaneously"));
+        }
+
+        let (tx, rx) = make_buf_channel_pair();
+        let store_update_fut = Box::pin(async move {
+            // We need to wrap `Store::update()` in a another future because we need to capture
+            // `store` to ensure it's lifetime follows the future and not the caller.
+            Pin::new(store.as_ref())
+                // Bytestream always uses digest size as the actual byte size.
+                .update(
+                    digest,
+                    rx,
+                    UploadSizeInfo::ExactSize(usize::try_from(digest.size_bytes).err_tip(|| "Invalid digest size")?),
+                )
+                .await
+        });
+        let bytes_received = Arc::new(AtomicU64::new(0));
+        // Our stream is "in use" if the key is in the map, but the value is None.
+        active_uploads.insert(uuid.clone(), (bytes_received.clone(), None));
+        Ok(ActiveStreamGuard {
+            stream_state: Some(StreamState {
+                tx,
+                store_update_fut,
+                uuid,
+            }),
+            bytes_received,
+            bytestream_server: self,
+            sleep_fn: &self.sleep_fn,
+        })
     }
 
     async fn inner_read(&self, grpc_request: Request<ReadRequest>) -> Result<Response<ReadStream>, Error> {
@@ -174,53 +335,99 @@ impl ByteStreamServer {
         &self,
         mut stream: WriteRequestStreamWrapper<Streaming<WriteRequest>, Status>,
     ) -> Result<Response<WriteResponse>, Error> {
-        let (mut tx, rx) = make_buf_channel_pair();
+        let instance_name = &stream.instance_name;
+        let store = self
+            .stores
+            .get(instance_name)
+            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
+            .clone();
 
-        let join_handle = {
-            let instance_name = &stream.instance_name;
-            let store_clone = self
-                .stores
-                .get(instance_name)
-                .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
-                .clone();
-
-            // If we are a GrpcStore we shortcut here, as this is a special store.
-            let any_store = store_clone.clone().as_any();
-            let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
-            if let Some(grpc_store) = maybe_grpc_store {
-                return grpc_store.write(stream).await;
-            }
-
-            let hash = stream.hash.clone();
-            let expected_size = stream.expected_size;
-            tokio::spawn(async move {
-                Pin::new(store_clone.as_ref())
-                    .update(
-                        DigestInfo::try_new(&hash, expected_size)?,
-                        rx,
-                        UploadSizeInfo::ExactSize(expected_size),
-                    )
-                    .await
-            })
-        };
-
-        while let Some(write_request) = stream.next().await.err_tip(|| "Stream closed early")? {
-            if write_request.data.is_empty() {
-                continue; // We don't want to send EOF, let the None option send it.
-            }
-            tx.send(write_request.data)
-                .await
-                .err_tip(|| "Error writing to store stream")?;
+        // If we are a GrpcStore we shortcut here, as this is a special store.
+        let any_store = store.clone().as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
+            return grpc_store.write(stream).await;
         }
-        tx.send_eof()
-            .await
-            .err_tip(|| "Failed to send EOF in bytestream server")?;
-        join_handle
-            .await
-            .err_tip(|| "Error joining promise")?
-            .err_tip(|| "Error updating inner store")?;
+
+        let uuid = stream
+            .uuid
+            .take()
+            .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?;
+        let digest = DigestInfo::try_new(&stream.hash, stream.expected_size)
+            .err_tip(|| "Invalid digest input in ByteStream::write")?;
+        let mut active_stream_guard = self.create_or_join_upload_stream(uuid, store, digest)?;
+        // let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
+        let expected_size = stream.expected_size as u64;
+
+        async fn process_client_stream(
+            mut stream: WriteRequestStreamWrapper<Streaming<WriteRequest>, Status>,
+            tx: &mut DropCloserWriteHalf,
+            outer_bytes_received: &Arc<AtomicU64>,
+            expected_size: u64,
+        ) -> Result<(), Error> {
+            loop {
+                let write_request = match stream.next().await {
+                    // Code path for when client tries to gracefully close the stream.
+                    // If this happens it means there's a problem with the data sent,
+                    // because we always close the stream from our end before this point
+                    // by counting the number of bytes sent from the client. If they send
+                    // less than the amount they said they were going to send and then
+                    // close the stream, we know there's a problem.
+                    Ok(None) => return Err(make_input_err!("Client closed stream before sending all data")),
+                    // Code path for client stream error. Probably client disconnect.
+                    Err(err) => return Err(err),
+                    // Code path for received chunk of data.
+                    Ok(Some(write_request)) => write_request,
+                };
+                if write_request.write_offset as u64 != tx.get_bytes_written() {
+                    return Err(make_input_err!(
+                        "Received out of order data. Got {}, expected {}",
+                        write_request.write_offset,
+                        tx.get_bytes_written()
+                    ));
+                }
+                // Do not process EOF or weird stuff will happen.
+                if !write_request.data.is_empty() {
+                    // We also need to process the possible EOF branch, so we can't early return.
+                    if let Err(mut err) = tx.send(write_request.data).await {
+                        err.code = Code::Internal;
+                        return Err(err);
+                    }
+                }
+                let bytes_written = tx.get_bytes_written();
+                outer_bytes_received.store(bytes_written, Ordering::Relaxed);
+
+                if expected_size < bytes_written {
+                    return Err(make_input_err!("Received more bytes than expected"));
+                }
+                if expected_size == bytes_written {
+                    // Gracefully close our stream.
+                    tx.send_eof()
+                        .await
+                        .err_tip(|| "Failed to send EOF in ByteStream::write")?;
+                    return Ok(());
+                }
+                // Continue.
+            }
+            // Unreachable.
+        }
+
+        let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
+        try_join!(
+            process_client_stream(
+                stream,
+                &mut active_stream.tx,
+                &active_stream_guard.bytes_received,
+                expected_size
+            ),
+            (&mut active_stream.store_update_fut).map_err(|err| { err.append("Error updating inner store") })
+        )?;
+
+        // Close our guard and consider the stream no longer active.
+        drop(active_stream_guard.forget());
+
         Ok(Response::new(WriteResponse {
-            committed_size: stream.bytes_received as i64,
+            committed_size: expected_size as i64,
         }))
     }
 
@@ -250,11 +457,11 @@ impl ByteStreamServer {
 
         {
             let active_uploads = self.active_uploads.lock();
-            if active_uploads.contains(uuid) {
+            if let Some((received_bytes, _maybe_idle_stream)) = active_uploads.get(uuid) {
                 return Ok(Response::new(QueryWriteStatusResponse {
-                    // TODO(blaise.bruer) We currently don't support resuming a stream, so we always
-                    // start from zero.
-                    committed_size: 0,
+                    committed_size: received_bytes.load(Ordering::Relaxed) as i64,
+                    // If we are in the active_uploads map, but the value is None,
+                    // it means the stream is not complete.
                     complete: false,
                 }));
             }
@@ -265,11 +472,11 @@ impl ByteStreamServer {
             .await
             .err_tip(|| "Failed to join spawn")?;
 
-        if result.err_tip(|| "Failed to call .has() on store")?.is_none() {
+        let Some(item_size) = result.err_tip(|| "Failed to call .has() on store")? else {
             return Err(make_err!(Code::NotFound, "{}", "not found"));
-        }
+        };
         Ok(Response::new(QueryWriteStatusResponse {
-            committed_size: 0,
+            committed_size: item_size as i64,
             complete: true,
         }))
     }
@@ -297,7 +504,7 @@ impl ByteStream for ByteStreamServer {
 
     async fn write(&self, grpc_request: Request<Streaming<WriteRequest>>) -> Result<Response<WriteResponse>, Status> {
         let now = Instant::now();
-        let mut stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
+        let stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
             .await
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(Into::<Status>::into)?;
@@ -307,32 +514,14 @@ impl ByteStream for ByteStreamServer {
             None
         };
 
-        let uuid = stream
-            .uuid
-            .take()
-            .ok_or_else(|| Into::<Status>::into(make_input_err!("UUID must be set if writing data")))?;
-        {
-            // Check to see if request is already being uploaded and if it is error, otherwise insert entry.
-            let mut active_uploads = self.active_uploads.lock();
-            if !active_uploads.insert(uuid.clone()) {
-                return Err(Into::<Status>::into(make_input_err!(
-                    "Cannot upload same UUID simultaneously"
-                )));
-            }
-        }
-
         log::info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", hash);
+
         let resp = self
             .inner_write(stream)
             .await
-            .err_tip(|| "Failed on write() command")
+            .err_tip(|| "In ByteStreamServer::write()")
             .map_err(|e| e.into());
 
-        {
-            // Remove the active upload request.
-            let mut active_uploads = self.active_uploads.lock();
-            active_uploads.remove(&uuid);
-        }
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = resp.as_ref() {
             log::error!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?} {:?}", d, hash, err);
