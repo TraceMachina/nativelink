@@ -188,11 +188,12 @@ rust_test(
         "//util:common",
         "//util:error",
         "@crate_index//:futures",
+        "@crate_index//:hyper",
         "@crate_index//:maplit",
         "@crate_index//:pretty_assertions",
         "@crate_index//:prometheus-client",
-        "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
+        "@crate_index//:tokio",
         "@crate_index//:tonic",
     ],
 )

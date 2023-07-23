@@ -115,9 +115,18 @@ pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
     pub cas_stores: HashMap<InstanceName, StoreRefName>,
 
-    // Max number of bytes to send on each grpc stream chunk.
+    /// Max number of bytes to send on each grpc stream chunk.
     #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_bytes_per_stream: usize,
+
+    /// In the event a client disconnects while uploading a blob, we will hold
+    /// the internal stream open for this many seconds before closing it.
+    /// This allows clients that disconnect to reconnect and continue uploading
+    /// the same blob.
+    ///
+    /// Defaults: 10 (seconds)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub persist_stream_on_disconnect_timeout: usize,
 }
 
 #[derive(Deserialize, Debug)]
