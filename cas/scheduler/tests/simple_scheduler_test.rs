@@ -692,6 +692,7 @@ mod scheduler_tests {
                 output_upload_completed_timestamp: make_system_time(13),
             },
             server_logs: HashMap::default(),
+            error: None,
         };
         scheduler
             .update_action(
@@ -789,6 +790,7 @@ mod scheduler_tests {
                 output_upload_completed_timestamp: make_system_time(13),
             },
             server_logs: HashMap::default(),
+            error: None,
         };
         scheduler
             .update_action(
@@ -872,6 +874,7 @@ mod scheduler_tests {
                 output_upload_completed_timestamp: make_system_time(13),
             },
             server_logs: HashMap::default(),
+            error: None,
         };
         let update_action_result = scheduler
             .update_action(
@@ -981,6 +984,7 @@ mod scheduler_tests {
                 output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
             },
             server_logs: HashMap::default(),
+            error: None,
         };
 
         scheduler
@@ -1082,6 +1086,7 @@ mod scheduler_tests {
                 output_upload_completed_timestamp: make_system_time(13),
             },
             server_logs: HashMap::default(),
+            error: None,
         };
 
         // Tell scheduler our first task is completed.
@@ -1277,13 +1282,10 @@ mod scheduler_tests {
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
         }
 
+        let err = make_err!(Code::Internal, "Some error");
         // Send internal error from worker again.
         scheduler
-            .update_action_with_internal_error(
-                &WORKER_ID,
-                &action_info_hash_key,
-                make_err!(Code::Internal, "Some error"),
-            )
+            .update_action_with_internal_error(&WORKER_ID, &action_info_hash_key, err.clone())
             .await;
 
         {
@@ -1292,31 +1294,32 @@ mod scheduler_tests {
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
                 unique_qualifier: action_state.unique_qualifier.clone(),
-                stage: ActionStage::Error((
-                    make_err!(Code::Internal, "Some error"),
-                    ActionResult {
-                        output_files: Vec::default(),
-                        output_folders: Vec::default(),
-                        output_file_symlinks: Vec::default(),
-                        output_directory_symlinks: Vec::default(),
-                        exit_code: INTERNAL_ERROR_EXIT_CODE,
-                        stdout_digest: DigestInfo::empty_digest(),
-                        stderr_digest: DigestInfo::empty_digest(),
-                        execution_metadata: ExecutionMetadata {
-                            worker: WORKER_ID.to_string(),
-                            queued_timestamp: SystemTime::UNIX_EPOCH,
-                            worker_start_timestamp: SystemTime::UNIX_EPOCH,
-                            worker_completed_timestamp: SystemTime::UNIX_EPOCH,
-                            input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
-                            input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
-                            execution_start_timestamp: SystemTime::UNIX_EPOCH,
-                            execution_completed_timestamp: SystemTime::UNIX_EPOCH,
-                            output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
-                            output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
-                        },
-                        server_logs: HashMap::default(),
+                stage: ActionStage::Completed(ActionResult {
+                    output_files: Vec::default(),
+                    output_folders: Vec::default(),
+                    output_file_symlinks: Vec::default(),
+                    output_directory_symlinks: Vec::default(),
+                    exit_code: INTERNAL_ERROR_EXIT_CODE,
+                    stdout_digest: DigestInfo::empty_digest(),
+                    stderr_digest: DigestInfo::empty_digest(),
+                    execution_metadata: ExecutionMetadata {
+                        worker: WORKER_ID.to_string(),
+                        queued_timestamp: SystemTime::UNIX_EPOCH,
+                        worker_start_timestamp: SystemTime::UNIX_EPOCH,
+                        worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+                        input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+                        input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+                        execution_start_timestamp: SystemTime::UNIX_EPOCH,
+                        execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+                        output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+                        output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
                     },
-                )),
+                    server_logs: HashMap::default(),
+                    error: Some(err.merge(make_err!(
+                        Code::Internal,
+                        "Job cancelled because it attempted to execute too many times and failed"
+                    ))),
+                }),
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
         }

@@ -242,6 +242,12 @@ pub struct LocalWorkerConfig {
     /// Endpoint which the worker will connect to the scheduler's WorkerApiService.
     pub worker_api_endpoint: EndpointConfig,
 
+    /// The maximum time an action is allowed to run. If a task requests for a timeout
+    /// longer than this time limit, the task will be rejected. Value in seconds.
+    ///
+    /// Default: 1200 (seconds / 20 mins)
+    pub max_action_timeout: usize,
+
     /// The command to execute on every execution request. This will be parsed as
     /// a command + arguments (not shell).
     /// Example: "run.sh" and a job with command: "sleep 5" will result in a

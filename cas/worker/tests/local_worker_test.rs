@@ -249,6 +249,7 @@ mod local_worker_tests {
                 output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
             },
             server_logs: HashMap::new(),
+            error: None,
         };
         let running_action = Arc::new(MockRunningAction::new());
 

@@ -28,7 +28,7 @@ use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
-use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState};
+use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata};
 use common::log;
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
@@ -308,22 +308,22 @@ impl SimpleSchedulerImpl {
             .map(Self::subscribe_to_channel)
     }
 
-    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId) {
+    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
         match self.active_actions.remove(action_info) {
             Some(running_action) => {
                 let mut awaited_action = running_action.action;
                 let send_result = if awaited_action.attempts >= self.max_job_retries {
-                    let mut default_action_result = ActionResult::default();
-                    default_action_result.execution_metadata.worker = format!("{worker_id}");
-                    Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Error((
-                        awaited_action.last_error.unwrap_or_else(|| {
-                            make_err!(
-                                Code::Internal,
-                                "Job cancelled because it attempted to execute too many times and failed"
-                            )
-                        }),
-                        default_action_result,
-                    ));
+                    Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Completed(ActionResult {
+                        execution_metadata: ExecutionMetadata {
+                            worker: format!("{worker_id}"),
+                            ..ExecutionMetadata::default()
+                        },
+                        error: Some(err.merge(make_err!(
+                            Code::Internal,
+                            "Job cancelled because it attempted to execute too many times and failed"
+                        ))),
+                        ..ActionResult::default()
+                    });
                     awaited_action.notify_channel.send(awaited_action.current_state.clone())
                     // Do not put the action back in the queue here, as this action attempted to run too many
                     // times.
@@ -352,14 +352,14 @@ impl SimpleSchedulerImpl {
     }
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
-    fn immediate_evict_worker(&mut self, worker_id: &WorkerId) {
+    fn immediate_evict_worker(&mut self, worker_id: &WorkerId, err: Error) {
         if let Some(mut worker) = self.workers.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
             // We create a temporary Vec to avoid doubt about a possible code
             // path touching the worker.running_action_infos elsewhere.
             for action_info in worker.running_action_infos.drain() {
-                self.retry_action(&action_info, worker_id);
+                self.retry_action(&action_info, worker_id, err.clone());
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
@@ -396,8 +396,9 @@ impl SimpleSchedulerImpl {
             let notify_worker_result = worker.notify_update(WorkerUpdate::RunAction(action_info.clone()));
             if notify_worker_result.is_err() {
                 // Remove worker, as it is no longer receiving messages and let it try to find another worker.
-                log::warn!("Worker command failed, removing worker {}", worker_id);
-                self.immediate_evict_worker(&worker_id);
+                let err = make_err!(Code::Internal, "Worker command failed, removing worker {}", worker_id);
+                log::warn!("{:?}", err);
+                self.immediate_evict_worker(&worker_id, err);
                 return;
             }
 
@@ -449,7 +450,7 @@ impl SimpleSchedulerImpl {
         if running_action.worker_id == *worker_id {
             // Don't set the error on an action that's running somewhere else.
             log::warn!("Internal error for worker {}: {}", worker_id, err);
-            running_action.action.last_error = Some(err);
+            running_action.action.last_error = Some(err.clone());
         } else {
             log::error!(
                 "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {}",
@@ -473,7 +474,7 @@ impl SimpleSchedulerImpl {
         }
 
         // Re-queue the action or fail on max attempts.
-        self.retry_action(&action_info, worker_id);
+        self.retry_action(&action_info, worker_id, err);
     }
 
     fn update_action(
@@ -483,10 +484,13 @@ impl SimpleSchedulerImpl {
         action_stage: ActionStage,
     ) -> Result<(), Error> {
         if !action_stage.has_action_result() {
-            let msg = format!("Worker '{worker_id}' set the action_stage of running action {action_info_hash_key:?} to {action_stage:?}. Removing worker.");
-            log::error!("{}", msg);
-            self.immediate_evict_worker(worker_id);
-            return Err(make_input_err!("{}", msg));
+            let err = make_err!(
+                Code::Internal,
+                "Worker '{worker_id}' set the action_stage of running action {action_info_hash_key:?} to {action_stage:?}. Removing worker.",
+            );
+            log::error!("{:?}", err);
+            self.immediate_evict_worker(worker_id, err.clone());
+            return Err(err);
         }
 
         let (action_info, mut running_action) = self
@@ -495,18 +499,16 @@ impl SimpleSchedulerImpl {
             .err_tip(|| format!("Could not find action info in active actions : {action_info_hash_key:?}"))?;
 
         if running_action.worker_id != *worker_id {
-            let msg = format!(
-                "Got a result from a worker that should not be running the action, {}",
-                format_args!(
-                    "Removing worker. Expected worker {} got worker {}",
-                    running_action.worker_id, worker_id
-                )
+            let err = make_err!(
+                Code::Internal,
+                "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {worker_id}",
+                running_action.worker_id,
             );
-            log::error!("{}", msg);
+            log::error!("{:?}", err);
             // First put it back in our active_actions or we will drop the task.
             self.active_actions.insert(action_info, running_action);
-            self.immediate_evict_worker(worker_id);
-            return Err(make_input_err!("{}", msg));
+            self.immediate_evict_worker(worker_id, err.clone());
+            return Err(err);
         }
 
         Arc::make_mut(&mut running_action.action.current_state).stage = action_stage;
@@ -694,8 +696,8 @@ impl WorkerScheduler for SimpleScheduler {
             .workers
             .add_worker(worker)
             .err_tip(|| "Error while adding worker, removing from pool");
-        if res.is_err() {
-            inner.immediate_evict_worker(&worker_id);
+        if let Err(err) = &res {
+            inner.immediate_evict_worker(&worker_id, err.clone());
         }
         inner.tasks_or_workers_change_notify.notify_one();
         res
@@ -731,7 +733,10 @@ impl WorkerScheduler for SimpleScheduler {
 
     async fn remove_worker(&self, worker_id: WorkerId) {
         let mut inner = self.inner.lock();
-        inner.immediate_evict_worker(&worker_id);
+        inner.immediate_evict_worker(
+            &worker_id,
+            make_err!(Code::Internal, "Received request to remove worker"),
+        );
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
@@ -752,8 +757,9 @@ impl WorkerScheduler for SimpleScheduler {
             })
             .collect();
         for worker_id in &worker_ids_to_remove {
-            log::warn!("Worker {} timed out, removing from pool", worker_id);
-            inner.immediate_evict_worker(worker_id);
+            let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool",);
+            log::warn!("{:?}", err);
+            inner.immediate_evict_worker(worker_id, err);
         }
         Ok(())
     }

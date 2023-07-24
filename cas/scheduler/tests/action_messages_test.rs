@@ -87,6 +87,7 @@ mod action_messages_tests {
                 output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
             },
             server_logs: HashMap::default(),
+            error: None,
         })
         .into();
 
