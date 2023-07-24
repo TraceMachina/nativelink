@@ -50,6 +50,10 @@ const CONNECTION_RETRY_DELAY_S: f32 = 0.5;
 /// `cas_server.rs` must also be updated.
 const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 
+/// Default maximum amount of time a task is allowed to run for.
+/// If this value gets modified the documentation in `cas_server.rs` must also be updated.
+const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_secs(1200); // 20 mins.
+
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
     config: &'a LocalWorkerConfig,
     // According to the tonic documentation it is a cheap operation to clone this.
@@ -224,13 +228,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                                 log::error!("\x1b[0;31mError saving action in store\x1b[0m: {} - {:?}", err, action_digest);
                                             }
                                         }
+                                        let action_stage = ActionStage::Completed(action_result).into();
                                         grpc_client.execution_response(
                                             ExecuteResult{
                                                 worker_id,
                                                 instance_name,
                                                 action_digest,
                                                 salt,
-                                                result: Some(execute_result::Result::ExecuteResponse(ActionStage::Completed(action_result).into())),
+                                                result: Some(execute_result::Result::ExecuteResponse(action_stage)),
                                             }
                                         )
                                         .await
@@ -310,12 +315,18 @@ pub async fn new_local_worker(
     } else {
         Some(Arc::new(config.entrypoint_cmd.clone()))
     };
+    let max_action_timeout = if config.max_action_timeout == 0 {
+        DEFAULT_MAX_ACTION_TIMEOUT
+    } else {
+        Duration::from_secs(config.max_action_timeout as u64)
+    };
     let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
         config.work_directory.clone(),
         entrypoint_cmd,
         fast_slow_store,
         ac_store,
         config.ac_store_strategy,
+        max_action_timeout,
     )?);
     Ok(LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),

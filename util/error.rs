@@ -73,6 +73,17 @@ impl Error {
         self
     }
 
+    #[must_use]
+    pub fn merge_option<T: Into<Self>, U: Into<Self>>(this: Option<T>, other: Option<U>) -> Option<Self> {
+        if let Some(this) = this {
+            if let Some(other) = other {
+                return Some(this.into().merge(other));
+            }
+            return Some(this.into());
+        }
+        other.map(|v| v.into())
+    }
+
     pub fn to_std_err(self) -> std::io::Error {
         std::io::Error::new(self.code.into(), self.messages.join(" : "))
     }
