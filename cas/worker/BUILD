@@ -49,7 +49,6 @@ rust_library(
         "@crate_index//:relative-path",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
-        "@crate_index//:tokio-util",
         "@crate_index//:tonic",
     ],
 )
@@ -144,8 +143,10 @@ rust_test(
         "//util:common",
         "//util:error",
         "@crate_index//:futures",
+        "@crate_index//:lazy_static",
         "@crate_index//:pretty_assertions",
         "@crate_index//:prost",
+        "@crate_index//:prost-types",
         "@crate_index//:rand",
         "@crate_index//:tokio",
     ],

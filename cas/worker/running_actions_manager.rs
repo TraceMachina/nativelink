@@ -22,9 +22,9 @@ use std::path::Path;
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Weak};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use filetime::{set_file_mtime, FileTime};
 use futures::future::{try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
@@ -32,12 +32,11 @@ use parking_lot::Mutex;
 use prometheus_utils::{AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent};
 use prost::Message;
 use relative_path::RelativePath;
-use tokio::io::AsyncSeekExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
 use tokio_stream::wrappers::ReadDirStream;
-use tokio_util::io::ReaderStream;
 use tonic::Request;
 
 use ac_utils::{
@@ -393,6 +392,12 @@ struct RunningActionImplState {
     execution_result: Option<RunningActionImplExecutionResult>,
     action_result: Option<ActionResult>,
     execution_metadata: ExecutionMetadata,
+    // If there was an internal error, this will be set.
+    // This should NOT be set if everything was fine, but the process had a
+    // non-zero exit code. Instead this should be used for internal errors
+    // that prevented the action from running, upload failures, timeouts, exc...
+    // but we have (or could have) the action results (like stderr/stdout).
+    error: Option<Error>,
 }
 
 pub struct RunningActionImpl {
@@ -400,6 +405,7 @@ pub struct RunningActionImpl {
     work_directory: String,
     entrypoint_cmd: Option<Arc<String>>,
     action_info: ActionInfo,
+    timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
     state: Mutex<RunningActionImplState>,
     did_cleanup: AtomicBool,
@@ -412,6 +418,7 @@ impl RunningActionImpl {
         work_directory: String,
         entrypoint_cmd: Option<Arc<String>>,
         action_info: ActionInfo,
+        timeout: Duration,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
     ) -> Self {
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
@@ -420,6 +427,7 @@ impl RunningActionImpl {
             work_directory,
             entrypoint_cmd,
             action_info,
+            timeout,
             running_actions_manager,
             state: Mutex::new(RunningActionImplState {
                 command_proto: None,
@@ -428,6 +436,7 @@ impl RunningActionImpl {
                 execution_result: None,
                 action_result: None,
                 execution_metadata,
+                error: None,
             }),
             did_cleanup: AtomicBool::new(false),
         }
@@ -445,7 +454,7 @@ impl RunningActionImpl {
     async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         {
             let mut state = self.state.lock();
-            state.execution_metadata.input_fetch_start_timestamp = (self.running_actions_manager.now_fn)();
+            state.execution_metadata.input_fetch_start_timestamp = (self.running_actions_manager.callbacks.now_fn)();
         }
         let command = {
             // Download and build out our input files/folders. Also fetch and decode our Command.
@@ -497,7 +506,8 @@ impl RunningActionImpl {
         {
             let mut state = self.state.lock();
             state.command_proto = Some(command);
-            state.execution_metadata.input_fetch_completed_timestamp = (self.running_actions_manager.now_fn)();
+            state.execution_metadata.input_fetch_completed_timestamp =
+                (self.running_actions_manager.callbacks.now_fn)();
         }
         Ok(self)
     }
@@ -505,7 +515,7 @@ impl RunningActionImpl {
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
-            state.execution_metadata.execution_start_timestamp = (self.running_actions_manager.now_fn)();
+            state.execution_metadata.execution_start_timestamp = (self.running_actions_manager.callbacks.now_fn)();
             (
                 state
                     .command_proto
@@ -546,60 +556,93 @@ impl RunningActionImpl {
         let mut child_process = command_builder
             .spawn()
             .err_tip(|| format!("Could not execute command {:?}", command_proto.arguments))?;
-        let mut stdout_stream = ReaderStream::new(
-            child_process
-                .stdout
-                .take()
-                .err_tip(|| "Expected stdout to exist on command this should never happen")?,
-        );
-        let mut stderr_stream = ReaderStream::new(
-            child_process
-                .stderr
-                .take()
-                .err_tip(|| "Expected stderr to exist on command this should never happen")?,
-        );
+        let mut stdout_reader = child_process
+            .stdout
+            .take()
+            .err_tip(|| "Expected stdout to exist on command this should never happen")?;
+        let mut stderr_reader = child_process
+            .stderr
+            .take()
+            .err_tip(|| "Expected stderr to exist on command this should never happen")?;
 
         let all_stdout_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
             let mut all_stdout = BytesMut::new();
-            while let Some(chunk) = stdout_stream.next().await {
-                all_stdout.put(chunk.err_tip(|| "Error reading stdout stream")?);
+            loop {
+                let sz = stdout_reader
+                    .read_buf(&mut all_stdout)
+                    .await
+                    .err_tip(|| "Error reading stdout stream")?;
+                if sz == 0 {
+                    break; // EOF.
+                }
             }
             Result::<Bytes, Error>::Ok(all_stdout.freeze())
         }));
         let all_stderr_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
             let mut all_stderr = BytesMut::new();
-            while let Some(chunk) = stderr_stream.next().await {
-                all_stderr.put(chunk.err_tip(|| "Error reading stderr stream")?);
+            loop {
+                let sz = stderr_reader
+                    .read_buf(&mut all_stderr)
+                    .await
+                    .err_tip(|| "Error reading stderr stream")?;
+                if sz == 0 {
+                    break; // EOF.
+                }
             }
             Result::<Bytes, Error>::Ok(all_stderr.freeze())
         }));
         let mut killed_action = false;
 
         let timer = self.metrics().child_process.begin_timer();
+        let mut sleep_fut = (self.running_actions_manager.callbacks.sleep_fn)(self.timeout).fuse();
         loop {
             tokio::select! {
+                _ = &mut sleep_fut => {
+                    self.running_actions_manager.metrics.task_timeouts.inc();
+                    killed_action = true;
+                    if let Err(e) = child_process.start_kill() {
+                        log::error!("Could not kill process in RunningActionsManager for timeout : {:?}", e);
+                    }
+                    {
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::DeadlineExceeded,
+                            format!(
+                                "Command '{}' timed out after {} seconds",
+                                args.join(OsStr::new(" ")).to_string_lossy(),
+                                self.action_info.timeout.as_secs_f32()
+                            )
+                        )));
+                    }
+                },
                 maybe_exit_status = child_process.wait() => {
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
                     // TODO(allada) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
+                    // TODO(allada) There is a significant bug here. If we kill the action and the action creates
+                    // child processes, it can create zombies. See: https://github.com/allada/turbo-cache/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
                         (Bytes::new(), Bytes::new())
                     } else {
                         timer.measure();
-                        (all_stdout_fut.await.err_tip(|| "Internal error reading from stdout of worker task")??, all_stderr_fut.await.err_tip(|| "Internal error reading from stderr of worker task")??)
+                        let (maybe_all_stdout, maybe_all_stderr) = tokio::join!(all_stdout_fut, all_stderr_fut);
+                        (
+                            maybe_all_stdout.err_tip(|| "Internal error reading from stdout of worker task")??,
+                            maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??
+                        )
+                    };
+                    let exit_code = if let Some(exit_code) = exit_status.code() {
+                        if exit_code == 0 {
+                            self.metrics().child_process_success_error_code.inc();
+                        } else {
+                            self.metrics().child_process_failure_error_code.inc();
+                        }
+                        exit_code
+                    } else {
+                        EXIT_CODE_FOR_SIGNAL
                     };
                     {
-                        let exit_code = if let Some(exit_code) = exit_status.code() {
-                            if exit_code == 0 {
-                                self.metrics().child_process_success_error_code.inc();
-                            } else {
-                                self.metrics().child_process_failure_error_code.inc();
-                            }
-                            exit_code
-                        } else {
-                            EXIT_CODE_FOR_SIGNAL
-                        };
                         let mut state = self.state.lock();
                         state.command_proto = Some(command_proto);
                         state.execution_result = Some(RunningActionImplExecutionResult{
@@ -607,7 +650,7 @@ impl RunningActionImpl {
                             stderr,
                             exit_code,
                         });
-                        state.execution_metadata.execution_completed_timestamp = (self.running_actions_manager.now_fn)();
+                        state.execution_metadata.execution_completed_timestamp = (self.running_actions_manager.callbacks.now_fn)();
                     }
                     return Ok(self);
                 },
@@ -615,6 +658,18 @@ impl RunningActionImpl {
                     killed_action = true;
                     if let Err(e) = child_process.start_kill() {
                         log::error!("Could not kill process in RunningActionsManager : {:?}", e);
+                    } else {
+                        log::error!("Could not get child process id, maybe already dead?");
+                    }
+                    {
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::Aborted,
+                            format!(
+                                "Command '{}' was killed by scheduler",
+                                args.join(OsStr::new(" ")).to_string_lossy()
+                            )
+                        )));
                     }
                 },
             }
@@ -626,7 +681,7 @@ impl RunningActionImpl {
         log::info!("\x1b[0;31mWorker Uploading Results\x1b[0m");
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
-            state.execution_metadata.output_upload_start_timestamp = (self.running_actions_manager.now_fn)();
+            state.execution_metadata.output_upload_start_timestamp = (self.running_actions_manager.callbacks.now_fn)();
             (
                 state
                     .command_proto
@@ -778,14 +833,14 @@ impl RunningActionImpl {
             Err(e) => return Err(e).err_tip(|| "Error while uploading results"),
         };
 
-        execution_metadata.output_upload_completed_timestamp = (self.running_actions_manager.now_fn)();
+        execution_metadata.output_upload_completed_timestamp = (self.running_actions_manager.callbacks.now_fn)();
         output_files.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_folders.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         output_file_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_directory_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         {
             let mut state = self.state.lock();
-            execution_metadata.worker_completed_timestamp = (self.running_actions_manager.now_fn)();
+            execution_metadata.worker_completed_timestamp = (self.running_actions_manager.callbacks.now_fn)();
             state.action_result = Some(ActionResult {
                 output_files,
                 output_folders,
@@ -796,6 +851,7 @@ impl RunningActionImpl {
                 stderr_digest,
                 execution_metadata,
                 server_logs: HashMap::default(), // TODO(allada) Not implemented.
+                error: state.error.clone(),
             });
         }
         Ok(self)
@@ -890,6 +946,12 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
 
 /// A function to get the current system time, used to allow mocking for tests
 type NowFn = fn() -> SystemTime;
+type SleepFn = fn(Duration) -> BoxFuture<'static, ()>;
+
+pub struct Callbacks {
+    pub now_fn: NowFn,
+    pub sleep_fn: SleepFn,
+}
 
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
@@ -900,19 +962,21 @@ pub struct RunningActionsManagerImpl {
     filesystem_store: Arc<FilesystemStore>,
     ac_store: Arc<dyn Store>,
     upload_strategy: UploadCacheResultsStrategy,
+    max_action_timeout: Duration,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
-    now_fn: NowFn,
+    callbacks: Callbacks,
     metrics: Arc<Metrics>,
 }
 
 impl RunningActionsManagerImpl {
-    pub fn new_with_now_fn(
+    pub fn new_with_callbacks(
         root_work_directory: String,
         entrypoint_cmd: Option<Arc<String>>,
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
-        now_fn: NowFn,
+        max_action_timeout: Duration,
+        callbacks: Callbacks,
     ) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
         let filesystem_store = cas_store
@@ -929,8 +993,9 @@ impl RunningActionsManagerImpl {
             filesystem_store,
             ac_store,
             upload_strategy,
+            max_action_timeout,
             running_actions: Mutex::new(HashMap::new()),
-            now_fn,
+            callbacks,
             metrics: Arc::new(Metrics::default()),
         })
     }
@@ -941,14 +1006,19 @@ impl RunningActionsManagerImpl {
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
+        max_action_timeout: Duration,
     ) -> Result<Self, Error> {
-        Self::new_with_now_fn(
+        Self::new_with_callbacks(
             root_work_directory,
             entrypoint_cmd,
             cas_store,
             ac_store,
             upload_strategy,
-            SystemTime::now,
+            max_action_timeout,
+            Callbacks {
+                now_fn: SystemTime::now,
+                sleep_fn: |duration| Box::pin(tokio::time::sleep(duration)),
+            },
         )
     }
 
@@ -976,7 +1046,7 @@ impl RunningActionsManagerImpl {
                 .clone()
                 .err_tip(|| "Expected action_digest to exist on StartExecute")?
                 .try_into()?;
-            let load_start_timestamp = (self.now_fn)();
+            let load_start_timestamp = (self.callbacks.now_fn)();
             let action = get_and_decode_digest::<Action>(Pin::new(self.cas_store.as_ref()), &action_digest)
                 .await
                 .err_tip(|| "During start_action")?;
@@ -1047,12 +1117,26 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
                     output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
                 };
+                let timeout = if action_info.timeout == Duration::ZERO {
+                    self.max_action_timeout
+                } else {
+                    action_info.timeout
+                };
+                if timeout > self.max_action_timeout {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "Action timeout of {} seconds is greater than the maximum allowed timeout of {} seconds",
+                        timeout.as_secs_f32(),
+                        self.max_action_timeout.as_secs_f32()
+                    ));
+                }
                 let running_action = Arc::new(RunningActionImpl::new(
                     execution_metadata,
                     action_id,
                     work_directory,
                     self.entrypoint_cmd.clone(),
                     action_info,
+                    timeout,
                     self.clone(),
                 ));
                 {
@@ -1070,12 +1154,17 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .wrap(async move {
                 match self.upload_strategy {
                     UploadCacheResultsStrategy::SuccessOnly => {
-                        if action_result.exit_code != 0 {
+                        if action_result.exit_code != 0 || action_result.error.is_some() {
                             return Ok(());
                         }
                     }
                     UploadCacheResultsStrategy::Never => return Ok(()),
-                    UploadCacheResultsStrategy::Everything => {}
+                    UploadCacheResultsStrategy::Everything => {
+                        if action_result.error.is_some() {
+                            // Never cache internal errors or timeouts.
+                            return Ok(());
+                        }
+                    }
                 }
 
                 let proto_action_result: ProtoActionResult = action_result.into();
@@ -1155,6 +1244,7 @@ pub struct Metrics {
     child_process_failure_error_code: CounterWithTime,
     upload_stdout: AsyncCounterWrapper,
     upload_stderr: AsyncCounterWrapper,
+    task_timeouts: CounterWithTime,
 }
 
 impl MetricsComponent for Metrics {
@@ -1242,5 +1332,10 @@ impl MetricsComponent for Metrics {
             &self.upload_stderr,
             "Total time spent uploading stderr.",
         );
+        c.publish(
+            "task_timeouts_count",
+            &self.task_timeouts,
+            "Total number of task timeouts.",
+        )
     }
 }

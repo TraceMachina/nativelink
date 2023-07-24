@@ -478,6 +478,23 @@ pub struct ExecutionMetadata {
     pub output_upload_completed_timestamp: SystemTime,
 }
 
+impl Default for ExecutionMetadata {
+    fn default() -> Self {
+        Self {
+            worker: "".to_string(),
+            queued_timestamp: SystemTime::UNIX_EPOCH,
+            worker_start_timestamp: SystemTime::UNIX_EPOCH,
+            worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+            input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+            input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+            execution_start_timestamp: SystemTime::UNIX_EPOCH,
+            execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+            output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+            output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+        }
+    }
+}
+
 impl From<ExecutionMetadata> for ExecutedActionMetadata {
     fn from(val: ExecutionMetadata) -> Self {
         Self {
@@ -558,6 +575,7 @@ pub struct ActionResult {
     pub stderr_digest: DigestInfo,
     pub execution_metadata: ExecutionMetadata,
     pub server_logs: HashMap<String, DigestInfo>,
+    pub error: Option<Error>,
 }
 
 impl Default for ActionResult {
@@ -583,12 +601,16 @@ impl Default for ActionResult {
                 output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
             },
             server_logs: Default::default(),
+            error: None,
         }
     }
 }
 
+// TODO(allada) Remove the need for clippy argument by making the ActionResult and ProtoActionResult
+// a Box.
 /// The execution status/stage. This should match `ExecutionStage::Value` in `remote_execution.proto`.
 #[derive(PartialEq, Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ActionStage {
     /// Stage is unknown.
     Unknown,
@@ -604,19 +626,13 @@ pub enum ActionStage {
     Completed(ActionResult),
     /// Result was found from cache, don't decode the proto just to re-encode it.
     CompletedFromCache(ProtoActionResult),
-    /// Error or action failed with an exit code on the worker.
-    /// This means that the job might have finished executing, but the worker had an
-    /// internal error. This might have happened if the worker timed out, crashed,
-    /// action cleanup failure, out of memory or other kind of errors that are not
-    /// related to the action, but rather the environment.
-    Error((Error, ActionResult)),
 }
 
 impl ActionStage {
     pub const fn has_action_result(&self) -> bool {
         match self {
             Self::Unknown | Self::CacheCheck | Self::Queued | Self::Executing => false,
-            Self::Completed(_) | Self::CompletedFromCache(_) | Self::Error(_) => true,
+            Self::Completed(_) | Self::CompletedFromCache(_) => true,
         }
     }
 
@@ -635,7 +651,7 @@ impl From<&ActionStage> for execution_stage::Value {
             ActionStage::CacheCheck => Self::CacheCheck,
             ActionStage::Queued => Self::Queued,
             ActionStage::Executing => Self::Executing,
-            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) | ActionStage::Error(_) => Self::Completed,
+            ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => Self::Completed,
         }
     }
 }
@@ -664,21 +680,16 @@ impl From<ActionStage> for ExecuteResponse {
             ActionStage::Unknown | ActionStage::CacheCheck | ActionStage::Queued | ActionStage::Executing => {
                 Self::default()
             }
-
-            ActionStage::Completed(action_result) => Self {
-                server_logs: logs_from(action_result.server_logs.clone()),
-                result: Some(action_result.into()),
-                cached_result: false,
-                status: Some(Status::default()),
-                message: RESPONSE_MESSAGE.to_string(),
-            },
-            ActionStage::Error((error, action_result)) => Self {
-                server_logs: logs_from(action_result.server_logs.clone()),
-                result: Some(action_result.into()),
-                cached_result: false,
-                status: Some(error.into()),
-                message: RESPONSE_MESSAGE.to_string(),
-            },
+            ActionStage::Completed(action_result) => {
+                let status = Some(action_result.error.clone().map_or_else(Status::default, |v| v.into()));
+                Self {
+                    server_logs: logs_from(action_result.server_logs.clone()),
+                    result: Some(action_result.into()),
+                    cached_result: false,
+                    status,
+                    message: RESPONSE_MESSAGE.to_string(),
+                }
+            }
             // Handled separately as there are no server logs and the action
             // result is already in Proto format.
             ActionStage::CompletedFromCache(proto_action_result) => Self {
@@ -748,14 +759,11 @@ impl TryFrom<ExecuteResponse> for ActionStage {
                     .err_tip(|| "Expected digest to be set on LogFile msg")?
                     .try_into()
             })?,
+            error: execute_response
+                .status
+                .clone()
+                .and_then(|v| if v.code == 0 { None } else { Some(v.into()) }),
         };
-
-        let status = execute_response
-            .status
-            .err_tip(|| "Expected status to be set on ExecuteResponse")?;
-        if status.code != tonic::Code::Ok as i32 {
-            return Ok(Self::Error((status.into(), action_result)));
-        }
 
         if execute_response.cached_result {
             return Ok(Self::CompletedFromCache(action_result.into()));
@@ -826,7 +834,10 @@ impl TryFrom<Operation> for ActionState {
                     .result
                     .err_tip(|| "No result data for completed upstream action")?;
                 match execute_response {
-                    LongRunningResult::Error(error) => ActionStage::Error((error.into(), ActionResult::default())),
+                    LongRunningResult::Error(error) => ActionStage::Completed(ActionResult {
+                        error: Some(error.into()),
+                        ..ActionResult::default()
+                    }),
                     LongRunningResult::Response(response) => {
                         // Could be Completed, CompletedFromCache or Error.
                         from_any::<ExecuteResponse>(&response)

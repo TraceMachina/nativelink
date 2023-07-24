@@ -198,7 +198,10 @@ impl ActionScheduler for CacheLookupScheduler {
                     }
                 }
                 Err(err) => {
-                    Arc::make_mut(&mut current_state).stage = ActionStage::Error((err, ActionResult::default()));
+                    Arc::make_mut(&mut current_state).stage = ActionStage::Completed(ActionResult {
+                        error: Some(err),
+                        ..Default::default()
+                    });
                     let _ = tx.send(current_state);
                 }
             }

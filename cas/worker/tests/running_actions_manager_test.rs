@@ -18,18 +18,20 @@ use std::io::Cursor;
 use std::os::unix::fs::MetadataExt;
 use std::pin::Pin;
 use std::str::from_utf8;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{FutureExt, TryFutureExt};
+use lazy_static::lazy_static;
 use prost::Message;
 use rand::{thread_rng, Rng};
+use tokio::sync::oneshot;
 
 use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
 use action_messages::{ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use common::{fs, DigestInfo};
-use error::{Error, ResultExt};
+use error::{Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
 use memory_store::MemoryStore;
@@ -39,7 +41,8 @@ use proto::build::bazel::remote::execution::v2::{
 };
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
 use running_actions_manager::{
-    download_to_directory, RunningAction, RunningActionImpl, RunningActionsManager, RunningActionsManagerImpl,
+    download_to_directory, Callbacks, RunningAction, RunningActionImpl, RunningActionsManager,
+    RunningActionsManagerImpl,
 };
 use store::Store;
 
@@ -389,13 +392,17 @@ mod running_actions_manager_tests {
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory,
             None,
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
-            test_monotonic_clock,
+            Duration::MAX,
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            },
         )?);
         {
             const SALT: u64 = 55;
@@ -471,13 +478,17 @@ mod running_actions_manager_tests {
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory,
             None,
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
-            test_monotonic_clock,
+            Duration::MAX,
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            },
         )?);
         let action_result = {
             const SALT: u64 = 55;
@@ -578,7 +589,8 @@ mod running_actions_manager_tests {
                     output_upload_start_timestamp: increment_clock(&mut clock_time),
                     output_upload_completed_timestamp: increment_clock(&mut clock_time),
                     worker_completed_timestamp: increment_clock(&mut clock_time),
-                }
+                },
+                error: None,
             }
         );
         Ok(())
@@ -597,13 +609,17 @@ mod running_actions_manager_tests {
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory,
             None,
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
-            test_monotonic_clock,
+            Duration::MAX,
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            },
         )?);
         let queued_timestamp = make_system_time(1000);
         let action_result = {
@@ -734,7 +750,8 @@ mod running_actions_manager_tests {
                     output_upload_start_timestamp: increment_clock(&mut clock_time),
                     output_upload_completed_timestamp: increment_clock(&mut clock_time),
                     worker_completed_timestamp: increment_clock(&mut clock_time),
-                }
+                },
+                error: None,
             }
         );
         Ok(())
@@ -753,13 +770,17 @@ mod running_actions_manager_tests {
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_now_fn(
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory.clone(),
             None,
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
-            test_monotonic_clock,
+            Duration::MAX,
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            },
         )?);
         let queued_timestamp = make_system_time(1000);
         let action_result = {
@@ -824,7 +845,8 @@ mod running_actions_manager_tests {
                     output_upload_start_timestamp: increment_clock(&mut clock_time),
                     output_upload_completed_timestamp: increment_clock(&mut clock_time),
                     worker_completed_timestamp: increment_clock(&mut clock_time),
-                }
+                },
+                error: None,
             }
         );
         let mut dir_stream = fs::read_dir(&root_work_directory).await?;
@@ -850,6 +872,7 @@ mod running_actions_manager_tests {
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
+            Duration::MAX,
         )?);
         let command = Command {
             arguments: vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()],
@@ -915,6 +938,7 @@ mod running_actions_manager_tests {
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
+            Duration::MAX,
         )?);
         let command = Command {
             arguments: vec!["printf".to_string(), EXPECTED_STDOUT.to_string()],
@@ -966,6 +990,7 @@ mod running_actions_manager_tests {
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
+            Duration::MAX,
         )?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -994,6 +1019,7 @@ mod running_actions_manager_tests {
                 output_upload_completed_timestamp: make_system_time(6),
                 worker_completed_timestamp: make_system_time(7),
             },
+            error: None,
         };
         running_actions_manager
             .cache_action_result(action_digest, action_result.clone())
@@ -1017,6 +1043,7 @@ mod running_actions_manager_tests {
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Everything,
+            Duration::MAX,
         )?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
@@ -1045,6 +1072,7 @@ mod running_actions_manager_tests {
                 output_upload_completed_timestamp: make_system_time(6),
                 worker_completed_timestamp: make_system_time(7),
             },
+            error: None,
         };
         running_actions_manager
             .cache_action_result(action_digest, action_result.clone())
@@ -1054,6 +1082,306 @@ mod running_actions_manager_tests {
 
         let proto_result: ProtoActionResult = action_result.into();
         assert_eq!(proto_result, retrieved_result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn std::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+
+        let command = Command {
+            arguments: vec!["true".to_string()],
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+        let input_root_digest = serialize_and_upload_message(&Directory::default(), cas_store.as_ref()).await?;
+
+        {
+            // Test to ensure that the task timeout is choosen if it is less than the max timeout.
+            static SENT_TIMEOUT: AtomicI64 = AtomicI64::new(-1);
+            const MAX_TIMEOUT_DURATION: Duration = Duration::from_secs(100);
+            const TASK_TIMEOUT: Duration = Duration::from_secs(10);
+
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                timeout: Some(prost_types::Duration {
+                    seconds: TASK_TIMEOUT.as_secs() as i64,
+                    nanos: 0,
+                }),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+            let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+                root_work_directory.clone(),
+                None,
+                Pin::into_inner(cas_store.clone()),
+                Pin::into_inner(ac_store.clone()),
+                config::cas_server::UploadCacheResultsStrategy::Never,
+                MAX_TIMEOUT_DURATION,
+                Callbacks {
+                    now_fn: test_monotonic_clock,
+                    sleep_fn: |duration| {
+                        SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
+                        Box::pin(futures::future::pending())
+                    },
+                },
+            )?);
+
+            running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            ..Default::default()
+                        }),
+                        salt: 0,
+                        queued_timestamp: Some(make_system_time(1000).into()),
+                    },
+                )
+                .and_then(|action| {
+                    action
+                        .clone()
+                        .prepare_action()
+                        .and_then(RunningAction::execute)
+                        .then(|result| async move {
+                            if let Err(e) = action.cleanup().await {
+                                return Result::<ActionResult, Error>::Err(e).merge(result);
+                            }
+                            result
+                        })
+                })
+                .await?;
+            assert_eq!(SENT_TIMEOUT.load(Ordering::Relaxed), TASK_TIMEOUT.as_millis() as i64);
+        }
+        {
+            // Ensure if no timeout is set use max timeout.
+            static SENT_TIMEOUT: AtomicI64 = AtomicI64::new(-1);
+            const MAX_TIMEOUT_DURATION: Duration = Duration::from_secs(100);
+            const TASK_TIMEOUT: Duration = Duration::from_secs(0);
+
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                timeout: Some(prost_types::Duration {
+                    seconds: TASK_TIMEOUT.as_secs() as i64,
+                    nanos: 0,
+                }),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+            let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+                root_work_directory.clone(),
+                None,
+                Pin::into_inner(cas_store.clone()),
+                Pin::into_inner(ac_store.clone()),
+                config::cas_server::UploadCacheResultsStrategy::Never,
+                MAX_TIMEOUT_DURATION,
+                Callbacks {
+                    now_fn: test_monotonic_clock,
+                    sleep_fn: |duration| {
+                        SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
+                        Box::pin(futures::future::pending())
+                    },
+                },
+            )?);
+
+            running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            ..Default::default()
+                        }),
+                        salt: 0,
+                        queued_timestamp: Some(make_system_time(1000).into()),
+                    },
+                )
+                .and_then(|action| {
+                    action
+                        .clone()
+                        .prepare_action()
+                        .and_then(RunningAction::execute)
+                        .then(|result| async move {
+                            if let Err(e) = action.cleanup().await {
+                                return Result::<ActionResult, Error>::Err(e).merge(result);
+                            }
+                            result
+                        })
+                })
+                .await?;
+            assert_eq!(
+                SENT_TIMEOUT.load(Ordering::Relaxed),
+                MAX_TIMEOUT_DURATION.as_millis() as i64
+            );
+        }
+        {
+            // Ensure we reject tasks that have a timeout set too high.
+            static SENT_TIMEOUT: AtomicI64 = AtomicI64::new(-1);
+            const MAX_TIMEOUT_DURATION: Duration = Duration::from_secs(100);
+            const TASK_TIMEOUT: Duration = Duration::from_secs(200);
+
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                timeout: Some(prost_types::Duration {
+                    seconds: TASK_TIMEOUT.as_secs() as i64,
+                    nanos: 0,
+                }),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+            let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+                root_work_directory.clone(),
+                None,
+                Pin::into_inner(cas_store.clone()),
+                Pin::into_inner(ac_store.clone()),
+                config::cas_server::UploadCacheResultsStrategy::Never,
+                MAX_TIMEOUT_DURATION,
+                Callbacks {
+                    now_fn: test_monotonic_clock,
+                    sleep_fn: |duration| {
+                        SENT_TIMEOUT.store(duration.as_millis() as i64, Ordering::Relaxed);
+                        Box::pin(futures::future::pending())
+                    },
+                },
+            )?);
+
+            let result = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            ..Default::default()
+                        }),
+                        salt: 0,
+                        queued_timestamp: Some(make_system_time(1000).into()),
+                    },
+                )
+                .and_then(|action| {
+                    action
+                        .clone()
+                        .prepare_action()
+                        .and_then(RunningAction::execute)
+                        .then(|result| async move {
+                            if let Err(e) = action.cleanup().await {
+                                return Result::<ActionResult, Error>::Err(e).merge(result);
+                            }
+                            result
+                        })
+                })
+                .await;
+            assert_eq!(SENT_TIMEOUT.load(Ordering::Relaxed), -1);
+            assert_eq!(result.err().unwrap().code, Code::InvalidArgument);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        type StaticOneshotTuple = Mutex<(Option<oneshot::Sender<()>>, Option<oneshot::Receiver<()>>)>;
+        lazy_static! {
+            static ref TIMEOUT_ONESHOT: StaticOneshotTuple = {
+                let (tx, rx) = oneshot::channel();
+                Mutex::new((Some(tx), Some(rx)))
+            };
+        }
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            root_work_directory.clone(),
+            None,
+            Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Never,
+            Duration::MAX,
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| {
+                    Box::pin(async move {
+                        let rx = TIMEOUT_ONESHOT.lock().unwrap().1.take().unwrap();
+                        rx.await.expect("Could not receive timeout signal");
+                    })
+                },
+            },
+        )?);
+
+        let command = Command {
+            arguments: vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()],
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+        let input_root_digest = serialize_and_upload_message(&Directory::default(), cas_store.as_ref()).await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+        let execute_results_fut = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: 0,
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                },
+            )
+            .and_then(|action| {
+                action
+                    .clone()
+                    .prepare_action()
+                    .and_then(RunningAction::execute)
+                    .and_then(RunningAction::upload_results)
+                    .and_then(RunningAction::get_finished_result)
+                    .then(|result| async move {
+                        if let Err(e) = action.cleanup().await {
+                            return Result::<ActionResult, Error>::Err(e).merge(result);
+                        }
+                        result
+                    })
+            });
+
+        let (results, _) = tokio::join!(execute_results_fut, async move {
+            tokio::task::yield_now().await;
+            let tx = TIMEOUT_ONESHOT.lock().unwrap().0.take().unwrap();
+            tx.send(()).expect("Could not send timeout signal");
+        });
+        assert_eq!(results?.error.unwrap().code, Code::DeadlineExceeded);
 
         Ok(())
     }
