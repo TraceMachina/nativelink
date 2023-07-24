@@ -22,7 +22,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Weak};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use filetime::{set_file_mtime, FileTime};
@@ -400,6 +400,7 @@ pub struct RunningActionImpl {
     work_directory: String,
     entrypoint_cmd: Option<Arc<String>>,
     action_info: ActionInfo,
+    timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
     state: Mutex<RunningActionImplState>,
     did_cleanup: AtomicBool,
@@ -412,6 +413,7 @@ impl RunningActionImpl {
         work_directory: String,
         entrypoint_cmd: Option<Arc<String>>,
         action_info: ActionInfo,
+        timeout: Duration,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
     ) -> Self {
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
@@ -420,6 +422,7 @@ impl RunningActionImpl {
             work_directory,
             entrypoint_cmd,
             action_info,
+            timeout,
             running_actions_manager,
             state: Mutex::new(RunningActionImplState {
                 command_proto: None,
@@ -578,6 +581,16 @@ impl RunningActionImpl {
         let timer = self.metrics().child_process.begin_timer();
         loop {
             tokio::select! {
+                _ = (self.running_actions_manager.sleep_fn)(self.timeout) => {
+                    if let Err(e) = child_process.start_kill() {
+                        log::error!("Could not kill process in RunningActionsManager for timeout : {:?}", e);
+                    }
+                    child_process.wait().await.err_tip(|| "Failed to collect exit code of process after timeout")?;
+                    return Err(Error::new(
+                        Code::DeadlineExceeded,
+                        format!("Command '{}' timed out after {} seconds", args.join(OsStr::new(" ")).to_string_lossy(), self.action_info.timeout.as_secs_f32())
+                    ));
+                },
                 maybe_exit_status = child_process.wait() => {
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
                     // TODO(allada) We should implement stderr/stdout streaming to client here.
@@ -890,6 +903,7 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
 
 /// A function to get the current system time, used to allow mocking for tests
 type NowFn = fn() -> SystemTime;
+type SleepFn = fn(Duration) -> BoxFuture<'static, ()>;
 
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
@@ -900,19 +914,24 @@ pub struct RunningActionsManagerImpl {
     filesystem_store: Arc<FilesystemStore>,
     ac_store: Arc<dyn Store>,
     upload_strategy: UploadCacheResultsStrategy,
+    max_action_timeout: Duration,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
     now_fn: NowFn,
+    sleep_fn: SleepFn,
     metrics: Arc<Metrics>,
 }
 
 impl RunningActionsManagerImpl {
-    pub fn new_with_now_fn(
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_callbacks(
         root_work_directory: String,
         entrypoint_cmd: Option<Arc<String>>,
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
+        max_action_timeout: Duration,
         now_fn: NowFn,
+        sleep_fn: SleepFn,
     ) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
         let filesystem_store = cas_store
@@ -929,8 +948,10 @@ impl RunningActionsManagerImpl {
             filesystem_store,
             ac_store,
             upload_strategy,
+            max_action_timeout,
             running_actions: Mutex::new(HashMap::new()),
             now_fn,
+            sleep_fn,
             metrics: Arc::new(Metrics::default()),
         })
     }
@@ -941,14 +962,17 @@ impl RunningActionsManagerImpl {
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
+        max_action_timeout: Duration,
     ) -> Result<Self, Error> {
-        Self::new_with_now_fn(
+        Self::new_with_callbacks(
             root_work_directory,
             entrypoint_cmd,
             cas_store,
             ac_store,
             upload_strategy,
+            max_action_timeout,
             SystemTime::now,
+            |duration| Box::pin(tokio::time::sleep(duration)),
         )
     }
 
@@ -1047,12 +1071,26 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
                     output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
                 };
+                let timeout = if action_info.timeout == Duration::ZERO {
+                    self.max_action_timeout
+                } else {
+                    action_info.timeout
+                };
+                if timeout > self.max_action_timeout {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "Action timeout of {} seconds is greater than the maximum allowed timeout of {} seconds",
+                        timeout.as_secs_f32(),
+                        self.max_action_timeout.as_secs_f32()
+                    ));
+                }
                 let running_action = Arc::new(RunningActionImpl::new(
                     execution_metadata,
                     action_id,
                     work_directory,
                     self.entrypoint_cmd.clone(),
                     action_info,
+                    timeout,
                     self.clone(),
                 ));
                 {
