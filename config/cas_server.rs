@@ -246,6 +246,7 @@ pub struct LocalWorkerConfig {
     /// longer than this time limit, the task will be rejected. Value in seconds.
     ///
     /// Default: 1200 (seconds / 20 mins)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_action_timeout: usize,
 
     /// The command to execute on every execution request. This will be parsed as
