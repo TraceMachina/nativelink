@@ -27,7 +27,7 @@ services:
         target: /root
     environment:
       RUST_LOG: ${RUST_LOG:-}
-    ports: [ "50051:50051/tcp" ]
+    ports: [ "50051:50051/tcp", "127.0.0.1:50061:50061" ]
     command: |
       turbo-cache /root/local-storage-cas.json
 

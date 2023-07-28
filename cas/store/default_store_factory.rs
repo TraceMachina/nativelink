@@ -37,7 +37,7 @@ type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Arc<dyn Store>, Error
 pub fn store_factory<'a>(
     backend: &'a StoreConfig,
     store_manager: &'a Arc<StoreManager>,
-    store_metrics: &'a mut Registry,
+    maybe_store_metrics: Option<&'a mut Registry>,
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
         let store: Arc<dyn Store> = match backend {
@@ -45,32 +45,34 @@ pub fn store_factory<'a>(
             StoreConfig::s3_store(config) => Arc::new(S3Store::new(config)?),
             StoreConfig::verify(config) => Arc::new(VerifyStore::new(
                 config,
-                store_factory(&config.backend, store_manager, store_metrics).await?,
+                store_factory(&config.backend, store_manager, None).await?,
             )),
             StoreConfig::compression(config) => Arc::new(CompressionStore::new(
                 *config.clone(),
-                store_factory(&config.backend, store_manager, store_metrics).await?,
+                store_factory(&config.backend, store_manager, None).await?,
             )?),
             StoreConfig::dedup(config) => Arc::new(DedupStore::new(
                 config,
-                store_factory(&config.index_store, store_manager, store_metrics).await?,
-                store_factory(&config.content_store, store_manager, store_metrics).await?,
+                store_factory(&config.index_store, store_manager, None).await?,
+                store_factory(&config.content_store, store_manager, None).await?,
             )),
             StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
                 config,
-                store_factory(&config.fast, store_manager, store_metrics).await?,
-                store_factory(&config.slow, store_manager, store_metrics).await?,
+                store_factory(&config.fast, store_manager, None).await?,
+                store_factory(&config.slow, store_manager, None).await?,
             )),
             StoreConfig::filesystem(config) => Arc::new(<FilesystemStore>::new(config).await?),
             StoreConfig::ref_store(config) => Arc::new(RefStore::new(config, Arc::downgrade(store_manager))),
             StoreConfig::size_partitioning(config) => Arc::new(SizePartitioningStore::new(
                 config,
-                store_factory(&config.lower_store, store_manager, store_metrics).await?,
-                store_factory(&config.upper_store, store_manager, store_metrics).await?,
+                store_factory(&config.lower_store, store_manager, None).await?,
+                store_factory(&config.upper_store, store_manager, None).await?,
             )),
             StoreConfig::grpc(config) => Arc::new(GrpcStore::new(config).await?),
         };
-        store.clone().register_metrics(store_metrics);
+        if let Some(store_metrics) = maybe_store_metrics {
+            store.clone().register_metrics(store_metrics);
+        }
         Ok(store)
     })
 }
