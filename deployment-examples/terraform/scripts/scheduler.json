@@ -143,6 +143,9 @@
   }, {
     "listen_address": "0.0.0.0:50061",
     "services": {
+      "prometheus": {
+        "path": "/metrics"
+      },
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.
       // In other words, this service is a backend api. The ones above

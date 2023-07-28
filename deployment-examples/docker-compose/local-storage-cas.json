@@ -59,8 +59,15 @@
         },
         // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
         "max_bytes_per_stream": 64000, // 64kb.
-      },
-      "prometheus": {}
+      }
+    }
+  }, {
+    // Only publish metrics on a private port.
+    "listen_address": "0.0.0.0:50061",
+    "services": {
+      "prometheus": {
+        "path": "/metrics"
+      }
     }
   }]
 }

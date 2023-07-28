@@ -43,7 +43,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         store_factory(
             &config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
             &store_manager,
-            &mut <Registry>::default(),
+            Some(&mut <Registry>::default()),
         )
         .await?,
     );

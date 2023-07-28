@@ -74,7 +74,7 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
             let store_metrics = root_store_metrics.sub_registry_with_prefix(&name);
             store_manager.add_store(
                 &name,
-                store_factory(&store_cfg, &store_manager, store_metrics)
+                store_factory(&store_cfg, &store_manager, Some(store_metrics))
                     .await
                     .err_tip(|| format!("Failed to create store '{}'", name))?,
             );

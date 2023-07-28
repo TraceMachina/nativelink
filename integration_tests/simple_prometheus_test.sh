@@ -26,7 +26,7 @@ set -euo pipefail
 bazel --output_base="$BAZEL_CACHE_DIR" test --config self_test //:dummy_test
 
 # Our service may take a few seconds to get started, so retry a few times.
-all_contents="$(curl --retry 5 --retry-delay 0 --retry-max-time 30 http://127.0.0.1:50051/metrics)"
+all_contents="$(curl --retry 5 --retry-delay 0 --retry-max-time 30 http://127.0.0.1:50061/metrics)"
 
 echo "$all_contents"
 
@@ -36,8 +36,15 @@ echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 50000000
 grep -q 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents"
 echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_read_buff_size_bytes 32768'
 grep -q 'turbo_cache_stores_AC_MAIN_STORE_read_buff_size_bytes 32768' <<< "$all_contents"
-echo 'Checking: turbo_cache_stores_CAS_MAIN_STORE_evicting_map_max_bytes 10000000000'
-grep -q 'turbo_cache_stores_CAS_MAIN_STORE_evicting_map_max_bytes 10000000000' <<< "$all_contents"
+echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000'
+grep -q 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents"
+
+# Ensure our store metrics are only published once.
+count=$(grep 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents" | wc -l)
+if [[ $count -ne 1 ]]; then
+  echo "Expected to find 1 instance of CAS_MAIN_STORE, but found $count"
+  exit 1
+fi
 
 # Check dynamic metrics in some of the stores.
 # These are the most stable settings to test that are dymaic.

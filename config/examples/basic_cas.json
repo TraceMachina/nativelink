@@ -120,14 +120,16 @@
         },
         // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
         "max_bytes_per_stream": 64000, // 64kb.
-      },
-      "prometheus": {
-        "path": "/metrics"
       }
     }
   }, {
     "listen_address": "0.0.0.0:50061",
     "services": {
+      "services": {
+        "prometheus": {
+          "path": "/metrics"
+        }
+      },
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.
       // In other words, this service is a backend api. The ones above
