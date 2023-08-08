@@ -89,6 +89,7 @@
     }
   }],
   "servers": [{
+    "name": "public",
     "listen_address": "0.0.0.0:50051",
     "services": {
       "cas": {
@@ -126,6 +127,7 @@
       }
     }
   }, {
+    "name": "private_workers_servers",
     "listen_address": "0.0.0.0:50061",
     "services": {
       // Note: This should be served on a different port, because it has

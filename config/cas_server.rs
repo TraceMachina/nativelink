@@ -190,6 +190,13 @@ pub struct ServicesConfig {
 
 #[derive(Deserialize, Debug)]
 pub struct ServerConfig {
+    /// Name of the server. This is used to help identify the service
+    /// for telemetry and logs.
+    ///
+    /// Default: (index of server in config)
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub name: String,
+
     /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
     /// to all IPs.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]

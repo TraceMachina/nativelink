@@ -1,5 +1,5 @@
 {
-  "checksum": "461c6fc060010e68f913e54c1f63f256f3ff70f1bb37216541fd347b5f56be53",
+  "checksum": "dbd5cb231b829ad5fecb66047898c06e0f97a3c67302fbe78854dfbd0917ae48",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -2687,6 +2687,36 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "drop_guard 0.3.0": {
+      "name": "drop_guard",
+      "version": "0.3.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/drop_guard/0.3.0/download",
+          "sha256": "2c4a817d8b683f6e649aed359aab0c47a875377516bb5791d0f7e46d9066d209"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "drop_guard",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "drop_guard",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2018",
+        "version": "0.3.0"
+      },
+      "license": "MIT/Apache-2.0"
+    },
     "dtoa 1.0.9": {
       "name": "dtoa",
       "version": "1.0.9",
@@ -2766,6 +2796,10 @@
             {
               "id": "clap 4.3.15",
               "target": "clap"
+            },
+            {
+              "id": "drop_guard 0.3.0",
+              "target": "drop_guard"
             },
             {
               "id": "env_logger 0.10.0",

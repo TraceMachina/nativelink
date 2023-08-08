@@ -14,14 +14,18 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
 use clap::Parser;
-use futures::future::{ok, select_all, BoxFuture, OptionFuture, TryFutureExt};
-use hyper::service::make_service_fn;
-use hyper::{Body, Response, Server};
+use drop_guard::guard;
+use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
+use hyper::server::conn::Http;
+use hyper::{Body, Response};
+use parking_lot::Mutex;
 use runfiles::Runfiles;
+use tokio::net::TcpListener;
 use tokio::task::spawn_blocking;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
@@ -32,13 +36,14 @@ use bytestream_server::ByteStreamServer;
 use capabilities_server::CapabilitiesServer;
 use cas_server::CasServer;
 use common::fs::set_open_file_limit;
-use config::cas_server::{CasConfig, CompressionAlgorithm, GlobalConfig, WorkerConfig};
+use common::log;
+use config::cas_server::{CasConfig, CompressionAlgorithm, GlobalConfig, ServerConfig, WorkerConfig};
 use default_scheduler_factory::scheduler_factory;
 use default_store_factory::store_factory;
 use error::{make_err, Code, Error, ResultExt};
 use execution_server::ExecutionServer;
 use local_worker::new_local_worker;
-use prometheus_utils::{set_metrics_enabled_for_this_thread, Registry};
+use prometheus_utils::{set_metrics_enabled_for_this_thread, Collector, CollectorState, MetricsComponent, Registry};
 use store::StoreManager;
 use worker_api_server::WorkerApiServer;
 
@@ -156,9 +161,51 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    /// Simple wrapper to enable us to register the Hashmap so it can
+    /// report metrics about what clients are connected.
+    struct ConnectedClientsMetrics {
+        inner: Mutex<HashSet<SocketAddr>>,
+    }
+    impl MetricsComponent for ConnectedClientsMetrics {
+        fn gather_metrics(&self, c: &mut CollectorState) {
+            let connected_clients = self.inner.lock();
+            for client in connected_clients.iter() {
+                c.publish_with_labels(
+                    "connected_clients",
+                    &1,
+                    "The endpoint of the connected clients",
+                    vec![("endpoint".into(), format!("{}", client).into())],
+                );
+            }
+        }
+    }
+
+    // Registers all the ConnectedClientsMetrics to the registries
+    // and zips them in. It is done this way to get around the need
+    // for `root_metrics_registry` to become immutable in the loop.
+    let servers_and_clients: Vec<(ServerConfig, _)> = cfg
+        .servers
+        .into_iter()
+        .enumerate()
+        .map(|(i, server_cfg)| {
+            let name = if server_cfg.name.is_empty() {
+                format!("{}", i)
+            } else {
+                server_cfg.name.clone()
+            };
+            let connected_clients_mux = Arc::new(ConnectedClientsMetrics {
+                inner: Mutex::new(HashSet::new()),
+            });
+            let server_metrics = root_metrics_registry.sub_registry_with_prefix(format!("server_{}", name));
+            server_metrics.register_collector(Box::new(Collector::new(&connected_clients_mux)));
+
+            (server_cfg, connected_clients_mux)
+        })
+        .collect();
+
     // Lock our registry as immutable and clonable.
     let root_metrics_registry = Arc::new(root_metrics_registry);
-    for server_cfg in cfg.servers {
+    for (server_cfg, connected_clients_mux) in servers_and_clients {
         let services = server_cfg.services.ok_or("'services' must be configured")?;
 
         let tonic_services = TonicServer::builder()
@@ -368,14 +415,26 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
             )
         }
 
-        futures.push(Box::pin(
-            tokio::spawn(
-                Server::bind(&server_cfg.listen_address.parse()?)
-                    .serve(make_service_fn(move |_conn| ok::<_, Error>(svc.clone())))
-                    .map_err(|e| make_err!(Code::Internal, "Failed running service : {:?}", e)),
-            )
-            .map_ok_or_else(|e| Err(e.into()), |v| v),
-        ));
+        let tcp_listener = TcpListener::bind(&server_cfg.listen_address.parse::<SocketAddr>()?).await?;
+        futures.push(Box::pin(async move {
+            loop {
+                let (tcp_stream, remote_addr) = tcp_listener.accept().await?;
+                connected_clients_mux.inner.lock().insert(remote_addr);
+                // This is the safest way to guarantee that if our future
+                // is ever dropped we will cleanup our data.
+                let drop_guard = guard(connected_clients_mux.clone(), move |connected_clients_mux| {
+                    connected_clients_mux.inner.lock().remove(&remote_addr);
+                });
+                let fut = Http::new().serve_connection(tcp_stream, svc.clone());
+                tokio::spawn(async move {
+                    // Move it into our spawn, so if our spawn dies the cleanup happens.
+                    let _drop_guard = drop_guard;
+                    if let Err(e) = fut.await {
+                        log::error!("Failed running service : {:?}", e);
+                    }
+                });
+            }
+        }));
     }
 
     if let Err(e) = select_all(futures).await.0 {

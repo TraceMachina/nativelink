@@ -33,7 +33,7 @@ variable "build_x86_instance_type" {
 }
 
 variable "terminate_ami_builder" {
-  description = "If we should terminate the AMI builder instances. Disabling this will development easier, but cost more money."
+  description = "If we should terminate the AMI builder instances. Disabling this will make development easier, but cost more money."
   default     = true
 }
 

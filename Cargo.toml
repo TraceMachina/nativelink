@@ -62,6 +62,7 @@ axum = "0.6.18"
 tower = "0.4.13"
 prometheus-client = "0.21.2"
 blake3 = "1.4.1"
+drop_guard = "0.3.0"
 
 [dev-dependencies]
 stdext = "0.3.1"
