@@ -15,9 +15,9 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-
 use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
-use stores::StoreRefName;
+
+use crate::stores::StoreRefName;
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]

@@ -8,41 +8,14 @@ exports_files([
 
 rust_library(
     name = "config",
-    srcs = ["lib.rs"],
+    srcs = [
+        "lib.rs",
+        "cas_server.rs",
+        "stores.rs",
+        "schedulers.rs",
+    ],
     visibility = ["//visibility:public"],
     deps = [
-        ":schedulers",
-        ":stores",
-        ":cas_server",
-        "@crate_index//:serde",
-    ],
-)
-
-rust_library(
-    name = "cas_server",
-    srcs = ["cas_server.rs"],
-    deps = [
-        ":schedulers",
-        ":stores",
-        "//util:serde_utils",
-        "@crate_index//:serde",
-    ],
-)
-
-rust_library(
-    name = "stores",
-    srcs = ["stores.rs"],
-    deps = [
-        "//util:serde_utils",
-        "@crate_index//:serde",
-    ],
-)
-
-rust_library(
-    name = "schedulers",
-    srcs = ["schedulers.rs"],
-    deps = [
-        ":stores",
         "//util:serde_utils",
         "@crate_index//:serde",
     ],
