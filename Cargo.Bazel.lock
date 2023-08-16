@@ -1,5 +1,5 @@
 {
-  "checksum": "dbd5cb231b829ad5fecb66047898c06e0f97a3c67302fbe78854dfbd0917ae48",
+  "checksum": "802af8a828f5206bae0c121dec1cbd3192f4218b0e944efaef9e66e22ff54975",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -2494,6 +2494,245 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "direct-cargo-bazel-deps 0.0.1": {
+      "name": "direct-cargo-bazel-deps",
+      "version": "0.0.1",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "direct_cargo_bazel_deps",
+            "crate_root": ".direct_cargo_bazel_deps.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "direct_cargo_bazel_deps",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "async-lock 2.7.0",
+              "target": "async_lock"
+            },
+            {
+              "id": "axum 0.6.19",
+              "target": "axum"
+            },
+            {
+              "id": "bincode 1.3.3",
+              "target": "bincode"
+            },
+            {
+              "id": "blake3 1.4.1",
+              "target": "blake3"
+            },
+            {
+              "id": "byteorder 1.4.3",
+              "target": "byteorder"
+            },
+            {
+              "id": "bytes 1.4.0",
+              "target": "bytes"
+            },
+            {
+              "id": "clap 4.3.15",
+              "target": "clap"
+            },
+            {
+              "id": "drop_guard 0.3.0",
+              "target": "drop_guard"
+            },
+            {
+              "id": "env_logger 0.10.0",
+              "target": "env_logger"
+            },
+            {
+              "id": "filetime 0.2.21",
+              "target": "filetime"
+            },
+            {
+              "id": "fixed-buffer 0.2.3",
+              "target": "fixed_buffer"
+            },
+            {
+              "id": "futures 0.3.28",
+              "target": "futures"
+            },
+            {
+              "id": "hashbrown 0.14.0",
+              "target": "hashbrown"
+            },
+            {
+              "id": "hex 0.4.3",
+              "target": "hex"
+            },
+            {
+              "id": "http 0.2.9",
+              "target": "http"
+            },
+            {
+              "id": "hyper 0.14.27",
+              "target": "hyper"
+            },
+            {
+              "id": "json5 0.4.1",
+              "target": "json5"
+            },
+            {
+              "id": "lazy_static 1.4.0",
+              "target": "lazy_static"
+            },
+            {
+              "id": "log 0.4.19",
+              "target": "log"
+            },
+            {
+              "id": "lru 0.10.1",
+              "target": "lru"
+            },
+            {
+              "id": "lz4_flex 0.11.1",
+              "target": "lz4_flex"
+            },
+            {
+              "id": "maplit 1.0.2",
+              "target": "maplit"
+            },
+            {
+              "id": "mock_instant 0.3.1",
+              "target": "mock_instant"
+            },
+            {
+              "id": "nix 0.26.2",
+              "target": "nix"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
+            },
+            {
+              "id": "pin-project-lite 0.2.10",
+              "target": "pin_project_lite"
+            },
+            {
+              "id": "pretty_assertions 1.4.0",
+              "target": "pretty_assertions"
+            },
+            {
+              "id": "prometheus-client 0.21.2",
+              "target": "prometheus_client"
+            },
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "prost-build 0.11.9",
+              "target": "prost_build"
+            },
+            {
+              "id": "prost-types 0.11.9",
+              "target": "prost_types"
+            },
+            {
+              "id": "rand 0.8.5",
+              "target": "rand"
+            },
+            {
+              "id": "relative-path 1.8.0",
+              "target": "relative_path"
+            },
+            {
+              "id": "rusoto_core 0.48.0",
+              "target": "rusoto_core"
+            },
+            {
+              "id": "rusoto_mock 0.48.0",
+              "target": "rusoto_mock"
+            },
+            {
+              "id": "rusoto_s3 0.48.0",
+              "target": "rusoto_s3"
+            },
+            {
+              "id": "rusoto_signature 0.48.0",
+              "target": "rusoto_signature"
+            },
+            {
+              "id": "serde 1.0.171",
+              "target": "serde"
+            },
+            {
+              "id": "sha2 0.10.7",
+              "target": "sha2"
+            },
+            {
+              "id": "shellexpand 3.1.0",
+              "target": "shellexpand"
+            },
+            {
+              "id": "shlex 1.1.0",
+              "target": "shlex"
+            },
+            {
+              "id": "stdext 0.3.1",
+              "target": "stdext"
+            },
+            {
+              "id": "tokio 1.29.1",
+              "target": "tokio"
+            },
+            {
+              "id": "tokio-stream 0.1.14",
+              "target": "tokio_stream"
+            },
+            {
+              "id": "tokio-util 0.7.8",
+              "target": "tokio_util"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            },
+            {
+              "id": "tonic-build 0.9.2",
+              "target": "tonic_build"
+            },
+            {
+              "id": "tower 0.4.13",
+              "target": "tower"
+            },
+            {
+              "id": "uuid 1.4.1",
+              "target": "uuid"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "proc_macro_deps": {
+          "common": [
+            {
+              "id": "async-trait 0.1.71",
+              "target": "async_trait"
+            },
+            {
+              "id": "ctor 0.2.4",
+              "target": "ctor"
+            }
+          ],
+          "selects": {}
+        },
+        "version": "0.0.1"
+      },
+      "license": null
+    },
     "dirs 5.0.1": {
       "name": "dirs",
       "version": "5.0.1",
@@ -2746,255 +2985,6 @@
         "version": "1.0.9"
       },
       "license": "MIT OR Apache-2.0"
-    },
-    "dummy_name_to_make_cargo_tooling_happy 0.0.0": {
-      "name": "dummy_name_to_make_cargo_tooling_happy",
-      "version": "0.0.0",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "dummy_name_to_make_cargo_tooling_happy",
-            "crate_root": "needed_only_to_make_cargo_tooling_happy.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "dummy_name_to_make_cargo_tooling_happy",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "async-lock 2.7.0",
-              "target": "async_lock"
-            },
-            {
-              "id": "axum 0.6.19",
-              "target": "axum"
-            },
-            {
-              "id": "bincode 1.3.3",
-              "target": "bincode"
-            },
-            {
-              "id": "blake3 1.4.1",
-              "target": "blake3"
-            },
-            {
-              "id": "byteorder 1.4.3",
-              "target": "byteorder"
-            },
-            {
-              "id": "bytes 1.4.0",
-              "target": "bytes"
-            },
-            {
-              "id": "clap 4.3.15",
-              "target": "clap"
-            },
-            {
-              "id": "drop_guard 0.3.0",
-              "target": "drop_guard"
-            },
-            {
-              "id": "env_logger 0.10.0",
-              "target": "env_logger"
-            },
-            {
-              "id": "filetime 0.2.21",
-              "target": "filetime"
-            },
-            {
-              "id": "fixed-buffer 0.2.3",
-              "target": "fixed_buffer"
-            },
-            {
-              "id": "futures 0.3.28",
-              "target": "futures"
-            },
-            {
-              "id": "hashbrown 0.14.0",
-              "target": "hashbrown"
-            },
-            {
-              "id": "hex 0.4.3",
-              "target": "hex"
-            },
-            {
-              "id": "http 0.2.9",
-              "target": "http"
-            },
-            {
-              "id": "hyper 0.14.27",
-              "target": "hyper"
-            },
-            {
-              "id": "json5 0.4.1",
-              "target": "json5"
-            },
-            {
-              "id": "lazy_static 1.4.0",
-              "target": "lazy_static"
-            },
-            {
-              "id": "log 0.4.19",
-              "target": "log"
-            },
-            {
-              "id": "lru 0.10.1",
-              "target": "lru"
-            },
-            {
-              "id": "lz4_flex 0.11.1",
-              "target": "lz4_flex"
-            },
-            {
-              "id": "nix 0.26.2",
-              "target": "nix"
-            },
-            {
-              "id": "parking_lot 0.12.1",
-              "target": "parking_lot"
-            },
-            {
-              "id": "pin-project-lite 0.2.10",
-              "target": "pin_project_lite"
-            },
-            {
-              "id": "prometheus-client 0.21.2",
-              "target": "prometheus_client"
-            },
-            {
-              "id": "prost 0.11.9",
-              "target": "prost"
-            },
-            {
-              "id": "prost-types 0.11.9",
-              "target": "prost_types"
-            },
-            {
-              "id": "rand 0.8.5",
-              "target": "rand"
-            },
-            {
-              "id": "relative-path 1.8.0",
-              "target": "relative_path"
-            },
-            {
-              "id": "rusoto_core 0.48.0",
-              "target": "rusoto_core"
-            },
-            {
-              "id": "rusoto_s3 0.48.0",
-              "target": "rusoto_s3"
-            },
-            {
-              "id": "rusoto_signature 0.48.0",
-              "target": "rusoto_signature"
-            },
-            {
-              "id": "serde 1.0.171",
-              "target": "serde"
-            },
-            {
-              "id": "sha2 0.10.7",
-              "target": "sha2"
-            },
-            {
-              "id": "shellexpand 3.1.0",
-              "target": "shellexpand"
-            },
-            {
-              "id": "shlex 1.1.0",
-              "target": "shlex"
-            },
-            {
-              "id": "tokio 1.29.1",
-              "target": "tokio"
-            },
-            {
-              "id": "tokio-stream 0.1.14",
-              "target": "tokio_stream"
-            },
-            {
-              "id": "tokio-util 0.7.8",
-              "target": "tokio_util"
-            },
-            {
-              "id": "tonic 0.9.2",
-              "target": "tonic"
-            },
-            {
-              "id": "tower 0.4.13",
-              "target": "tower"
-            },
-            {
-              "id": "uuid 1.4.1",
-              "target": "uuid"
-            }
-          ],
-          "selects": {}
-        },
-        "deps_dev": {
-          "common": [
-            {
-              "id": "maplit 1.0.2",
-              "target": "maplit"
-            },
-            {
-              "id": "mock_instant 0.3.1",
-              "target": "mock_instant"
-            },
-            {
-              "id": "pretty_assertions 1.4.0",
-              "target": "pretty_assertions"
-            },
-            {
-              "id": "prost-build 0.11.9",
-              "target": "prost_build"
-            },
-            {
-              "id": "rusoto_mock 0.48.0",
-              "target": "rusoto_mock"
-            },
-            {
-              "id": "stdext 0.3.1",
-              "target": "stdext"
-            },
-            {
-              "id": "tonic-build 0.9.2",
-              "target": "tonic_build"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2015",
-        "proc_macro_deps": {
-          "common": [
-            {
-              "id": "async-trait 0.1.71",
-              "target": "async_trait"
-            }
-          ],
-          "selects": {}
-        },
-        "proc_macro_deps_dev": {
-          "common": [
-            {
-              "id": "ctor 0.2.4",
-              "target": "ctor"
-            }
-          ],
-          "selects": {}
-        },
-        "version": "0.0.0"
-      },
-      "license": null
     },
     "either 1.8.1": {
       "name": "either",
@@ -13817,7 +13807,7 @@
   },
   "binary_crates": [],
   "workspace_members": {
-    "dummy_name_to_make_cargo_tooling_happy 0.0.0": ""
+    "direct-cargo-bazel-deps 0.0.1": ""
   },
   "conditions": {
     "aarch64-linux-android": [],

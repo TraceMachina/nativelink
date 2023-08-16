@@ -15,9 +15,10 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-
 use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
-use stores::StoreRefName;
+
+use crate::schedulers::SchedulerConfig;
+use crate::stores::{StoreConfig, StoreRefName};
 
 /// Name of the scheduler. This type will be used when referencing a
 /// scheduler in the `CasConfig::schedulers`'s map key.
@@ -358,7 +359,7 @@ pub struct GlobalConfig {
 pub struct CasConfig {
     /// List of stores available to use in this config.
     /// The keys can be used in other configs when needing to reference a store.
-    pub stores: HashMap<StoreRefName, stores::StoreConfig>,
+    pub stores: HashMap<StoreRefName, StoreConfig>,
 
     /// Worker configurations used to execute jobs.
     pub workers: Option<Vec<WorkerConfig>>,
@@ -366,7 +367,7 @@ pub struct CasConfig {
     /// List of schedulers available to use in this config.
     /// The keys can be used in other configs when needing to reference a
     /// scheduler.
-    pub schedulers: Option<HashMap<SchedulerRefName, schedulers::SchedulerConfig>>,
+    pub schedulers: Option<HashMap<SchedulerRefName, SchedulerConfig>>,
 
     /// Servers to setup for this process.
     pub servers: Vec<ServerConfig>,
