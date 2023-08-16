@@ -47,8 +47,9 @@ SHELL [ "/bin/bash", "-euo", "pipefail", "-c" ]
 FROM builder-deps as builder-with-externals
 WORKDIR /root/turbo-cache
 ARG CC
-# Only xfer the minimum needed to query external packages..
+# Only xfer the minimum needed to query external packages.
 COPY [ "WORKSPACE", ".bazel*", "Cargo.*", ".rustfmt.toml", "BUILD", "./" ]
+COPY [ "tools/BUILD", "tools/*.bzl", "./tools/" ]
 # Download external dependencies. This is to improve docker layer caching.
 RUN bazel fetch //...
 
@@ -59,7 +60,7 @@ RUN bazel fetch //...
 FROM builder-with-externals as builder-only-bazel-and-build-files
 WORKDIR /root/turbo-cache
 COPY . .
-RUN find . -type f -regextype egrep ! -regex '.*/(BUILD|BUILD.bazel|WORKSPACE|\.bazel.*|Cargo\..*|\.rustfmt\.toml)' -delete && \
+RUN find . -type f -regextype egrep ! -regex '.*/(BUILD|BUILD.bazel|WORKSPACE|\.bazel.*|Cargo\..*|\.rustfmt\.toml|proto/genproto.*)' -delete && \
     find . -type d -empty -delete
 
 

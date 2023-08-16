@@ -27,8 +27,10 @@ load(
 
 rules_rust_dependencies()
 
+load("//tools:cargo_shared.bzl", "RUST_EDITION", "PACKAGES")
+
 rust_register_toolchains(
-    edition = "2021",
+    edition = RUST_EDITION,
     versions = [
         "1.70.0",
         "nightly/2023-07-15",
@@ -47,165 +49,10 @@ crates_repository(
     cargo_lockfile = "//:Cargo.lock",
     lockfile = "//:Cargo.Bazel.lock",
     packages = {
-        "prost": crate.spec(
-            version = "0.11.9",
-        ),
-        "prost-types": crate.spec(
-            version = "0.11.9",
-        ),
-        "hex": crate.spec(
-            version = "0.4.3",
-        ),
-        "async-trait": crate.spec(
-            version = "0.1.71",
-        ),
-        "fixed-buffer": crate.spec(
-            version = "0.2.3",
-        ),
-        "futures": crate.spec(
-            version = "0.3.28",
-        ),
-        "tokio": crate.spec(
-            version = "1.29.1",
-            features = ["macros", "io-util", "fs", "rt-multi-thread", "parking_lot"],
-        ),
-        "tokio-stream": crate.spec(
-            version = "0.1.14",
-            features = ["fs", "sync"],
-        ),
-        "tokio-util": crate.spec(
-            version = "0.7.8",
-            features = ["io", "io-util", "codec"],
-        ),
-        "tonic": crate.spec(
-            version = "0.9.2",
-            features = ["gzip"],
-        ),
-        "log": crate.spec(
-            version = "0.4.19",
-        ),
-        "env_logger": crate.spec(
-            version = "0.10.0",
-        ),
-        "serde": crate.spec(
-            version = "1.0.167",
-        ),
-        "json5": crate.spec(
-            version = "0.4.1",
-        ),
-        "sha2": crate.spec(
-            version = "0.10.7",
-        ),
-        "lru": crate.spec(
-            version = "0.10.1",
-        ),
-        "rand": crate.spec(
-            version = "0.8.5",
-        ),
-        "rusoto_s3": crate.spec(
-            version = "0.48.0",
-        ),
-        "rusoto_core": crate.spec(
-            version = "0.48.0",
-        ),
-        "rusoto_signature": crate.spec(
-            version = "0.48.0",
-        ),
-        "http": crate.spec(
-            version = "^0.2",
-        ),
-        "pin-project-lite": crate.spec(
-            version = "0.2.10",
-        ),
-        "async-lock": crate.spec(
-            version = "2.7.0",
-        ),
-        "lz4_flex": crate.spec(
-            version = "0.11.1",
-        ),
-        "bincode": crate.spec(
-            version = "1.3.3",
-        ),
-        "bytes": crate.spec(
-            version = "1.4.0",
-        ),
-        "shellexpand": crate.spec(
-            version = "3.1.0",
-        ),
-        "byteorder": crate.spec(
-            version = "1.4.3",
-        ),
-        "lazy_static": crate.spec(
-            version = "1.4.0",
-        ),
-        "filetime": crate.spec(
-            version = "0.2.21",
-        ),
-        "nix": crate.spec(
-            version = "0.26.2",
-        ),
-        "clap": crate.spec(
-            version = "4.3.11",
-            features = ["derive"],
-        ),
-        "uuid": crate.spec(
-            version = "1.4.0",
-            features = ["v4"],
-        ),
-        "shlex": crate.spec(
-            version = "1.1.0",
-        ),
-        "relative-path": crate.spec(
-            version = "1.8.0",
-        ),
-        "parking_lot": crate.spec(
-            version = "0.12.1",
-        ),
-        "hashbrown": crate.spec(
-            version = "0.14",
-        ),
-        "hyper": crate.spec(
-            version = "0.14.27",
-        ),
-        "axum": crate.spec(
-            version = "0.6.18",
-        ),
-        "tower": crate.spec(
-            version = "0.4.13",
-        ),
-        "prometheus-client": crate.spec(
-            version = "0.21.2",
-        ),
-        "blake3": crate.spec(
-            version = "1.4.1",
-        ),
-        "drop_guard": crate.spec(
-            version = "0.3.0",
-        ),
-        "stdext": crate.spec(
-            version = "0.3.1",
-        ),
-        "prost-build": crate.spec(
-            version = "0.11.9",
-        ),
-        "tonic-build": crate.spec(
-            version = "0.9.2",
-        ),
-        "pretty_assertions": crate.spec(
-            version = "1.4.0",
-        ),
-        "maplit": crate.spec(
-            version = "1.0.2",
-        ),
-        "mock_instant": crate.spec(
-            version = "0.3.1",
-        ),
-        "rusoto_mock": crate.spec(
-            version = "=0.48.0",
-        ),
-        "ctor": crate.spec(
-            version = "0.2.3",
-        ),
+        name: crate.spec(
+            version = PACKAGES[name]["version"],
+            features = PACKAGES[name].get("features", []),
+        ) for name in PACKAGES
     },
     render_config = render_config(
         default_package_name = "",

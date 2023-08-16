@@ -129,7 +129,6 @@ rust_library(
 rust_test(
     name = "running_actions_manager_test",
     srcs = ["tests/running_actions_manager_test.rs"],
-    data = ["tests/wrapper_for_test.sh"],
     deps = [
         ":running_actions_manager",
         "//cas/scheduler:action_messages",

@@ -416,7 +416,7 @@ pub struct GrpcStore {
 
 /// Retry configuration. This configuration is exponential and each iteration
 /// a jitter as a percentage is applied of the calculated delay. For example:
-/// ```
+/// ```norun
 /// Retry{
 ///   max_retries: 7
 ///   delay: .1,
@@ -448,7 +448,7 @@ pub struct Retry {
 
     /// Amount of jitter to add as a percentage in decimal form. This will
     /// change the formula like:
-    /// ```
+    /// ```norun
     /// random(
     ///    2 ^ {attempt_number} * {delay}) * (1 - (jitter / 2)),
     ///    2 ^ {attempt_number} * {delay}) * (1 + (jitter / 2)),
