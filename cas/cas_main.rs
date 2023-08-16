@@ -24,7 +24,6 @@ use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
 use hyper::server::conn::Http;
 use hyper::{Body, Response};
 use parking_lot::Mutex;
-use runfiles::Runfiles;
 use tokio::net::TcpListener;
 use tokio::task::spawn_blocking;
 use tonic::codec::CompressionEncoding;
@@ -47,8 +46,6 @@ use prometheus_utils::{set_metrics_enabled_for_this_thread, Collector, Collector
 use store::StoreManager;
 use worker_api_server::WorkerApiServer;
 
-const DEFAULT_CONFIG_FILE: &str = "<built-in example in config/examples/basic_cas.json>";
-
 /// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
 const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
 
@@ -65,7 +62,7 @@ const METRICS_DISABLE_ENV: &str = "TURBO_CACHE_DISABLE_METRICS";
 )]
 struct Args {
     /// Config file to use.
-    #[clap(value_parser, default_value = DEFAULT_CONFIG_FILE)]
+    #[clap(value_parser)]
     config_file: String,
 }
 
@@ -446,22 +443,13 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
 async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
     let args = Args::parse();
     // Note: We cannot mutate args, so we create another variable for it here.
-    let mut config_file = args.config_file;
-    if config_file.eq(DEFAULT_CONFIG_FILE) {
-        let r = Runfiles::create().err_tip(|| "Failed to create runfiles lookup object")?;
-        config_file = r
-            .rlocation("turbo_cache/config/examples/basic_cas.json")
-            .into_os_string()
-            .into_string()
-            .unwrap();
-    }
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .format_timestamp_millis()
         .init();
 
     let json_contents = String::from_utf8(
-        std::fs::read(&config_file).err_tip(|| format!("Could not open config file {}", config_file))?,
+        std::fs::read(&args.config_file).err_tip(|| format!("Could not open config file {}", args.config_file))?,
     )?;
     Ok(json5::from_str(&json_contents)?)
 }
