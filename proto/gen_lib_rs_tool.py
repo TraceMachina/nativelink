@@ -34,7 +34,8 @@ _HEADER = """\
 // limitations under the License.
 
 // *** DO NOT MODIFY ***
-// This file is auto-generated to provide the libs for the proto files.
+// This file is auto-generated. To update it, run:
+// `bazel run proto:update_protos`
 """
 
 

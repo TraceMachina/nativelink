@@ -17,7 +17,6 @@ rust_binary(
         "@crate_index//:clap",
         "@crate_index//:prost-build",
         "@crate_index//:tonic-build",
-        "@rules_rust//:rustfmt",
     ],
 )
 
@@ -72,23 +71,24 @@ genrule(
 
 rust_library(
     name = "proto",
-    srcs = [
-        ":gen_lib_rs",
-        ":gen_rs_protos",
-    ],
+    srcs = glob(["genproto/*.rs"]),
     visibility = ["//visibility:public"],
     deps = [
         "@crate_index//:prost",
         "@crate_index//:prost-types",
         "@crate_index//:tonic",
     ],
+    tags = ["no-rustfmt"],
 )
 
 py_binary(
     name = "update_protos",
     srcs = ["update_protos.py"],
     args = ["--update"] + PROTO_NAMES,
-    data = [":gen_rs_protos"],
+    data = [
+        ":gen_rs_protos",
+        ":gen_lib_rs",
+    ],
 )
 
 # Test to ensure the proto files are in sync with the checked in files.
@@ -96,6 +96,9 @@ py_test(
     name = "update_protos_test",
     srcs = ["update_protos.py"],
     args = ["--check"] + PROTO_NAMES,
-    data = glob(["genproto/*.pb.rs"]) + [":gen_rs_protos"],
+    data = glob(["genproto/*.rs"]) + [
+        ":gen_rs_protos",
+        ":gen_lib_rs",
+    ],
     main = "update_protos.py",
 )

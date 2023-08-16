@@ -71,11 +71,11 @@ pub struct SimpleScheduler {
     /// the task.
     ///
     /// For example, a value of:
-    /// ```
+    /// ```json
     /// { "cpu_count": "Minimum", "cpu_arch": "Exact" }
     /// ```
     /// With a job that contains:
-    /// ```
+    /// ```json
     /// { "cpu_count": "8", "cpu_arch": "arm" }
     /// ```
     /// Will result in the scheduler filtering out any workers that do not have

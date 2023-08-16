@@ -167,10 +167,9 @@ rust_test(
 rust_test(
     name = "fastcdc_test",
     srcs = ["tests/fastcdc_test.rs"],
-    data = ["tests/data/SekienAkashita.jpg"],
+    compile_data = ["tests/data/SekienAkashita.jpg"],
     deps = [
         ":fastcdc",
-        "//util:common",
         "@crate_index//:bytes",
         "@crate_index//:futures",
         "@crate_index//:hex",

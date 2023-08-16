@@ -61,6 +61,9 @@ def update(proto_packages):
     for pkg in proto_packages:
         with open(repo_file_path(pkg), "wb") as outfile:
             outfile.write(expected_contents(pkg))
+    with open(_REPO_DIR + "/lib.rs", "wb") as outfile:
+        with open(_BAZEL_DIR + "/lib.rs", "rb") as infile:
+            outfile.write(infile.read())
 
 
 def check(proto_packages):
@@ -80,6 +83,23 @@ def check(proto_packages):
         else:
             print("%s out of date" % dst)
             failed = True
+
+    # Now check the lib.rs file.
+    dst = _REPO_DIR + "/lib.rs"
+    try:
+        with open(_BAZEL_DIR + "/lib.rs", "rb") as infile:
+            expected = infile.read()
+        with open(dst, "rb") as infile:
+            actual = infile.read()
+    except OSError as e:
+        failed = True
+        print("Could not read package lib.rs: %s" % e)
+    if expected == actual:
+        print("%s OK" % dst)
+    else:
+        print("%s out of date" % dst)
+        failed = True
+
     if failed:
         print("To update, run: 'bazel run proto:update_protos'")
         raise SystemExit(1)

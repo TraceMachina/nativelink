@@ -8,6 +8,49 @@ on:
     branches: [ main ]
 
 jobs:
+  cargo-tests:
+    # The type of runner that the job will run on.
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        # Which OS versions we will test on.
+        os_version: [ 20.04 ]
+    steps:
+    - uses: actions/checkout@v3.5.3
+      with:
+        fetch-depth: 0
+
+    - uses: docker/setup-buildx-action@v2
+    - uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: ./deployment-examples/docker-compose/Dockerfile
+        build-args: |
+          OPT_LEVEL=fastbuild
+          OS_VERSION=${{ matrix.os_version }}
+        # The `builder` stage is pointless to be cached because any change to the
+        # PR invalidates it. So to save the limited cache space we skip it.
+        no-cache-filters: |
+          builder-final
+        target: builder-externals-built
+        load: true # This brings the build into `docker images` from buildx.
+        tags: allada/turbo-cache:test
+        cache-from: type=gha,scope=main
+        cache-to: type=gha,scope=main,mode=max
+
+    - name: Cargo.toml is up to date
+      run: |
+        docker run --rm -e CC=clang -v $PWD:/root/turbo-cache allada/turbo-cache:test python3 ./tools/build_cargo_manifest.py && \
+        git diff --exit-code || \
+        (echo "Cargo.toml is out of date. Please run: python ./tools/build_cargo_manifest.py" && exit 1)
+    - name: Compile & test with cargo
+      run: |
+        docker run --rm -e CC=clang -v $PWD:/root/turbo-cache allada/turbo-cache:test sh -c ' \
+          apt-get update && apt-get install cargo -y && \
+          cargo build --all && \
+          cargo test --all \
+        '
+
   unit-test:
     # The type of runner that the job will run on.
     runs-on: ubuntu-22.04
