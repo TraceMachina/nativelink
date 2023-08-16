@@ -3,7 +3,6 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 rust_binary(
     name = "cas",
     srcs = ["cas_main.rs"],
-    data = ["//config:examples/basic_cas.json"],
     deps = [
         "//cas/grpc_service:ac_server",
         "//cas/grpc_service:bytestream_server",
@@ -31,6 +30,5 @@ rust_binary(
         "@crate_index//:tower",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
-        "@rules_rust//tools/runfiles",
     ],
 )

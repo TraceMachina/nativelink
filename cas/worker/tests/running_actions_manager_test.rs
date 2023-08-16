@@ -14,8 +14,10 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::fs::Permissions;
 use std::io::Cursor;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::PermissionsExt;
 use std::pin::Pin;
 use std::str::from_utf8;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -26,6 +28,7 @@ use futures::{FutureExt, TryFutureExt};
 use lazy_static::lazy_static;
 use prost::Message;
 use rand::{thread_rng, Rng};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 
 use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
@@ -913,13 +916,21 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
-    // This script runs a command under `cas/worker/tests/wrapper_for_test.sh` set in a config.
+    // This script runs a command under a wrapper script set in a config.
     // The wrapper script will print a constant string to stderr, and the test itself will
     // print to stdout. We then check the results of both to make sure the shell script was
     // invoked and the actual command was invoked under the shell script.
     #[tokio::test]
     async fn entrypoint_cmd_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
-        const TEST_WRAPPER_SCRIPT: &str = "cas/worker/tests/wrapper_for_test.sh";
+        const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
+#!/bin/bash
+# Print some static text to stderr. This is what the test uses to
+# make sure the script did run.
+>&2 printf \"Wrapper script did run\"
+
+# Now run the real command.
+exec \"$@\"
+";
         const WORKER_ID: &str = "foo_worker_id";
         const SALT: u64 = 66;
         const EXPECTED_STDOUT: &str = "Action did run";
@@ -928,8 +939,20 @@ mod running_actions_manager_tests {
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
+        let test_wrapper_script = {
+            let test_wrapper_dir = make_temp_path("wrapper_dir");
+            fs::create_dir_all(&test_wrapper_dir).await?;
+            let test_wrapper_script = test_wrapper_dir + "/test_wrapper_script.sh";
+            let mut test_wrapper_script_handle = fs::create_file(&test_wrapper_script).await?;
+            test_wrapper_script_handle
+                .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
+                .await?;
+            fs::set_permissions(&test_wrapper_script, Permissions::from_mode(0o755)).await?;
+            test_wrapper_script
+        };
+
         let mut full_wrapper_script_path = env::current_dir()?;
-        full_wrapper_script_path.push(TEST_WRAPPER_SCRIPT);
+        full_wrapper_script_path.push(test_wrapper_script);
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             root_work_directory.clone(),
             Some(Arc::new(
