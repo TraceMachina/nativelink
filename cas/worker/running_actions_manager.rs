@@ -15,8 +15,10 @@
 use std::collections::{vec_deque::VecDeque, HashMap};
 use std::ffi::OsStr;
 use std::fmt::Debug;
+#[cfg(target_family = "unix")]
 use std::fs::Permissions;
 use std::io::Cursor;
+#[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::pin::Pin;
@@ -93,13 +95,14 @@ pub fn download_to_directory<'a>(
                 .try_into()
                 .err_tip(|| "In Directory::file::digest")?;
             let dest = format!("{}/{}", current_directory, file.name);
-            let mut mtime = None;
-            let mut unix_mode = None;
-            if let Some(properties) = file.node_properties {
-                mtime = properties.mtime;
-                unix_mode = properties.unix_mode;
+            let (mtime, mut unix_mode) = match file.node_properties {
+                Some(properties) => (properties.mtime, properties.unix_mode),
+                None => (None, None),
+            };
+            #[cfg_attr(target_family = "windows", allow(unused_assignments))]
+            if file.is_executable {
+                unix_mode = Some(unix_mode.unwrap_or(0o444) | 0o111);
             }
-            let is_executable = file.is_executable;
             futures.push(
                 cas_store
                     .populate_fast_store(digest)
@@ -112,9 +115,7 @@ pub fn download_to_directory<'a>(
                             .get_file_path_locked(|src| fs::hard_link(src, &dest))
                             .await
                             .map_err(|e| make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}"))?;
-                        if is_executable {
-                            unix_mode = Some(unix_mode.unwrap_or(0o444) | 0o111);
-                        }
+                        #[cfg(target_family = "unix")]
                         if let Some(unix_mode) = unix_mode {
                             fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
                                 .await
@@ -156,6 +157,7 @@ pub fn download_to_directory<'a>(
             );
         }
 
+        #[cfg(target_family = "unix")]
         for symlink_node in directory.symlinks {
             let dest = format!("{}/{}", current_directory, symlink_node.name);
             futures.push(
@@ -173,6 +175,24 @@ pub fn download_to_directory<'a>(
         Ok(())
     }
     .boxed()
+}
+
+#[cfg(target_family = "windows")]
+async fn is_executable(_file_handle: &fs::FileSlot<'_>, _full_path: &impl AsRef<Path>) -> Result<bool, Error> {
+    static EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "bat", "com"];
+    Ok(EXECUTABLE_EXTENSIONS
+        .iter()
+        .any(|ext| _full_path.as_ref().extension().map_or(false, |v| v == *ext)))
+}
+
+#[cfg(target_family = "unix")]
+async fn is_executable(file_handle: &fs::FileSlot<'_>, full_path: &impl AsRef<Path>) -> Result<bool, Error> {
+    let metadata = file_handle
+        .as_ref()
+        .metadata()
+        .await
+        .err_tip(|| format!("While reading metadata for {:?}", full_path.as_ref()))?;
+    Ok((metadata.mode() & 0o001) != 0)
 }
 
 async fn upload_file<'a>(
@@ -195,12 +215,9 @@ async fn upload_file<'a>(
         .to_str()
         .err_tip(|| make_err!(Code::Internal, "Could not convert {:?} to string", full_path))?
         .to_string();
-    let metadata = file_handle
-        .as_ref()
-        .metadata()
-        .await
-        .err_tip(|| format!("While reading metadata for {full_path:?}"))?;
-    let is_executable = (metadata.mode() & 0o001) != 0;
+
+    let is_executable = is_executable(&file_handle, &full_path).await?;
+
     Ok(FileInfo {
         name_or_path: NameOrPath::Name(name),
         digest,
@@ -549,7 +566,24 @@ impl RunningActionImpl {
             .stderr(Stdio::piped())
             .current_dir(format!("{}/{}", self.work_directory, command_proto.working_directory))
             .env_clear();
-        for environment_variable in &command_proto.environment_variables {
+        #[cfg(target_family = "unix")]
+        let envs = &command_proto.environment_variables;
+        // If SystemRoot is not set on windows we set it to default. Failing to do
+        // this causes all commands to fail.
+        #[cfg(target_family = "windows")]
+        let envs = {
+            let mut envs = command_proto.environment_variables.clone();
+            if envs.iter().find(|v| v.name == "SystemRoot").is_none() {
+                envs.push(
+                    proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
+                        name: "SystemRoot".to_string(),
+                        value: "C:\\Windows".to_string(),
+                    },
+                );
+            }
+            envs
+        };
+        for environment_variable in envs {
             command_builder.env(&environment_variable.name, &environment_variable.value);
         }
 

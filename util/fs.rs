@@ -166,6 +166,7 @@ pub async fn create_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     tokio::fs::create_dir_all(path).await.map_err(|e| e.into())
 }
 
+#[cfg(target_family = "unix")]
 pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
     let _permit = OPEN_FILE_SEMAPHORE
         .acquire()

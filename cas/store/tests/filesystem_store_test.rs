@@ -518,7 +518,7 @@ mod filesystem_store_tests {
         file_entry
             .get_file_path_locked(move |path| async move {
                 // Set atime to along time ago.
-                set_file_atime(&path, FileTime::zero())?;
+                set_file_atime(&path, FileTime::from_system_time(SystemTime::UNIX_EPOCH))?;
 
                 // Check to ensure it was set to zero from previous command.
                 assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
@@ -605,7 +605,7 @@ mod filesystem_store_tests {
         file_entry
             .get_file_path_locked(move |path| async move {
                 // Set atime to along time ago.
-                set_file_atime(&path, FileTime::zero())?;
+                set_file_atime(&path, FileTime::from_system_time(SystemTime::UNIX_EPOCH))?;
 
                 // Check to ensure it was set to zero from previous command.
                 assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
@@ -765,7 +765,6 @@ mod filesystem_store_tests {
             yield_fn: F,
         ) -> Result<fs::DirEntry, Error> {
             loop {
-                // Just in case there's a
                 yield_fn().await?;
                 let (_permit, dir_handle) = fs::read_dir(&temp_path).await?.into_inner();
                 let mut read_dir_stream = ReadDirStream::new(dir_handle);
@@ -775,6 +774,14 @@ mod filesystem_store_tests {
                         "There should only be one file in temp directory"
                     );
                     let dir_entry = dir_entry?;
+                    {
+                        // Some filesystems won't sync automatically, so force it.
+                        let file_handle = fs::open_file(dir_entry.path().to_str().unwrap())
+                            .await
+                            .err_tip(|| "Failed to open temp file")?;
+                        // We don't care if it fails, this is only best attempt.
+                        let _ = file_handle.as_ref().sync_all().await;
+                    }
                     // Ensure we have written to the file too. This ensures we have an open file handle.
                     // Failing to do this may result in the file existing, but the `update_fut` not actually
                     // sending data to it yet.
