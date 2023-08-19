@@ -14,7 +14,9 @@
 
 use std::collections::HashMap;
 use std::env;
+#[cfg(target_family = "unix")]
 use std::fs::Permissions;
+#[cfg(target_family = "unix")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -77,7 +79,10 @@ mod local_worker_tests {
         platform_properties.insert(
             "baz".to_string(),
             // Note: new lines will result in two entries for same key.
+            #[cfg(target_family = "unix")]
             WrokerProperty::query_cmd("echo -e 'hello\ngoodbye'".to_string()),
+            #[cfg(target_family = "windows")]
+            WrokerProperty::query_cmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
         );
         let mut test_context = setup_local_worker(platform_properties).await;
         let streaming_response = test_context.maybe_streaming_response.take().unwrap();
@@ -378,12 +383,21 @@ mod local_worker_tests {
     async fn precondition_script_fails() -> Result<(), Box<dyn std::error::Error>> {
         let temp_path = make_temp_path("scripts");
         fs::create_dir_all(temp_path.clone()).await?;
-        let precondition_script = format!("{}/precondition.sh", temp_path);
-        {
+        #[cfg(target_family = "unix")]
+        let precondition_script = {
+            let precondition_script = format!("{}/precondition.sh", temp_path);
             let mut file = fs::create_file(precondition_script.clone()).await?;
             file.write_all(b"#!/bin/sh\nexit 1\n").await?;
-        }
-        fs::set_permissions(&precondition_script, Permissions::from_mode(0o777)).await?;
+            fs::set_permissions(&precondition_script, Permissions::from_mode(0o777)).await?;
+            precondition_script
+        };
+        #[cfg(target_family = "windows")]
+        let precondition_script = {
+            let precondition_script = format!("{}/precondition.bat", temp_path);
+            let mut file = fs::create_file(precondition_script.clone()).await?;
+            file.write_all(b"@echo off\r\nexit 1").await?;
+            precondition_script
+        };
         let local_worker_config = LocalWorkerConfig {
             precondition_script: Some(precondition_script),
             ..Default::default()
@@ -451,6 +465,11 @@ mod local_worker_tests {
             .expect_execution_response(Ok(Response::new(())))
             .await;
 
+        #[cfg(target_family = "unix")]
+        const EXPECTED_MSG: &str = "Preconditions script returned status exit status: 1 - ";
+        #[cfg(target_family = "windows")]
+        const EXPECTED_MSG: &str = "Preconditions script returned status exit code: 1 - ";
+
         // Now ensure the final results match our expectations.
         assert_eq!(
             execution_response,
@@ -460,11 +479,7 @@ mod local_worker_tests {
                 action_digest: Some(action_digest.into()),
                 salt: SALT,
                 result: Some(execute_result::Result::InternalError(
-                    make_err!(
-                        Code::ResourceExhausted,
-                        "Preconditions script returned status exit status: 1 - "
-                    )
-                    .into()
+                    make_err!(Code::ResourceExhausted, "{}", EXPECTED_MSG,).into()
                 )),
             }
         );

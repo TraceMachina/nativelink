@@ -16,6 +16,8 @@ Turbo Cache is a project that implements the [Bazel Remote Execution protocol](h
 
 When properly configured this project will provide extremely fast and efficient build cache for any systems that communicate using the [BRE protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) and/or extremely fast, efficient and low foot-print remote execution capability.
 
+Unix based operating systems and Windows are fully supported.
+
 ## TL;DR
 To compile and run the server:
 ```sh

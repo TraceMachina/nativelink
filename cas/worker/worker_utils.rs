@@ -79,7 +79,7 @@ pub async fn make_supported_properties<S: BuildHasher>(
                     for value in reader.lines() {
                         props.push(Property {
                             name: property_name.clone(),
-                            value: value.err_tip(|| "Could split input by lines")?.clone(),
+                            value: value.err_tip(|| "Could split input by lines")?.trim().to_string(),
                         });
                     }
                     Ok(props)

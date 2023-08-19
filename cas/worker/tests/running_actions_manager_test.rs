@@ -14,10 +14,11 @@
 
 use std::collections::HashMap;
 use std::env;
+#[cfg(target_family = "unix")]
 use std::fs::Permissions;
 use std::io::Cursor;
-use std::os::unix::fs::MetadataExt;
-use std::os::unix::fs::PermissionsExt;
+#[cfg(target_family = "unix")]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::pin::Pin;
 use std::str::from_utf8;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -32,12 +33,14 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 
 use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
+#[cfg_attr(target_family = "windows", allow(unused_imports))]
 use action_messages::{ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use common::{fs, DigestInfo};
 use error::{Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
 use memory_store::MemoryStore;
+#[cfg_attr(target_family = "windows", allow(unused_imports))]
 use proto::build::bazel::remote::execution::v2::{
     Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest, FileNode,
     NodeProperties, SymlinkNode, Tree,
@@ -52,12 +55,20 @@ use store::Store;
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
 /// not set.
 fn make_temp_path(data: &str) -> String {
-    format!(
+    #[cfg(target_family = "unix")]
+    return format!(
         "{}/{}/{}",
         env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
         thread_rng().gen::<u64>(),
         data
-    )
+    );
+    #[cfg(target_family = "windows")]
+    return format!(
+        "{}\\{}\\{}",
+        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
+        thread_rng().gen::<u64>(),
+        data
+    );
 }
 
 async fn setup_stores() -> Result<
@@ -213,9 +224,15 @@ mod running_actions_manager_tests {
 
             let file2_metadata = fs::metadata(&file2_path).await?;
             // Note: We sent 0o710, but because is_executable was set it turns into 0o711.
+            #[cfg(target_family = "unix")]
             assert_eq!(file2_metadata.mode() & 0o777, FILE2_MODE | 0o111);
-
-            assert_eq!(file2_metadata.mtime() as u64, FILE2_MTIME);
+            assert_eq!(
+                file2_metadata
+                    .modified()?
+                    .duration_since(SystemTime::UNIX_EPOCH)?
+                    .as_secs(),
+                FILE2_MTIME
+            );
         }
         Ok(())
     }
@@ -313,6 +330,8 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
+    // Windows does not support symlinks.
+    #[cfg(not(target_family = "windows"))]
     #[tokio::test]
     async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std::error::Error>> {
         const FILE_NAME: &str = "file.txt";
@@ -495,12 +514,22 @@ mod running_actions_manager_tests {
         )?);
         let action_result = {
             const SALT: u64 = 55;
+            #[cfg(target_family = "unix")]
+            let arguments = vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo -n \"123 \" > ../test.txt; echo -n \"foo-stdout \"; >&2 echo -n \"bar-stderr  \"".to_string(),
+            ];
+            #[cfg(target_family = "windows")]
+            let arguments = vec![
+                "cmd".to_string(),
+                "/C".to_string(),
+                // Note: Windows adds two spaces after 'set /p=XXX'.
+                "echo | set /p=123> ../test.txt & echo | set /p=foo-stdout & echo | set /p=bar-stderr 1>&2 & exit 0"
+                    .to_string(),
+            ];
             let command = Command {
-                arguments: vec![
-                    "sh".to_string(),
-                    "-c".to_string(),
-                    "echo -n 123 > ../test.txt; echo -n foo-stdout; >&2 echo -n bar-stderr".to_string(),
-                ],
+                arguments,
                 output_paths: vec!["test.txt".to_string()],
                 working_directory: "some_cwd".to_string(),
                 ..Default::default()
@@ -548,33 +577,33 @@ mod running_actions_manager_tests {
             .as_ref()
             .get_part_unchunked(action_result.output_files[0].digest, 0, None, None)
             .await?;
-        assert_eq!(from_utf8(&file_content)?, "123");
+        assert_eq!(from_utf8(&file_content)?, "123 ");
         let stdout_content = slow_store
             .as_ref()
             .get_part_unchunked(action_result.stdout_digest, 0, None, None)
             .await?;
-        assert_eq!(from_utf8(&stdout_content)?, "foo-stdout");
+        assert_eq!(from_utf8(&stdout_content)?, "foo-stdout ");
         let stderr_content = slow_store
             .as_ref()
             .get_part_unchunked(action_result.stderr_digest, 0, None, None)
             .await?;
-        assert_eq!(from_utf8(&stderr_content)?, "bar-stderr");
+        assert_eq!(from_utf8(&stderr_content)?, "bar-stderr  ");
         let mut clock_time = make_system_time(0);
         assert_eq!(
             action_result,
             ActionResult {
                 output_files: vec![FileInfo {
                     name_or_path: NameOrPath::Path("test.txt".to_string()),
-                    digest: DigestInfo::try_new("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3", 3)?,
+                    digest: DigestInfo::try_new("c69e10a5f54f4e28e33897fbd4f8701595443fa8c3004aeaa20dd4d9a463483b", 4)?,
                     is_executable: false,
                 }],
                 stdout_digest: DigestInfo::try_new(
-                    "426afaf613d8cfdd9fa8addcc030ae6c95a7950ae0301164af1d5851012081d5",
-                    10
+                    "15019a676f057d97d1ad3af86f3cc1e623cb33b18ff28422bbe3248d2471cc94",
+                    11
                 )?,
                 stderr_digest: DigestInfo::try_new(
-                    "7b2e400d08b8e334e3172d105be308b506c6036c62a9bde5c509d7808b28b213",
-                    10
+                    "2375ab8a01ca11e1ea7606dfb58756c153d49733cde1dbfb5a1e00f39afacf06",
+                    12
                 )?,
                 exit_code: 0,
                 output_folders: vec![],
@@ -599,6 +628,8 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
+    // Windows does not support symlinks.
+    #[cfg(not(target_family = "windows"))]
     #[tokio::test]
     async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
@@ -786,10 +817,16 @@ mod running_actions_manager_tests {
             },
         )?);
         let queued_timestamp = make_system_time(1000);
+
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "exit 33".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["cmd".to_string(), "/C".to_string(), "exit 33".to_string()];
+
         let action_result = {
             const SALT: u64 = 55;
             let command = Command {
-                arguments: vec!["sh".to_string(), "-c".to_string(), "exit 33".to_string()],
+                arguments,
                 output_paths: vec![],
                 working_directory: ".".to_string(),
                 ..Default::default()
@@ -877,8 +914,14 @@ mod running_actions_manager_tests {
             config::cas_server::UploadCacheResultsStrategy::Never,
             Duration::MAX,
         )?);
+
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["cmd".to_string(), "/C".to_string(), "timeout 99999".to_string()];
+
         let command = Command {
-            arguments: vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()],
+            arguments,
             output_paths: vec![],
             working_directory: ".".to_string(),
             ..Default::default()
@@ -911,7 +954,11 @@ mod running_actions_manager_tests {
         let result = futures::join!(run_action(running_action_impl), running_actions_manager.kill_all()).0?;
 
         // Check that the action was killed.
+        #[cfg(target_family = "unix")]
         assert_eq!(9, result.exit_code);
+        // Note: Windows kill command returns exit code 1.
+        #[cfg(target_family = "windows")]
+        assert_eq!(1, result.exit_code);
 
         Ok(())
     }
@@ -922,6 +969,7 @@ mod running_actions_manager_tests {
     // invoked and the actual command was invoked under the shell script.
     #[tokio::test]
     async fn entrypoint_cmd_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(target_family = "unix")]
         const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
 #!/bin/bash
 # Print some static text to stderr. This is what the test uses to
@@ -930,6 +978,18 @@ mod running_actions_manager_tests {
 
 # Now run the real command.
 exec \"$@\"
+";
+        #[cfg(target_family = "windows")]
+        const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
+@echo off
+:: Print some static text to stderr. This is what the test uses to
+:: make sure the script did run.
+echo | set /p=\"Wrapper script did run\" 1>&2
+
+:: Run command, but morph the echo to ensure it doesn't
+:: add a new line to the end of the output.
+%1 | set /p=%2
+exit 0
 ";
         const WORKER_ID: &str = "foo_worker_id";
         const SALT: u64 = 66;
@@ -942,11 +1002,15 @@ exec \"$@\"
         let test_wrapper_script = {
             let test_wrapper_dir = make_temp_path("wrapper_dir");
             fs::create_dir_all(&test_wrapper_dir).await?;
+            #[cfg(target_family = "unix")]
             let test_wrapper_script = test_wrapper_dir + "/test_wrapper_script.sh";
+            #[cfg(target_family = "windows")]
+            let test_wrapper_script = test_wrapper_dir + "\\test_wrapper_script.bat";
             let mut test_wrapper_script_handle = fs::create_file(&test_wrapper_script).await?;
             test_wrapper_script_handle
                 .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
                 .await?;
+            #[cfg(target_family = "unix")]
             fs::set_permissions(&test_wrapper_script, Permissions::from_mode(0o755)).await?;
             test_wrapper_script
         };
@@ -963,8 +1027,12 @@ exec \"$@\"
             config::cas_server::UploadCacheResultsStrategy::Never,
             Duration::MAX,
         )?);
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["echo".to_string(), EXPECTED_STDOUT.to_string()];
         let command = Command {
-            arguments: vec!["printf".to_string(), EXPECTED_STDOUT.to_string()],
+            arguments,
             working_directory: ".".to_string(),
             ..Default::default()
         };
@@ -993,6 +1061,7 @@ exec \"$@\"
             .await?;
 
         let result = run_action(running_action_impl).await?;
+        assert_eq!(result.exit_code, 0, "Exit code should be 0");
 
         let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT)).await?.0;
         // Note: This string should match what is in worker_for_test.sh
@@ -1123,8 +1192,13 @@ exec \"$@\"
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["true".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["cmd".to_string(), "/C".to_string(), "exit".to_string(), "0".to_string()];
+
         let command = Command {
-            arguments: vec!["true".to_string()],
+            arguments,
             output_paths: vec![],
             working_directory: ".".to_string(),
             ..Default::default()
@@ -1357,8 +1431,13 @@ exec \"$@\"
             },
         )?);
 
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["cmd".to_string(), "/C".to_string(), "timeout 99999".to_string()];
+
         let command = Command {
-            arguments: vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()],
+            arguments,
             output_paths: vec![],
             working_directory: ".".to_string(),
             ..Default::default()

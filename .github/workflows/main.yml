@@ -8,6 +8,18 @@ on:
     branches: [ main ]
 
 jobs:
+  windows-tests:
+    # The type of runner that the job will run on.
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v3.5.3
+      with:
+        fetch-depth: 0
+    - name: Compile on windows
+      run: cargo build --all
+    - name: Test on windows
+      run: cargo test --all
+
   cargo-tests:
     # The type of runner that the job will run on.
     runs-on: ubuntu-22.04
