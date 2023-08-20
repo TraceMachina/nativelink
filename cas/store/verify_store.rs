@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
 use error::{make_input_err, Error, ResultExt};
-use prometheus_utils::{Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
+use metrics_utils::{Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
 use traits::{StoreTrait, UploadSizeInfo};
 
 pub struct VerifyStore {

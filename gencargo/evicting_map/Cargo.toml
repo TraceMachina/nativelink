@@ -28,4 +28,4 @@ serde = { workspace = true }
 # Local libraries.
 config = { workspace = true }
 common = { workspace = true }
-prometheus_utils = { workspace = true }
+metrics_utils = { workspace = true }

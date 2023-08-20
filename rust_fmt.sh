@@ -28,7 +28,8 @@ else
   FILES="$(find . \
     -type f \
     -name '*.rs' \
-    ! -name '*.pb.rs' \
+    ! -name '*\.pb\.rs' \
+    ! -ipath '.*/proto/genproto/lib\.rs' \
     ! -ipath '*/.*' \
     ! -ipath '*/target/*' \
   2> >(grep -v 'Permission denied' >&2) || true)"

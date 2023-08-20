@@ -32,7 +32,7 @@ use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::{fs, log, DigestInfo};
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use evicting_map::{EvictingMap, LenEntry};
-use prometheus_utils::{Collector, CollectorState, MetricsComponent, Registry};
+use metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use traits::{StoreTrait, UploadSizeInfo};
 
 // Default size to allocate memory of the buffer when reading files.

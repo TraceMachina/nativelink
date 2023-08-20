@@ -59,8 +59,8 @@ version = "0.0.0"
 dependencies = [
  "common",
  "error",
+ "metrics_utils",
  "platform_property_manager",
- "prometheus_utils",
  "prost",
  "prost-types",
  "proto",
@@ -541,9 +541,9 @@ dependencies = [
  "hyper",
  "json5",
  "local_worker",
+ "metrics_utils",
  "parking_lot",
  "prometheus-client",
- "prometheus_utils",
  "store",
  "tokio",
  "tonic",
@@ -834,7 +834,7 @@ dependencies = [
  "error",
  "futures",
  "grpc_scheduler",
- "prometheus_utils",
+ "metrics_utils",
  "property_modifier_scheduler",
  "scheduler",
  "simple_scheduler",
@@ -855,7 +855,7 @@ dependencies = [
  "futures",
  "grpc_store",
  "memory_store",
- "prometheus_utils",
+ "metrics_utils",
  "ref_store",
  "s3_store",
  "size_partitioning_store",
@@ -1012,7 +1012,7 @@ dependencies = [
  "config",
  "futures",
  "lru",
- "prometheus_utils",
+ "metrics_utils",
  "serde",
 ]
 
@@ -1123,9 +1123,9 @@ dependencies = [
  "evicting_map",
  "filetime",
  "futures",
+ "metrics_utils",
  "nix",
  "prometheus-client",
- "prometheus_utils",
  "rand",
  "tokio",
  "tokio-stream",
@@ -1663,7 +1663,7 @@ dependencies = [
  "error",
  "fast_slow_store",
  "futures",
- "prometheus_utils",
+ "metrics_utils",
  "proto",
  "running_actions_manager",
  "store",
@@ -1798,7 +1798,7 @@ dependencies = [
  "config",
  "error",
  "evicting_map",
- "prometheus_utils",
+ "metrics_utils",
  "traits",
 ]
 
@@ -1813,6 +1813,14 @@ dependencies = [
  "pretty_assertions",
  "tokio",
  "traits",
+]
+
+[[package]]
+name = "metrics_utils"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "prometheus-client",
 ]
 
 [[package]]
@@ -2202,14 +2210,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prometheus_utils"
-version = "0.0.0"
-dependencies = [
- "futures",
- "prometheus-client",
-]
-
-[[package]]
 name = "property_modifier_scheduler"
 version = "0.0.0"
 dependencies = [
@@ -2485,8 +2485,8 @@ dependencies = [
  "futures",
  "grpc_store",
  "hex",
+ "metrics_utils",
  "parking_lot",
- "prometheus_utils",
  "prost",
  "proto",
  "relative-path",
@@ -2716,8 +2716,8 @@ dependencies = [
  "action_messages",
  "async-trait",
  "error",
+ "metrics_utils",
  "platform_property_manager",
- "prometheus_utils",
  "tokio",
  "worker",
 ]
@@ -2888,9 +2888,9 @@ dependencies = [
  "futures",
  "hashbrown 0.14.0",
  "lru",
+ "metrics_utils",
  "parking_lot",
  "platform_property_manager",
- "prometheus_utils",
  "scheduler",
  "tokio",
  "worker",
@@ -3274,7 +3274,7 @@ dependencies = [
  "common",
  "error",
  "futures",
- "prometheus_utils",
+ "metrics_utils",
  "serde",
 ]
 
@@ -3343,7 +3343,7 @@ dependencies = [
  "config",
  "error",
  "hex",
- "prometheus_utils",
+ "metrics_utils",
  "sha2 0.10.7",
  "tokio",
  "traits",
@@ -3569,8 +3569,8 @@ version = "0.0.0"
 dependencies = [
  "action_messages",
  "error",
+ "metrics_utils",
  "platform_property_manager",
- "prometheus_utils",
  "proto",
  "tokio",
  "uuid",

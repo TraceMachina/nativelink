@@ -26,8 +26,8 @@ use sha2::{digest::Update as _, Digest as _, Sha256};
 
 use common::{DigestInfo, HashMapExt, VecExt};
 use error::{error_if, make_input_err, Error, ResultExt};
+use metrics_utils::{CollectorState, MetricsComponent};
 use platform_property_manager::PlatformProperties;
-use prometheus_utils::{CollectorState, MetricsComponent};
 use prost::bytes::Bytes;
 use proto::build::bazel::remote::execution::v2::{
     execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,

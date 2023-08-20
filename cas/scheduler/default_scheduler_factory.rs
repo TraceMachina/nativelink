@@ -24,7 +24,7 @@ use cache_lookup_scheduler::CacheLookupScheduler;
 use config::schedulers::SchedulerConfig;
 use error::{Error, ResultExt};
 use grpc_scheduler::GrpcScheduler;
-use prometheus_utils::Registry;
+use metrics_utils::Registry;
 use property_modifier_scheduler::PropertyModifierScheduler;
 use scheduler::{ActionScheduler, WorkerScheduler};
 use simple_scheduler::SimpleScheduler;
