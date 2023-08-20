@@ -42,7 +42,7 @@ use default_store_factory::store_factory;
 use error::{make_err, Code, Error, ResultExt};
 use execution_server::ExecutionServer;
 use local_worker::new_local_worker;
-use prometheus_utils::{set_metrics_enabled_for_this_thread, Collector, CollectorState, MetricsComponent, Registry};
+use metrics_utils::{set_metrics_enabled_for_this_thread, Collector, CollectorState, MetricsComponent, Registry};
 use store::StoreManager;
 use worker_api_server::WorkerApiServer;
 

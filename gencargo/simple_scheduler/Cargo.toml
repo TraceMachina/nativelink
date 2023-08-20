@@ -34,4 +34,4 @@ worker = { workspace = true }
 config = { workspace = true }
 common = { workspace = true }
 error = { workspace = true }
-prometheus_utils = { workspace = true }
+metrics_utils = { workspace = true }

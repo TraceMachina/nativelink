@@ -54,11 +54,11 @@ members = [
   "gencargo/local_worker_test_utils",
   "gencargo/memory_store",
   "gencargo/memory_store_test",
+  "gencargo/metrics_utils",
   "gencargo/mock_running_actions_manager",
   "gencargo/mock_scheduler",
   "gencargo/mock_worker_api_client",
   "gencargo/platform_property_manager",
-  "gencargo/prometheus_utils",
   "gencargo/property_modifier_scheduler",
   "gencargo/property_modifier_scheduler_test",
   "gencargo/proto",
@@ -190,11 +190,11 @@ local_worker_test = { path = "gencargo/local_worker_test" }
 local_worker_test_utils = { path = "gencargo/local_worker_test_utils" }
 memory_store = { path = "gencargo/memory_store" }
 memory_store_test = { path = "gencargo/memory_store_test" }
+metrics_utils = { path = "gencargo/metrics_utils" }
 mock_running_actions_manager = { path = "gencargo/mock_running_actions_manager" }
 mock_scheduler = { path = "gencargo/mock_scheduler" }
 mock_worker_api_client = { path = "gencargo/mock_worker_api_client" }
 platform_property_manager = { path = "gencargo/platform_property_manager" }
-prometheus_utils = { path = "gencargo/prometheus_utils" }
 property_modifier_scheduler = { path = "gencargo/property_modifier_scheduler" }
 property_modifier_scheduler_test = { path = "gencargo/property_modifier_scheduler_test" }
 proto = { path = "gencargo/proto" }

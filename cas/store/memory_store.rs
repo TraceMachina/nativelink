@@ -24,7 +24,7 @@ use bytes::{Bytes, BytesMut};
 use common::DigestInfo;
 use error::{Code, Error, ResultExt};
 use evicting_map::{EvictingMap, LenEntry};
-use prometheus_utils::{Collector, CollectorState, MetricsComponent, Registry};
+use metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use traits::{StoreTrait, UploadSizeInfo};
 
 #[derive(Clone)]

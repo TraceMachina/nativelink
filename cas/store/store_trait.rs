@@ -24,7 +24,7 @@ use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf
 use bytes::Bytes;
 use common::DigestInfo;
 use error::{Error, ResultExt};
-use prometheus_utils::Registry;
+use metrics_utils::Registry;
 
 #[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum UploadSizeInfo {

@@ -17,7 +17,7 @@ rust_binary(
         "//config",
         "//util:common",
         "//util:error",
-        "//util:prometheus_utils",
+        "//util:metrics_utils",
         "@crate_index//:clap",
         "@crate_index//:drop_guard",
         "@crate_index//:env_logger",

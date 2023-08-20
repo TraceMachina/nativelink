@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use common::{log, DigestInfo};
 use config::stores::EvictionPolicy;
-use prometheus_utils::{CollectorState, Counter, CounterWithTime, MetricsComponent};
+use metrics_utils::{CollectorState, Counter, CounterWithTime, MetricsComponent};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct SerializedLRU {

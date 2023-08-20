@@ -36,4 +36,4 @@ traits = { workspace = true }
 verify_store = { workspace = true }
 config = { workspace = true }
 error = { workspace = true }
-prometheus_utils = { workspace = true }
+metrics_utils = { workspace = true }

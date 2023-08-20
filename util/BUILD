@@ -32,8 +32,8 @@ rust_library(
 )
 
 rust_library(
-    name = "prometheus_utils",
-    srcs = ["prometheus_utils.rs"],
+    name = "metrics_utils",
+    srcs = ["metrics_utils.rs"],
     visibility = ["//visibility:public"],
     deps = [
         "@crate_index//:futures",
@@ -88,7 +88,7 @@ rust_library(
     proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = ["//visibility:public"],
     deps = [
-        ":prometheus_utils",
+        ":metrics_utils",
         "//config",
         "//util:common",
         "@crate_index//:async-lock",

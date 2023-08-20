@@ -31,4 +31,4 @@ simple_scheduler = { workspace = true }
 store = { workspace = true }
 config = { workspace = true }
 error = { workspace = true }
-prometheus_utils = { workspace = true }
+metrics_utils = { workspace = true }

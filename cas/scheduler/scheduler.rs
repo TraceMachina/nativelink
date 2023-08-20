@@ -19,8 +19,8 @@ use tokio::sync::watch;
 
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState};
 use error::Error;
+use metrics_utils::Registry;
 use platform_property_manager::PlatformPropertyManager;
-use prometheus_utils::Registry;
 use worker::{Worker, WorkerId, WorkerTimestamp};
 
 /// ActionScheduler interface is responsible for interactions between the scheduler

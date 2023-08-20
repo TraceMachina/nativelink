@@ -25,7 +25,7 @@ use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
 use grpc_store::GrpcStore;
 use memory_store::MemoryStore;
-use prometheus_utils::Registry;
+use metrics_utils::Registry;
 use ref_store::RefStore;
 use s3_store::S3Store;
 use size_partitioning_store::SizePartitioningStore;

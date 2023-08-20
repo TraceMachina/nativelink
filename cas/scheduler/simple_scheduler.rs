@@ -33,10 +33,10 @@ use tokio::time::Duration;
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata};
 use common::log;
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
-use platform_property_manager::PlatformPropertyManager;
-use prometheus_utils::{
+use metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent, Registry,
 };
+use platform_property_manager::PlatformPropertyManager;
 use scheduler::{ActionScheduler, WorkerScheduler};
 use worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
 
