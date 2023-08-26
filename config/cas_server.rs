@@ -341,6 +341,21 @@ pub struct GlobalConfig {
     #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_open_files: usize,
 
+    /// If a file descriptor is idle for this many milliseconds, it will be closed.
+    /// In the event a client or store takes a long time to send or receive data
+    /// the file descriptor will be closed, and since `max_open_files` blocks new
+    /// open_file requests until a slot opens up, it will allow new requests to be
+    /// processed. If a read or write is attempted on a closed file descriptor, the
+    /// file will be reopened and the operation will continue.
+    ///
+    /// On services where worker(s) and scheduler(s) live in the same process, this
+    /// also prevents deadlocks if a file->file copy is happening, but cannot open
+    /// a new file descriptor because the limit has been reached.
+    ///
+    /// Default: 1000 (1 second)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub idle_file_descriptor_timeout_millis: u64,
+
     /// This flag can be used to prevent metrics from being collected at runtime.
     /// Metrics are still able to be collected, but this flag prevents metrics that
     /// are collected at runtime (performance metrics) from being tallied. The

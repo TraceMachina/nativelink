@@ -440,3 +440,19 @@ rust_test(
     ],
     proc_macro_deps = ["@crate_index//:async-trait"],
 )
+
+rust_test(
+    name = "ac_utils_test",
+    srcs = ["tests/ac_utils_test.rs"],
+    deps = [
+        ":ac_utils",
+        ":memory_store",
+        ":store",
+        "//config",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:rand",
+        "@crate_index//:tokio",
+    ],
+)

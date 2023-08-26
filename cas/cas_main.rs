@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use clap::Parser;
@@ -34,7 +35,7 @@ use ac_server::AcServer;
 use bytestream_server::ByteStreamServer;
 use capabilities_server::CapabilitiesServer;
 use cas_server::CasServer;
-use common::fs::set_open_file_limit;
+use common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
 use common::log;
 use config::cas_server::{CasConfig, CompressionAlgorithm, GlobalConfig, ServerConfig, WorkerConfig};
 use default_scheduler_factory::scheduler_factory;
@@ -461,14 +462,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Note: If the default changes make sure you update the documentation in
         // `config/cas_server.rs`.
         const DEFAULT_MAX_OPEN_FILES: usize = 512;
+        // Note: If the default changes make sure you update the documentation in
+        // `config/cas_server.rs`.
+        const DEFAULT_IDLE_FILE_DESCRIPTOR_TIMEOUT_MILLIS: u64 = 1000;
         let global_cfg = if let Some(global_cfg) = &mut cfg.global {
             if global_cfg.max_open_files == 0 {
                 global_cfg.max_open_files = DEFAULT_MAX_OPEN_FILES;
+            }
+            if global_cfg.idle_file_descriptor_timeout_millis == 0 {
+                global_cfg.idle_file_descriptor_timeout_millis = DEFAULT_IDLE_FILE_DESCRIPTOR_TIMEOUT_MILLIS;
             }
             *global_cfg
         } else {
             GlobalConfig {
                 max_open_files: DEFAULT_MAX_OPEN_FILES,
+                idle_file_descriptor_timeout_millis: DEFAULT_IDLE_FILE_DESCRIPTOR_TIMEOUT_MILLIS,
                 disable_metrics: cfg.servers.iter().all(|v| {
                     let Some(service) = &v.services else {
                         return true;
@@ -478,6 +486,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         set_open_file_limit(global_cfg.max_open_files);
+        set_idle_file_descriptor_timeout(Duration::from_millis(global_cfg.idle_file_descriptor_timeout_millis))?;
         !global_cfg.disable_metrics
     };
     // Override metrics enabled if the environment variable is set.

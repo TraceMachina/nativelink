@@ -14,6 +14,7 @@
 
 use std::cell::RefCell;
 use std::env;
+use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::DerefMut;
@@ -33,7 +34,7 @@ use futures::task::Poll;
 use futures::{poll, Future};
 use lazy_static::lazy_static;
 use rand::{thread_rng, Rng};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Take};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Barrier;
 use tokio_stream::{wrappers::ReadDirStream, StreamExt};
 use traits::UploadSizeInfo;
@@ -71,7 +72,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
 
     async fn make_and_open_file(
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(Self, fs::FileSlot<'static>, String), Error> {
+    ) -> Result<(Self, fs::ResumeableFileSlot<'static>, OsString), Error> {
         let (inner, file_slot, path) = FileEntryImpl::make_and_open_file(encoded_file_path).await?;
         Ok((
             Self {
@@ -91,11 +92,15 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         self.inner.as_ref().unwrap().get_encoded_file_path()
     }
 
-    async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot<'_>>, Error> {
+    async fn read_file_part<'a>(&'a self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot<'a>, Error> {
         self.inner.as_ref().unwrap().read_file_part(offset, length).await
     }
 
-    async fn get_file_path_locked<T, Fut: Future<Output = Result<T, Error>> + Send, F: FnOnce(String) -> Fut + Send>(
+    async fn get_file_path_locked<
+        T,
+        Fut: Future<Output = Result<T, Error>> + Send,
+        F: FnOnce(OsString) -> Fut + Send,
+    >(
         &self,
         handler: F,
     ) -> Result<T, Error> {
@@ -159,22 +164,24 @@ fn make_temp_path(data: &str) -> String {
     )
 }
 
-async fn read_file_contents(file_name: &str) -> Result<Vec<u8>, Error> {
-    let mut file = fs::open_file(&file_name)
+async fn read_file_contents(file_name: &OsStr) -> Result<Vec<u8>, Error> {
+    let mut file = fs::open_file(file_name, u64::MAX)
         .await
-        .err_tip(|| format!("Failed to open file: {}", file_name))?;
+        .err_tip(|| format!("Failed to open file: {file_name:?}"))?;
     let mut data = vec![];
-    file.read_to_end(&mut data)
+    file.as_reader()
+        .await?
+        .read_to_end(&mut data)
         .await
         .err_tip(|| "Error reading file to end")?;
     Ok(data)
 }
 
-async fn write_file(file_name: &str, data: &[u8]) -> Result<(), Error> {
-    let mut file = fs::create_file(&file_name)
+async fn write_file(file_name: &OsStr, data: &[u8]) -> Result<(), Error> {
+    let mut file = fs::create_file(file_name)
         .await
-        .err_tip(|| format!("Failed to create file: {}", file_name))?;
-    Ok(file.write_all(data).await?)
+        .err_tip(|| format!("Failed to create file: {file_name:?}"))?;
+    Ok(file.as_writer().await?.write_all(data).await?)
 }
 
 #[cfg(test)]
@@ -261,7 +268,12 @@ mod filesystem_store_tests {
         // Insert data into store.
         store.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
-        let expected_file_name = format!("{}/{}-{}", content_path, digest1.hash_str(), digest1.size_bytes);
+        let expected_file_name = OsString::from(format!(
+            "{}/{}-{}",
+            content_path,
+            digest1.hash_str(),
+            digest1.size_bytes
+        ));
         {
             // Check to ensure our file exists where it should and content matches.
             let data = read_file_contents(&expected_file_name).await?;
@@ -362,7 +374,7 @@ mod filesystem_store_tests {
             while let Some(temp_dir_entry) = read_dir_stream.next().await {
                 num_files += 1;
                 let path = temp_dir_entry?.path();
-                let data = read_file_contents(path.to_str().unwrap()).await?;
+                let data = read_file_contents(path.as_os_str()).await?;
                 assert_eq!(&data[..], VALUE1.as_bytes(), "Expected file content to match");
             }
             assert_eq!(num_files, 1, "There should only be one file in the temp directory");
@@ -463,7 +475,7 @@ mod filesystem_store_tests {
             while let Some(temp_dir_entry) = read_dir_stream.next().await {
                 num_files += 1;
                 let path = temp_dir_entry?.path();
-                let data = read_file_contents(path.to_str().unwrap()).await?;
+                let data = read_file_contents(path.as_os_str()).await?;
                 assert_eq!(&data[..], VALUE1.as_bytes(), "Expected file content to match");
             }
             assert_eq!(num_files, 1, "There should only be one file in the temp directory");
@@ -551,8 +563,18 @@ mod filesystem_store_tests {
         fs::create_dir_all(&content_path).await?;
 
         // Make the two files on disk before loading the store.
-        let file1 = format!("{}/{}-{}", content_path, digest1.hash_str(), digest1.size_bytes);
-        let file2 = format!("{}/{}-{}", content_path, digest2.hash_str(), digest2.size_bytes);
+        let file1 = OsString::from(format!(
+            "{}/{}-{}",
+            content_path,
+            digest1.hash_str(),
+            digest1.size_bytes
+        ));
+        let file2 = OsString::from(format!(
+            "{}/{}-{}",
+            content_path,
+            digest2.hash_str(),
+            digest2.size_bytes
+        ));
         write_file(&file1, VALUE1.as_bytes()).await?;
         write_file(&file2, VALUE2.as_bytes()).await?;
         set_file_atime(&file1, FileTime::from_unix_time(0, 0))?;
@@ -651,7 +673,7 @@ mod filesystem_store_tests {
             // The file contents should equal our initial data.
             let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
             let mut file_contents = String::new();
-            reader.read_to_string(&mut file_contents).await?;
+            reader.as_reader().await?.read_to_string(&mut file_contents).await?;
             assert_eq!(file_contents, VALUE1);
         }
 
@@ -662,7 +684,7 @@ mod filesystem_store_tests {
             // The file contents still equal our old data.
             let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
             let mut file_contents = String::new();
-            reader.read_to_string(&mut file_contents).await?;
+            reader.as_reader().await?.read_to_string(&mut file_contents).await?;
             assert_eq!(file_contents, VALUE1);
         }
 
@@ -776,11 +798,11 @@ mod filesystem_store_tests {
                     let dir_entry = dir_entry?;
                     {
                         // Some filesystems won't sync automatically, so force it.
-                        let file_handle = fs::open_file(dir_entry.path().to_str().unwrap())
+                        let mut file_handle = fs::open_file(dir_entry.path().into_os_string(), u64::MAX)
                             .await
                             .err_tip(|| "Failed to open temp file")?;
                         // We don't care if it fails, this is only best attempt.
-                        let _ = file_handle.as_ref().sync_all().await;
+                        let _ = file_handle.as_reader().await?.get_ref().as_ref().sync_all().await;
                     }
                     // Ensure we have written to the file too. This ensures we have an open file handle.
                     // Failing to do this may result in the file existing, but the `update_fut` not actually
