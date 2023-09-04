@@ -21,14 +21,23 @@ Unix based operating systems and Windows are fully supported.
 ## TL;DR
 To compile and run the server:
 ```sh
-bazel run //cas -- ./config/examples/basic_cas.json
+# --release causes link-time-optmization to be enabled, which can take a while
+# to compile, but will result in a much faster binary.
+#
+# Note: If you see an error like:
+# "Could not connect to endpoint grpc://127.0.0.1:50061"
+# You can ignore it is caused because the worker & scheduler are in the same
+# process and the worker tried to connect to the scheduler before it was ready.
+# It will auto-reconnect when able and everything will work fine.
+cargo run --release --bin cas -- ./config/examples/basic_cas.json
 ```
 To have bazel (or another BRE client) connect to the running server launched above:
 ```sh
 bazel test //... \
   --remote_instance_name=main \
   --remote_cache=grpc://127.0.0.1:50051 \
-  --remote_executor=grpc://127.0.0.1:50051
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1
 ```
 This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/allada/turbo-cache/tree/master/config) for configuration documentation and [here](https://github.com/allada/turbo-cache/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
 
