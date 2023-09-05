@@ -2243,6 +2243,7 @@ dependencies = [
  "async-trait",
  "config",
  "error",
+ "parking_lot",
  "platform_property_manager",
  "scheduler",
  "tokio",

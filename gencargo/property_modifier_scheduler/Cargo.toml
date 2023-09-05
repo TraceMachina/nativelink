@@ -20,6 +20,7 @@ doctest = false
 
 [dependencies]
 async-trait = { workspace = true }
+parking_lot = { workspace = true }
 tokio = { workspace = true }
 
 # Local libraries.

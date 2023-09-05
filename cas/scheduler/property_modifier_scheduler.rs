@@ -12,13 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use tokio::sync::watch;
 
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
-use config::schedulers::PropertyModification;
+use config::schedulers::{PropertyModification, PropertyType};
 use error::{Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
 use scheduler::ActionScheduler;
@@ -26,6 +29,7 @@ use scheduler::ActionScheduler;
 pub struct PropertyModifierScheduler {
     modifications: Vec<config::schedulers::PropertyModification>,
     scheduler: Arc<dyn ActionScheduler>,
+    property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
 }
 
 impl PropertyModifierScheduler {
@@ -33,6 +37,7 @@ impl PropertyModifierScheduler {
         Self {
             modifications: config.modifications.clone(),
             scheduler,
+            property_managers: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -40,7 +45,35 @@ impl PropertyModifierScheduler {
 #[async_trait]
 impl ActionScheduler for PropertyModifierScheduler {
     async fn get_platform_property_manager(&self, instance_name: &str) -> Result<Arc<PlatformPropertyManager>, Error> {
-        self.scheduler.get_platform_property_manager(instance_name).await
+        {
+            let property_managers = self.property_managers.lock();
+            if let Some(property_manager) = property_managers.get(instance_name) {
+                return Ok(property_manager.clone());
+            }
+        }
+        let property_manager = self.scheduler.get_platform_property_manager(instance_name).await?;
+        let mut known_properties = property_manager.get_known_properties().clone();
+        for modification in &self.modifications {
+            match modification {
+                PropertyModification::Remove(name) => {
+                    known_properties.entry(name.into()).or_insert(PropertyType::Priority);
+                }
+                PropertyModification::Add(_) => (),
+            }
+        }
+        let property_manager = {
+            let mut property_managers = self.property_managers.lock();
+            match property_managers.entry(instance_name.into()) {
+                Entry::Vacant(new_entry) => {
+                    let property_manager = Arc::new(PlatformPropertyManager::new(known_properties));
+                    new_entry.insert(property_manager.clone());
+                    property_manager
+                }
+                // We lost the race, use the other manager.
+                Entry::Occupied(old_entry) => old_entry.get().clone(),
+            }
+        };
+        Ok(property_manager)
     }
 
     async fn add_action(&self, mut action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {

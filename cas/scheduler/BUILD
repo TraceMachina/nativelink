@@ -156,6 +156,7 @@ rust_library(
         ":scheduler",
         "//config",
         "//util:error",
+        "@crate_index//:parking_lot",
         "@crate_index//:tokio",
     ],
 )

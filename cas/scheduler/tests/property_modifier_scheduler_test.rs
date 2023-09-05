@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
@@ -52,22 +53,6 @@ fn make_modifier_scheduler(modifications: Vec<PropertyModification>) -> TestCont
 mod property_modifier_scheduler_tests {
     use super::*;
     use pretty_assertions::assert_eq; // Must be declared in every module.
-
-    #[tokio::test]
-    async fn platform_property_manager_call_passed() -> Result<(), Error> {
-        let context = make_modifier_scheduler(vec![]);
-        let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
-        let instance_name = INSTANCE_NAME.to_string();
-        let (actual_manager, actual_instance_name) = join!(
-            context.modifier_scheduler.get_platform_property_manager(&instance_name),
-            context
-                .mock_scheduler
-                .expect_get_platform_property_manager(Ok(platform_property_manager.clone())),
-        );
-        assert_eq!(Arc::as_ptr(&platform_property_manager), Arc::as_ptr(&actual_manager?));
-        assert_eq!(instance_name, actual_instance_name);
-        Ok(())
-    }
 
     #[tokio::test]
     async fn add_action_adds_property() -> Result<(), Error> {
@@ -241,6 +226,44 @@ mod property_modifier_scheduler_tests {
         );
         assert_eq!(true, actual_result.is_none());
         assert_eq!(action_name, actual_action_name);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
+        let name = "name".to_string();
+        let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
+        let scheduler_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
+        let get_property_manager_fut = context
+            .mock_scheduler
+            .expect_get_platform_property_manager(Ok(scheduler_property_manager));
+        let property_manager_fut = context.modifier_scheduler.get_platform_property_manager(INSTANCE_NAME);
+        let (actual_instance_name, property_manager) = join!(get_property_manager_fut, property_manager_fut);
+        assert_eq!(
+            HashMap::<_, _>::from_iter([(name, PropertyType::Priority)]),
+            *property_manager?.get_known_properties()
+        );
+        assert_eq!(actual_instance_name, INSTANCE_NAME);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remove_retains_type_in_underlying_manager() -> Result<(), Error> {
+        let name = "name".to_string();
+        let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
+        let scheduler_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::<_, _>::from_iter([(
+            name.clone(),
+            PropertyType::Exact,
+        )])));
+        let get_property_manager_fut = context
+            .mock_scheduler
+            .expect_get_platform_property_manager(Ok(scheduler_property_manager));
+        let property_manager_fut = context.modifier_scheduler.get_platform_property_manager(INSTANCE_NAME);
+        let (_, property_manager) = join!(get_property_manager_fut, property_manager_fut);
+        assert_eq!(
+            HashMap::<_, _>::from_iter([(name, PropertyType::Exact)]),
+            *property_manager?.get_known_properties()
+        );
         Ok(())
     }
 }
