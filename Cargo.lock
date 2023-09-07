@@ -54,21 +54,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ac_utils_test"
-version = "0.0.0"
-dependencies = [
- "ac_utils",
- "common",
- "config",
- "error",
- "memory_store",
- "pretty_assertions",
- "rand",
- "store",
- "tokio",
-]
-
-[[package]]
 name = "action_messages"
 version = "0.0.0"
 dependencies = [
@@ -1239,17 +1224,6 @@ version = "0.0.0"
 dependencies = [
  "error",
  "log",
- "tokio",
-]
-
-[[package]]
-name = "fs_test"
-version = "0.0.0"
-dependencies = [
- "common",
- "error",
- "pretty_assertions",
- "rand",
  "tokio",
 ]
 

@@ -65,7 +65,7 @@ bazel build -c opt //cas
 These will place an executable in `./bazel-bin/cas/cas` that will start the service.
 
 ### Cargo requirements
-* Cargo 1.70.0+
+* Cargo 1.66.0+
 * `libssl-dev` package installed (ie: `apt install libssl-dev` or `yum install libssl-dev`)
 #### Cargo building for deployment
 ```sh

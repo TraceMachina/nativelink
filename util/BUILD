@@ -233,15 +233,3 @@ rust_test(
         "@crate_index//:tokio",
     ],
 )
-
-rust_test(
-    name = "fs_test",
-    srcs = ["tests/fs_test.rs"],
-    deps = [
-        ":common",
-        ":error",
-        "@crate_index//:rand",
-        "@crate_index//:pretty_assertions",
-        "@crate_index//:tokio",
-    ],
-)

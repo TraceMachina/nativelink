@@ -14,7 +14,6 @@
 
 use std::collections::{vec_deque::VecDeque, HashMap};
 use std::ffi::OsStr;
-use std::ffi::OsString;
 use std::fmt::Debug;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
@@ -39,13 +38,11 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
-use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
 
 use ac_utils::{
-    compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_file_to_store, upload_to_store,
-    ESTIMATED_DIGEST_SIZE,
+    compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_to_store, ESTIMATED_DIGEST_SIZE,
 };
 use action_messages::{ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use async_trait::async_trait;
@@ -181,7 +178,7 @@ pub fn download_to_directory<'a>(
 }
 
 #[cfg(target_family = "windows")]
-async fn is_executable(_file_handle: &fs::FileSlot, _full_path: &impl AsRef<Path>) -> Result<bool, Error> {
+async fn is_executable(_file_handle: &fs::FileSlot<'_>, _full_path: &impl AsRef<Path>) -> Result<bool, Error> {
     static EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "bat", "com"];
     Ok(EXECUTABLE_EXTENSIONS
         .iter()
@@ -189,7 +186,7 @@ async fn is_executable(_file_handle: &fs::FileSlot, _full_path: &impl AsRef<Path
 }
 
 #[cfg(target_family = "unix")]
-async fn is_executable(file_handle: &fs::FileSlot, full_path: &impl AsRef<Path>) -> Result<bool, Error> {
+async fn is_executable(file_handle: &fs::FileSlot<'_>, full_path: &impl AsRef<Path>) -> Result<bool, Error> {
     let metadata = file_handle
         .as_ref()
         .metadata()
@@ -198,40 +195,16 @@ async fn is_executable(file_handle: &fs::FileSlot, full_path: &impl AsRef<Path>)
     Ok((metadata.mode() & 0o001) != 0)
 }
 
-async fn upload_file(
-    mut resumeable_file: fs::ResumeableFileSlot<'static>,
-    cas_store: Pin<&dyn Store>,
+async fn upload_file<'a>(
+    file_handle: fs::FileSlot<'static>,
+    cas_store: Pin<&'a dyn Store>,
     full_path: impl AsRef<Path> + Debug,
 ) -> Result<FileInfo, Error> {
-    let (digest, is_executable, resumeable_file) = {
-        let (digest, mut resumeable_file) = JoinHandleDropGuard::new(tokio::spawn(async move {
-            let file_handle = resumeable_file
-                .as_reader()
-                .await
-                .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?;
-            let digest = compute_digest(file_handle).await?.0;
-            Ok::<_, Error>((digest, resumeable_file))
-        }))
+    let (digest, mut file_handle) = compute_digest(file_handle)
         .await
-        .err_tip(|| "Failed to launch spawn")?
         .err_tip(|| format!("for {full_path:?}"))?;
-
-        // Sadly we to reaquire a `reader` from `resumeable_file` because `tokio::spawn` requires an owned
-        // version of the struct. Luckily acquireing a reader is cheap, but this code was dirtied up a bit
-        // from this.
-        let file_handle = resumeable_file
-            .as_reader()
-            .await
-            .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?;
-        let is_executable = is_executable(file_handle.get_ref(), &full_path).await?;
-        file_handle
-            .get_mut()
-            .rewind()
-            .await
-            .err_tip(|| "Could not rewind file")?;
-        (digest, is_executable, resumeable_file)
-    };
-    upload_file_to_store(cas_store, digest, resumeable_file)
+    file_handle.rewind().await.err_tip(|| "Could not rewind file")?;
+    upload_to_store(cas_store, digest, &mut file_handle)
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
 
@@ -242,6 +215,8 @@ async fn upload_file(
         .to_str()
         .err_tip(|| make_err!(Code::Internal, "Could not convert {:?} to string", full_path))?
         .to_string();
+
+    let is_executable = is_executable(&file_handle, &full_path).await?;
 
     Ok(FileInfo {
         name_or_path: NameOrPath::Name(name),
@@ -348,10 +323,10 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                     );
                 } else if file_type.is_file() {
                     file_futures.push(async move {
-                        let file_handle = fs::open_file(full_path.as_os_str().to_os_string(), u64::MAX)
+                        let file_handle = fs::open_file(&full_path)
                             .await
                             .err_tip(|| format!("Could not open file {full_path:?}"))?;
-                        upload_file(file_handle, cas_store, &full_path)
+                        upload_file(file_handle, cas_store, full_path)
                             .map_ok(|v| v.into())
                             .await
                     });
@@ -598,7 +573,7 @@ impl RunningActionImpl {
         #[cfg(target_family = "windows")]
         let envs = {
             let mut envs = command_proto.environment_variables.clone();
-            if envs.iter().any(|v| v.name == "SystemRoot") {
+            if envs.iter().find(|v| v.name == "SystemRoot").is_none() {
                 envs.push(
                     proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
                         name: "SystemRoot".to_string(),
@@ -770,42 +745,29 @@ impl RunningActionImpl {
             output_paths.append(&mut command_proto.output_directories);
         }
         for entry in output_paths {
-            let full_path = OsString::from(format!("{}/{}", self.work_directory, entry));
+            let full_path = format!("{}/{}", self.work_directory, entry);
             let work_directory = &self.work_directory;
             output_path_futures.push(async move {
                 let metadata = {
-                    let mut resumeable_file = match fs::open_file(full_path.clone(), u64::MAX).await {
-                        Ok(file) => file,
+                    let file_handle = match fs::open_file(&full_path).await {
+                        Ok(handle) => handle,
                         Err(e) => {
                             if e.code == Code::NotFound {
                                 // In the event our output does not exist, according to the bazel remote
                                 // execution spec, we simply ignore it continue.
                                 return Result::<OutputType, Error>::Ok(OutputType::None);
                             }
-                            return Err(e).err_tip(|| format!("Could not open file {full_path:?}"));
+                            return Err(e).err_tip(|| format!("Could not open file {full_path}"));
                         }
                     };
                     // We cannot rely on the file_handle's metadata, because it follows symlinks, so
                     // we need to instead use `symlink_metadata`.
-                    let metadata_fut = fs::symlink_metadata(&full_path);
-                    tokio::pin!(metadata_fut);
-
-                    // Just in case we are starved for open file descriptors, we timeout the metadata
-                    // call and close the file, then try again.
-                    let metadata = match timeout(fs::idle_file_descriptor_timeout(), &mut metadata_fut).await {
-                        Ok(result) => result,
-                        Err(_) => {
-                            resumeable_file
-                                .close_file()
-                                .await
-                                .err_tip(|| "In inner_upload_results()")?;
-                            (&mut metadata_fut).await
-                        }
-                    }
-                    .err_tip(|| format!("While querying symlink metadata for {entry}"))?;
+                    let metadata = fs::symlink_metadata(&full_path)
+                        .await
+                        .err_tip(|| format!("While querying symlink metadata for {entry}"))?;
                     if metadata.is_file() {
                         return Ok(OutputType::File(
-                            upload_file(resumeable_file, cas_store, &full_path)
+                            upload_file(file_handle, cas_store, full_path)
                                 .await
                                 .map(|mut file_info| {
                                     file_info.name_or_path = NameOrPath::Path(entry);
@@ -851,7 +813,7 @@ impl RunningActionImpl {
                         Err(e) => {
                             if e.code != Code::NotFound {
                                 return Err(e)
-                                    .err_tip(|| format!("While querying target symlink metadata for {full_path:?}"));
+                                    .err_tip(|| format!("While querying target symlink metadata for {full_path}"));
                             }
                             // If the file doesn't exist, we consider it a file. Even though the
                             // file doesn't exist we still need to populate an entry.
@@ -861,7 +823,8 @@ impl RunningActionImpl {
                 } else {
                     Err(make_err!(
                         Code::Internal,
-                        "{full_path:?} was not a file, folder or symlink. Must be one.",
+                        "{} was not a file, folder or symlink. Must be one.",
+                        full_path
                     ))
                 }
             });

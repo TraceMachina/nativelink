@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsString;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
 #[cfg(target_family = "unix")]
@@ -358,8 +357,8 @@ mod local_worker_tests {
         let ac_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         let work_directory = make_temp_path("foo");
         fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
-        let mut file = fs::create_file(OsString::from(format!("{}/{}", work_directory, "foo.txt"))).await?;
-        file.as_writer().await?.write_all(b"Hello, world!").await?;
+        let mut file = fs::create_file(format!("{}/{}", work_directory, "foo.txt")).await?;
+        file.write_all(b"Hello, world!").await?;
         new_local_worker(
             Arc::new(LocalWorkerConfig {
                 work_directory: work_directory.clone(),
@@ -387,16 +386,16 @@ mod local_worker_tests {
         #[cfg(target_family = "unix")]
         let precondition_script = {
             let precondition_script = format!("{}/precondition.sh", temp_path);
-            let mut file = fs::create_file(OsString::from(&precondition_script)).await?;
-            file.as_writer().await?.write_all(b"#!/bin/sh\nexit 1\n").await?;
+            let mut file = fs::create_file(precondition_script.clone()).await?;
+            file.write_all(b"#!/bin/sh\nexit 1\n").await?;
             fs::set_permissions(&precondition_script, Permissions::from_mode(0o777)).await?;
             precondition_script
         };
         #[cfg(target_family = "windows")]
         let precondition_script = {
             let precondition_script = format!("{}/precondition.bat", temp_path);
-            let mut file = fs::create_file(OsString::from(&precondition_script)).await?;
-            file.as_writer().await?.write_all(b"@echo off\r\nexit 1").await?;
+            let mut file = fs::create_file(precondition_script.clone()).await?;
+            file.write_all(b"@echo off\r\nexit 1").await?;
             precondition_script
         };
         let local_worker_config = LocalWorkerConfig {

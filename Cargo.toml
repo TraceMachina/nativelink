@@ -13,7 +13,6 @@ members = [
   "gencargo/ac_server",
   "gencargo/ac_server_test",
   "gencargo/ac_utils",
-  "gencargo/ac_utils_test",
   "gencargo/action_messages",
   "gencargo/action_messages_test",
   "gencargo/async_fixed_buffer",
@@ -47,7 +46,6 @@ members = [
   "gencargo/filesystem_store",
   "gencargo/filesystem_store_test",
   "gencargo/fs",
-  "gencargo/fs_test",
   "gencargo/gen_protos_tool",
   "gencargo/grpc_scheduler",
   "gencargo/grpc_store",
@@ -151,7 +149,6 @@ uuid = { version = "1.4.0", features = ["v4"] }
 ac_server = { path = "gencargo/ac_server" }
 ac_server_test = { path = "gencargo/ac_server_test" }
 ac_utils = { path = "gencargo/ac_utils" }
-ac_utils_test = { path = "gencargo/ac_utils_test" }
 action_messages = { path = "gencargo/action_messages" }
 action_messages_test = { path = "gencargo/action_messages_test" }
 async_fixed_buffer = { path = "gencargo/async_fixed_buffer" }
@@ -185,7 +182,6 @@ fastcdc_test = { path = "gencargo/fastcdc_test" }
 filesystem_store = { path = "gencargo/filesystem_store" }
 filesystem_store_test = { path = "gencargo/filesystem_store_test" }
 fs = { path = "gencargo/fs" }
-fs_test = { path = "gencargo/fs_test" }
 gen_protos_tool = { path = "gencargo/gen_protos_tool" }
 grpc_scheduler = { path = "gencargo/grpc_scheduler" }
 grpc_store = { path = "gencargo/grpc_store" }

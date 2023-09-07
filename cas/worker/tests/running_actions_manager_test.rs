@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsString;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
 use std::io::Cursor;
@@ -1004,13 +1003,11 @@ exit 0
             let test_wrapper_dir = make_temp_path("wrapper_dir");
             fs::create_dir_all(&test_wrapper_dir).await?;
             #[cfg(target_family = "unix")]
-            let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
+            let test_wrapper_script = test_wrapper_dir + "/test_wrapper_script.sh";
             #[cfg(target_family = "windows")]
-            let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
+            let test_wrapper_script = test_wrapper_dir + "\\test_wrapper_script.bat";
             let mut test_wrapper_script_handle = fs::create_file(&test_wrapper_script).await?;
             test_wrapper_script_handle
-                .as_writer()
-                .await?
                 .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
                 .await?;
             #[cfg(target_family = "unix")]

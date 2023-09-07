@@ -136,7 +136,7 @@ impl Drop for DropCloserWriteHalf {
     /// This will notify the reader of an error if we did not send an EOF.
     fn drop(&mut self) {
         if tokio::runtime::Handle::try_current().is_err() {
-            eprintln!("No tokio runtime active. Tx was dropped but can't send error.");
+            println!("No tokio runtime active. Tx was dropped but can't send error.");
             return; // Cant send error, no runtime.
         }
         if let Some(tx) = self.tx.take() {

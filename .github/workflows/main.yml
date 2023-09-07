@@ -57,10 +57,8 @@ jobs:
         (echo "Cargo.toml is out of date. Please run: python ./tools/build_cargo_manifest.py" && exit 1)
     - name: Compile & test with cargo
       run: |
-        docker run --rm -e CC=clang -v $PWD:/root/turbo-cache allada/turbo-cache:test bash -c ' \
-          apt update && apt install -y curl libssl-dev gcc pkg-config && \
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain=1.70.0 && \
-          . $HOME/.cargo/env && \
+        docker run --rm -e CC=clang -v $PWD:/root/turbo-cache allada/turbo-cache:test sh -c ' \
+          apt-get update && apt-get install cargo -y && \
           cargo build --all && \
           cargo test --all \
         '
