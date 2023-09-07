@@ -19,6 +19,11 @@ When properly configured this project will provide extremely fast and efficient 
 Unix based operating systems and Windows are fully supported.
 
 ## TL;DR
+
+If you have not updated Rust or Cargo recently, run:
+
+`rustup update`
+
 To compile and run the server:
 ```sh
 # --release causes link-time-optmization to be enabled, which can take a while
