@@ -19,6 +19,11 @@ When properly configured this project will provide extremely fast and efficient 
 Unix based operating systems and Windows are fully supported.
 
 ## TL;DR
+
+If you have not updated Rust or Cargo recently, run:
+
+`rustup update`
+
 To compile and run the server:
 ```sh
 # Install dependencies needed to compile Turbo Cache with bazel on
@@ -38,7 +43,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # It will auto-reconnect when able and everything will work fine.
 cargo run --release --bin cas -- ./config/examples/basic_cas.json
 ```
-To have bazel (or another BRE client) connect to the running server launched above:
+In a separate terminal session, run the following command to connect the running server launched above to Bazel or another BRE client:
 ```sh
 bazel test //... \
   --remote_instance_name=main \
