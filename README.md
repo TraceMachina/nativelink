@@ -31,7 +31,7 @@ To compile and run the server:
 # It will auto-reconnect when able and everything will work fine.
 cargo run --release --bin cas -- ./config/examples/basic_cas.json
 ```
-To have bazel (or another BRE client) connect to the running server launched above:
+In a separate terminal session run the following command to connect the running server launched above to Bazel or another BRE client:
 ```sh
 bazel test //... \
   --remote_instance_name=main \
