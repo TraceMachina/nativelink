@@ -22,7 +22,7 @@ use futures::{future::BoxFuture, select, stream::FuturesUnordered, Future, Futur
 use tokio::process;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::{ReadDirStream, UnboundedReceiverStream};
 use tonic::{transport::Channel as TonicChannel, Streaming};
 
 use action_messages::{ActionResult, ActionStage};
@@ -454,11 +454,49 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;
 
+                let e = if let Err(clean_error) = self.clean_work_directories().await {
+                    e.merge(clean_error)
+                } else {
+                    e
+                };
+
                 (error_handler)(e).await;
+
                 continue; // Try to connect again.
             }
         }
         // Unreachable.
+    }
+
+    async fn clean_work_directories(&self) -> Result<(), Error> {
+        let (_permit, dir_handle) = fs::read_dir(&self.config.work_directory)
+            .await
+            .err_tip(|| "Failed opening temp directory to clean up work directories")?
+            .into_inner();
+
+        let mut read_dir_stream = ReadDirStream::new(dir_handle);
+        while let Some(dir_entry) = read_dir_stream.next().await {
+            let Ok(dir_entry) = dir_entry else {
+                continue;
+            };
+            let Ok(file_type) = dir_entry.file_type().await else {
+                continue;
+            };
+            let path = dir_entry.path();
+            if file_type.is_dir() {
+                if let Err(err) = fs::remove_dir_all(&path).await {
+                    log::warn!(
+                        "Failed to delete stale work directory directory {:?} : {:?}",
+                        &path,
+                        err
+                    );
+                }
+            }
+            if let Err(err) = fs::remove_file(&path).await {
+                log::warn!("Failed to delete stale work file {:?} : {:?}", &path, err);
+            }
+        }
+        Ok(())
     }
 
     pub fn register_metrics(&self, registry: &mut Registry) {

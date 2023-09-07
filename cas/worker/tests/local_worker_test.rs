@@ -23,9 +23,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use futures::future::BoxFuture;
+use parking_lot::Mutex;
 use prost::Message;
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use tonic::Response;
 
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata};
@@ -35,7 +38,10 @@ use error::{make_err, make_input_err, Code, Error};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
 use local_worker::new_local_worker;
-use local_worker_test_utils::{setup_grpc_stream, setup_local_worker, setup_local_worker_with_config};
+use local_worker_test_utils::{
+    setup_grpc_stream, setup_local_worker, setup_local_worker_with_config, setup_local_worker_with_config_and_sleep_fn,
+    worker_config_from_platform_properties,
+};
 use memory_store::MemoryStore;
 use mock_running_actions_manager::MockRunningAction;
 use platform_property_manager::PlatformProperties;
@@ -172,6 +178,64 @@ mod local_worker_tests {
 
         // Check that kill_all is called.
         test_context.actions_manager.expect_kill_all().await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn work_directories_cleaned_on_disconnect() -> Result<(), Box<dyn std::error::Error>> {
+        let (sleep_fn_tx, mut sleep_fn_rx) = mpsc::unbounded_channel();
+        let sleep_fn_tx = Arc::new(Mutex::new(sleep_fn_tx));
+        let sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync> = Box::new(move |_: Duration| {
+            let sleep_fn_tx = sleep_fn_tx.clone();
+            Box::pin(async move {
+                let _ = sleep_fn_tx.lock().send(());
+            })
+        });
+        let mut local_worker_config = worker_config_from_platform_properties(HashMap::new());
+        local_worker_config.work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&local_worker_config.work_directory).await?;
+        let stale_directory = format!("{}/some_action_id/other_directory", local_worker_config.work_directory);
+        let mut test_context = setup_local_worker_with_config_and_sleep_fn(local_worker_config, sleep_fn).await;
+        let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+        {
+            // Ensure our worker connects and properties were sent.
+            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            assert_eq!(props, SupportedProperties::default());
+        }
+
+        // Handle registration (kill_all not called unless registered).
+        let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+        {
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: "foobar".to_string(),
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+
+        // Disconnect our grpc stream.
+        tx_stream.abort();
+
+        // Create a stale work directory
+        fs::create_dir_all(&stale_directory).await?;
+
+        // Wait for kill_all to be called
+        test_context.actions_manager.expect_kill_all().await;
+
+        // Wait for the cleanup to complete
+        sleep_fn_rx.recv().await;
+
+        // The existing directory should have been deleted.
+        assert_eq!(
+            fs::metadata(stale_directory).await.is_ok(),
+            false,
+            "Expected old directory to have been cleaned up"
+        );
 
         Ok(())
     }

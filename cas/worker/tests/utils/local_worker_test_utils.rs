@@ -14,7 +14,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
+use futures::future::BoxFuture;
 use hyper::body::Sender as HyperSender;
 use tonic::{
     codec::Codec, // Needed for .decoder().
@@ -41,7 +43,10 @@ pub fn setup_grpc_stream() -> (HyperSender, Response<Streaming<UpdateForWorker>>
     (tx, Response::new(stream))
 }
 
-pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConfig) -> TestContext {
+pub async fn setup_local_worker_with_config_and_sleep_fn(
+    local_worker_config: LocalWorkerConfig,
+    sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>,
+) -> TestContext {
     let mock_worker_api_client = MockWorkerApiClient::new();
     let mock_worker_api_client_clone = mock_worker_api_client.clone();
     let actions_manager = Arc::new(MockRunningActionsManager::new());
@@ -52,7 +57,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
             let mock_worker_api_client = mock_worker_api_client_clone.clone();
             Box::pin(async move { Ok(mock_worker_api_client) })
         }),
-        Box::new(move |_| Box::pin(async move { /* No sleep */ })),
+        sleep_fn,
     );
     let drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move { worker.run().await }));
 
@@ -68,17 +73,37 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
     }
 }
 
-pub async fn setup_local_worker(platform_properties: HashMap<String, WrokerProperty>) -> TestContext {
+pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConfig) -> TestContext {
+    let sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync> =
+        Box::new(move |_| Box::pin(async move { /* No sleep */ }));
+    setup_local_worker_with_config_and_sleep_fn(local_worker_config, sleep_fn).await
+}
+
+pub fn worker_config_from_platform_properties(
+    platform_properties: HashMap<String, WrokerProperty>,
+) -> LocalWorkerConfig {
     const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
-    let local_worker_config = LocalWorkerConfig {
+    LocalWorkerConfig {
         platform_properties,
         worker_api_endpoint: EndpointConfig {
             timeout: Some(ARBITRARY_LARGE_TIMEOUT),
             ..Default::default()
         },
         ..Default::default()
-    };
+    }
+}
+
+pub async fn setup_local_worker(platform_properties: HashMap<String, WrokerProperty>) -> TestContext {
+    let local_worker_config = worker_config_from_platform_properties(platform_properties);
     setup_local_worker_with_config(local_worker_config).await
+}
+
+pub async fn setup_local_worker_with_sleep_fn(
+    platform_properties: HashMap<String, WrokerProperty>,
+    sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>,
+) -> TestContext {
+    let local_worker_config = worker_config_from_platform_properties(platform_properties);
+    setup_local_worker_with_config_and_sleep_fn(local_worker_config, sleep_fn).await
 }
 
 pub struct TestContext {

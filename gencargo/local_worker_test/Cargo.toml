@@ -21,6 +21,8 @@ doctest = false
 [dependencies]
 ctor = { workspace = true }
 env_logger = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
 pretty_assertions = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
