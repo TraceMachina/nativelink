@@ -158,8 +158,8 @@ impl StoreTrait for FastSlowStore {
             }
         };
 
-        let fast_store_fut = self.pin_slow_store().update(digest, fast_rx, size_info);
-        let slow_store_fut = self.pin_fast_store().update(digest, slow_rx, size_info);
+        let fast_store_fut = self.pin_fast_store().update(digest, fast_rx, size_info);
+        let slow_store_fut = self.pin_slow_store().update(digest, slow_rx, size_info);
 
         let (data_stream_res, fast_res, slow_res) = join!(data_stream_fut, fast_store_fut, slow_store_fut);
         data_stream_res.merge(fast_res).merge(slow_res)?;

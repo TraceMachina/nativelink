@@ -17,7 +17,7 @@ use std::io::Cursor;
 use std::pin::Pin;
 
 use bytes::BytesMut;
-use futures::{future::try_join, Future, FutureExt, TryFutureExt};
+use futures::{future::join, Future, FutureExt};
 use prost::Message;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -108,10 +108,14 @@ fn inner_upload_file_to_store<'a, Fut: Future<Output = Result<(), Error>> + 'a>(
     read_data_fn: impl FnOnce(DropCloserWriteHalf) -> Fut,
 ) -> impl Future<Output = Result<(), Error>> + 'a {
     let (tx, rx) = make_buf_channel_pair();
-    let upload_file_to_store_fut = cas_store
-        .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes as usize))
-        .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
-    try_join(read_data_fn(tx), upload_file_to_store_fut).map_ok(|(_, _)| ())
+    join(
+        cas_store
+            .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes as usize))
+            .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store")),
+        read_data_fn(tx),
+    )
+    // Ensure we get errors reported from both sides
+    .map(|(upload_result, read_result)| upload_result.merge(read_result))
 }
 
 /// Uploads data to our store for given digest.
