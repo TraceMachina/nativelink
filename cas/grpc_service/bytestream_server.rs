@@ -388,14 +388,13 @@ impl ByteStreamServer {
                         err.code = Code::Internal;
                         return Err(err);
                     }
+                    outer_bytes_received.store(tx.get_bytes_written(), Ordering::Release);
                 }
-                let bytes_written = tx.get_bytes_written();
-                outer_bytes_received.store(bytes_written, Ordering::Relaxed);
 
-                if expected_size < bytes_written {
+                if expected_size < tx.get_bytes_written() {
                     return Err(make_input_err!("Received more bytes than expected"));
                 }
-                if expected_size == bytes_written {
+                if write_request.finish_write {
                     // Gracefully close our stream.
                     tx.send_eof()
                         .await
@@ -454,7 +453,7 @@ impl ByteStreamServer {
             let active_uploads = self.active_uploads.lock();
             if let Some((received_bytes, _maybe_idle_stream)) = active_uploads.get(uuid) {
                 return Ok(Response::new(QueryWriteStatusResponse {
-                    committed_size: received_bytes.load(Ordering::Relaxed) as i64,
+                    committed_size: received_bytes.load(Ordering::Acquire) as i64,
                     // If we are in the active_uploads map, but the value is None,
                     // it means the stream is not complete.
                     complete: false,
