@@ -115,7 +115,7 @@ COPY --from=builder-final /root/turbo-cache-bin /usr/local/bin/turbo-cache
 # Install runtime packages.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        libssl-dev
+        libssl-dev gcc g++
 RUN mkdir -p /root/.cache/turbo-cache
 EXPOSE 50051/tcp 50052/tcp
 CMD ["turbo-cache"]
