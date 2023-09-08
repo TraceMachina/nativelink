@@ -17,6 +17,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use bytestream_server::ByteStreamServer;
+use futures::poll;
+use futures::task::Poll;
 use hyper::body::Sender;
 use maplit::hashmap;
 use prometheus_client::registry::Registry;
@@ -228,6 +230,7 @@ pub mod write_tests {
         {
             // Write the remainder of our data.
             write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+            write_request.finish_write = true;
             write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
             tx.send_data(encode_stream_proto(&write_request)?).await?;
         }
@@ -236,6 +239,91 @@ pub mod write_tests {
             drop(tx);
             let (result, _bs_server) = join_handle.await?;
             assert!(result.is_ok(), "Expected success to be returned");
+        }
+        {
+            // Check to make sure our store recorded the data properly.
+            let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
+            assert_eq!(
+                store.get_part_unchunked(digest, 0, None, None).await?,
+                WRITE_DATA,
+                "Data written to store did not match expected data",
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    pub async fn ensure_write_is_not_done_until_write_request_is_set() -> Result<(), Box<dyn std::error::Error>> {
+        let store_manager = make_store_manager().await?;
+        let bs_server = make_bytestream_server(store_manager.as_ref())?;
+        let store_owned = store_manager.get_store("main_cas").unwrap();
+
+        let store = Pin::new(store_owned.as_ref());
+
+        // Setup stream.
+        let (mut tx, mut write_fut) = {
+            let (tx, body) = Body::channel();
+            let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
+            // Note: This is an undocumented function.
+            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+
+            (tx, bs_server.write(Request::new(stream)))
+        };
+        const WRITE_DATA: &str = "12456789abcdefghijk";
+        let resource_name = format!(
+            "{}/uploads/{}/blobs/{}/{}",
+            INSTANCE_NAME,
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
+            HASH1,
+            WRITE_DATA.len()
+        );
+        let mut write_request = WriteRequest {
+            resource_name,
+            write_offset: 0,
+            finish_write: false,
+            data: vec![].into(),
+        };
+        {
+            // Write our data.
+            write_request.write_offset = 0;
+            write_request.data = WRITE_DATA[..].into();
+            tx.send_data(encode_stream_proto(&write_request)?).await?;
+        }
+        // Note: We have to pull multiple times because there are multiple futures
+        // joined onto this one future and we need to ensure we run the state machine as
+        // far as possible.
+        for _ in 0..100 {
+            assert!(
+                poll!(&mut write_fut).is_pending(),
+                "Expected the future to not be completed yet"
+            );
+        }
+        {
+            // Write our EOF.
+            write_request.write_offset = WRITE_DATA.len() as i64;
+            write_request.finish_write = true;
+            write_request.data.clear();
+            tx.send_data(encode_stream_proto(&write_request)?).await?;
+        }
+        let mut result = None;
+        for _ in 0..100 {
+            if let Poll::Ready(r) = poll!(&mut write_fut) {
+                result = Some(r);
+                break;
+            }
+        }
+        {
+            // Check our results.
+            assert_eq!(
+                result
+                    .err_tip(|| "bs_server.write never returned a value")?
+                    .err_tip(|| "bs_server.write returned an error")?
+                    .into_inner(),
+                WriteResponse {
+                    committed_size: WRITE_DATA.len() as i64
+                },
+                "Expected Responses to match"
+            );
         }
         {
             // Check to make sure our store recorded the data properly.
