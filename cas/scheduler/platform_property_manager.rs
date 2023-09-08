@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use config::schedulers::PropertyType;
@@ -102,6 +103,15 @@ impl PlatformPropertyValue {
             Self::Priority(_) => true,
             // Success exact case is handled above.
             Self::Exact(_) | Self::Unknown(_) => false,
+        }
+    }
+
+    pub fn as_str(&self) -> Cow<str> {
+        match self {
+            Self::Exact(value) => Cow::Borrowed(value),
+            Self::Minimum(value) => Cow::Owned(value.to_string()),
+            Self::Priority(value) => Cow::Borrowed(value),
+            Self::Unknown(value) => Cow::Borrowed(value),
         }
     }
 }

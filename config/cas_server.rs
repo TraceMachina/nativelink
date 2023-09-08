@@ -236,7 +236,6 @@ pub struct EndpointConfig {
     pub timeout: Option<f32>,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Deserialize, Debug, Default)]
 pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
@@ -246,6 +245,14 @@ pub enum UploadCacheResultsStrategy {
     Never,
     /// Upload all action results that complete.
     Everything,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+pub enum EnvironmentSource {
+    /// The name of the property in the action to get the value from.
+    Property(String),
+    /// The raw value to set.
+    Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -317,6 +324,13 @@ pub struct LocalWorkerConfig {
     /// actions until there is enough resource available on the machine to
     /// handle them.
     pub precondition_script: Option<String>,
+
+    /// An optional mapping of environment names to set for the execution
+    /// as well as those specified in the action itself.  If set, will set each
+    /// key as an environment variable before executing the job with the value
+    /// of the environment variable being the value of the property of the
+    /// action being executed of that name or the fixed value.
+    pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
 #[allow(non_camel_case_types)]
