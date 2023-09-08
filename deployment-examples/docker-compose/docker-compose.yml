@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-version: '2.2'
+version: '3.4'
 
 services:
   turbo_cache_local_cas:
@@ -20,25 +20,30 @@ services:
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      network: host
     volumes:
       - ${TURBO_CACHE_DIR:-~/.cache/turbo-cache}:/root/.cache/turbo-cache
       - type: bind
         source: .
         target: /root
     environment:
-      RUST_LOG: ${RUST_LOG:-}
+      RUST_LOG: ${RUST_LOG:-warn}
     ports: [ "50051:50051/tcp", "127.0.0.1:50061:50061" ]
     command: |
       turbo-cache /root/local-storage-cas.json
 
   turbo_cache_scheduler:
     image: allada/turbo-cache:latest
+    build:
+      context: ../..
+      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      network: host
     volumes:
       - type: bind
         source: .
         target: /root
     environment:
-      RUST_LOG: ${RUST_LOG:-}
+      RUST_LOG: ${RUST_LOG:-warn}
       CAS_ENDPOINT: turbo_cache_local_cas
     ports: [ "50052:50052/tcp" ]
     command: |
@@ -46,13 +51,17 @@ services:
 
   turbo_cache_executor:
     image: allada/turbo-cache:latest
+    build:
+      context: ../..
+      dockerfile: ./deployment-examples/docker-compose/Dockerfile
+      network: host
     volumes:
       - ${TURBO_CACHE_DIR:-~/.cache/turbo-cache}:/root/.cache/turbo-cache
       - type: bind
         source: .
         target: /root
     environment:
-      RUST_LOG: ${RUST_LOG:-}
+      RUST_LOG: ${RUST_LOG:-warn}
       CAS_ENDPOINT: turbo_cache_local_cas
       SCHEDULER_ENDPOINT: turbo_cache_scheduler
     command: |

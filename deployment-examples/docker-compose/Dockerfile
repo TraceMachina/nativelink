@@ -1,4 +1,4 @@
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2022-2023 The Turbo Cache Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,6 +20,9 @@ ARG OPT_LEVEL=opt
 ARG CC=clang
 # Additional bazel flags.
 ARG ADDITIONAL_BAZEL_FLAGS=
+# Bash arguments my be passed in here to install any additional dependencies
+# needed by the user. Useful if your worker needs specific dependencies installed.
+ARG ADDITIONAL_SETUP_WORKER_CMD=
 
 
 # Builder that contains the OS dependencies.
@@ -29,6 +32,7 @@ RUN apt update && apt-get -y install curl gnupg && \
     echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+        ca-certificates \
         git \
         pkg-config \
         libssl-dev \
@@ -115,7 +119,12 @@ COPY --from=builder-final /root/turbo-cache-bin /usr/local/bin/turbo-cache
 # Install runtime packages.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        libssl-dev
+        libssl-dev ca-certificates
+
+# Install any specific dependencies needed by the user.
+ARG ADDITIONAL_SETUP_WORKER_CMD
+RUN bash -c "${ADDITIONAL_SETUP_WORKER_CMD}"
+
 RUN mkdir -p /root/.cache/turbo-cache
 EXPOSE 50051/tcp 50052/tcp
 CMD ["turbo-cache"]
