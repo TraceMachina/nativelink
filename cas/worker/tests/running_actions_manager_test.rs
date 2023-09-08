@@ -403,7 +403,8 @@ mod running_actions_manager_tests {
     }
 
     #[tokio::test]
-    async fn ensure_output_files_full_directories_are_created_test() -> Result<(), Box<dyn std::error::Error>> {
+    async fn ensure_output_files_full_directories_are_created_no_working_directory_test(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
         fn test_monotonic_clock() -> SystemTime {
@@ -432,7 +433,6 @@ mod running_actions_manager_tests {
             let command = Command {
                 arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
                 output_files: vec!["some/path/test.txt".to_string()],
-                working_directory: "some_cwd".to_string(),
                 ..Default::default()
             };
             let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
@@ -489,6 +489,98 @@ mod running_actions_manager_tests {
     }
 
     #[tokio::test]
+    async fn ensure_output_files_full_directories_are_created_test() -> Result<(), Box<dyn std::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            root_work_directory,
+            None,
+            Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Never,
+            Duration::MAX,
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            },
+        )?);
+        {
+            const SALT: u64 = 55;
+            let working_directory = "some_cwd";
+            let command = Command {
+                arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
+                output_files: vec!["some/path/test.txt".to_string()],
+                working_directory: working_directory.to_string(),
+                ..Default::default()
+            };
+            let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory {
+                    directories: vec![DirectoryNode {
+                        name: "some_cwd".to_string(),
+                        digest: Some(
+                            serialize_and_upload_message(&Directory::default(), cas_store.as_ref())
+                                .await?
+                                .into(),
+                        ),
+                    }],
+                    ..Default::default()
+                },
+                cas_store.as_ref(),
+            )
+            .await?;
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+            let running_action = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            ..Default::default()
+                        }),
+                        salt: SALT,
+                        queued_timestamp: None,
+                    },
+                )
+                .await?;
+
+            let running_action = running_action.clone().prepare_action().await?;
+
+            // The folder should have been created for our output file.
+            assert_eq!(
+                fs::metadata(format!(
+                    "{}/{}/{}",
+                    running_action.get_work_directory(),
+                    working_directory,
+                    "some/path"
+                ))
+                .await
+                .is_ok(),
+                true,
+                "Expected path to exist"
+            );
+
+            running_action.cleanup().await?;
+        };
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
@@ -519,27 +611,28 @@ mod running_actions_manager_tests {
             let arguments = vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "echo -n \"123 \" > ../test.txt; echo -n \"foo-stdout \"; >&2 echo -n \"bar-stderr  \"".to_string(),
+                "echo -n \"123 \" > ./test.txt; echo -n \"foo-stdout \"; >&2 echo -n \"bar-stderr  \"".to_string(),
             ];
             #[cfg(target_family = "windows")]
             let arguments = vec![
                 "cmd".to_string(),
                 "/C".to_string(),
                 // Note: Windows adds two spaces after 'set /p=XXX'.
-                "echo | set /p=123> ../test.txt & echo | set /p=foo-stdout & echo | set /p=bar-stderr 1>&2 & exit 0"
+                "echo | set /p=123> ./test.txt & echo | set /p=foo-stdout & echo | set /p=bar-stderr 1>&2 & exit 0"
                     .to_string(),
             ];
+            let working_directory = "some_cwd";
             let command = Command {
                 arguments,
                 output_paths: vec!["test.txt".to_string()],
-                working_directory: "some_cwd".to_string(),
+                working_directory: working_directory.to_string(),
                 ..Default::default()
             };
             let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory {
                     directories: vec![DirectoryNode {
-                        name: "some_cwd".to_string(),
+                        name: working_directory.to_string(),
                         digest: Some(
                             serialize_and_upload_message(&Directory::default(), cas_store.as_ref())
                                 .await?
