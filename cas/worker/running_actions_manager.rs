@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::collections::{vec_deque::VecDeque, HashMap};
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -50,7 +51,7 @@ use ac_utils::{
 use action_messages::{ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use async_trait::async_trait;
 use common::{fs, log, DigestInfo, JoinHandleDropGuard};
-use config::cas_server::UploadCacheResultsStrategy;
+use config::cas_server::{EnvironmentSource, UploadCacheResultsStrategy};
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
@@ -445,7 +446,6 @@ struct RunningActionImplState {
 pub struct RunningActionImpl {
     action_id: ActionId,
     work_directory: String,
-    entrypoint_cmd: Option<Arc<String>>,
     action_info: ActionInfo,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
@@ -458,7 +458,6 @@ impl RunningActionImpl {
         execution_metadata: ExecutionMetadata,
         action_id: ActionId,
         work_directory: String,
-        entrypoint_cmd: Option<Arc<String>>,
         action_info: ActionInfo,
         timeout: Duration,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
@@ -467,7 +466,6 @@ impl RunningActionImpl {
         Self {
             action_id,
             work_directory,
-            entrypoint_cmd,
             action_info,
             timeout,
             running_actions_manager,
@@ -578,13 +576,14 @@ impl RunningActionImpl {
         if command_proto.arguments.is_empty() {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
-        let args: Vec<&OsStr> = if let Some(entrypoint_cmd) = &self.entrypoint_cmd {
-            std::iter::once(entrypoint_cmd.as_ref().as_ref())
-                .chain(command_proto.arguments.iter().map(AsRef::as_ref))
-                .collect()
-        } else {
-            command_proto.arguments.iter().map(AsRef::as_ref).collect()
-        };
+        let args: Vec<&OsStr> =
+            if let Some(entrypoint_cmd) = &self.running_actions_manager.execution_configuration.entrypoint_cmd {
+                std::iter::once(entrypoint_cmd.as_ref())
+                    .chain(command_proto.arguments.iter().map(AsRef::as_ref))
+                    .collect()
+            } else {
+                command_proto.arguments.iter().map(AsRef::as_ref).collect()
+            };
         log::info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
         let mut command_builder = process::Command::new(args[0]);
         command_builder
@@ -595,6 +594,25 @@ impl RunningActionImpl {
             .stderr(Stdio::piped())
             .current_dir(format!("{}/{}", self.work_directory, command_proto.working_directory))
             .env_clear();
+
+        if let Some(additional_environment) = &self
+            .running_actions_manager
+            .execution_configuration
+            .additional_environment
+        {
+            for (name, source) in additional_environment {
+                let value = match source {
+                    EnvironmentSource::Property(property) => self
+                        .action_info
+                        .platform_properties
+                        .properties
+                        .get(property)
+                        .map_or_else(|| Cow::Borrowed(""), |v| v.as_str()),
+                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                };
+                command_builder.env(name, value.as_ref());
+            }
+        }
 
         #[cfg(target_family = "unix")]
         let envs = &command_proto.environment_variables;
@@ -1050,16 +1068,38 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
 type NowFn = fn() -> SystemTime;
 type SleepFn = fn(Duration) -> BoxFuture<'static, ()>;
 
+/// Functions that may be injected for testing purposes, during standard control
+/// flows these are specified by the new function.
 pub struct Callbacks {
+    /// A function that gets the current time.
     pub now_fn: NowFn,
+    /// A function that sleeps for a given Duration.
     pub sleep_fn: SleepFn,
+}
+
+/// The set of additional information for executing an action over and above
+/// those given in the ActionInfo passed to the worker.  This allows
+/// modification of the action for execution on this particular worker.  This
+/// may be used to run the action with a particular set of additional
+/// environment variables, or perhaps configure it to execute within a
+/// container.
+#[derive(Default)]
+pub struct ExecutionConfiguration {
+    /// If set, will be executed instead of the first argument passed in the
+    /// ActionInfo with all of the arguments in the ActionInfo passed as
+    /// arguments to this command.
+    pub entrypoint_cmd: Option<String>,
+    /// The only environment variables that will be specified when the command
+    /// executes other than those in the ActionInfo.  On Windows, SystemRoot
+    /// and PATH are also assigned (see inner_execute).
+    pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
 pub struct RunningActionsManagerImpl {
     root_work_directory: String,
-    entrypoint_cmd: Option<Arc<String>>,
+    execution_configuration: ExecutionConfiguration,
     cas_store: Arc<FastSlowStore>,
     filesystem_store: Arc<FilesystemStore>,
     ac_store: Arc<dyn Store>,
@@ -1076,7 +1116,7 @@ pub struct RunningActionsManagerImpl {
 impl RunningActionsManagerImpl {
     pub fn new_with_callbacks(
         root_work_directory: String,
-        entrypoint_cmd: Option<Arc<String>>,
+        execution_configuration: ExecutionConfiguration,
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
@@ -1094,7 +1134,7 @@ impl RunningActionsManagerImpl {
         let (action_done_tx, _) = watch::channel(());
         Ok(Self {
             root_work_directory,
-            entrypoint_cmd,
+            execution_configuration,
             cas_store,
             filesystem_store,
             ac_store,
@@ -1109,7 +1149,7 @@ impl RunningActionsManagerImpl {
 
     pub fn new(
         root_work_directory: String,
-        entrypoint_cmd: Option<Arc<String>>,
+        execution_configuration: ExecutionConfiguration,
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
@@ -1117,7 +1157,7 @@ impl RunningActionsManagerImpl {
     ) -> Result<Self, Error> {
         Self::new_with_callbacks(
             root_work_directory,
-            entrypoint_cmd,
+            execution_configuration,
             cas_store,
             ac_store,
             upload_strategy,
@@ -1244,7 +1284,6 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     execution_metadata,
                     action_id,
                     work_directory,
-                    self.entrypoint_cmd.clone(),
                     action_info,
                     timeout,
                     self.clone(),
