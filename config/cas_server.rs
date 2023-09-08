@@ -317,6 +317,12 @@ pub struct LocalWorkerConfig {
     /// actions until there is enough resource available on the machine to
     /// handle them.
     pub precondition_script: Option<String>,
+
+    /// An optional mapping of environment names to properties to set on them.
+    /// If set, will set each key as an environment variable before executing
+    /// the job with the value of the environment variable being the value of
+    /// the property of the action being executed of that name.
+    pub property_environments: Option<HashMap<String, String>>,
 }
 
 #[allow(non_camel_case_types)]

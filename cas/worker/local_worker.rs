@@ -36,7 +36,8 @@ use proto::com::github::allada::turbo_cache::remote_execution::{
     UpdateForWorker,
 };
 use running_actions_manager::{
-    Metrics as RunningActionManagerMetrics, RunningAction, RunningActionsManager, RunningActionsManagerImpl,
+    ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction, RunningActionsManager,
+    RunningActionsManagerImpl,
 };
 use store::Store;
 use worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
@@ -313,7 +314,7 @@ pub async fn new_local_worker(
     let entrypoint_cmd = if config.entrypoint_cmd.is_empty() {
         None
     } else {
-        Some(Arc::new(config.entrypoint_cmd.clone()))
+        Some(config.entrypoint_cmd.clone())
     };
     let max_action_timeout = if config.max_action_timeout == 0 {
         DEFAULT_MAX_ACTION_TIMEOUT
@@ -322,7 +323,10 @@ pub async fn new_local_worker(
     };
     let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
         config.work_directory.clone(),
-        entrypoint_cmd,
+        ExecutionConfiguration {
+            entrypoint_cmd,
+            property_environments: config.property_environments.clone(),
+        },
         fast_slow_store,
         ac_store,
         config.ac_store_strategy,

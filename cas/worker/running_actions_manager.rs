@@ -55,6 +55,7 @@ use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
 use grpc_store::GrpcStore;
+use platform_property_manager::PlatformPropertyValue;
 use proto::build::bazel::remote::execution::v2::{
     Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode, FileNode, SymlinkNode,
     Tree as ProtoTree,
@@ -445,7 +446,6 @@ struct RunningActionImplState {
 pub struct RunningActionImpl {
     action_id: ActionId,
     work_directory: String,
-    entrypoint_cmd: Option<Arc<String>>,
     action_info: ActionInfo,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
@@ -458,7 +458,6 @@ impl RunningActionImpl {
         execution_metadata: ExecutionMetadata,
         action_id: ActionId,
         work_directory: String,
-        entrypoint_cmd: Option<Arc<String>>,
         action_info: ActionInfo,
         timeout: Duration,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
@@ -467,7 +466,6 @@ impl RunningActionImpl {
         Self {
             action_id,
             work_directory,
-            entrypoint_cmd,
             action_info,
             timeout,
             running_actions_manager,
@@ -578,13 +576,14 @@ impl RunningActionImpl {
         if command_proto.arguments.is_empty() {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
-        let args: Vec<&OsStr> = if let Some(entrypoint_cmd) = &self.entrypoint_cmd {
-            std::iter::once(entrypoint_cmd.as_ref().as_ref())
-                .chain(command_proto.arguments.iter().map(AsRef::as_ref))
-                .collect()
-        } else {
-            command_proto.arguments.iter().map(AsRef::as_ref).collect()
-        };
+        let args: Vec<&OsStr> =
+            if let Some(entrypoint_cmd) = &self.running_actions_manager.execution_configuration.entrypoint_cmd {
+                std::iter::once(entrypoint_cmd.as_ref())
+                    .chain(command_proto.arguments.iter().map(AsRef::as_ref))
+                    .collect()
+            } else {
+                command_proto.arguments.iter().map(AsRef::as_ref).collect()
+            };
         log::info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
         let mut command_builder = process::Command::new(args[0]);
         command_builder
@@ -595,6 +594,23 @@ impl RunningActionImpl {
             .stderr(Stdio::piped())
             .current_dir(format!("{}/{}", self.work_directory, command_proto.working_directory))
             .env_clear();
+
+        if let Some(property_environments) = &self
+            .running_actions_manager
+            .execution_configuration
+            .property_environments
+        {
+            for (name, property) in property_environments {
+                match self.action_info.platform_properties.properties.get(property) {
+                    Some(PlatformPropertyValue::Exact(value)) => command_builder.env(name, value),
+                    Some(PlatformPropertyValue::Minimum(value)) => command_builder.env(name, value.to_string()),
+                    Some(PlatformPropertyValue::Priority(value)) => command_builder.env(name, value),
+                    Some(PlatformPropertyValue::Unknown(value)) => command_builder.env(name, value),
+                    None => command_builder.env(name, ""),
+                };
+            }
+        }
+
         #[cfg(target_family = "unix")]
         let envs = &command_proto.environment_variables;
         // If SystemRoot is not set on windows we set it to default. Failing to do
@@ -1032,11 +1048,17 @@ pub struct Callbacks {
     pub sleep_fn: SleepFn,
 }
 
+#[derive(Default)]
+pub struct ExecutionConfiguration {
+    pub entrypoint_cmd: Option<String>,
+    pub property_environments: Option<HashMap<String, String>>,
+}
+
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
 pub struct RunningActionsManagerImpl {
     root_work_directory: String,
-    entrypoint_cmd: Option<Arc<String>>,
+    execution_configuration: ExecutionConfiguration,
     cas_store: Arc<FastSlowStore>,
     filesystem_store: Arc<FilesystemStore>,
     ac_store: Arc<dyn Store>,
@@ -1050,7 +1072,7 @@ pub struct RunningActionsManagerImpl {
 impl RunningActionsManagerImpl {
     pub fn new_with_callbacks(
         root_work_directory: String,
-        entrypoint_cmd: Option<Arc<String>>,
+        execution_configuration: ExecutionConfiguration,
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
@@ -1067,7 +1089,7 @@ impl RunningActionsManagerImpl {
             .clone();
         Ok(Self {
             root_work_directory,
-            entrypoint_cmd,
+            execution_configuration,
             cas_store,
             filesystem_store,
             ac_store,
@@ -1081,7 +1103,7 @@ impl RunningActionsManagerImpl {
 
     pub fn new(
         root_work_directory: String,
-        entrypoint_cmd: Option<Arc<String>>,
+        execution_configuration: ExecutionConfiguration,
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
@@ -1089,7 +1111,7 @@ impl RunningActionsManagerImpl {
     ) -> Result<Self, Error> {
         Self::new_with_callbacks(
             root_work_directory,
-            entrypoint_cmd,
+            execution_configuration,
             cas_store,
             ac_store,
             upload_strategy,
@@ -1213,7 +1235,6 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     execution_metadata,
                     action_id,
                     work_directory,
-                    self.entrypoint_cmd.clone(),
                     action_info,
                     timeout,
                     self.clone(),
