@@ -33,6 +33,7 @@ tonic = { workspace = true }
 
 # Local libraries.
 action_messages = { workspace = true }
+platform_property_manager = { workspace = true }
 ac_utils = { workspace = true }
 fast_slow_store = { workspace = true }
 filesystem_store = { workspace = true }

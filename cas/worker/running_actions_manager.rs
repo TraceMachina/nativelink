@@ -50,11 +50,12 @@ use ac_utils::{
 use action_messages::{ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use async_trait::async_trait;
 use common::{fs, log, DigestInfo, JoinHandleDropGuard};
-use config::cas_server::UploadCacheResultsStrategy;
+use config::cas_server::{EnvironmentSource, UploadCacheResultsStrategy};
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
 use grpc_store::GrpcStore;
+use platform_property_manager::PlatformPropertyValue;
 use proto::build::bazel::remote::execution::v2::{
     digest_function, Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode, FileNode,
     SymlinkNode, Tree as ProtoTree,
@@ -445,7 +446,6 @@ struct RunningActionImplState {
 pub struct RunningActionImpl {
     action_id: ActionId,
     work_directory: String,
-    entrypoint_cmd: Option<Arc<String>>,
     action_info: ActionInfo,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
@@ -458,7 +458,6 @@ impl RunningActionImpl {
         execution_metadata: ExecutionMetadata,
         action_id: ActionId,
         work_directory: String,
-        entrypoint_cmd: Option<Arc<String>>,
         action_info: ActionInfo,
         timeout: Duration,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
@@ -467,7 +466,6 @@ impl RunningActionImpl {
         Self {
             action_id,
             work_directory,
-            entrypoint_cmd,
             action_info,
             timeout,
             running_actions_manager,
@@ -578,13 +576,14 @@ impl RunningActionImpl {
         if command_proto.arguments.is_empty() {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
-        let args: Vec<&OsStr> = if let Some(entrypoint_cmd) = &self.entrypoint_cmd {
-            std::iter::once(entrypoint_cmd.as_ref().as_ref())
-                .chain(command_proto.arguments.iter().map(AsRef::as_ref))
-                .collect()
-        } else {
-            command_proto.arguments.iter().map(AsRef::as_ref).collect()
-        };
+        let args: Vec<&OsStr> =
+            if let Some(entrypoint_cmd) = &self.running_actions_manager.execution_configuration.entrypoint_cmd {
+                std::iter::once(entrypoint_cmd.as_ref())
+                    .chain(command_proto.arguments.iter().map(AsRef::as_ref))
+                    .collect()
+            } else {
+                command_proto.arguments.iter().map(AsRef::as_ref).collect()
+            };
         log::info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
         let mut command_builder = process::Command::new(args[0]);
         command_builder
@@ -595,6 +594,27 @@ impl RunningActionImpl {
             .stderr(Stdio::piped())
             .current_dir(format!("{}/{}", self.work_directory, command_proto.working_directory))
             .env_clear();
+
+        if let Some(additional_environment) = &self
+            .running_actions_manager
+            .execution_configuration
+            .additional_environment
+        {
+            for (name, source) in additional_environment {
+                let value = match source {
+                    EnvironmentSource::Property(property) => {
+                        match self.action_info.platform_properties.properties.get(property) {
+                            // Only set in Unknown in the worker -
+                            // see impl From<ProtoPlatform> for PlatformProperties
+                            Some(PlatformPropertyValue::Unknown(value)) => value,
+                            _ => "",
+                        }
+                    }
+                    EnvironmentSource::Value(value) => value,
+                };
+                command_builder.env(name, value);
+            }
+        }
 
         #[cfg(target_family = "unix")]
         let envs = &command_proto.environment_variables;
@@ -1055,11 +1075,17 @@ pub struct Callbacks {
     pub sleep_fn: SleepFn,
 }
 
+#[derive(Default)]
+pub struct ExecutionConfiguration {
+    pub entrypoint_cmd: Option<String>,
+    pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
+}
+
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
 pub struct RunningActionsManagerImpl {
     root_work_directory: String,
-    entrypoint_cmd: Option<Arc<String>>,
+    execution_configuration: ExecutionConfiguration,
     cas_store: Arc<FastSlowStore>,
     filesystem_store: Arc<FilesystemStore>,
     ac_store: Arc<dyn Store>,
@@ -1076,7 +1102,7 @@ pub struct RunningActionsManagerImpl {
 impl RunningActionsManagerImpl {
     pub fn new_with_callbacks(
         root_work_directory: String,
-        entrypoint_cmd: Option<Arc<String>>,
+        execution_configuration: ExecutionConfiguration,
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
@@ -1094,7 +1120,7 @@ impl RunningActionsManagerImpl {
         let (action_done_tx, _) = watch::channel(());
         Ok(Self {
             root_work_directory,
-            entrypoint_cmd,
+            execution_configuration,
             cas_store,
             filesystem_store,
             ac_store,
@@ -1109,7 +1135,7 @@ impl RunningActionsManagerImpl {
 
     pub fn new(
         root_work_directory: String,
-        entrypoint_cmd: Option<Arc<String>>,
+        execution_configuration: ExecutionConfiguration,
         cas_store: Arc<FastSlowStore>,
         ac_store: Arc<dyn Store>,
         upload_strategy: UploadCacheResultsStrategy,
@@ -1117,7 +1143,7 @@ impl RunningActionsManagerImpl {
     ) -> Result<Self, Error> {
         Self::new_with_callbacks(
             root_work_directory,
-            entrypoint_cmd,
+            execution_configuration,
             cas_store,
             ac_store,
             upload_strategy,
@@ -1244,7 +1270,6 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     execution_metadata,
                     action_id,
                     work_directory,
-                    self.entrypoint_cmd.clone(),
                     action_info,
                     timeout,
                     self.clone(),

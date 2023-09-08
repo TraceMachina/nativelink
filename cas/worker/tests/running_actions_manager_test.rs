@@ -43,12 +43,12 @@ use filesystem_store::FilesystemStore;
 use memory_store::MemoryStore;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use proto::build::bazel::remote::execution::v2::{
-    Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest, FileNode,
-    NodeProperties, SymlinkNode, Tree,
+    platform::Property, Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
+    FileNode, NodeProperties, Platform, SymlinkNode, Tree,
 };
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
 use running_actions_manager::{
-    download_to_directory, Callbacks, RunningAction, RunningActionImpl, RunningActionsManager,
+    download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
     RunningActionsManagerImpl,
 };
 use store::Store;
@@ -138,6 +138,7 @@ fn increment_clock(time: &mut SystemTime) -> SystemTime {
 #[cfg(test)]
 mod running_actions_manager_tests {
     use super::*;
+    use config::cas_server::EnvironmentSource;
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
     #[tokio::test]
@@ -418,7 +419,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory,
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
@@ -503,7 +504,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory,
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
@@ -595,7 +596,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory,
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
@@ -739,7 +740,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory,
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
@@ -900,7 +901,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory.clone(),
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
@@ -1002,7 +1003,7 @@ mod running_actions_manager_tests {
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             root_work_directory.clone(),
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
@@ -1121,9 +1122,10 @@ exit 0
         full_wrapper_script_path.push(test_wrapper_script);
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             root_work_directory.clone(),
-            Some(Arc::new(
-                full_wrapper_script_path.into_os_string().into_string().unwrap(),
-            )),
+            ExecutionConfiguration {
+                entrypoint_cmd: Some(full_wrapper_script_path.into_os_string().into_string().unwrap()),
+                additional_environment: None,
+            },
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
@@ -1175,12 +1177,140 @@ exit 0
     }
 
     #[tokio::test]
+    async fn entrypoint_cmd_injects_properties() -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(target_family = "unix")]
+        const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
+#!/bin/bash
+# Print some static text to stderr. This is what the test uses to
+# make sure the script did run.
+>&2 printf \"Wrapper script did run with property $PROPERTY $VALUE\"
+
+# Now run the real command.
+exec \"$@\"
+";
+        #[cfg(target_family = "windows")]
+        const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
+@echo off
+:: Print some static text to stderr. This is what the test uses to
+:: make sure the script did run.
+echo | set /p=\"Wrapper script did run with property %PROPERTY% %VALUE%\" 1>&2
+
+:: Run command, but morph the echo to ensure it doesn't
+:: add a new line to the end of the output.
+%1 | set /p=%2
+exit 0
+";
+        const WORKER_ID: &str = "foo_worker_id";
+        const SALT: u64 = 66;
+        const EXPECTED_STDOUT: &str = "Action did run";
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let test_wrapper_script = {
+            let test_wrapper_dir = make_temp_path("wrapper_dir");
+            fs::create_dir_all(&test_wrapper_dir).await?;
+            #[cfg(target_family = "unix")]
+            let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
+            #[cfg(target_family = "windows")]
+            let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
+            let mut test_wrapper_script_handle = fs::create_file(&test_wrapper_script).await?;
+            test_wrapper_script_handle
+                .as_writer()
+                .await?
+                .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
+                .await?;
+            #[cfg(target_family = "unix")]
+            fs::set_permissions(&test_wrapper_script, Permissions::from_mode(0o755)).await?;
+            test_wrapper_script
+        };
+
+        let mut full_wrapper_script_path = env::current_dir()?;
+        full_wrapper_script_path.push(test_wrapper_script);
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+            root_work_directory.clone(),
+            ExecutionConfiguration {
+                entrypoint_cmd: Some(full_wrapper_script_path.into_os_string().into_string().unwrap()),
+                additional_environment: Some(HashMap::from([
+                    (
+                        "PROPERTY".to_string(),
+                        EnvironmentSource::Property("property_name".to_string()),
+                    ),
+                    ("VALUE".to_string(), EnvironmentSource::Value("raw_value".to_string())),
+                ])),
+            },
+            Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Never,
+            Duration::MAX,
+        )?);
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["echo".to_string(), EXPECTED_STDOUT.to_string()];
+        let command = Command {
+            arguments,
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+        let input_root_digest = serialize_and_upload_message(&Directory::default(), cas_store.as_ref()).await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            platform: Some(Platform {
+                properties: vec![Property {
+                    name: "property_name".into(),
+                    value: "property_value".into(),
+                }],
+            }),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+        let running_action_impl = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: SALT,
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                },
+            )
+            .await?;
+
+        let result = run_action(running_action_impl).await?;
+        assert_eq!(result.exit_code, 0, "Exit code should be 0");
+
+        let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT)).await?.0;
+        // Note: This string should match what is in worker_for_test.sh
+        let expected_stderr = "Wrapper script did run with property property_value raw_value";
+        let expected_stderr_digest = compute_digest(Cursor::new(expected_stderr)).await?.0;
+
+        let actual_stderr: prost::bytes::Bytes = cas_store
+            .as_ref()
+            .get_part_unchunked(result.stderr_digest, 0, None, Some(expected_stderr.len()))
+            .await?;
+        let actual_stderr_decoded = std::str::from_utf8(&actual_stderr)?;
+        assert_eq!(expected_stderr, actual_stderr_decoded);
+        assert_eq!(expected_stdout, result.stdout_digest);
+        assert_eq!(expected_stderr_digest, result.stderr_digest);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             String::new(),
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
@@ -1233,7 +1363,7 @@ exit 0
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             String::new(),
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Everything,
@@ -1327,7 +1457,7 @@ exit 0
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 root_work_directory.clone(),
-                None,
+                ExecutionConfiguration::default(),
                 Pin::into_inner(cas_store.clone()),
                 Pin::into_inner(ac_store.clone()),
                 config::cas_server::UploadCacheResultsStrategy::Never,
@@ -1387,7 +1517,7 @@ exit 0
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 root_work_directory.clone(),
-                None,
+                ExecutionConfiguration::default(),
                 Pin::into_inner(cas_store.clone()),
                 Pin::into_inner(ac_store.clone()),
                 config::cas_server::UploadCacheResultsStrategy::Never,
@@ -1450,7 +1580,7 @@ exit 0
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 root_work_directory.clone(),
-                None,
+                ExecutionConfiguration::default(),
                 Pin::into_inner(cas_store.clone()),
                 Pin::into_inner(ac_store.clone()),
                 config::cas_server::UploadCacheResultsStrategy::Never,
@@ -1517,7 +1647,7 @@ exit 0
         let (_, _, cas_store, ac_store) = setup_stores().await?;
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory.clone(),
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,
@@ -1605,7 +1735,7 @@ exit 0
         let (_, _, cas_store, ac_store) = setup_stores().await?;
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             root_work_directory.clone(),
-            None,
+            ExecutionConfiguration::default(),
             Pin::into_inner(cas_store.clone()),
             Pin::into_inner(ac_store.clone()),
             config::cas_server::UploadCacheResultsStrategy::Never,

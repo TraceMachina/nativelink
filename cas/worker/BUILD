@@ -31,6 +31,7 @@ rust_library(
     deps = [
         "//config",
         "//cas/scheduler:action_messages",
+        "//cas/scheduler:platform_property_manager",
         "//cas/store",
         "//cas/store:ac_utils",
         "//cas/store:fast_slow_store",
