@@ -2514,6 +2514,7 @@ dependencies = [
  "hex",
  "metrics_utils",
  "parking_lot",
+ "platform_property_manager",
  "prost",
  "proto",
  "relative-path",

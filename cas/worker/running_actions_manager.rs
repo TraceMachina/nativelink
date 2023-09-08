@@ -55,6 +55,7 @@ use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
 use grpc_store::GrpcStore;
+use platform_property_manager::PlatformPropertyValue;
 use proto::build::bazel::remote::execution::v2::{
     Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode, FileNode, SymlinkNode,
     Tree as ProtoTree,
@@ -554,6 +555,23 @@ impl RunningActionImpl {
         Ok(self)
     }
 
+    fn inject_property<'a>(&'a self, argument: &'a str) -> &'a str {
+        if argument.starts_with('{') && argument.ends_with('}') {
+            // Inject property
+            let property_name = &argument[1..argument.len() - 1];
+            match self.action_info.platform_properties.properties.get(property_name) {
+                Some(PlatformPropertyValue::Exact(value)) => value.as_str(),
+                // TODO: Support injecting minimum
+                Some(PlatformPropertyValue::Minimum(_)) => argument,
+                Some(PlatformPropertyValue::Priority(value)) => value.as_str(),
+                Some(PlatformPropertyValue::Unknown(value)) => value.as_str(),
+                None => argument,
+            }
+        } else {
+            argument
+        }
+    }
+
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
@@ -575,7 +593,10 @@ impl RunningActionImpl {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
         let args: Vec<&OsStr> = if let Some(entrypoint_cmd) = &self.entrypoint_cmd {
-            std::iter::once(entrypoint_cmd.as_ref().as_ref())
+            entrypoint_cmd
+                .split(' ')
+                .map(|arg| self.inject_property(arg))
+                .map(AsRef::as_ref)
                 .chain(command_proto.arguments.iter().map(AsRef::as_ref))
                 .collect()
         } else {
