@@ -520,7 +520,11 @@ impl RunningActionImpl {
         {
             // Create all directories needed for our output paths. This is required by the bazel spec.
             let prepare_output_directories = |output_file| {
-                let full_output_path = format!("{}/{}", self.work_directory, output_file);
+                let full_output_path = if command.working_directory.is_empty() {
+                    format!("{}/{}", self.work_directory, output_file)
+                } else {
+                    format!("{}/{}/{}", self.work_directory, command.working_directory, output_file)
+                };
                 async move {
                     let full_parent_path = Path::new(&full_output_path)
                         .parent()
@@ -770,7 +774,11 @@ impl RunningActionImpl {
             output_paths.append(&mut command_proto.output_directories);
         }
         for entry in output_paths {
-            let full_path = OsString::from(format!("{}/{}", self.work_directory, entry));
+            let full_path = OsString::from(if command_proto.working_directory.is_empty() {
+                format!("{}/{}", self.work_directory, entry)
+            } else {
+                format!("{}/{}/{}", self.work_directory, command_proto.working_directory, entry)
+            });
             let work_directory = &self.work_directory;
             output_path_futures.push(async move {
                 let metadata = {
