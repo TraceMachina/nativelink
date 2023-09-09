@@ -156,6 +156,7 @@ rust_library(
         "//util:buf_channel",
         "//util:common",
         "//util:error",
+        "//util:metrics_utils",
         "@crate_index//:futures",
     ],
 )
