@@ -21,6 +21,7 @@ use futures::{join, FutureExt};
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
 use error::{make_err, Code, Error, ResultExt};
+use metrics_utils::Registry;
 use traits::{StoreTrait, UploadSizeInfo};
 
 // TODO(blaise.bruer) This store needs to be evaluated for more efficient memory usage,
@@ -238,5 +239,12 @@ impl StoreTrait for FastSlowStore {
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
+    }
+
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        let fast_store_registry = registry.sub_registry_with_prefix("fast");
+        self.fast_store.clone().register_metrics(fast_store_registry);
+        let slow_store_registry = registry.sub_registry_with_prefix("slow");
+        self.slow_store.clone().register_metrics(slow_store_registry);
     }
 }
