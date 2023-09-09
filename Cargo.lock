@@ -1077,6 +1077,7 @@ dependencies = [
  "config",
  "error",
  "futures",
+ "metrics_utils",
  "traits",
 ]
 
