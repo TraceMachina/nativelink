@@ -56,7 +56,7 @@ cd "$SELF_DIR/deployment-examples/docker-compose"
 export UNDER_TEST_RUNNER=1
 
 # Ensure our cache locations are empty.
-rm -rf ~/.cache/turbo-cache
+sudo rm -rf ~/.cache/turbo-cache
 mkdir -p ~/.cache/turbo-cache
 
 # Ensure our docker compose is not running.
@@ -66,7 +66,7 @@ export TMPDIR=$HOME/.cache/turbo-cache/
 mkdir -p "$TMPDIR"
 export CACHE_DIR=$(mktemp -d --suffix="-turbo-cache-integration-test")
 export BAZEL_CACHE_DIR="$CACHE_DIR/bazel"
-trap "rm -rf $CACHE_DIR; docker-compose rm --stop -f" EXIT
+trap "sudo rm -rf $CACHE_DIR; docker-compose rm --stop -f" EXIT
 
 echo "" # New line.
 
@@ -78,7 +78,7 @@ mkdir -p "$TURBO_CACHE_DIR"
 for pattern in "${TEST_PATTERNS[@]}"; do
   find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
     # Cleanup.
-    find "$TURBO_CACHE_DIR" -delete
+    sudo find "$TURBO_CACHE_DIR" -delete
     bazel --output_base="$BAZEL_CACHE_DIR" clean
     FILENAME=$(basename $fullpath)
     echo "Running test $FILENAME"

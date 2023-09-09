@@ -26,7 +26,7 @@ jobs:
     strategy:
       matrix:
         # Which OS versions we will test on.
-        os_version: [ 20.04 ]
+        os_version: [ 20.04, 22.04 ]
     steps:
     - uses: actions/checkout@v3.5.3
       with:
@@ -38,29 +38,27 @@ jobs:
         context: .
         file: ./deployment-examples/docker-compose/Dockerfile
         build-args: |
-          OPT_LEVEL=fastbuild
           OS_VERSION=${{ matrix.os_version }}
-        # The `builder` stage is pointless to be cached because any change to the
-        # PR invalidates it. So to save the limited cache space we skip it.
-        no-cache-filters: |
-          builder-final
-        target: builder-externals-built
         load: true # This brings the build into `docker images` from buildx.
-        tags: allada/turbo-cache:test
-        cache-from: type=gha,scope=main
-        cache-to: type=gha,scope=main,mode=max
+        tags: allada/turbo-cache:dependencies
+        target: dependencies
 
-    - name: Cargo.toml is up to date
+    - name: Create container for cargo
       run: |
-        docker run --rm -e CC=clang -v $PWD:/root/turbo-cache allada/turbo-cache:test python3 ./tools/build_cargo_manifest.py && \
+        docker run --name=turbo-cache-cargo allada/turbo-cache:dependencies bash -c ' \
+          DEBIAN_FRONTEND=noninteractive apt-get install -y curl libssl-dev gcc pkg-config python3 && \
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain=1.70.0 \
+        ' && \
+        docker commit turbo-cache-cargo allada/turbo-cache:cargo
+    - name: Check Cargo.toml is up to date
+      run: |
+        docker run --rm -w /root/turbo-cache -v $PWD:/root/turbo-cache allada/turbo-cache:cargo python3 ./tools/build_cargo_manifest.py && \
         git diff --exit-code || \
         (echo "Cargo.toml is out of date. Please run: python ./tools/build_cargo_manifest.py" && exit 1)
     - name: Compile & test with cargo
       run: |
-        docker run --rm -e CC=clang -v $PWD:/root/turbo-cache allada/turbo-cache:test bash -c ' \
-          apt update && apt install -y curl libssl-dev gcc pkg-config && \
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain=1.70.0 && \
-          . $HOME/.cargo/env && \
+        docker run --rm -w /root/turbo-cache -v $PWD:/root/turbo-cache allada/turbo-cache:cargo bash -c ' \
+          . /root/.cargo/env && \
           cargo build --all && \
           cargo test --all \
         '
@@ -71,7 +69,7 @@ jobs:
     strategy:
       matrix:
         # Which OS versions we will test on.
-        os_version: [ 20.04 ]
+        os_version: [ 20.04, 22.04 ]
     steps:
     - uses: actions/checkout@v3.5.3
       with:
@@ -85,24 +83,76 @@ jobs:
         build-args: |
           OPT_LEVEL=fastbuild
           OS_VERSION=${{ matrix.os_version }}
-        # The `builder` stage is pointless to be cached because any change to the
-        # PR invalidates it. So to save the limited cache space we skip it.
-        no-cache-filters: |
-          builder-final
-        target: builder-externals-built
         load: true # This brings the build into `docker images` from buildx.
         tags: allada/turbo-cache:test
-        cache-from: type=gha,scope=main
-        cache-to: type=gha,scope=main,mode=max
+        target: builder
 
     - name: Bazel test
-      run: docker run --rm -e CC=clang -v $PWD:/root/turbo-cache allada/turbo-cache:test bazel test //...
+      run: docker run --rm -v $PWD:/root/turbo-cache allada/turbo-cache:test bazel test -c fastbuild //...
+
+  docker-compose-compiles-turbo-cache:
+    # The type of runner that the job will run on.
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        # Which OS versions we will test on.
+        os_version: [ 20.04, 22.04 ]
+    steps:
+    - uses: actions/checkout@v3.5.3
+      with:
+        fetch-depth: 0
+
+    - uses: docker/setup-buildx-action@v2
+    - uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: ./deployment-examples/docker-compose/Dockerfile
+        build-args: |
+          OPT_LEVEL=opt
+          OS_VERSION=${{ matrix.os_version }}
+          ADDITIONAL_SETUP_WORKER_CMD=DEBIAN_FRONTEND=noninteractive apt-get install -y gcc g++ lld pkg-config python3
+        load: true # This brings the build into `docker images` from buildx.
+        tags: allada/turbo-cache:latest
+    - uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: ./deployment-examples/docker-compose/Dockerfile
+        build-args: |
+          OPT_LEVEL=opt
+          OS_VERSION=${{ matrix.os_version }}
+        load: true # This brings the build into `docker images` from buildx.
+        tags: allada/turbo-cache:builder
+        target: builder
+
+    - name: Compile turbo cache with turbo cache
+      run: |
+        mkdir -p ~/.cache && \
+        cd deployment-examples/docker-compose && \
+        docker-compose up -d && \
+        cd ../../ && \
+        docker run --rm --net=host -w /root/turbo-cache -v $PWD:/root/turbo-cache allada/turbo-cache:builder sh -c ' \
+          bazel clean && \
+          bazel test //... \
+          --remote_instance_name=main \
+          --remote_cache=grpc://127.0.0.1:50051 \
+          --remote_executor=grpc://127.0.0.1:50052 \
+          --remote_default_exec_properties=cpu_count=1 \
+        ' && \
+        docker run --rm --net=host -w /root/turbo-cache -v $PWD:/root/turbo-cache allada/turbo-cache:builder sh -c ' \
+          bazel clean && \
+          bazel test //... \
+          --remote_instance_name=main \
+          --remote_cache=grpc://127.0.0.1:50051 \
+          --remote_executor=grpc://127.0.0.1:50052 \
+          --remote_default_exec_properties=cpu_count=1 \
+        ' 2>&1 | ( ! grep '         PASSED in ' ) # If we get PASSED without (cache) it means there's a cache issue.
+
   integration-tests:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
         # Which OS versions we will test on.
-        os_version: [ 20.04 ]
+        os_version: [ 20.04, 22.04 ]
     steps:
     - uses: actions/checkout@v3.5.3
       with:
@@ -116,14 +166,8 @@ jobs:
         build-args: |
           OPT_LEVEL=fastbuild
           OS_VERSION=${{ matrix.os_version }}
-        # The `builder` stage is pointless to be cached because any change to the
-        # PR invalidates it. So to save the limited cache space we skip it.
-        no-cache-filters: |
-          builder-final
         load: true # This brings the build into `docker images` from buildx.
         tags: allada/turbo-cache:latest
-        cache-from: type=gha,scope=main
-        cache-to: type=gha,scope=main,mode=max
 
     - name: Run tests
       run: ./run_integration_tests.sh
@@ -134,7 +178,7 @@ jobs:
     strategy:
       matrix:
         # Which OS versions we will test on.
-        os_version: [ 20.04 ]
+        os_version: [ 20.04, 22.04 ]
     steps:
     - uses: actions/checkout@v3.5.3
       with:
@@ -146,24 +190,19 @@ jobs:
         context: .
         file: ./deployment-examples/docker-compose/Dockerfile
         build-args: |
-          ADDITIONAL_BAZEL_FLAGS=--config=asan
           OS_VERSION=${{ matrix.os_version }}
-        # The `builder` stage is pointless to be cached because any change to the
-        # PR invalidates it. So to save the limited cache space we skip it.
-        no-cache-filters: |
-          builder-final
-        target: builder-externals-built
         load: true # This brings the build into `docker images` from buildx.
         tags: allada/turbo-cache:asan-test
-        cache-from: type=gha,scope=main
-        cache-to: type=gha,scope=main,mode=max
+        target: dependencies
 
     - name: Bazel test
       run: |
         docker run \
+          -e TURBO_CACHE_DIR=/tmp/turbo-cache \
           --rm \
-          -e CC=clang \
-          -v $PWD:/root/turbo-cache allada/turbo-cache:asan-test \
+          -w /root/turbo-cache \
+          -v $PWD:/root/turbo-cache \
+          allada/turbo-cache:asan-test \
           bazel test \
             --config=asan \
             //...

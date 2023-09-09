@@ -6,8 +6,8 @@ An extremely fast and efficient bazel cache service (CAS) written in rust.
 
 The goals of this project are:
 1. Stability - Things should work out of the box as expected
-2. Efficiency - Don't waste time on inefficiencies & low resource usage
-3. Tested - Components should have plenty of tests & each bug should be regression tested
+2. Efficiency - Don't waste time on inefficiencies &amp; low resource usage
+3. Tested - Components should have plenty of tests &amp; each bug should be regression tested
 4. Customers First - Design choices should be optimized for what customers want
 
 ## Overview
@@ -21,6 +21,13 @@ Unix based operating systems and Windows are fully supported.
 ## TL;DR
 To compile and run the server:
 ```sh
+# Install dependencies needed to compile Turbo Cache with bazel on
+# worker machine (which is this machine).
+apt install -y gcc g++ lld libssl-dev pkg-config python3
+
+# Install cargo (if needed).
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
 # --release causes link-time-optmization to be enabled, which can take a while
 # to compile, but will result in a much faster binary.
 #
@@ -42,7 +49,7 @@ bazel test //... \
 This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/allada/turbo-cache/tree/master/config) for configuration documentation and [here](https://github.com/allada/turbo-cache/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
 
 ## Example Deployments
-We currently have two example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
+We currently have a few example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
 
 ### Terraform
 The [terraform deployment](https://github.com/allada/turbo-cache/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of AWS cloud resources to make everything much more robust.
@@ -59,7 +66,14 @@ We support building with Bazel or Cargo. Cargo **might** produce faster binaries
 ### Bazel requirements
 * Linux (most recent versions) (untested on Windows, but might work)
 * Bazel 5.0.0+
-* `libssl-dev` package installed (ie: `apt install libssl-dev` or `yum install libssl-dev`)
+* gcc
+* g++
+* lld
+* pkg-config
+* python3
+
+Runtime dependencies:
+* `libssl-dev` or `libssl1.0-dev` (depending on your distro &amp; version)
 #### Bazel building for deployment
 ```sh
 bazel build //cas
