@@ -56,7 +56,7 @@ cd "$SELF_DIR/deployment-examples/docker-compose"
 export UNDER_TEST_RUNNER=1
 
 # Ensure our cache locations are empty.
-rm -rf ~/.cache/turbo-cache
+sudo rm -rf ~/.cache/turbo-cache
 mkdir -p ~/.cache/turbo-cache
 
 # Ensure our docker compose is not running.
@@ -66,7 +66,7 @@ export TMPDIR=$HOME/.cache/turbo-cache/
 mkdir -p "$TMPDIR"
 export CACHE_DIR=$(mktemp -d --suffix="-turbo-cache-integration-test")
 export BAZEL_CACHE_DIR="$CACHE_DIR/bazel"
-trap "rm -rf $CACHE_DIR; docker-compose rm --stop -f" EXIT
+trap "sudo rm -rf $CACHE_DIR; docker-compose rm --stop -f" EXIT
 
 echo "" # New line.
 
