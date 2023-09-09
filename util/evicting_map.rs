@@ -385,18 +385,19 @@ impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T,
                 &state
                     .lru
                     .peek_lru()
-                    .map(|(_, v)| v.seconds_since_anchor as i64 + self.anchor_time.unix_timestamp() as i64)
+                    .map(|(_, v)| self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64)
                     .unwrap_or(-1),
                 "Timestamp of the oldest item in the store",
             );
             c.publish(
-                "oldest_item_age_nanos",
+                "newest_item_timestamp",
                 &state
                     .lru
-                    .peek_lru()
-                    .map(|(_, v)| v.seconds_since_anchor as i64 + self.anchor_time.elapsed().as_secs() as i64)
+                    .iter()
+                    .next()
+                    .map(|(_, v)| self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64)
                     .unwrap_or(-1),
-                "Age of the oldest item in the store in seconds",
+                "Timestamp of the newest item in the store",
             );
             c.publish(
                 "evicted_items_total",
@@ -435,8 +436,8 @@ impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T,
             );
             c.publish_stats(
                 "item_size_bytes",
-                state.lru.iter().take(10_000).map(|(_, v)| v.data.len()),
-                "Stats about the first 10_000 items in the store (these are oldest items in the store)",
+                state.lru.iter().take(1_000_000).map(|(_, v)| v.data.len()),
+                "Stats about the first 1_000_000 items in the store (these are newest items in the store)",
             );
         });
     }
