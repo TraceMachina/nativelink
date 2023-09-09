@@ -21,6 +21,8 @@ services:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
       network: host
+      args:
+        - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
     volumes:
       - ${TURBO_CACHE_DIR:-~/.cache/turbo-cache}:/root/.cache/turbo-cache
       - type: bind
@@ -38,6 +40,8 @@ services:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
       network: host
+      args:
+        - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
     volumes:
       - type: bind
         source: .
@@ -55,6 +59,8 @@ services:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
       network: host
+      args:
+        - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
     volumes:
       - ${TURBO_CACHE_DIR:-~/.cache/turbo-cache}:/root/.cache/turbo-cache
       - type: bind
