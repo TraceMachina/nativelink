@@ -352,8 +352,14 @@ mod local_worker_tests {
         let ac_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         let work_directory = make_temp_path("foo");
         fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
+<<<<<<< Updated upstream
         let mut file = fs::create_file(format!("{}/{}", work_directory, "foo.txt")).await?;
         file.write_all(b"Hello, world!").await?;
+=======
+        let mut file = fs::create_file(OsString::from(format!("{}/{}", work_directory, "foo.txt"))).await?;
+        file.as_writer().await?.write_all(b"Hello, world!").await?;
+        file.as_writer().await?.as_mut().sync_all().await?;
+>>>>>>> Stashed changes
         new_local_worker(
             Arc::new(LocalWorkerConfig {
                 work_directory: work_directory.clone(),
@@ -378,12 +384,32 @@ mod local_worker_tests {
     async fn precondition_script_fails() -> Result<(), Box<dyn std::error::Error>> {
         let temp_path = make_temp_path("scripts");
         fs::create_dir_all(temp_path.clone()).await?;
+<<<<<<< Updated upstream
         let precondition_script = format!("{}/precondition.sh", temp_path);
         {
             let mut file = fs::create_file(precondition_script.clone()).await?;
             file.write_all(b"#!/bin/sh\nexit 1\n").await?;
         }
         fs::set_permissions(&precondition_script, Permissions::from_mode(0o777)).await?;
+=======
+        #[cfg(target_family = "unix")]
+        let precondition_script = {
+            let precondition_script = format!("{}/precondition.sh", temp_path);
+            let mut file = fs::create_file(OsString::from(&precondition_script)).await?;
+            file.as_writer().await?.write_all(b"#!/bin/sh\nexit 1\n").await?;
+            file.as_writer().await?.as_mut().sync_all().await?;
+            fs::set_permissions(&precondition_script, Permissions::from_mode(0o777)).await?;
+            precondition_script
+        };
+        #[cfg(target_family = "windows")]
+        let precondition_script = {
+            let precondition_script = format!("{}/precondition.bat", temp_path);
+            let mut file = fs::create_file(OsString::from(&precondition_script)).await?;
+            file.as_writer().await?.write_all(b"@echo off\r\nexit 1").await?;
+            file.as_writer().await?.as_mut().sync_all().await?;
+            precondition_script
+        };
+>>>>>>> Stashed changes
         let local_worker_config = LocalWorkerConfig {
             precondition_script: Some(precondition_script),
             ..Default::default()

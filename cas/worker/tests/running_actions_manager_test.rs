@@ -928,6 +928,33 @@ mod running_actions_manager_tests {
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
+<<<<<<< Updated upstream
+=======
+        let test_wrapper_script = {
+            let test_wrapper_dir = make_temp_path("wrapper_dir");
+            fs::create_dir_all(&test_wrapper_dir).await?;
+            #[cfg(target_family = "unix")]
+            let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
+            #[cfg(target_family = "windows")]
+            let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
+            let mut test_wrapper_script_handle = fs::create_file(&test_wrapper_script).await?;
+            test_wrapper_script_handle
+                .as_writer()
+                .await?
+                .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
+                .await?;
+            test_wrapper_script_handle
+                .as_writer()
+                .await?
+                .as_mut()
+                .sync_all()
+                .await?;
+            #[cfg(target_family = "unix")]
+            fs::set_permissions(&test_wrapper_script, Permissions::from_mode(0o755)).await?;
+            test_wrapper_script
+        };
+
+>>>>>>> Stashed changes
         let mut full_wrapper_script_path = env::current_dir()?;
         full_wrapper_script_path.push(TEST_WRAPPER_SCRIPT);
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(

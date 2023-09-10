@@ -173,8 +173,14 @@ async fn read_file_contents(file_name: &str) -> Result<Vec<u8>, Error> {
 async fn write_file(file_name: &str, data: &[u8]) -> Result<(), Error> {
     let mut file = fs::create_file(&file_name)
         .await
+<<<<<<< Updated upstream
         .err_tip(|| format!("Failed to create file: {}", file_name))?;
     Ok(file.write_all(data).await?)
+=======
+        .err_tip(|| format!("Failed to create file: {file_name:?}"))?;
+    file.as_writer().await?.write_all(data).await?;
+    Ok(file.as_writer().await?.as_mut().sync_all().await?)
+>>>>>>> Stashed changes
 }
 
 #[cfg(test)]
