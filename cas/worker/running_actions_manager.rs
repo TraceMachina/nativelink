@@ -37,7 +37,7 @@ use prost::Message;
 use relative_path::RelativePath;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
@@ -598,11 +598,19 @@ impl RunningActionImpl {
         #[cfg(target_family = "windows")]
         let envs = {
             let mut envs = command_proto.environment_variables.clone();
-            if envs.iter().any(|v| v.name == "SystemRoot") {
+            if !envs.iter().any(|v| v.name.to_uppercase() == "SYSTEMROOT") {
                 envs.push(
                     proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
                         name: "SystemRoot".to_string(),
                         value: "C:\\Windows".to_string(),
+                    },
+                );
+            }
+            if !envs.iter().any(|v| v.name.to_uppercase() == "PATH") {
+                envs.push(
+                    proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
+                        name: "PATH".to_string(),
+                        value: "C:\\Windows\\System32".to_string(),
                     },
                 );
             }
@@ -716,9 +724,15 @@ impl RunningActionImpl {
                 _ = &mut kill_channel_rx => {
                     killed_action = true;
                     if let Err(e) = child_process.start_kill() {
-                        log::error!("Could not kill process in RunningActionsManager : {:?}", e);
+                        log::error!(
+                            "Could not kill process in RunningActionsManager for action {} : {:?}",
+                            hex::encode(self.action_id),
+                            e);
                     } else {
-                        log::error!("Could not get child process id, maybe already dead?");
+                        log::error!(
+                            "Could not get child process id, maybe already dead? for action {}",
+                            hex::encode(self.action_id)
+                        );
                     }
                     {
                         let mut state = self.state.lock();
@@ -936,9 +950,17 @@ impl RunningActionImpl {
             .err_tip(|| format!("Could not remove working directory {}", self.work_directory));
         self.did_cleanup.store(true, Ordering::Relaxed);
         if let Err(e) = self.running_actions_manager.cleanup_action(&self.action_id) {
+            log::error!("Error cleaning up action: {e:?}");
             return Result::<Arc<Self>, Error>::Err(e).merge(remove_dir_result.map(|_| self));
         }
-        remove_dir_result.map(|_| self)
+        if let Err(e) = remove_dir_result {
+            log::error!(
+                "Error removing working for action {} directory: {e:?}",
+                hex::encode(self.action_id)
+            );
+            return Err(e);
+        }
+        Ok(self)
     }
 
     async fn inner_get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
@@ -1035,6 +1057,9 @@ pub struct RunningActionsManagerImpl {
     upload_strategy: UploadCacheResultsStrategy,
     max_action_timeout: Duration,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
+    // Note: We don't use Notify because we need to support a .wait_for()-like function, which
+    // Notify does not support.
+    action_done_tx: watch::Sender<()>,
     callbacks: Callbacks,
     metrics: Arc<Metrics>,
 }
@@ -1057,6 +1082,7 @@ impl RunningActionsManagerImpl {
             .downcast_ref::<Arc<FilesystemStore>>()
             .err_tip(|| "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl")?
             .clone();
+        let (action_done_tx, _) = watch::channel(());
         Ok(Self {
             root_work_directory,
             entrypoint_cmd,
@@ -1066,6 +1092,7 @@ impl RunningActionsManagerImpl {
             upload_strategy,
             max_action_timeout,
             running_actions: Mutex::new(HashMap::new()),
+            action_done_tx,
             callbacks,
             metrics: Arc::new(Metrics::default()),
         })
@@ -1134,14 +1161,18 @@ impl RunningActionsManagerImpl {
     }
 
     fn cleanup_action(&self, action_id: &ActionId) -> Result<(), Error> {
+        println!("cleanup_action triggered");
         let mut running_actions = self.running_actions.lock();
-        running_actions
+        let result = running_actions
             .remove(action_id)
-            .err_tip(|| format!("Expected action id '{action_id:?}' to exist in RunningActionsManagerImpl"))?;
-        Ok(())
+            .err_tip(|| format!("Expected action id '{action_id:?}' to exist in RunningActionsManagerImpl"));
+        // No need to copy anything, we just are telling the receivers an event happened.
+        self.action_done_tx.send_modify(|_| {});
+        result.map(|_| ())
     }
 
     // Note: We do not capture metrics on this call, only `.kill_all()`.
+    // Important: When the future returns the process may still be running.
     async fn kill_action(action: Arc<RunningActionImpl>) {
         let kill_channel_tx = {
             let mut action_state = action.state.lock();
@@ -1149,7 +1180,7 @@ impl RunningActionsManagerImpl {
         };
         if let Some(kill_channel_tx) = kill_channel_tx {
             if kill_channel_tx.send(()).is_err() {
-                log::error!("Error sending kill to running action");
+                log::error!("Error sending kill to running action {}", hex::encode(action.action_id));
             }
         }
     }
@@ -1270,6 +1301,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .await
     }
 
+    // Note: When the future returns the process should be fully killed and cleaned up.
     async fn kill_all(&self) {
         self.metrics
             .kill_all
@@ -1285,7 +1317,15 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     Self::kill_action(action).await;
                 }
             })
-            .await
+            .await;
+        // Ignore error. If error happens it means there's no sender, which is not a problem.
+        // Note: Sanity check this API will always check current value then future values:
+        // https://play.rust-lang.org/?version=stable&edition=2021&gist=23103652cc1276a97e5f9938da87fdb2
+        let _ = self
+            .action_done_tx
+            .subscribe()
+            .wait_for(|_| self.running_actions.lock().is_empty())
+            .await;
     }
 
     #[inline]

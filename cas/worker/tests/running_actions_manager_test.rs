@@ -137,6 +137,8 @@ fn increment_clock(time: &mut SystemTime) -> SystemTime {
 
 #[cfg(test)]
 mod running_actions_manager_tests {
+    use std::sync::atomic::AtomicBool;
+
     use super::*;
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
@@ -919,7 +921,7 @@ mod running_actions_manager_tests {
         #[cfg(target_family = "unix")]
         let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
         #[cfg(target_family = "windows")]
-        let arguments = vec!["cmd".to_string(), "/C".to_string(), "timeout 99999".to_string()];
+        let arguments = vec!["cmd".to_string(), "/C".to_string(), "Timeout 99999".to_string()];
 
         let command = Command {
             arguments,
@@ -1493,6 +1495,124 @@ exit 0
             tx.send(()).expect("Could not send timeout signal");
         });
         assert_eq!(results?.error.unwrap().code, Code::DeadlineExceeded);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            root_work_directory.clone(),
+            None,
+            Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::Never,
+            Duration::MAX,
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            },
+        )?);
+
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["cmd".to_string(), "/C".to_string(), "Timeout 99999".to_string()];
+
+        let command = Command {
+            arguments,
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+        let input_root_digest = serialize_and_upload_message(&Directory::default(), cas_store.as_ref()).await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+        let (cleanup_tx, cleanup_rx) = oneshot::channel();
+        let cleanup_was_requested = AtomicBool::new(false);
+        let action = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: 0,
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                },
+            )
+            .await?;
+        let execute_results_fut = action
+            .clone()
+            .prepare_action()
+            .and_then(RunningAction::execute)
+            .and_then(RunningAction::upload_results)
+            .and_then(RunningAction::get_finished_result)
+            .then(|result| async {
+                cleanup_was_requested.store(true, Ordering::Release);
+                cleanup_rx.await.expect("Could not receive cleanup signal");
+                if let Err(e) = action.cleanup().await {
+                    return Result::<ActionResult, Error>::Err(e).merge(result);
+                }
+                result
+            });
+
+        tokio::pin!(execute_results_fut);
+        {
+            // Advance the action as far as possible and ensure we are not waiting on cleanup.
+            for _ in 0..1000 {
+                assert!(futures::poll!(&mut execute_results_fut).is_pending());
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(cleanup_was_requested.load(Ordering::Acquire), false);
+        }
+
+        let kill_all_fut = running_actions_manager.kill_all();
+        tokio::pin!(kill_all_fut);
+
+        {
+            // * Advance the action as far as possible.
+            // * Ensure we are now waiting on cleanup.
+            // * Ensure our kill_action is still pending.
+            while !cleanup_was_requested.load(Ordering::Acquire) {
+                // Wait for cleanup to be triggered.
+                tokio::task::yield_now().await;
+                assert!(futures::poll!(&mut execute_results_fut).is_pending());
+                assert!(futures::poll!(&mut kill_all_fut).is_pending());
+            }
+        }
+        // Allow cleanup, which allows execute_results_fut to advance.
+        cleanup_tx.send(()).expect("Could not send cleanup signal");
+        // Advance our two futures to completion now.
+        let result = execute_results_fut.await;
+        kill_all_fut.await;
+        {
+            // Ensure our results are correct.
+            let action_result = result?;
+            let err = action_result
+                .error
+                .as_ref()
+                .err_tip(|| format!("{:?}", action_result))?;
+            assert_eq!(err.code, Code::Aborted, "Expected Aborted : {action_result:?}");
+        }
 
         Ok(())
     }
