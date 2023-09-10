@@ -181,7 +181,13 @@ async fn write_file(file_name: &OsStr, data: &[u8]) -> Result<(), Error> {
     let mut file = fs::create_file(file_name)
         .await
         .err_tip(|| format!("Failed to create file: {file_name:?}"))?;
-    Ok(file.as_writer().await?.write_all(data).await?)
+    file.as_writer().await?.write_all(data).await?;
+    file.as_writer()
+        .await?
+        .as_mut()
+        .sync_all()
+        .await
+        .err_tip(|| "Could not sync file")
 }
 
 #[cfg(test)]
