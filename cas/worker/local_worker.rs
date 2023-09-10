@@ -15,6 +15,7 @@
 use std::pin::Pin;
 use std::process::Stdio;
 use std::str;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -42,6 +43,10 @@ use store::Store;
 use worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use worker_utils::make_supported_properties;
 
+/// Amount of time to wait if we have actions in transit before we try to
+/// consider an error to have occurred.
+const ACTIONS_IN_TRANSIT_TIMEOUT_S: f32 = 10.;
+
 /// If we loose connection to the worker api server we will wait this many seconds
 /// before trying to connect.
 const CONNECTION_RETRY_DELAY_S: f32 = 0.5;
@@ -60,6 +65,11 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
     grpc_client: T,
     worker_id: String,
     running_actions_manager: Arc<U>,
+    // Number of actions that have been received in `Update::StartAction`, but
+    // not yet processed by running_actions_manager's spawn. This number should
+    // always be zero if there are no actions running and no actions being waited
+    // on by the scheduler.
+    actions_in_transit: Arc<AtomicU64>,
     metrics: Arc<Metrics>,
 }
 
@@ -108,6 +118,11 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
             grpc_client,
             worker_id,
             running_actions_manager,
+            // Number of actions that have been received in `Update::StartAction`, but
+            // not yet processed by running_actions_manager's spawn. This number should
+            // always be zero if there are no actions running and no actions being waited
+            // on by the scheduler.
+            actions_in_transit: Arc::new(AtomicU64::new(0)),
             metrics,
         }
     }
@@ -194,10 +209,17 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let running_actions_manager = self.running_actions_manager.clone();
                             let worker_id_clone = worker_id.clone();
                             let precondition_script_cfg = self.config.precondition_script.clone();
+                            let actions_in_transit = self.actions_in_transit.clone();
                             let start_action_fut = self.metrics.clone().wrap(move |metrics| async move {
                                 metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
                                 .and_then(|_| async move {
                                     running_actions_manager.create_and_add_action(worker_id_clone, start_execute).await
+                                })
+                                .map(|r| {
+                                    // Now that we either failed or registered our action, we can
+                                    // consider the action to no longer be in transit.
+                                    actions_in_transit.fetch_sub(1, Ordering::Release);
+                                    r
                                 })
                                 .and_then(|action|
                                     action
@@ -254,16 +276,17 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 Ok(())
                             };
 
-                            let mapped_fut = tokio::spawn(start_action_fut)
-                                .map(move |res| {
+                            self.actions_in_transit.fetch_add(1, Ordering::Release);
+                            futures.push(
+                                tokio::spawn(start_action_fut).map(move |res| {
                                     let res = res.err_tip(|| "Failed to launch spawn")?;
                                     add_future_channel
                                         .send(make_publish_future(res).boxed())
                                         .map_err(|_| make_err!(Code::Internal, "LocalWorker could not send future"))?;
                                     Ok(())
                                 })
-                                .boxed();
-                            futures.push(mapped_fut);
+                                .boxed()
+                            );
                         }
                     };
                 },
@@ -271,7 +294,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                     let fut = res.err_tip(|| "New future stream receives should never be closed")?;
                     futures.push(fut);
                 },
-                res = futures.next() => res.err_tip(|| "Keep-alive should always pending. This is an internal error")??,
+                res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
             };
         }
         // Unreachable.
@@ -450,6 +473,24 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
 
             // Now listen for connections and run all other services.
             if let Err(e) = inner.run(update_for_worker_stream).await {
+                'no_more_actions: {
+                    // Ensure there are no actions in transit before we try to kill
+                    // all our actions.
+                    const ITERATIONS: usize = 1_000;
+                    let sleep_duration = ACTIONS_IN_TRANSIT_TIMEOUT_S / ITERATIONS as f32;
+                    for _ in 0..ITERATIONS {
+                        if inner.actions_in_transit.load(Ordering::Acquire) == 0 {
+                            break 'no_more_actions;
+                        }
+                        (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
+                    }
+                    let e = make_err!(
+                        Code::Internal,
+                        "Actions in transit did not reach zero before we disconnected from the scheduler."
+                    );
+                    log::error!("{e:?}");
+                    return Err(e);
+                }
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;
