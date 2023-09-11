@@ -523,6 +523,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .as_writer()
             .await
             .err_tip(|| "in filesystem_store::update_file")?
+            .flush()
+            .await
+            .err_tip(|| "Could not flush file in filesystem store")?;
+        resumeable_temp_file
+            .as_writer()
+            .await
+            .err_tip(|| "in filesystem_store::update_file")?
             .as_ref()
             .sync_all()
             .await

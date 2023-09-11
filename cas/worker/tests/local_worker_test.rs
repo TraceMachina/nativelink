@@ -360,7 +360,7 @@ mod local_worker_tests {
         fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
         let mut file = fs::create_file(OsString::from(format!("{}/{}", work_directory, "foo.txt"))).await?;
         file.as_writer().await?.write_all(b"Hello, world!").await?;
-        file.as_writer().await?.as_mut().sync_all().await?;
+        file.as_writer().await?.flush().await?;
         new_local_worker(
             Arc::new(LocalWorkerConfig {
                 work_directory: work_directory.clone(),
@@ -390,8 +390,12 @@ mod local_worker_tests {
             let precondition_script = format!("{}/precondition.sh", temp_path);
             let mut file = fs::create_file(OsString::from(&precondition_script)).await?;
             file.as_writer().await?.write_all(b"#!/bin/sh\nexit 1\n").await?;
-            file.as_writer().await?.as_mut().sync_all().await?;
-            fs::set_permissions(&precondition_script, Permissions::from_mode(0o777)).await?;
+            file.as_writer()
+                .await?
+                .as_mut()
+                .set_permissions(Permissions::from_mode(0o777))
+                .await?;
+            file.as_writer().await?.flush().await?;
             precondition_script
         };
         #[cfg(target_family = "windows")]
@@ -399,7 +403,7 @@ mod local_worker_tests {
             let precondition_script = format!("{}/precondition.bat", temp_path);
             let mut file = fs::create_file(OsString::from(&precondition_script)).await?;
             file.as_writer().await?.write_all(b"@echo off\r\nexit 1").await?;
-            file.as_writer().await?.as_mut().sync_all().await?;
+            file.as_writer().await?.flush().await?;
             precondition_script
         };
         let local_worker_config = LocalWorkerConfig {
