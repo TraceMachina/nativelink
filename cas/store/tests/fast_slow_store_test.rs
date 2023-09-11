@@ -116,7 +116,7 @@ mod fast_slow_store_tests {
     }
 
     #[tokio::test]
-    async fn partial_reads_do_not_copy_to_slow_store_test() -> Result<(), Error> {
+    async fn partial_reads_copy_full_to_slow_store_test() -> Result<(), Error> {
         let (fast_slow_store, fast_store, slow_store) = make_stores();
         let fast_slow_store = Pin::new(fast_slow_store.as_ref());
         let fast_store = Pin::new(fast_store.as_ref());
@@ -127,12 +127,15 @@ mod fast_slow_store_tests {
         slow_store.update_oneshot(digest, original_data.clone().into()).await?;
 
         // This get() request should place the data in fast_store too.
-        fast_slow_store.get_part_unchunked(digest, 0, Some(50), None).await?;
+        assert_eq!(
+            original_data[10..60],
+            fast_slow_store.get_part_unchunked(digest, 10, Some(50), None).await?
+        );
 
-        // Data should not exist in fast store, but should exist in slow store because
-        // it was a partial read.
-        assert_eq!(fast_store.has(digest).await, Ok(None));
+        // Full data should exist in the fast store even though only partially
+        // read.
         check_data(slow_store, digest, &original_data, "slow_store").await?;
+        check_data(fast_store, digest, &original_data, "fast_store").await?;
 
         Ok(())
     }

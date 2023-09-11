@@ -181,10 +181,6 @@ impl StoreTrait for FastSlowStore {
         if fast_store.has(digest).await?.is_some() {
             return fast_store.get_part(digest, writer, offset, length).await;
         }
-        // We can only copy the data to our fast store if we are copying everything.
-        if offset != 0 || length.is_some() {
-            return slow_store.get_part(digest, writer, offset, length).await;
-        }
 
         let sz_result = slow_store
             .has(digest)
@@ -193,9 +189,13 @@ impl StoreTrait for FastSlowStore {
         let Some(sz) = sz_result else {
             return Err(make_err!(
                 Code::NotFound,
-                "Object not found in either fast or slow store"
+                "Object {} not found in either fast or slow store",
+                digest.hash_str(),
             ));
         };
+
+        let mut offset = offset;
+        let mut remaining = length;
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
@@ -216,10 +216,34 @@ impl StoreTrait for FastSlowStore {
                     let _ = writer_pin.send_eof().await?;
                     return Ok(());
                 }
-                let (fast_tx_res, writer_res) = join!(
-                    fast_tx.send(output_buf.clone()).boxed(),
-                    writer_pin.send(output_buf).boxed(),
-                );
+                let output_slice = if offset == 0 {
+                    output_buf.clone()
+                } else if offset > output_buf.len() {
+                    offset -= output_buf.len();
+                    bytes::Bytes::new()
+                } else {
+                    let output_slice = output_buf.clone().slice(offset..);
+                    offset = 0;
+                    output_slice
+                };
+                let output_slice = if let Some(remaining_bytes) = remaining {
+                    if remaining_bytes > output_slice.len() {
+                        remaining = Some(remaining_bytes - output_slice.len());
+                        output_slice
+                    } else {
+                        let output_slice = output_slice.slice(..remaining_bytes);
+                        remaining = Some(0);
+                        output_slice
+                    }
+                } else {
+                    output_slice
+                };
+                let writer_fut = if output_slice.is_empty() {
+                    futures::future::ready(Ok(())).boxed()
+                } else {
+                    writer_pin.send(output_slice).boxed()
+                };
+                let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf).boxed(), writer_fut,);
                 if let Err(err) = fast_tx_res {
                     return Err(err).err_tip(|| "Failed to write to fast store in fast_slow store");
                 }
