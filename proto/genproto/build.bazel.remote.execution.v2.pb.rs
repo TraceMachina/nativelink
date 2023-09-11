@@ -57,6 +57,14 @@ pub struct Action {
     /// timeout that is longer than the server's maximum timeout, the server MUST
     /// reject the request.
     ///
+    /// The timeout is only intended to cover the "execution" of the specified
+    /// action and not time in queue nor any overheads before or after execution
+    /// such as marshalling inputs/outputs. The server SHOULD avoid including time
+    /// spent the client doesn't have control over, and MAY extend or reduce the
+    /// timeout to account for delays or speedups that occur during execution
+    /// itself (e.g., lazily loading data from the Content Addressable Storage,
+    /// live migration of virtual machines, emulation overhead).
+    ///
     /// The timeout is a part of the
     /// \[Action][build.bazel.remote.execution.v2.Action\] message, and
     /// therefore two `Actions` with different timeouts are different, even if they
@@ -101,9 +109,21 @@ pub struct Action {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Command {
-    /// The arguments to the command. The first argument must be the path to the
-    /// executable, which must be either a relative path, in which case it is
-    /// evaluated with respect to the input root, or an absolute path.
+    /// The arguments to the command.
+    ///
+    /// The first argument specifies the command to run, which may be either an
+    /// absolute path, a path relative to the working directory, or an unqualified
+    /// path (without path separators) which will be resolved using the operating
+    /// system's equivalent of the PATH environment variable. Path separators
+    /// native to the operating system running on the worker SHOULD be used. If the
+    /// `environment_variables` list contains an entry for the PATH environment
+    /// variable, it SHOULD be respected. If not, the resolution process is
+    /// implementation-defined.
+    ///
+    /// Changed in v2.3. v2.2 and older require that no PATH lookups are performed,
+    /// and that relative paths are resolved relative to the input root. This
+    /// behavior can, however, not be relied upon, as most implementations already
+    /// followed the rules described above.
     #[prost(string, repeated, tag = "1")]
     pub arguments: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// The environment variables to set when running the program. The worker may
@@ -139,6 +159,8 @@ pub struct Command {
     /// to execution, even if they are not explicitly part of the input root.
     ///
     /// DEPRECATED since v2.1: Use `output_paths` instead.
+    ///
+    /// [ deprecated = true ];
     #[prost(string, repeated, tag = "3")]
     pub output_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// A list of the output directories that the client expects to retrieve from
@@ -170,6 +192,8 @@ pub struct Command {
     /// if they are not explicitly part of the input root.
     ///
     /// DEPRECATED since 2.1: Use `output_paths` instead.
+    ///
+    /// [ deprecated = true ];
     #[prost(string, repeated, tag = "4")]
     pub output_directories: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// A list of the output paths that the client expects to retrieve from the
@@ -177,10 +201,10 @@ pub struct Command {
     /// The type of the output (file or directory) is not specified, and will be
     /// determined by the server after action execution. If the resulting path is
     /// a file, it will be returned in an
-    /// \[OutputFile][build.bazel.remote.execution.v2.OutputFile\]) typed field.
+    /// \[OutputFile][build.bazel.remote.execution.v2.OutputFile\] typed field.
     /// If the path is a directory, the entire directory structure will be returned
     /// as a \[Tree][build.bazel.remote.execution.v2.Tree\] message digest, see
-    /// \[OutputDirectory][build.bazel.remote.execution.v2.OutputDirectory\])
+    /// \[OutputDirectory][build.bazel.remote.execution.v2.OutputDirectory\]
     /// Other files or directories that may be created during command execution
     /// are discarded.
     ///
@@ -210,6 +234,8 @@ pub struct Command {
     /// DEPRECATED as of v2.2: platform properties are now specified directly in
     /// the action. See documentation note in the
     /// \[Action][build.bazel.remote.execution.v2.Action\] for migration.
+    ///
+    /// [ deprecated = true ];
     #[prost(message, optional, tag = "5")]
     pub platform: ::core::option::Option<Platform>,
     /// The working directory, relative to the input root, for the command to run
@@ -546,6 +572,25 @@ pub struct ExecutedActionMetadata {
     /// When the worker completed executing the action command.
     #[prost(message, optional, tag = "8")]
     pub execution_completed_timestamp: ::core::option::Option<::prost_types::Timestamp>,
+    /// New in v2.3: the amount of time the worker spent executing the action
+    /// command, potentially computed using a worker-specific virtual clock.
+    ///
+    /// The virtual execution duration is only intended to cover the "execution" of
+    /// the specified action and not time in queue nor any overheads before or
+    /// after execution such as marshalling inputs/outputs. The server SHOULD avoid
+    /// including time spent the client doesn't have control over, and MAY extend
+    /// or reduce the execution duration to account for delays or speedups that
+    /// occur during execution itself (e.g., lazily loading data from the Content
+    /// Addressable Storage, live migration of virtual machines, emulation
+    /// overhead).
+    ///
+    /// The method of timekeeping used to compute the virtual execution duration
+    /// MUST be consistent with what is used to enforce the
+    /// \[Action][[build.bazel.remote.execution.v2.Action\]'s `timeout`. There is no
+    /// relationship between the virtual execution duration and the values of
+    /// `execution_start_timestamp` and `execution_completed_timestamp`.
+    #[prost(message, optional, tag = "12")]
+    pub virtual_execution_duration: ::core::option::Option<::prost_types::Duration>,
     /// When the worker started uploading action outputs.
     #[prost(message, optional, tag = "9")]
     pub output_upload_start_timestamp: ::core::option::Option<::prost_types::Timestamp>,
@@ -601,6 +646,8 @@ pub struct ActionResult {
     ///
     /// DEPRECATED as of v2.1. Servers that wish to be compatible with v2.0 API
     /// should still populate this field in addition to `output_symlinks`.
+    ///
+    /// [ deprecated = true ];
     #[prost(message, repeated, tag = "10")]
     pub output_file_symlinks: ::prost::alloc::vec::Vec<OutputSymlink>,
     /// New in v2.1: this field will only be populated if the command
@@ -701,6 +748,8 @@ pub struct ActionResult {
     ///
     /// DEPRECATED as of v2.1. Servers that wish to be compatible with v2.0 API
     /// should still populate this field in addition to `output_symlinks`.
+    ///
+    /// [ deprecated = true ];
     #[prost(message, repeated, tag = "11")]
     pub output_directory_symlinks: ::prost::alloc::vec::Vec<OutputSymlink>,
     /// The exit code of the command.
@@ -711,6 +760,7 @@ pub struct ActionResult {
     /// \[GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest\]
     /// message. The server MAY omit inlining, even if requested, and MUST do so if inlining
     /// would cause the response to exceed message size limits.
+    /// Clients SHOULD NOT populate this field when uploading to the cache.
     #[prost(bytes = "bytes", tag = "5")]
     pub stdout_raw: ::prost::bytes::Bytes,
     /// The digest for a blob containing the standard output of the action, which
@@ -723,6 +773,7 @@ pub struct ActionResult {
     /// \[GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest\]
     /// message. The server MAY omit inlining, even if requested, and MUST do so if inlining
     /// would cause the response to exceed message size limits.
+    /// Clients SHOULD NOT populate this field when uploading to the cache.
     #[prost(bytes = "bytes", tag = "7")]
     pub stderr_raw: ::prost::bytes::Bytes,
     /// The digest for a blob containing the standard error of the action, which
@@ -757,6 +808,7 @@ pub struct OutputFile {
     /// \[GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest\]
     /// message. The server MAY omit inlining, even if requested, and MUST do so if inlining
     /// would cause the response to exceed message size limits.
+    /// Clients SHOULD NOT populate this field when uploading to the cache.
     #[prost(bytes = "bytes", tag = "5")]
     pub contents: ::prost::bytes::Bytes,
     #[prost(message, optional, tag = "7")]
@@ -775,6 +827,9 @@ pub struct Tree {
     /// recursively, all its children. In order to reconstruct the directory tree,
     /// the client must take the digests of each of the child directories and then
     /// build up a tree starting from the `root`.
+    /// Servers SHOULD ensure that these are ordered consistently such that two
+    /// actions producing equivalent output directories on the same server
+    /// implementation also produce Tree messages with matching digests.
     #[prost(message, repeated, tag = "2")]
     pub children: ::prost::alloc::vec::Vec<Directory>,
 }
@@ -794,6 +849,43 @@ pub struct OutputDirectory {
     /// directory's contents.
     #[prost(message, optional, tag = "3")]
     pub tree_digest: ::core::option::Option<Digest>,
+    /// If set, consumers MAY make the following assumptions about the
+    /// directories contained in the the Tree, so that it may be
+    /// instantiated on a local file system by scanning through it
+    /// sequentially:
+    ///
+    /// - All directories with the same binary representation are stored
+    ///    exactly once.
+    /// - All directories, apart from the root directory, are referenced by
+    ///    at least one parent directory.
+    /// - Directories are stored in topological order, with parents being
+    ///    stored before the child. The root directory is thus the first to
+    ///    be stored.
+    ///
+    /// Additionally, the Tree MUST be encoded as a stream of records,
+    /// where each record has the following format:
+    ///
+    /// - A tag byte, having one of the following two values:
+    ///    - (1 << 3) | 2 == 0x0a: First record (the root directory).
+    ///    - (2 << 3) | 2 == 0x12: Any subsequent records (child directories).
+    /// - The size of the directory, encoded as a base 128 varint.
+    /// - The contents of the directory, encoded as a binary serialized
+    ///    Protobuf message.
+    ///
+    /// This encoding is a subset of the Protobuf wire format of the Tree
+    /// message. As it is only permitted to store data associated with
+    /// field numbers 1 and 2, the tag MUST be encoded as a single byte.
+    /// More details on the Protobuf wire format can be found here:
+    /// <https://developers.google.com/protocol-buffers/docs/encoding>
+    ///
+    /// It is recommended that implementations using this feature construct
+    /// Tree objects manually using the specification given above, as
+    /// opposed to using a Protobuf library to marshal a full Tree message.
+    /// As individual Directory messages already need to be marshaled to
+    /// compute their digests, constructing the Tree object manually avoids
+    /// redundant marshaling.
+    #[prost(bool, tag = "4")]
+    pub is_topologically_sorted: bool,
 }
 /// An `OutputSymlink` is similar to a
 /// \[Symlink][build.bazel.remote.execution.v2.SymlinkNode\], but it is used as an
@@ -890,6 +982,15 @@ pub struct ExecuteRequest {
     /// This may be applied to both the ActionResult and the associated blobs.
     #[prost(message, optional, tag = "8")]
     pub results_cache_policy: ::core::option::Option<ResultsCachePolicy>,
+    /// The digest function that was used to compute the action digest.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
+    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
+    /// that case the server SHOULD infer the digest function using the
+    /// length of the action digest hash and the digest functions announced
+    /// in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "9")]
+    pub digest_function: i32,
 }
 /// A `LogFile` is a log stored in the CAS.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -952,6 +1053,17 @@ pub struct ExecuteResponse {
     pub message: ::prost::alloc::string::String,
 }
 /// The current stage of action execution.
+///
+/// Even though these stages are numbered according to the order in which
+/// they generally occur, there is no requirement that the remote
+/// execution system reports events along this order. For example, an
+/// operation MAY transition from the EXECUTING stage back to QUEUED
+/// in case the hardware on which the operation executes fails.
+///
+/// If and only if the remote execution system reports that an operation
+/// has reached the COMPLETED stage, it MUST set the [done
+/// field]\[google.longrunning.Operation.done\] of the
+/// \[Operation][google.longrunning.Operation\] and terminate the stream.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionStage {}
@@ -1033,6 +1145,10 @@ pub struct ExecuteOperationMetadata {
     /// standard error from the endpoint hosting streamed responses.
     #[prost(string, tag = "4")]
     pub stderr_stream_name: ::prost::alloc::string::String,
+    /// The client can read this field to view details about the ongoing
+    /// execution.
+    #[prost(message, optional, tag = "5")]
+    pub partial_execution_metadata: ::core::option::Option<ExecutedActionMetadata>,
 }
 /// A request message for
 /// \[WaitExecution][build.bazel.remote.execution.v2.Execution.WaitExecution\].
@@ -1074,6 +1190,15 @@ pub struct GetActionResultRequest {
     /// \[Command][build.bazel.remote.execution.v2.Command\] message.
     #[prost(string, repeated, tag = "5")]
     pub inline_output_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The digest function that was used to compute the action digest.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
+    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
+    /// that case the server SHOULD infer the digest function using the
+    /// length of the action digest hash and the digest functions announced
+    /// in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "6")]
+    pub digest_function: i32,
 }
 /// A request message for
 /// \[ActionCache.UpdateActionResult][build.bazel.remote.execution.v2.ActionCache.UpdateActionResult\].
@@ -1100,6 +1225,15 @@ pub struct UpdateActionResultRequest {
     /// This may be applied to both the ActionResult and the associated blobs.
     #[prost(message, optional, tag = "4")]
     pub results_cache_policy: ::core::option::Option<ResultsCachePolicy>,
+    /// The digest function that was used to compute the action digest.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
+    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
+    /// that case the server SHOULD infer the digest function using the
+    /// length of the action digest hash and the digest functions announced
+    /// in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "5")]
+    pub digest_function: i32,
 }
 /// A request message for
 /// \[ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs\].
@@ -1113,9 +1247,19 @@ pub struct FindMissingBlobsRequest {
     /// omitted.
     #[prost(string, tag = "1")]
     pub instance_name: ::prost::alloc::string::String,
-    /// A list of the blobs to check.
+    /// A list of the blobs to check. All digests MUST use the same digest
+    /// function.
     #[prost(message, repeated, tag = "2")]
     pub blob_digests: ::prost::alloc::vec::Vec<Digest>,
+    /// The digest function of the blobs whose existence is checked.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
+    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
+    /// that case the server SHOULD infer the digest function using the
+    /// length of the blob digest hashes and the digest functions announced
+    /// in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "3")]
+    pub digest_function: i32,
 }
 /// A response message for
 /// \[ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs\].
@@ -1141,6 +1285,16 @@ pub struct BatchUpdateBlobsRequest {
     /// The individual upload requests.
     #[prost(message, repeated, tag = "2")]
     pub requests: ::prost::alloc::vec::Vec<batch_update_blobs_request::Request>,
+    /// The digest function that was used to compute the digests of the
+    /// blobs being uploaded.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
+    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
+    /// that case the server SHOULD infer the digest function using the
+    /// length of the blob digest hashes and the digest functions announced
+    /// in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "5")]
+    pub digest_function: i32,
 }
 /// Nested message and enum types in `BatchUpdateBlobsRequest`.
 pub mod batch_update_blobs_request {
@@ -1148,12 +1302,19 @@ pub mod batch_update_blobs_request {
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Request {
-        /// The digest of the blob. This MUST be the digest of `data`.
+        /// The digest of the blob. This MUST be the digest of `data`. All
+        /// digests MUST use the same digest function.
         #[prost(message, optional, tag = "1")]
         pub digest: ::core::option::Option<super::Digest>,
         /// The raw binary data.
         #[prost(bytes = "bytes", tag = "2")]
         pub data: ::prost::bytes::Bytes,
+        /// The format of `data`. Must be `IDENTITY`/unspecified, or one of the
+        /// compressors advertised by the
+        /// \[CacheCapabilities.supported_batch_compressors][build.bazel.remote.execution.v2.CacheCapabilities.supported_batch_compressors\]
+        /// field.
+        #[prost(enumeration = "super::compressor::Value", tag = "3")]
+        pub compressor: i32,
     }
 }
 /// A response message for
@@ -1193,9 +1354,23 @@ pub struct BatchReadBlobsRequest {
     /// omitted.
     #[prost(string, tag = "1")]
     pub instance_name: ::prost::alloc::string::String,
-    /// The individual blob digests.
+    /// The individual blob digests. All digests MUST use the same digest
+    /// function.
     #[prost(message, repeated, tag = "2")]
     pub digests: ::prost::alloc::vec::Vec<Digest>,
+    /// A list of acceptable encodings for the returned inlined data, in no
+    /// particular order. `IDENTITY` is always allowed even if not specified here.
+    #[prost(enumeration = "compressor::Value", repeated, tag = "3")]
+    pub acceptable_compressors: ::prost::alloc::vec::Vec<i32>,
+    /// The digest function of the blobs being requested.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
+    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
+    /// that case the server SHOULD infer the digest function using the
+    /// length of the blob digest hashes and the digest functions announced
+    /// in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "4")]
+    pub digest_function: i32,
 }
 /// A response message for
 /// \[ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs\].
@@ -1218,6 +1393,10 @@ pub mod batch_read_blobs_response {
         /// The raw binary data.
         #[prost(bytes = "bytes", tag = "2")]
         pub data: ::prost::bytes::Bytes,
+        /// The format the data is encoded in. MUST be `IDENTITY`/unspecified,
+        /// or one of the acceptable compressors specified in the `BatchReadBlobsRequest`.
+        #[prost(enumeration = "super::compressor::Value", tag = "4")]
+        pub compressor: i32,
         /// The result of attempting to download that blob.
         #[prost(message, optional, tag = "3")]
         pub status: ::core::option::Option<
@@ -1255,6 +1434,16 @@ pub struct GetTreeRequest {
     /// that page and the ones that succeed it.
     #[prost(string, tag = "4")]
     pub page_token: ::prost::alloc::string::String,
+    /// The digest function that was used to compute the digest of the root
+    /// directory.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
+    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
+    /// that case the server SHOULD infer the digest function using the
+    /// length of the root digest hash and the digest functions announced
+    /// in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "5")]
+    pub digest_function: i32,
 }
 /// A response message for
 /// \[ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree\].
@@ -1346,6 +1535,64 @@ pub mod digest_function {
         /// cryptographic hash function and its collision properties are not strongly guaranteed.
         /// See <https://github.com/aappleby/smhasher/wiki/MurmurHash3> .
         Murmur3 = 7,
+        /// The SHA-256 digest function, modified to use a Merkle tree for
+        /// large objects. This permits implementations to store large blobs
+        /// as a decomposed sequence of 2^j sized chunks, where j >= 10,
+        /// while being able to validate integrity at the chunk level.
+        ///
+        /// Furthermore, on systems that do not offer dedicated instructions
+        /// for computing SHA-256 hashes (e.g., the Intel SHA and ARMv8
+        /// cryptographic extensions), SHA256TREE hashes can be computed more
+        /// efficiently than plain SHA-256 hashes by using generic SIMD
+        /// extensions, such as Intel AVX2 or ARM NEON.
+        ///
+        /// SHA256TREE hashes are computed as follows:
+        ///
+        /// - For blobs that are 1024 bytes or smaller, the hash is computed
+        ///    using the regular SHA-256 digest function.
+        ///
+        /// - For blobs that are more than 1024 bytes in size, the hash is
+        ///    computed as follows:
+        ///
+        ///    1. The blob is partitioned into a left (leading) and right
+        ///       (trailing) blob. These blobs have lengths m and n
+        ///       respectively, where m = 2^k and 0 < n <= m.
+        ///
+        ///    2. Hashes of the left and right blob, Hash(left) and
+        ///       Hash(right) respectively, are computed by recursively
+        ///       applying the SHA256TREE algorithm.
+        ///
+        ///    3. A single invocation is made to the SHA-256 block cipher with
+        ///       the following parameters:
+        ///
+        ///           M = Hash(left) || Hash(right)
+        ///           H = {
+        ///               0xcbbb9d5d, 0x629a292a, 0x9159015a, 0x152fecd8,
+        ///               0x67332667, 0x8eb44a87, 0xdb0c2e0d, 0x47b5481d,
+        ///           }
+        ///
+        ///       The values of H are the leading fractional parts of the
+        ///       square roots of the 9th to the 16th prime number (23 to 53).
+        ///       This differs from plain SHA-256, where the first eight prime
+        ///       numbers (2 to 19) are used, thereby preventing trivial hash
+        ///       collisions between small and large objects.
+        ///
+        ///    4. The hash of the full blob can then be obtained by
+        ///       concatenating the outputs of the block cipher:
+        ///
+        ///           Hash(blob) = a || b || c || d || e || f || g || h
+        ///
+        ///       Addition of the original values of H, as normally done
+        ///       through the use of the Davies-Meyer structure, is not
+        ///       performed. This isn't necessary, as the block cipher is only
+        ///       invoked once.
+        ///
+        /// Test vectors of this digest function can be found in the
+        /// accompanying sha256tree_test_vectors.txt file.
+        Sha256tree = 8,
+        /// The BLAKE3 hash function.
+        /// See <https://github.com/BLAKE3-team/BLAKE3.>
+        Blake3 = 9,
     }
     impl Value {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -1362,6 +1609,8 @@ pub mod digest_function {
                 Value::Sha384 => "SHA384",
                 Value::Sha512 => "SHA512",
                 Value::Murmur3 => "MURMUR3",
+                Value::Sha256tree => "SHA256TREE",
+                Value::Blake3 => "BLAKE3",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1375,6 +1624,8 @@ pub mod digest_function {
                 "SHA384" => Some(Self::Sha384),
                 "SHA512" => Some(Self::Sha512),
                 "MURMUR3" => Some(Self::Murmur3),
+                "SHA256TREE" => Some(Self::Sha256tree),
+                "BLAKE3" => Some(Self::Blake3),
                 _ => None,
             }
         }
@@ -1466,6 +1717,65 @@ pub mod symlink_absolute_path_strategy {
         }
     }
 }
+/// Compression formats which may be supported.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Compressor {}
+/// Nested message and enum types in `Compressor`.
+pub mod compressor {
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum Value {
+        /// No compression. Servers and clients MUST always support this, and do
+        /// not need to advertise it.
+        Identity = 0,
+        /// Zstandard compression.
+        Zstd = 1,
+        /// RFC 1951 Deflate. This format is identical to what is used by ZIP
+        /// files. Headers such as the one generated by gzip are not
+        /// included.
+        ///
+        /// It is advised to use algorithms such as Zstandard instead, as
+        /// those are faster and/or provide a better compression ratio.
+        Deflate = 2,
+        /// Brotli compression.
+        Brotli = 3,
+    }
+    impl Value {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Value::Identity => "IDENTITY",
+                Value::Zstd => "ZSTD",
+                Value::Deflate => "DEFLATE",
+                Value::Brotli => "BROTLI",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "IDENTITY" => Some(Self::Identity),
+                "ZSTD" => Some(Self::Zstd),
+                "DEFLATE" => Some(Self::Deflate),
+                "BROTLI" => Some(Self::Brotli),
+                _ => None,
+            }
+        }
+    }
+}
 /// Capabilities of the remote cache system.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1473,7 +1783,7 @@ pub struct CacheCapabilities {
     /// All the digest functions supported by the remote cache.
     /// Remote cache may support multiple digest functions simultaneously.
     #[prost(enumeration = "digest_function::Value", repeated, tag = "1")]
-    pub digest_function: ::prost::alloc::vec::Vec<i32>,
+    pub digest_functions: ::prost::alloc::vec::Vec<i32>,
     /// Capabilities for updating the action cache.
     #[prost(message, optional, tag = "2")]
     pub action_cache_update_capabilities: ::core::option::Option<
@@ -1491,12 +1801,28 @@ pub struct CacheCapabilities {
     /// Whether absolute symlink targets are supported.
     #[prost(enumeration = "symlink_absolute_path_strategy::Value", tag = "5")]
     pub symlink_absolute_path_strategy: i32,
+    /// Compressors supported by the "compressed-blobs" bytestream resources.
+    /// Servers MUST support identity/no-compression, even if it is not listed
+    /// here.
+    ///
+    /// Note that this does not imply which if any compressors are supported by
+    /// the server at the gRPC level.
+    #[prost(enumeration = "compressor::Value", repeated, tag = "6")]
+    pub supported_compressors: ::prost::alloc::vec::Vec<i32>,
+    /// Compressors supported for inlined data in
+    /// \[BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs\]
+    /// requests.
+    #[prost(enumeration = "compressor::Value", repeated, tag = "7")]
+    pub supported_batch_update_compressors: ::prost::alloc::vec::Vec<i32>,
 }
 /// Capabilities of the remote execution system.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionCapabilities {
-    /// Remote execution may only support a single digest function.
+    /// Legacy field for indicating which digest function is supported by the
+    /// remote execution system. It MUST be set to a value other than UNKNOWN.
+    /// Implementations should consider the repeated digest_functions field
+    /// first, falling back to this singular field if digest_functions is unset.
     #[prost(enumeration = "digest_function::Value", tag = "1")]
     pub digest_function: i32,
     /// Whether remote execution is enabled for the particular server/instance.
@@ -1510,6 +1836,20 @@ pub struct ExecutionCapabilities {
     pub supported_node_properties: ::prost::alloc::vec::Vec<
         ::prost::alloc::string::String,
     >,
+    /// All the digest functions supported by the remote execution system.
+    /// If this field is set, it MUST also contain digest_function.
+    ///
+    /// Even if the remote execution system announces support for multiple
+    /// digest functions, individual execution requests may only reference
+    /// CAS objects using a single digest function. For example, it is not
+    /// permitted to execute actions having both MD5 and SHA-256 hashed
+    /// files in their input root.
+    ///
+    /// The CAS objects referenced by action results generated by the
+    /// remote execution system MUST use the same digest function as the
+    /// one used to construct the action.
+    #[prost(enumeration = "digest_function::Value", repeated, tag = "5")]
+    pub digest_functions: ::prost::alloc::vec::Vec<i32>,
 }
 /// Details for the tool used to call the API.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -1529,7 +1869,7 @@ pub struct ToolDetails {
 ///
 /// * name: `build.bazel.remote.execution.v2.requestmetadata-bin`
 /// * contents: the base64 encoded binary `RequestMetadata` message.
-/// Note: the gRPC library serializes binary headers encoded in base 64 by
+/// Note: the gRPC library serializes binary headers encoded in base64 by
 /// default (<https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#requests>).
 /// Therefore, if the gRPC library is used to pass/retrieve this
 /// metadata, the user may ignore the base64 encoding and assume it is simply
@@ -1553,6 +1893,20 @@ pub struct RequestMetadata {
     /// runs of foo_test, bar_test and baz_test on a post-submit of a given patch.
     #[prost(string, tag = "4")]
     pub correlated_invocations_id: ::prost::alloc::string::String,
+    /// A brief description of the kind of action, for example, CppCompile or GoLink.
+    /// There is no standard agreed set of values for this, and they are expected to vary between different client tools.
+    #[prost(string, tag = "5")]
+    pub action_mnemonic: ::prost::alloc::string::String,
+    /// An identifier for the target which produced this action.
+    /// No guarantees are made around how many actions may relate to a single target.
+    #[prost(string, tag = "6")]
+    pub target_id: ::prost::alloc::string::String,
+    /// An identifier for the configuration in which the target was built,
+    /// e.g. for differentiating building host tools or different target platforms.
+    /// There is no expectation that this value will have any particular structure,
+    /// or equality across invocations, though some client tools may offer these guarantees.
+    #[prost(string, tag = "7")]
+    pub configuration_id: ::prost::alloc::string::String,
 }
 /// Generated client implementations.
 pub mod execution_client {
@@ -1709,7 +2063,12 @@ pub mod execution_client {
         /// send a [PreconditionFailure][google.rpc.PreconditionFailure] error detail
         /// where, for each requested blob not present in the CAS, there is a
         /// `Violation` with a `type` of `MISSING` and a `subject` of
-        /// `"blobs/{hash}/{size}"` indicating the digest of the missing blob.
+        /// `"blobs/{digest_function/}{hash}/{size}"` indicating the digest of the
+        /// missing blob. The `subject` is formatted the same way as the
+        /// `resource_name` provided to
+        /// [ByteStream.Read][google.bytestream.ByteStream.Read], with the leading
+        /// instance name omitted. `digest_function` MUST thus be omitted if its value
+        /// is one of MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512, or VSO.
         ///
         /// The server does not need to guarantee that a call to this method leads to
         /// at most one execution of the action. The server MAY execute the action
@@ -1755,6 +2114,14 @@ pub mod execution_client {
         /// operation completes, and then respond with the completed operation. The
         /// server MAY choose to stream additional updates as execution progresses,
         /// such as to provide an update as to the state of the execution.
+        ///
+        /// In addition to the cases describe for Execute, the WaitExecution method
+        /// may fail as follows:
+        ///
+        /// * `NOT_FOUND`: The operation no longer exists due to any of a transient
+        ///   condition, an unknown operation name, or if the server implements the
+        ///   Operations API DeleteOperation method and it was called for the current
+        ///   execution. The client should call `Execute` to retry.
         pub async fn wait_execution(
             &mut self,
             request: impl tonic::IntoRequest<super::WaitExecutionRequest>,
@@ -2001,47 +2368,118 @@ pub mod content_addressable_storage_client {
     ///
     /// For small file uploads the client should group them together and call
     /// [BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
-    /// For large uploads, the client must use the
-    /// [Write method][google.bytestream.ByteStream.Write] of the ByteStream API. The
-    /// `resource_name` is `{instance_name}/uploads/{uuid}/blobs/{hash}/{size}`,
-    /// where `instance_name` is as described in the next paragraph, `uuid` is a
-    /// version 4 UUID generated by the client, and `hash` and `size` are the
-    /// [Digest][build.bazel.remote.execution.v2.Digest] of the blob. The
-    /// `uuid` is used only to avoid collisions when multiple clients try to upload
-    /// the same file (or the same client tries to upload the file multiple times at
-    /// once on different threads), so the client MAY reuse the `uuid` for uploading
-    /// different blobs. The `resource_name` may optionally have a trailing filename
-    /// (or other metadata) for a client to use if it is storing URLs, as in
-    /// `{instance}/uploads/{uuid}/blobs/{hash}/{size}/foo/bar/baz.cc`. Anything
-    /// after the `size` is ignored.
     ///
-    /// A single server MAY support multiple instances of the execution system, each
-    /// with their own workers, storage, cache, etc. The exact relationship between
-    /// instances is up to the server. If the server does, then the `instance_name`
-    /// is an identifier, possibly containing multiple path segments, used to
-    /// distinguish between the various instances on the server, in a manner defined
-    /// by the server. For servers which do not support multiple instances, then the
-    /// `instance_name` is the empty path and the leading slash is omitted, so that
-    /// the `resource_name` becomes `uploads/{uuid}/blobs/{hash}/{size}`.
-    /// To simplify parsing, a path segment cannot equal any of the following
-    /// keywords: `blobs`, `uploads`, `actions`, `actionResults`, `operations` and
-    /// `capabilities`.
+    /// For large uploads, the client must use the
+    /// [Write method][google.bytestream.ByteStream.Write] of the ByteStream API.
+    ///
+    /// For uncompressed data, The `WriteRequest.resource_name` is of the following form:
+    /// `{instance_name}/uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`
+    ///
+    /// Where:
+    /// * `instance_name` is an identifier used to distinguish between the various
+    ///   instances on the server. Syntax and semantics of this field are defined
+    ///   by the server; Clients must not make any assumptions about it (e.g.,
+    ///   whether it spans multiple path segments or not). If it is the empty path,
+    ///   the leading slash is omitted, so that  the `resource_name` becomes
+    ///   `uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`.
+    ///   To simplify parsing, a path segment cannot equal any of the following
+    ///   keywords: `blobs`, `uploads`, `actions`, `actionResults`, `operations`,
+    ///   `capabilities` or `compressed-blobs`.
+    /// * `uuid` is a version 4 UUID generated by the client, used to avoid
+    ///   collisions between concurrent uploads of the same data. Clients MAY
+    ///   reuse the same `uuid` for uploading different blobs.
+    /// * `digest_function` is a lowercase string form of a `DigestFunction.Value`
+    ///   enum, indicating which digest function was used to compute `hash`. If the
+    ///   digest function used is one of MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512,
+    ///   or VSO, this component MUST be omitted. In that case the server SHOULD
+    ///   infer the digest function using the length of the `hash` and the digest
+    ///   functions announced in the server's capabilities.
+    /// * `hash` and `size` refer to the [Digest][build.bazel.remote.execution.v2.Digest]
+    ///   of the data being uploaded.
+    /// * `optional_metadata` is implementation specific data, which clients MAY omit.
+    ///   Servers MAY ignore this metadata.
+    ///
+    /// Data can alternatively be uploaded in compressed form, with the following
+    /// `WriteRequest.resource_name` form:
+    /// `{instance_name}/uploads/{uuid}/compressed-blobs/{compressor}/{digest_function/}{uncompressed_hash}/{uncompressed_size}{/optional_metadata}`
+    ///
+    /// Where:
+    /// * `instance_name`, `uuid`, `digest_function` and `optional_metadata` are
+    ///   defined as above.
+    /// * `compressor` is a lowercase string form of a `Compressor.Value` enum
+    ///   other than `identity`, which is supported by the server and advertised in
+    ///   [CacheCapabilities.supported_compressor][build.bazel.remote.execution.v2.CacheCapabilities.supported_compressor].
+    /// * `uncompressed_hash` and `uncompressed_size` refer to the
+    ///   [Digest][build.bazel.remote.execution.v2.Digest] of the data being
+    ///   uploaded, once uncompressed. Servers MUST verify that these match
+    ///   the uploaded data once uncompressed, and MUST return an
+    ///   `INVALID_ARGUMENT` error in the case of mismatch.
+    ///
+    /// Note that when writing compressed blobs, the `WriteRequest.write_offset` in
+    /// the initial request in a stream refers to the offset in the uncompressed form
+    /// of the blob. In subsequent requests, `WriteRequest.write_offset` MUST be the
+    /// sum of the first request's 'WriteRequest.write_offset' and the total size of
+    /// all the compressed data bundles in the previous requests.
+    /// Note that this mixes an uncompressed offset with a compressed byte length,
+    /// which is nonsensical, but it is done to fit the semantics of the existing
+    /// ByteStream protocol.
+    ///
+    /// Uploads of the same data MAY occur concurrently in any form, compressed or
+    /// uncompressed.
+    ///
+    /// Clients SHOULD NOT use gRPC-level compression for ByteStream API `Write`
+    /// calls of compressed blobs, since this would compress already-compressed data.
     ///
     /// When attempting an upload, if another client has already completed the upload
     /// (which may occur in the middle of a single upload if another client uploads
-    /// the same blob concurrently), the request will terminate immediately with
-    /// a response whose `committed_size` is the full size of the uploaded file
-    /// (regardless of how much data was transmitted by the client). If the client
-    /// completes the upload but the
+    /// the same blob concurrently), the request will terminate immediately without
+    /// error, and with a response whose `committed_size` is the value `-1` if this
+    /// is a compressed upload, or with the full size of the uploaded file if this is
+    /// an uncompressed upload (regardless of how much data was transmitted by the
+    /// client). If the client completes the upload but the
     /// [Digest][build.bazel.remote.execution.v2.Digest] does not match, an
     /// `INVALID_ARGUMENT` error will be returned. In either case, the client should
     /// not attempt to retry the upload.
     ///
-    /// For downloading blobs, the client must use the
-    /// [Read method][google.bytestream.ByteStream.Read] of the ByteStream API, with
-    /// a `resource_name` of `"{instance_name}/blobs/{hash}/{size}"`, where
-    /// `instance_name` is the instance name (see above), and `hash` and `size` are
-    /// the [Digest][build.bazel.remote.execution.v2.Digest] of the blob.
+    /// Small downloads can be grouped and requested in a batch via
+    /// [BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
+    ///
+    /// For large downloads, the client must use the
+    /// [Read method][google.bytestream.ByteStream.Read] of the ByteStream API.
+    ///
+    /// For uncompressed data, The `ReadRequest.resource_name` is of the following form:
+    /// `{instance_name}/blobs/{digest_function/}{hash}/{size}`
+    /// Where `instance_name`, `digest_function`, `hash` and `size` are defined as
+    /// for uploads.
+    ///
+    /// Data can alternatively be downloaded in compressed form, with the following
+    /// `ReadRequest.resource_name` form:
+    /// `{instance_name}/compressed-blobs/{compressor}/{digest_function/}{uncompressed_hash}/{uncompressed_size}`
+    ///
+    /// Where:
+    /// * `instance_name`, `compressor` and `digest_function` are defined as for
+    ///   uploads.
+    /// * `uncompressed_hash` and `uncompressed_size` refer to the
+    ///   [Digest][build.bazel.remote.execution.v2.Digest] of the data being
+    ///   downloaded, once uncompressed. Clients MUST verify that these match
+    ///   the downloaded data once uncompressed, and take appropriate steps in
+    ///   the case of failure such as retrying a limited number of times or
+    ///   surfacing an error to the user.
+    ///
+    /// When downloading compressed blobs:
+    /// * `ReadRequest.read_offset` refers to the offset in the uncompressed form
+    ///   of the blob.
+    /// * Servers MUST return `INVALID_ARGUMENT` if `ReadRequest.read_limit` is
+    ///   non-zero.
+    /// * Servers MAY use any compression level they choose, including different
+    ///   levels for different blobs (e.g. choosing a level designed for maximum
+    ///   speed for data known to be incompressible).
+    /// * Clients SHOULD NOT use gRPC-level compression, since this would compress
+    ///   already-compressed data.
+    ///
+    /// Servers MUST be able to provide data for all recently advertised blobs in
+    /// each of the compression formats that the server supports, as well as in
+    /// uncompressed form.
     ///
     /// The lifetime of entries in the CAS is implementation specific, but it SHOULD
     /// be long enough to allow for newly-added and recently looked-up entries to be
@@ -2435,6 +2873,8 @@ pub mod capabilities_client {
         ///   CacheCapabilities and ExecutionCapabilities.
         /// * Execution only endpoints should return ExecutionCapabilities.
         /// * CAS + Action Cache only endpoints should return CacheCapabilities.
+        ///
+        /// There are no method-specific errors.
         pub async fn get_capabilities(
             &mut self,
             request: impl tonic::IntoRequest<super::GetCapabilitiesRequest>,
@@ -2545,7 +2985,12 @@ pub mod execution_server {
         /// send a [PreconditionFailure][google.rpc.PreconditionFailure] error detail
         /// where, for each requested blob not present in the CAS, there is a
         /// `Violation` with a `type` of `MISSING` and a `subject` of
-        /// `"blobs/{hash}/{size}"` indicating the digest of the missing blob.
+        /// `"blobs/{digest_function/}{hash}/{size}"` indicating the digest of the
+        /// missing blob. The `subject` is formatted the same way as the
+        /// `resource_name` provided to
+        /// [ByteStream.Read][google.bytestream.ByteStream.Read], with the leading
+        /// instance name omitted. `digest_function` MUST thus be omitted if its value
+        /// is one of MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512, or VSO.
         ///
         /// The server does not need to guarantee that a call to this method leads to
         /// at most one execution of the action. The server MAY execute the action
@@ -2570,6 +3015,14 @@ pub mod execution_server {
         /// operation completes, and then respond with the completed operation. The
         /// server MAY choose to stream additional updates as execution progresses,
         /// such as to provide an update as to the state of the execution.
+        ///
+        /// In addition to the cases describe for Execute, the WaitExecution method
+        /// may fail as follows:
+        ///
+        /// * `NOT_FOUND`: The operation no longer exists due to any of a transient
+        ///   condition, an unknown operation name, or if the server implements the
+        ///   Operations API DeleteOperation method and it was called for the current
+        ///   execution. The client should call `Execute` to retry.
         async fn wait_execution(
             &self,
             request: tonic::Request<super::WaitExecutionRequest>,
@@ -3205,47 +3658,118 @@ pub mod content_addressable_storage_server {
     ///
     /// For small file uploads the client should group them together and call
     /// [BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
-    /// For large uploads, the client must use the
-    /// [Write method][google.bytestream.ByteStream.Write] of the ByteStream API. The
-    /// `resource_name` is `{instance_name}/uploads/{uuid}/blobs/{hash}/{size}`,
-    /// where `instance_name` is as described in the next paragraph, `uuid` is a
-    /// version 4 UUID generated by the client, and `hash` and `size` are the
-    /// [Digest][build.bazel.remote.execution.v2.Digest] of the blob. The
-    /// `uuid` is used only to avoid collisions when multiple clients try to upload
-    /// the same file (or the same client tries to upload the file multiple times at
-    /// once on different threads), so the client MAY reuse the `uuid` for uploading
-    /// different blobs. The `resource_name` may optionally have a trailing filename
-    /// (or other metadata) for a client to use if it is storing URLs, as in
-    /// `{instance}/uploads/{uuid}/blobs/{hash}/{size}/foo/bar/baz.cc`. Anything
-    /// after the `size` is ignored.
     ///
-    /// A single server MAY support multiple instances of the execution system, each
-    /// with their own workers, storage, cache, etc. The exact relationship between
-    /// instances is up to the server. If the server does, then the `instance_name`
-    /// is an identifier, possibly containing multiple path segments, used to
-    /// distinguish between the various instances on the server, in a manner defined
-    /// by the server. For servers which do not support multiple instances, then the
-    /// `instance_name` is the empty path and the leading slash is omitted, so that
-    /// the `resource_name` becomes `uploads/{uuid}/blobs/{hash}/{size}`.
-    /// To simplify parsing, a path segment cannot equal any of the following
-    /// keywords: `blobs`, `uploads`, `actions`, `actionResults`, `operations` and
-    /// `capabilities`.
+    /// For large uploads, the client must use the
+    /// [Write method][google.bytestream.ByteStream.Write] of the ByteStream API.
+    ///
+    /// For uncompressed data, The `WriteRequest.resource_name` is of the following form:
+    /// `{instance_name}/uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`
+    ///
+    /// Where:
+    /// * `instance_name` is an identifier used to distinguish between the various
+    ///   instances on the server. Syntax and semantics of this field are defined
+    ///   by the server; Clients must not make any assumptions about it (e.g.,
+    ///   whether it spans multiple path segments or not). If it is the empty path,
+    ///   the leading slash is omitted, so that  the `resource_name` becomes
+    ///   `uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`.
+    ///   To simplify parsing, a path segment cannot equal any of the following
+    ///   keywords: `blobs`, `uploads`, `actions`, `actionResults`, `operations`,
+    ///   `capabilities` or `compressed-blobs`.
+    /// * `uuid` is a version 4 UUID generated by the client, used to avoid
+    ///   collisions between concurrent uploads of the same data. Clients MAY
+    ///   reuse the same `uuid` for uploading different blobs.
+    /// * `digest_function` is a lowercase string form of a `DigestFunction.Value`
+    ///   enum, indicating which digest function was used to compute `hash`. If the
+    ///   digest function used is one of MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512,
+    ///   or VSO, this component MUST be omitted. In that case the server SHOULD
+    ///   infer the digest function using the length of the `hash` and the digest
+    ///   functions announced in the server's capabilities.
+    /// * `hash` and `size` refer to the [Digest][build.bazel.remote.execution.v2.Digest]
+    ///   of the data being uploaded.
+    /// * `optional_metadata` is implementation specific data, which clients MAY omit.
+    ///   Servers MAY ignore this metadata.
+    ///
+    /// Data can alternatively be uploaded in compressed form, with the following
+    /// `WriteRequest.resource_name` form:
+    /// `{instance_name}/uploads/{uuid}/compressed-blobs/{compressor}/{digest_function/}{uncompressed_hash}/{uncompressed_size}{/optional_metadata}`
+    ///
+    /// Where:
+    /// * `instance_name`, `uuid`, `digest_function` and `optional_metadata` are
+    ///   defined as above.
+    /// * `compressor` is a lowercase string form of a `Compressor.Value` enum
+    ///   other than `identity`, which is supported by the server and advertised in
+    ///   [CacheCapabilities.supported_compressor][build.bazel.remote.execution.v2.CacheCapabilities.supported_compressor].
+    /// * `uncompressed_hash` and `uncompressed_size` refer to the
+    ///   [Digest][build.bazel.remote.execution.v2.Digest] of the data being
+    ///   uploaded, once uncompressed. Servers MUST verify that these match
+    ///   the uploaded data once uncompressed, and MUST return an
+    ///   `INVALID_ARGUMENT` error in the case of mismatch.
+    ///
+    /// Note that when writing compressed blobs, the `WriteRequest.write_offset` in
+    /// the initial request in a stream refers to the offset in the uncompressed form
+    /// of the blob. In subsequent requests, `WriteRequest.write_offset` MUST be the
+    /// sum of the first request's 'WriteRequest.write_offset' and the total size of
+    /// all the compressed data bundles in the previous requests.
+    /// Note that this mixes an uncompressed offset with a compressed byte length,
+    /// which is nonsensical, but it is done to fit the semantics of the existing
+    /// ByteStream protocol.
+    ///
+    /// Uploads of the same data MAY occur concurrently in any form, compressed or
+    /// uncompressed.
+    ///
+    /// Clients SHOULD NOT use gRPC-level compression for ByteStream API `Write`
+    /// calls of compressed blobs, since this would compress already-compressed data.
     ///
     /// When attempting an upload, if another client has already completed the upload
     /// (which may occur in the middle of a single upload if another client uploads
-    /// the same blob concurrently), the request will terminate immediately with
-    /// a response whose `committed_size` is the full size of the uploaded file
-    /// (regardless of how much data was transmitted by the client). If the client
-    /// completes the upload but the
+    /// the same blob concurrently), the request will terminate immediately without
+    /// error, and with a response whose `committed_size` is the value `-1` if this
+    /// is a compressed upload, or with the full size of the uploaded file if this is
+    /// an uncompressed upload (regardless of how much data was transmitted by the
+    /// client). If the client completes the upload but the
     /// [Digest][build.bazel.remote.execution.v2.Digest] does not match, an
     /// `INVALID_ARGUMENT` error will be returned. In either case, the client should
     /// not attempt to retry the upload.
     ///
-    /// For downloading blobs, the client must use the
-    /// [Read method][google.bytestream.ByteStream.Read] of the ByteStream API, with
-    /// a `resource_name` of `"{instance_name}/blobs/{hash}/{size}"`, where
-    /// `instance_name` is the instance name (see above), and `hash` and `size` are
-    /// the [Digest][build.bazel.remote.execution.v2.Digest] of the blob.
+    /// Small downloads can be grouped and requested in a batch via
+    /// [BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
+    ///
+    /// For large downloads, the client must use the
+    /// [Read method][google.bytestream.ByteStream.Read] of the ByteStream API.
+    ///
+    /// For uncompressed data, The `ReadRequest.resource_name` is of the following form:
+    /// `{instance_name}/blobs/{digest_function/}{hash}/{size}`
+    /// Where `instance_name`, `digest_function`, `hash` and `size` are defined as
+    /// for uploads.
+    ///
+    /// Data can alternatively be downloaded in compressed form, with the following
+    /// `ReadRequest.resource_name` form:
+    /// `{instance_name}/compressed-blobs/{compressor}/{digest_function/}{uncompressed_hash}/{uncompressed_size}`
+    ///
+    /// Where:
+    /// * `instance_name`, `compressor` and `digest_function` are defined as for
+    ///   uploads.
+    /// * `uncompressed_hash` and `uncompressed_size` refer to the
+    ///   [Digest][build.bazel.remote.execution.v2.Digest] of the data being
+    ///   downloaded, once uncompressed. Clients MUST verify that these match
+    ///   the downloaded data once uncompressed, and take appropriate steps in
+    ///   the case of failure such as retrying a limited number of times or
+    ///   surfacing an error to the user.
+    ///
+    /// When downloading compressed blobs:
+    /// * `ReadRequest.read_offset` refers to the offset in the uncompressed form
+    ///   of the blob.
+    /// * Servers MUST return `INVALID_ARGUMENT` if `ReadRequest.read_limit` is
+    ///   non-zero.
+    /// * Servers MAY use any compression level they choose, including different
+    ///   levels for different blobs (e.g. choosing a level designed for maximum
+    ///   speed for data known to be incompressible).
+    /// * Clients SHOULD NOT use gRPC-level compression, since this would compress
+    ///   already-compressed data.
+    ///
+    /// Servers MUST be able to provide data for all recently advertised blobs in
+    /// each of the compression formats that the server supports, as well as in
+    /// uncompressed form.
     ///
     /// The lifetime of entries in the CAS is implementation specific, but it SHOULD
     /// be long enough to allow for newly-added and recently looked-up entries to be
@@ -3580,6 +4104,8 @@ pub mod capabilities_server {
         ///   CacheCapabilities and ExecutionCapabilities.
         /// * Execution only endpoints should return ExecutionCapabilities.
         /// * CAS + Action Cache only endpoints should return CacheCapabilities.
+        ///
+        /// There are no method-specific errors.
         async fn get_capabilities(
             &self,
             request: tonic::Request<super::GetCapabilitiesRequest>,

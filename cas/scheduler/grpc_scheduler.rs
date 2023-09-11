@@ -26,8 +26,8 @@ use common::log;
 use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformPropertyManager;
 use proto::build::bazel::remote::execution::v2::{
-    capabilities_client::CapabilitiesClient, execution_client::ExecutionClient, ExecuteRequest, ExecutionPolicy,
-    GetCapabilitiesRequest, WaitExecutionRequest,
+    capabilities_client::CapabilitiesClient, digest_function, execution_client::ExecutionClient, ExecuteRequest,
+    ExecutionPolicy, GetCapabilitiesRequest, WaitExecutionRequest,
 };
 use proto::google::longrunning::Operation;
 use scheduler::ActionScheduler;
@@ -133,6 +133,7 @@ impl ActionScheduler for GrpcScheduler {
             execution_policy,
             // TODO: Get me from the original request, not very important as we ignore it.
             results_cache_policy: None,
+            digest_function: digest_function::Value::Sha256.into(),
         };
         let result_stream = self
             .execution_client

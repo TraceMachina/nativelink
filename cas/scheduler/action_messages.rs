@@ -30,9 +30,9 @@ use metrics_utils::{CollectorState, MetricsComponent};
 use platform_property_manager::PlatformProperties;
 use prost::bytes::Bytes;
 use proto::build::bazel::remote::execution::v2::{
-    execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
-    ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile, OutputSymlink,
-    SymlinkNode,
+    digest_function, execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata,
+    ExecuteRequest, ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile,
+    OutputSymlink, SymlinkNode,
 };
 use proto::google::longrunning::{operation::Result as LongRunningResult, Operation};
 use proto::google::rpc::Status;
@@ -212,6 +212,7 @@ impl From<ActionInfo> for ExecuteRequest {
             skip_cache_lookup: true,    // The worker should never cache lookup.
             execution_policy: None,     // Not used in the worker.
             results_cache_policy: None, // Not used in the worker.
+            digest_function: digest_function::Value::Sha256.into(),
         }
     }
 }
@@ -459,6 +460,7 @@ impl From<DirectoryInfo> for OutputDirectory {
         Self {
             path: val.path,
             tree_digest: Some(val.tree_digest.into()),
+            is_topologically_sorted: false,
         }
     }
 }
@@ -509,6 +511,11 @@ impl From<ExecutionMetadata> for ExecutedActionMetadata {
             execution_completed_timestamp: Some(val.execution_completed_timestamp.into()),
             output_upload_start_timestamp: Some(val.output_upload_start_timestamp.into()),
             output_upload_completed_timestamp: Some(val.output_upload_completed_timestamp.into()),
+            virtual_execution_duration: val
+                .execution_completed_timestamp
+                .duration_since(val.execution_start_timestamp)
+                .ok()
+                .and_then(|duration| prost_types::Duration::try_from(duration).ok()),
             auxiliary_metadata: Vec::default(),
         }
     }
@@ -928,6 +935,7 @@ impl From<ActionState> for Operation {
             // TODO(blaise.bruer) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
+            partial_execution_metadata: None,
         };
 
         Self {

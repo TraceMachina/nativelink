@@ -20,7 +20,7 @@ use prometheus_client::registry::Registry;
 use tonic::Request;
 
 use proto::build::bazel::remote::execution::v2::{
-    content_addressable_storage_server::ContentAddressableStorage, Digest,
+    compressor, content_addressable_storage_server::ContentAddressableStorage, digest_function, Digest,
 };
 use proto::google::rpc::Status as GrpcStatus;
 
@@ -80,6 +80,7 @@ mod find_missing_blobs {
                     hash: HASH1.to_string(),
                     size_bytes: 0,
                 }],
+                digest_function: digest_function::Value::Sha256.into(),
             }))
             .await;
         assert!(raw_response.is_ok());
@@ -107,6 +108,7 @@ mod find_missing_blobs {
                     hash: HASH1.to_string(),
                     size_bytes: VALUE.len() as i64,
                 }],
+                digest_function: digest_function::Value::Sha256.into(),
             }))
             .await;
         assert!(raw_response.is_ok());
@@ -144,6 +146,7 @@ mod find_missing_blobs {
                         size_bytes: VALUE.len() as i64,
                     },
                 ],
+                digest_function: digest_function::Value::Sha256.into(),
             }))
             .await;
         let error = raw_response.unwrap_err();
@@ -191,7 +194,9 @@ mod batch_update_blobs {
                 requests: vec![batch_update_blobs_request::Request {
                     digest: Some(digest.clone()),
                     data: VALUE2.into(),
+                    compressor: compressor::Value::Identity.into(),
                 }],
+                digest_function: digest_function::Value::Sha256.into(),
             }))
             .await;
         assert!(raw_response.is_ok());
@@ -270,6 +275,8 @@ mod batch_read_blobs {
                 .batch_read_blobs(Request::new(BatchReadBlobsRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     digests: vec![digest1.clone(), digest2.clone(), digest3.clone()],
+                    acceptable_compressors: vec![compressor::Value::Identity.into()],
+                    digest_function: digest_function::Value::Sha256.into(),
                 }))
                 .await;
             assert!(raw_response.is_ok());
@@ -285,6 +292,7 @@ mod batch_read_blobs {
                                 message: "".to_string(),
                                 details: vec![],
                             }),
+                            compressor: compressor::Value::Identity.into(),
                         },
                         batch_read_blobs_response::Response {
                             digest: Some(digest2),
@@ -294,6 +302,7 @@ mod batch_read_blobs {
                                 message: "".to_string(),
                                 details: vec![],
                             }),
+                            compressor: compressor::Value::Identity.into(),
                         },
                         batch_read_blobs_response::Response {
                             digest: Some(digest3.clone()),
@@ -303,6 +312,7 @@ mod batch_read_blobs {
                                 message: format!("Hash {} not found", digest3.hash),
                                 details: vec![],
                             }),
+                            compressor: compressor::Value::Identity.into(),
                         }
                     ],
                 }
@@ -348,12 +358,15 @@ mod end_to_end {
                         batch_update_blobs_request::Request {
                             digest: Some(digest1.clone()),
                             data: VALUE1.into(),
+                            compressor: compressor::Value::Identity.into(),
                         },
                         batch_update_blobs_request::Request {
                             digest: Some(digest2.clone()),
                             data: VALUE2.into(),
+                            compressor: compressor::Value::Identity.into(),
                         },
                     ],
+                    digest_function: digest_function::Value::Sha256.into(),
                 }))
                 .await;
             assert!(raw_response.is_ok());
@@ -402,6 +415,7 @@ mod end_to_end {
                             size_bytes: VALUE2.len() as i64,
                         },
                     ],
+                    digest_function: digest_function::Value::Sha256.into(),
                 }))
                 .await;
             assert!(raw_response.is_ok());

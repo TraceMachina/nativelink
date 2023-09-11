@@ -46,8 +46,12 @@ where
             .err_tip(|| "Error receiving first message in stream")?
             .err_tip(|| "Expected WriteRequest struct in stream")?;
 
-        let resource_info = ResourceInfo::new(&first_msg.resource_name)
-            .err_tip(|| "Could not extract resource info from first message of stream")?;
+        let resource_info = ResourceInfo::new(&first_msg.resource_name).err_tip(|| {
+            format!(
+                "Could not extract resource info from first message of stream: {}",
+                first_msg.resource_name
+            )
+        })?;
         let instance_name = resource_info.instance_name.to_string();
         let hash = resource_info.hash.to_string();
         let expected_size = resource_info.expected_size;

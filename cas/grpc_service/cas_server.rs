@@ -28,7 +28,7 @@ use config::cas_server::{CasStoreConfig, InstanceName};
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use grpc_store::GrpcStore;
 use proto::build::bazel::remote::execution::v2::{
-    batch_read_blobs_response, batch_update_blobs_response,
+    batch_read_blobs_response, batch_update_blobs_response, compressor,
     content_addressable_storage_server::ContentAddressableStorage,
     content_addressable_storage_server::ContentAddressableStorageServer as Server, BatchReadBlobsRequest,
     BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, FindMissingBlobsRequest,
@@ -189,6 +189,7 @@ impl CasServer {
                 Ok::<_, Error>(batch_read_blobs_response::Response {
                     status: Some(status),
                     digest: Some(digest),
+                    compressor: compressor::Value::Identity.into(),
                     data,
                 })
             })

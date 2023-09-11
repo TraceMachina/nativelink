@@ -130,6 +130,7 @@ rust_test(
         "//util:common",
         "//util:error",
         "@crate_index//:pretty_assertions",
+        "@crate_index//:prost-types",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
         "@crate_index//:tonic",

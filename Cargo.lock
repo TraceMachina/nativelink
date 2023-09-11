@@ -3641,6 +3641,7 @@ dependencies = [
  "error",
  "platform_property_manager",
  "pretty_assertions",
+ "prost-types",
  "proto",
  "scheduler",
  "simple_scheduler",
