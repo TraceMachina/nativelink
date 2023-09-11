@@ -54,6 +54,7 @@ mod fs_tests {
             assert_eq!(fs::get_open_files_for_test(), 0);
             file.as_writer().await?.write_all(b"Goodbye").await?;
             assert_eq!(fs::get_open_files_for_test(), 1);
+            file.as_writer().await?.flush().await?;
             file.as_writer().await?.as_mut().sync_all().await?;
         }
         assert_eq!(fs::get_open_files_for_test(), 0);
@@ -74,6 +75,7 @@ mod fs_tests {
         {
             let mut file = fs::create_file(&filename).await?;
             file.as_writer().await?.write_all(DUMMYDATA.as_bytes()).await?;
+            file.as_writer().await?.flush().await?;
             file.as_writer().await?.as_mut().sync_all().await?;
         }
         {
@@ -105,6 +107,7 @@ mod fs_tests {
         {
             let mut file = fs::create_file(&filename).await?;
             file.as_writer().await?.write_all(DUMMYDATA.as_bytes()).await?;
+            file.as_writer().await?.flush().await?;
             file.as_writer().await?.as_mut().sync_all().await?;
         }
         {
@@ -140,6 +143,7 @@ mod fs_tests {
         {
             let mut file = fs::create_file(&filename).await?;
             file.as_writer().await?.write_all(DUMMYDATA.as_bytes()).await?;
+            file.as_writer().await?.flush().await?;
             file.as_writer().await?.as_mut().sync_all().await?;
         }
         {

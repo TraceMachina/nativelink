@@ -64,6 +64,7 @@ mod ac_utils_tests {
             file.write_all(&expected_data)
                 .await
                 .err_tip(|| "Could not write to file")?;
+            file.flush().await.err_tip(|| "Could not flush file")?;
             file.sync_all().await.err_tip(|| "Could not sync file")?;
         }
         {

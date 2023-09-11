@@ -1012,7 +1012,13 @@ mod running_actions_manager_tests {
         #[cfg(target_family = "unix")]
         let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
         #[cfg(target_family = "windows")]
-        let arguments = vec!["cmd".to_string(), "/C".to_string(), "Timeout 99999".to_string()];
+        // Windows is weird with timeout, so we use ping. See:
+        // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately
+        let arguments = vec![
+            "cmd".to_string(),
+            "/C".to_string(),
+            "ping -n 99999 127.0.0.1".to_string(),
+        ];
 
         let command = Command {
             arguments,
@@ -1106,14 +1112,20 @@ exit 0
                 .await?
                 .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
                 .await?;
+            #[cfg(target_family = "unix")]
+            test_wrapper_script_handle
+                .as_writer()
+                .await?
+                .as_mut()
+                .set_permissions(Permissions::from_mode(0o755))
+                .await?;
+            test_wrapper_script_handle.as_writer().await?.flush().await?;
             test_wrapper_script_handle
                 .as_writer()
                 .await?
                 .as_mut()
                 .sync_all()
                 .await?;
-            #[cfg(target_family = "unix")]
-            fs::set_permissions(&test_wrapper_script, Permissions::from_mode(0o755)).await?;
             test_wrapper_script
         };
 
@@ -1536,7 +1548,13 @@ exit 0
         #[cfg(target_family = "unix")]
         let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
         #[cfg(target_family = "windows")]
-        let arguments = vec!["cmd".to_string(), "/C".to_string(), "timeout 99999".to_string()];
+        // Windows is weird with timeout, so we use ping. See:
+        // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately
+        let arguments = vec![
+            "cmd".to_string(),
+            "/C".to_string(),
+            "ping -n 99999 127.0.0.1".to_string(),
+        ];
 
         let command = Command {
             arguments,
@@ -1619,7 +1637,13 @@ exit 0
         #[cfg(target_family = "unix")]
         let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
         #[cfg(target_family = "windows")]
-        let arguments = vec!["cmd".to_string(), "/C".to_string(), "Timeout 99999".to_string()];
+        // Windows is weird with timeout, so we use ping. See:
+        // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately
+        let arguments = vec![
+            "cmd".to_string(),
+            "/C".to_string(),
+            "ping -n 99999 127.0.0.1".to_string(),
+        ];
 
         let command = Command {
             arguments,
@@ -1701,7 +1725,7 @@ exit 0
             let err = action_result
                 .error
                 .as_ref()
-                .err_tip(|| format!("{:?}", action_result))?;
+                .err_tip(|| format!("No error exists in result : {:?}", action_result))?;
             assert_eq!(err.code, Code::Aborted, "Expected Aborted : {action_result:?}");
         }
 
