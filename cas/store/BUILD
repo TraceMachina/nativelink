@@ -157,6 +157,7 @@ rust_library(
         "//util:common",
         "//util:error",
         "//util:metrics_utils",
+        "@crate_index//:bytes",
         "@crate_index//:futures",
     ],
 )
