@@ -51,10 +51,12 @@ RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} //cas && \
 # Go back to a fresh ubuntu container and copy only the compiled binary.
 FROM ubuntu:${OS_VERSION} as final
 COPY --from=builder /root/turbo-cache-bin /usr/local/bin/turbo-cache
+ARG OS_VERSION
 # Install runtime packages.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        libssl-dev ca-certificates
+        $( [[ "$OS_VERSION" == "18.04" ]] && echo libssl1.0-dev || echo libssl-dev ) \
+        ca-certificates
 # Install any specific dependencies needed by the user.
 ARG ADDITIONAL_SETUP_WORKER_CMD
 RUN bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}"

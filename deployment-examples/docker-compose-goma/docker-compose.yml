@@ -1,0 +1,98 @@
+# Copyright 2023 The Turbo Cache Authors. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+version: '3.4'
+
+services:
+  turbo_cache_local_cas:
+    extends:
+      file: ../docker-compose/docker-compose.yml
+      service: turbo_cache_local_cas
+    volumes:
+      - type: bind
+        source: ./local-storage-cas.json
+        target: /root/local-storage-cas.json
+    ports: [ "50051:50051/tcp" ]
+
+  turbo_cache_scheduler:
+    extends:
+      file: ../docker-compose/docker-compose.yml
+      service: turbo_cache_scheduler
+    volumes:
+      - type: bind
+        source: ./scheduler.json
+        target: /root/scheduler.json
+    ports: [ "50052:50052/tcp" ]
+
+  turbo_cache_executor:
+    extends:
+      file: ../docker-compose/docker-compose.yml
+      service: turbo_cache_executor
+    volumes:
+      - type: bind
+        source: ./worker.json
+        target: /root/worker.json
+      - type: bind
+        source: ./precondition_script.sh
+        target: /root/precondition_script.sh
+    build:
+      args:
+        # Install build dependencies for Chromium into our worker.
+        - "ADDITIONAL_SETUP_WORKER_CMD=apt-get -y install curl lsb-release sudo file && \
+            curl https://chromium.googlesource.com/chromium/src/+/refs/heads/main/build/install-build-deps.py?format=TEXT > /tmp/install-build-deps.py.b64 && \
+            base64 -d /tmp/install-build-deps.py.b64 > /tmp/install-build-deps.py && \
+            chmod +x /tmp/install-build-deps.py && \
+            /tmp/install-build-deps.py --no-prompt --no-arm --no-chromeos-fonts --no-nacl"
+
+  # Use Redis to keep DigestCache for Goma otherwise it will require all
+  # files to be uploaded every restart.
+  redis:
+    image: bitnami/redis:latest
+    volumes:
+      - redis-file-digest-cache:/bitnami/redis/data:z
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+    restart: always
+
+  goma:
+    build:
+      context: ./turbo-cache-goma
+    image: turbo-cache-goma:local
+    depends_on:
+      - redis
+      - turbo_cache_scheduler
+    environment:
+      REDISHOST: "redis"
+      REDISPORT: "6379"
+    ports:
+      - "5050:5050/tcp"
+    restart: always
+    command: >
+      /remoteexec_proxy
+       --port 5050
+       --remoteexec-addr turbo_cache_scheduler:50052
+       --remote-instance-name main
+       --insecure-remoteexec
+       --exec-missing-input-limit 0
+       --exec-check-missing-timeout 60s
+       --exec-check-cache-timeout 10s
+       --exec-response-timeout 30s
+       --exec-upload-blobs-timeout 120s
+       --exec-execute-timeout 120s
+       --exec-input-tree-timeout 60s
+       --exec-setup-timeout 60s
+       --allowed-users thegreatall@gmail.com
+
+volumes:
+  redis-file-digest-cache:
