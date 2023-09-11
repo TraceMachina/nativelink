@@ -574,6 +574,11 @@ impl StoreTrait for GrpcStore {
             return self.get_action_result_as_part(digest, writer, offset, length).await;
         }
 
+        // Shortcut for empty blobs.
+        if digest.size_bytes == 0 {
+            return writer.send_eof().await;
+        }
+
         let resource_name = format!(
             "{}/blobs/{}/{}",
             &self.instance_name,
