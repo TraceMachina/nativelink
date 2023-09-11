@@ -182,6 +182,7 @@ async fn write_file(file_name: &OsStr, data: &[u8]) -> Result<(), Error> {
         .await
         .err_tip(|| format!("Failed to create file: {file_name:?}"))?;
     file.as_writer().await?.write_all(data).await?;
+    file.as_writer().await?.flush().await?;
     file.as_writer()
         .await?
         .as_mut()
