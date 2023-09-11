@@ -56,8 +56,8 @@ use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
 use grpc_store::GrpcStore;
 use proto::build::bazel::remote::execution::v2::{
-    Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode, FileNode, SymlinkNode,
-    Tree as ProtoTree,
+    digest_function, Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode, FileNode,
+    SymlinkNode, Tree as ProtoTree,
 };
 use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, UpdateActionResultRequest};
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
@@ -595,6 +595,7 @@ impl RunningActionImpl {
             .stderr(Stdio::piped())
             .current_dir(format!("{}/{}", self.work_directory, command_proto.working_directory))
             .env_clear();
+
         #[cfg(target_family = "unix")]
         let envs = &command_proto.environment_variables;
         // If SystemRoot is not set on windows we set it to default. Failing to do
@@ -1257,6 +1258,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                         action_digest: Some(action_digest.into()),
                         action_result: Some(proto_action_result),
                         results_cache_policy: None,
+                        digest_function: digest_function::Value::Sha256.into(),
                     };
                     grpc_store
                         .update_action_result(Request::new(update_action_request))

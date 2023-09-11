@@ -94,15 +94,18 @@ impl Capabilities for CapabilitiesServer {
                 }],
             }),
             supported_node_properties: props_for_instance.clone(),
+            digest_functions: vec![DigestFunction::Sha256.into()],
         });
 
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {
-                digest_function: vec![DigestFunction::Sha256.into()],
+                digest_functions: vec![DigestFunction::Sha256.into()],
                 action_cache_update_capabilities: Some(ActionCacheUpdateCapabilities { update_enabled: true }),
                 cache_priority_capabilities: None,
                 max_batch_total_size_bytes: MAX_BATCH_TOTAL_SIZE,
                 symlink_absolute_path_strategy: SymlinkAbsolutePathStrategy::Disallowed.into(),
+                supported_compressors: vec![],
+                supported_batch_update_compressors: vec![],
             }),
             execution_capabilities,
             deprecated_api_version: None,
@@ -114,7 +117,7 @@ impl Capabilities for CapabilitiesServer {
             }),
             high_api_version: Some(SemVer {
                 major: 2,
-                minor: 0,
+                minor: 3,
                 patch: 0,
                 prerelease: "".to_string(),
             }),

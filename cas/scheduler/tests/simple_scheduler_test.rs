@@ -26,7 +26,7 @@ use action_messages::{
 use common::DigestInfo;
 use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
-use proto::build::bazel::remote::execution::v2::ExecuteRequest;
+use proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
 use proto::com::github::allada::turbo_cache::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
@@ -115,6 +115,7 @@ mod scheduler_tests {
                         instance_name: INSTANCE_NAME.to_string(),
                         skip_cache_lookup: true,
                         action_digest: Some(action_digest.into()),
+                        digest_function: digest_function::Value::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -172,6 +173,7 @@ mod scheduler_tests {
                         instance_name: INSTANCE_NAME.to_string(),
                         skip_cache_lookup: true,
                         action_digest: Some(action_digest.into()),
+                        digest_function: digest_function::Value::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -250,6 +252,7 @@ mod scheduler_tests {
                     instance_name: INSTANCE_NAME.to_string(),
                     skip_cache_lookup: true,
                     action_digest: Some(action_digest1.into()),
+                    digest_function: digest_function::Value::Sha256.into(),
                     ..Default::default()
                 }),
                 salt: 0,
@@ -267,6 +270,7 @@ mod scheduler_tests {
                     instance_name: INSTANCE_NAME.to_string(),
                     skip_cache_lookup: true,
                     action_digest: Some(action_digest2.into()),
+                    digest_function: digest_function::Value::Sha256.into(),
                     ..Default::default()
                 }),
                 salt: 0,
@@ -379,6 +383,7 @@ mod scheduler_tests {
                         instance_name: INSTANCE_NAME.to_string(),
                         skip_cache_lookup: true,
                         action_digest: Some(action_digest.into()),
+                        digest_function: digest_function::Value::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -459,6 +464,7 @@ mod scheduler_tests {
                         instance_name: INSTANCE_NAME.to_string(),
                         skip_cache_lookup: true,
                         action_digest: Some(action_digest.into()),
+                        digest_function: digest_function::Value::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -571,6 +577,7 @@ mod scheduler_tests {
                     instance_name: INSTANCE_NAME.to_string(),
                     skip_cache_lookup: true,
                     action_digest: Some(action_digest.into()),
+                    digest_function: digest_function::Value::Sha256.into(),
                     ..Default::default()
                 }),
                 salt: 0,
@@ -945,6 +952,7 @@ mod scheduler_tests {
                         instance_name: INSTANCE_NAME.to_string(),
                         skip_cache_lookup: true,
                         action_digest: Some(action_digest.into()),
+                        digest_function: digest_function::Value::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: 0,

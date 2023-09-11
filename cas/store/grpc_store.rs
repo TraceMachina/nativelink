@@ -22,6 +22,7 @@ use bytes::BytesMut;
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{future, Future, Stream, TryStreamExt};
 use prost::Message;
+use proto::build::bazel::remote::execution::v2::digest_function;
 use rand::{rngs::OsRng, Rng};
 use tokio::time::sleep;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
@@ -379,6 +380,7 @@ impl GrpcStore {
             inline_stdout: false,
             inline_stderr: false,
             inline_output_files: Vec::new(),
+            digest_function: digest_function::Value::Sha256.into(),
         };
         self.get_action_result(Request::new(action_result_request)).await
     }
@@ -430,6 +432,7 @@ impl GrpcStore {
             action_digest: Some(digest.into()),
             action_result: Some(action_result),
             results_cache_policy: None,
+            digest_function: digest_function::Value::Sha256.into(),
         };
         self.update_action_result(Request::new(update_action_request))
             .await
@@ -469,6 +472,7 @@ impl StoreTrait for GrpcStore {
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
                 instance_name: self.instance_name.clone(),
                 blob_digests: digests.iter().map(|digest| digest.into()).collect(),
+                digest_function: digest_function::Value::Sha256.into(),
             }))
             .await?
             .into_inner();

@@ -307,6 +307,7 @@ pub mod execution_response_tests {
                     output_directories: vec![OutputDirectory {
                         path: "some path4".to_string(),
                         tree_digest: Some(DigestInfo::new([12u8; 32], 124).into()),
+                        is_topologically_sorted: false,
                     }],
                     output_directory_symlinks: Default::default(), // Bazel deprecated this.
                     exit_code: 5,
@@ -325,6 +326,7 @@ pub mod execution_response_tests {
                         execution_completed_timestamp: Some(make_system_time(7).into()),
                         output_upload_start_timestamp: Some(make_system_time(8).into()),
                         output_upload_completed_timestamp: Some(make_system_time(9).into()),
+                        virtual_execution_duration: Some(prost_types::Duration { seconds: 1, nanos: 0 }),
                         auxiliary_metadata: vec![],
                     }),
                 }),

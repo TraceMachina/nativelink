@@ -21,7 +21,9 @@ use tonic::{Code, Request, Response, Status};
 
 use prometheus_client::registry::Registry;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::{action_cache_server::ActionCache, ActionResult, Digest};
+use proto::build::bazel::remote::execution::v2::{
+    action_cache_server::ActionCache, digest_function, ActionResult, Digest,
+};
 
 use ac_server::AcServer;
 use common::DigestInfo;
@@ -99,6 +101,7 @@ mod get_action_result {
                 inline_stdout: false,
                 inline_stderr: false,
                 inline_output_files: vec![],
+                digest_function: digest_function::Value::Sha256.into(),
             }))
             .await
     }
@@ -188,6 +191,7 @@ mod update_action_result {
                 action_digest: Some(digest),
                 action_result: Some(action_result),
                 results_cache_policy: None,
+                digest_function: digest_function::Value::Sha256.into(),
             }))
             .await
     }

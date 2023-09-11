@@ -30,7 +30,9 @@ use error::Error;
 use grpc_store::GrpcStore;
 use parking_lot::{Mutex, MutexGuard};
 use platform_property_manager::PlatformPropertyManager;
-use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, GetActionResultRequest};
+use proto::build::bazel::remote::execution::v2::{
+    digest_function, ActionResult as ProtoActionResult, GetActionResultRequest,
+};
 use scheduler::ActionScheduler;
 use store::Store;
 
@@ -67,6 +69,7 @@ async fn get_action_from_store(
             inline_stdout: false,
             inline_stderr: false,
             inline_output_files: Vec::new(),
+            digest_function: digest_function::Value::Sha256.into(),
         };
         grpc_store
             .get_action_result(Request::new(action_result_request))
