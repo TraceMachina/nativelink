@@ -1106,14 +1106,19 @@ exit 0
                 .await?
                 .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
                 .await?;
+            #[cfg(target_family = "unix")]
+            test_wrapper_script_handle
+                .as_writer()
+                .await?
+                .as_mut()
+                .set_permissions(Permissions::from_mode(0o755))
+                .await?;
             test_wrapper_script_handle
                 .as_writer()
                 .await?
                 .as_mut()
                 .sync_all()
                 .await?;
-            #[cfg(target_family = "unix")]
-            fs::set_permissions(&test_wrapper_script, Permissions::from_mode(0o755)).await?;
             test_wrapper_script
         };
 

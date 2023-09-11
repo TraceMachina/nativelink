@@ -390,8 +390,12 @@ mod local_worker_tests {
             let precondition_script = format!("{}/precondition.sh", temp_path);
             let mut file = fs::create_file(OsString::from(&precondition_script)).await?;
             file.as_writer().await?.write_all(b"#!/bin/sh\nexit 1\n").await?;
+            file.as_writer()
+                .await?
+                .as_mut()
+                .set_permissions(Permissions::from_mode(0o777))
+                .await?;
             file.as_writer().await?.as_mut().sync_all().await?;
-            fs::set_permissions(&precondition_script, Permissions::from_mode(0o777)).await?;
             precondition_script
         };
         #[cfg(target_family = "windows")]
