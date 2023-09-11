@@ -894,6 +894,15 @@ impl RunningActionImpl {
         let mut output_directory_symlinks = vec![];
         let mut output_file_symlinks = vec![];
 
+        if execution_result.exit_code != 0 {
+            log::info!(
+                "Command returned exit code {} : {} {}",
+                execution_result.exit_code,
+                std::str::from_utf8(&execution_result.stdout).unwrap_or(""),
+                std::str::from_utf8(&execution_result.stderr).unwrap_or("")
+            );
+        }
+
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
             let cursor = Cursor::new(execution_result.stdout);
             let (digest, mut cursor) = compute_digest(cursor).await?;

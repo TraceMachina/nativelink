@@ -482,7 +482,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.evicting_map
             .get(digest)
             .await
-            .ok_or_else(|| make_err!(Code::NotFound, "not found in filesystem store"))
+            .ok_or_else(|| make_err!(Code::NotFound, "{} not found in filesystem store", digest.hash_str()))
     }
 
     async fn update_file<'a>(
@@ -637,7 +637,7 @@ impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
             .evicting_map
             .get(&digest)
             .await
-            .ok_or_else(|| make_err!(Code::NotFound, "not found in filesystem store"))?;
+            .ok_or_else(|| make_err!(Code::NotFound, "{} not found in filesystem store", digest.hash_str()))?;
         let read_limit = length.unwrap_or(usize::MAX) as u64;
         let mut resumeable_temp_file = entry.read_file_part(offset as u64, read_limit).await?;
 

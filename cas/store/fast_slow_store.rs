@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cmp::{max, min};
+use std::ops::Range;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -80,6 +82,26 @@ impl FastSlowStore {
 
     fn pin_slow_store(&self) -> Pin<&dyn StoreTrait> {
         Pin::new(self.slow_store.as_ref())
+    }
+
+    /// Returns the range of bytes that should be sent given a slice bounds
+    /// offset so the output range maps the received_range.start to 0.
+    // TODO(allada) This should be put into utils, as this logic is used
+    // elsewhere in the code.
+    pub fn calculate_range(received_range: &Range<usize>, send_range: &Range<usize>) -> Option<Range<usize>> {
+        // Protect against subtraction overflow.
+        if received_range.start >= received_range.end {
+            return None;
+        }
+
+        let start = max(received_range.start, send_range.start);
+        let end = min(received_range.end, send_range.end);
+        if received_range.contains(&start) && received_range.contains(&(end - 1)) {
+            // Offset both to the start of the received_range.
+            Some(start - received_range.start..end - received_range.start)
+        } else {
+            None
+        }
     }
 }
 
@@ -181,21 +203,21 @@ impl StoreTrait for FastSlowStore {
         if fast_store.has(digest).await?.is_some() {
             return fast_store.get_part(digest, writer, offset, length).await;
         }
-        // We can only copy the data to our fast store if we are copying everything.
-        if offset != 0 || length.is_some() {
-            return slow_store.get_part(digest, writer, offset, length).await;
-        }
 
-        let sz_result = slow_store
+        let sz = slow_store
             .has(digest)
             .await
-            .err_tip(|| "Failed to run has() on slow store")?;
-        let Some(sz) = sz_result else {
-            return Err(make_err!(
-                Code::NotFound,
-                "Object not found in either fast or slow store"
-            ));
-        };
+            .err_tip(|| "Failed to run has() on slow store")?
+            .ok_or_else(|| {
+                make_err!(
+                    Code::NotFound,
+                    "Object {} not found in either fast or slow store",
+                    digest.hash_str()
+                )
+            })?;
+
+        let send_range = offset..length.map_or(usize::MAX, |length| length + offset);
+        let mut bytes_received: usize = 0;
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
@@ -212,20 +234,22 @@ impl StoreTrait for FastSlowStore {
                     // all the data they wanted, which could lead to an error when writing this
                     // EOF. If that was to happen, we could end up terminating this early and
                     // the resulting upload to the fast store might fail.
-                    let _ = fast_tx.send_eof().await?;
-                    let _ = writer_pin.send_eof().await?;
-                    return Ok(());
+                    let (fast_res, slow_res) = join!(fast_tx.send_eof(), writer_pin.send_eof());
+                    return fast_res.merge(slow_res);
                 }
-                let (fast_tx_res, writer_res) = join!(
-                    fast_tx.send(output_buf.clone()).boxed(),
-                    writer_pin.send(output_buf).boxed(),
-                );
-                if let Err(err) = fast_tx_res {
-                    return Err(err).err_tip(|| "Failed to write to fast store in fast_slow store");
-                }
-                if let Err(err) = writer_res {
-                    return Err(err).err_tip(|| "Failed to write result to writer in fast_slow store");
-                }
+
+                let writer_fut = if let Some(range) =
+                    Self::calculate_range(&(bytes_received..bytes_received + output_buf.len()), &send_range)
+                {
+                    writer_pin.send(output_buf.slice(range)).right_future()
+                } else {
+                    futures::future::ready(Ok(())).left_future()
+                };
+                bytes_received += output_buf.len();
+
+                let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
+                fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;
+                writer_res.err_tip(|| "Failed to write result to writer in fast_slow store")?;
             }
         };
 

@@ -280,6 +280,9 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             futures.push(
                                 tokio::spawn(start_action_fut).map(move |res| {
                                     let res = res.err_tip(|| "Failed to launch spawn")?;
+                                    if let Err(err) = &res {
+                                        log::info!("\x1b[0;31mError executing action\x1b[0m: {}", err);
+                                    }
                                     add_future_channel
                                         .send(make_publish_future(res).boxed())
                                         .map_err(|_| make_err!(Code::Internal, "LocalWorker could not send future"))?;

@@ -1074,6 +1074,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "buf_channel",
+ "bytes",
  "common",
  "config",
  "error",
