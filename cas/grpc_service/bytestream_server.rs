@@ -462,11 +462,9 @@ impl ByteStreamServer {
         }
 
         let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
-        let result = tokio::spawn(async move { Pin::new(store_clone.as_ref()).has(digest).await })
-            .await
-            .err_tip(|| "Failed to join spawn")?;
 
-        let Some(item_size) = result.err_tip(|| "Failed to call .has() on store")? else {
+        let has_fut = Pin::new(store_clone.as_ref()).has(digest);
+        let Some(item_size) = has_fut.await.err_tip(|| "Failed to call .has() on store")? else {
             return Err(make_err!(Code::NotFound, "{}", "not found"));
         };
         Ok(Response::new(QueryWriteStatusResponse {

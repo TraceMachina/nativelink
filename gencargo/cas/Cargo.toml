@@ -19,6 +19,7 @@ path = "../../cas/cas_main.rs"
 doctest = false
 
 [dependencies]
+async-lock = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }
 drop_guard = { workspace = true }

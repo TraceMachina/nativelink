@@ -470,6 +470,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                     update_for_worker_stream,
                 ),
             };
+            log::warn!("Worker {} connected to scheduler", inner.worker_id);
 
             // Now listen for connections and run all other services.
             if let Err(e) = inner.run(update_for_worker_stream).await {

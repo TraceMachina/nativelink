@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
 use drop_guard::guard;
@@ -103,55 +104,6 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
-    {
-        let worker_cfgs = cfg.workers.unwrap_or(vec![]);
-        let root_worker_metrics = root_metrics_registry.sub_registry_with_prefix("workers");
-        let mut worker_names = HashSet::with_capacity(worker_cfgs.len());
-        for (i, worker_cfg) in worker_cfgs.into_iter().enumerate() {
-            let spawn_fut = match worker_cfg {
-                WorkerConfig::local(local_worker_cfg) => {
-                    let fast_slow_store =
-                        store_manager
-                            .get_store(&local_worker_cfg.cas_fast_slow_store)
-                            .err_tip(|| {
-                                format!(
-                                    "Failed to find store for cas_store_ref in worker config : {}",
-                                    local_worker_cfg.cas_fast_slow_store
-                                )
-                            })?;
-                    let ac_store = store_manager.get_store(&local_worker_cfg.ac_store).err_tip(|| {
-                        format!(
-                            "Failed to find store for ac_store_ref in worker config : {}",
-                            local_worker_cfg.ac_store
-                        )
-                    })?;
-                    let local_worker =
-                        new_local_worker(Arc::new(local_worker_cfg), fast_slow_store.clone(), ac_store.clone())
-                            .await
-                            .err_tip(|| "Could not make LocalWorker")?;
-                    let name = if local_worker.name().is_empty() {
-                        format!("worker_{}", i)
-                    } else {
-                        local_worker.name().clone()
-                    };
-                    if worker_names.contains(&name) {
-                        Err(Box::new(make_err!(
-                            Code::InvalidArgument,
-                            "Duplicate worker name '{}' found in config",
-                            name
-                        )))?;
-                    }
-                    let worker_metrics = root_worker_metrics.sub_registry_with_prefix(&name);
-                    local_worker.register_metrics(worker_metrics);
-                    worker_names.insert(name);
-                    tokio::spawn(local_worker.run())
-                }
-            };
-            futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
-        }
-    }
-
     fn into_encoding(from: &CompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
             CompressionAlgorithm::Gzip => Some(CompressionEncoding::Gzip),
@@ -201,8 +153,10 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
+    let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
+
     // Lock our registry as immutable and clonable.
-    let root_metrics_registry = Arc::new(root_metrics_registry);
+    let root_metrics_registry = Arc::new(AsyncMutex::new(root_metrics_registry));
     for (server_cfg, connected_clients_mux) in servers_and_clients {
         let services = server_cfg.services.ok_or("'services' must be configured")?;
 
@@ -387,7 +341,8 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
                     // if it needs to wait on a future.
                     spawn_blocking(move || {
                         let mut buf = String::new();
-                        prometheus_client::encoding::text::encode(&mut buf, &root_metrics_registry)
+                        let root_metrics_registry_guard = futures::executor::block_on(root_metrics_registry.lock());
+                        prometheus_client::encoding::text::encode(&mut buf, &root_metrics_registry_guard)
                             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
                             .map(|_| {
                                 // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
@@ -413,9 +368,12 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
             )
         }
 
-        let tcp_listener = TcpListener::bind(&server_cfg.listen_address.parse::<SocketAddr>()?).await?;
-        futures.push(Box::pin(async move {
+        let socket_addr = server_cfg.listen_address.parse::<SocketAddr>()?;
+        let tcp_listener = TcpListener::bind(&socket_addr).await?;
+        log::warn!("Ready, listening on {}", socket_addr);
+        root_futures.push(Box::pin(async move {
             loop {
+                // Wait for client to connect.
                 let (tcp_stream, remote_addr) = tcp_listener.accept().await?;
                 connected_clients_mux.inner.lock().insert(remote_addr);
                 // This is the safest way to guarantee that if our future
@@ -435,7 +393,58 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    if let Err(e) = select_all(futures).await.0 {
+    {
+        // We start workers after our TcpListener is setup so if our worker connects to one
+        // of these services it will be able to connect.
+        let worker_cfgs = cfg.workers.unwrap_or(vec![]);
+        let mut root_metrics_registry_guard = root_metrics_registry.lock().await;
+        let root_worker_metrics = root_metrics_registry_guard.sub_registry_with_prefix("workers");
+        let mut worker_names = HashSet::with_capacity(worker_cfgs.len());
+        for (i, worker_cfg) in worker_cfgs.into_iter().enumerate() {
+            let spawn_fut = match worker_cfg {
+                WorkerConfig::local(local_worker_cfg) => {
+                    let fast_slow_store =
+                        store_manager
+                            .get_store(&local_worker_cfg.cas_fast_slow_store)
+                            .err_tip(|| {
+                                format!(
+                                    "Failed to find store for cas_store_ref in worker config : {}",
+                                    local_worker_cfg.cas_fast_slow_store
+                                )
+                            })?;
+                    let ac_store = store_manager.get_store(&local_worker_cfg.ac_store).err_tip(|| {
+                        format!(
+                            "Failed to find store for ac_store_ref in worker config : {}",
+                            local_worker_cfg.ac_store
+                        )
+                    })?;
+                    let local_worker =
+                        new_local_worker(Arc::new(local_worker_cfg), fast_slow_store.clone(), ac_store.clone())
+                            .await
+                            .err_tip(|| "Could not make LocalWorker")?;
+                    let name = if local_worker.name().is_empty() {
+                        format!("worker_{}", i)
+                    } else {
+                        local_worker.name().clone()
+                    };
+                    if worker_names.contains(&name) {
+                        Err(Box::new(make_err!(
+                            Code::InvalidArgument,
+                            "Duplicate worker name '{}' found in config",
+                            name
+                        )))?;
+                    }
+                    let worker_metrics = root_worker_metrics.sub_registry_with_prefix(&name);
+                    local_worker.register_metrics(worker_metrics);
+                    worker_names.insert(name);
+                    tokio::spawn(local_worker.run())
+                }
+            };
+            root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
+        }
+    }
+
+    if let Err(e) = select_all(root_futures).await.0 {
         panic!("{:?}", e);
     }
     unreachable!("None of the futures should resolve in main()");

@@ -35,12 +35,6 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # --release causes link-time-optmization to be enabled, which can take a while
 # to compile, but will result in a much faster binary.
-#
-# Note: If you see an error like:
-# "Could not connect to endpoint grpc://127.0.0.1:50061"
-# You can ignore it is caused because the worker & scheduler are in the same
-# process and the worker tried to connect to the scheduler before it was ready.
-# It will auto-reconnect when able and everything will work fine.
 cargo run --release --bin cas -- ./config/examples/basic_cas.json
 ```
 In a separate terminal session, run the following command to connect the running server launched above to Bazel or another BRE client:
@@ -69,7 +63,6 @@ This project can be considered ~stable~ and is currently used in production syst
 We support building with Bazel or Cargo. Cargo **might** produce faster binaries because LTO (Link Time Optimization) is enabled for release versions, where Bazel currently does not support LTO for rust.
 
 ### Bazel requirements
-* Linux (most recent versions) (untested on Windows, but might work)
 * Bazel 5.0.0+
 * gcc
 * g++
