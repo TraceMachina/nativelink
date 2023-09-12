@@ -18,6 +18,7 @@ rust_binary(
         "//util:common",
         "//util:error",
         "//util:metrics_utils",
+        "@crate_index//:async-lock",
         "@crate_index//:clap",
         "@crate_index//:drop_guard",
         "@crate_index//:env_logger",
