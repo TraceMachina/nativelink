@@ -486,7 +486,6 @@ dependencies = [
  "async-trait",
  "common",
  "config",
- "drop_guard",
  "error",
  "futures",
  "grpc_store",
@@ -494,6 +493,7 @@ dependencies = [
  "platform_property_manager",
  "proto",
  "scheduler",
+ "scopeguard",
  "store",
  "tokio",
  "tokio-stream",
@@ -550,7 +550,6 @@ dependencies = [
  "config",
  "default_scheduler_factory",
  "default_store_factory",
- "drop_guard",
  "env_logger",
  "error",
  "execution_server",
@@ -561,6 +560,7 @@ dependencies = [
  "metrics_utils",
  "parking_lot",
  "prometheus-client",
+ "scopeguard",
  "store",
  "tokio",
  "tonic",
@@ -948,12 +948,6 @@ dependencies = [
  "redox_users",
  "winapi",
 ]
-
-[[package]]
-name = "drop_guard"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c4a817d8b683f6e649aed359aab0c47a875377516bb5791d0f7e46d9066d209"
 
 [[package]]
 name = "dtoa"
@@ -2521,6 +2515,7 @@ dependencies = [
  "prost",
  "proto",
  "relative-path",
+ "scopeguard",
  "store",
  "tokio",
  "tokio-stream",

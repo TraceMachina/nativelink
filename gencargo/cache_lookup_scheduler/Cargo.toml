@@ -20,9 +20,9 @@ doctest = false
 
 [dependencies]
 async-trait = { workspace = true }
-drop_guard = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
+scopeguard = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }

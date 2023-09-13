@@ -1,5 +1,5 @@
 {
-  "checksum": "7f4a98804faf2c78e55b85d2c5e5db10d44f6c9234bdf72c615910774c8bd192",
+  "checksum": "ab4d365f12cccf08d844992f1bece260d9d2fc782bbe6d68ed8b288ce9bfdf71",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -2545,10 +2545,6 @@
               "target": "clap"
             },
             {
-              "id": "drop_guard 0.3.0",
-              "target": "drop_guard"
-            },
-            {
               "id": "env_logger 0.10.0",
               "target": "env_logger"
             },
@@ -2663,6 +2659,10 @@
             {
               "id": "rusoto_signature 0.48.0",
               "target": "rusoto_signature"
+            },
+            {
+              "id": "scopeguard 1.2.0",
+              "target": "scopeguard"
             },
             {
               "id": "serde 1.0.171",
@@ -2925,36 +2925,6 @@
         "version": "0.1.2"
       },
       "license": "MIT OR Apache-2.0"
-    },
-    "drop_guard 0.3.0": {
-      "name": "drop_guard",
-      "version": "0.3.0",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/drop_guard/0.3.0/download",
-          "sha256": "2c4a817d8b683f6e649aed359aab0c47a875377516bb5791d0f7e46d9066d209"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "drop_guard",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "drop_guard",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "edition": "2018",
-        "version": "0.3.0"
-      },
-      "license": "MIT/Apache-2.0"
     },
     "dtoa 1.0.9": {
       "name": "dtoa",
@@ -9552,6 +9522,13 @@
         "compile_data_glob": [
           "**"
         ],
+        "crate_features": {
+          "common": [
+            "default",
+            "use_std"
+          ],
+          "selects": {}
+        },
         "edition": "2015",
         "version": "1.2.0"
       },

@@ -27,6 +27,7 @@ hex = { workspace = true }
 parking_lot = { workspace = true }
 prost = { workspace = true }
 relative-path = { workspace = true }
+scopeguard = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }

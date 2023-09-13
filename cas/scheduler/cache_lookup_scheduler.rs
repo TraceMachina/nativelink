@@ -17,8 +17,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use drop_guard::guard;
 use futures::stream::StreamExt;
+use scopeguard::guard;
 use tokio::select;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
@@ -158,14 +158,14 @@ impl ActionScheduler for CacheLookupScheduler {
         });
         let (tx, rx) = watch::channel(current_state.clone());
         let tx = Arc::new(tx);
-        let drop_guard = {
+        let scope_guard = {
             let mut cache_check_actions = self.cache_check_actions.lock();
             // Check this isn't a duplicate request first.
             if let Some(rx) = subscribe_to_existing_action(&cache_check_actions, &action_info.unique_qualifier) {
                 return Ok(rx);
             }
             cache_check_actions.insert(action_info.unique_qualifier.clone(), tx.clone());
-            // In the event we loose the reference to our `drop_guard`, it will remove
+            // In the event we loose the reference to our `scope_guard`, it will remove
             // the action from the cache_check_actions map.
             let cache_check_actions = self.cache_check_actions.clone();
             let unique_qualifier = action_info.unique_qualifier.clone();
@@ -180,7 +180,7 @@ impl ActionScheduler for CacheLookupScheduler {
         // We need this spawn because we are returning a stream and this spawn will populate the stream's data.
         tokio::spawn(async move {
             // If our spawn ever dies, we will remove the action from the cache_check_actions map.
-            let _drop_guard = drop_guard;
+            let _scope_guard = scope_guard;
 
             // Perform cache check.
             let action_digest = current_state.action_digest();

@@ -111,7 +111,7 @@ rust_library(
         "//proto",
         "//util:common",
         "//util:error",
-        "@crate_index//:drop_guard",
+        "@crate_index//:scopeguard",
         "@crate_index//:futures",
         "@crate_index//:parking_lot",
         "@crate_index//:tonic",
