@@ -36,6 +36,7 @@ use metrics_utils::{AsyncCounterWrapper, CollectorState, CounterWithTime, Metric
 use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
+use scopeguard::guard;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::{oneshot, watch};
@@ -655,6 +656,13 @@ impl RunningActionImpl {
             .take()
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
 
+        let mut child_process_guard = guard(child_process, |mut child_process| {
+            log::error!(
+                "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
+            );
+            tokio::spawn(async move { child_process.kill().await });
+        });
+
         let all_stdout_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
             let mut all_stdout = BytesMut::new();
             loop {
@@ -690,7 +698,7 @@ impl RunningActionImpl {
                 _ = &mut sleep_fut => {
                     self.running_actions_manager.metrics.task_timeouts.inc();
                     killed_action = true;
-                    if let Err(e) = child_process.start_kill() {
+                    if let Err(e) = child_process_guard.start_kill() {
                         log::error!("Could not kill process in RunningActionsManager for timeout : {:?}", e);
                     }
                     {
@@ -705,7 +713,7 @@ impl RunningActionImpl {
                         )));
                     }
                 },
-                maybe_exit_status = child_process.wait() => {
+                maybe_exit_status = child_process_guard.wait() => {
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
                     // TODO(allada) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
@@ -746,7 +754,7 @@ impl RunningActionImpl {
                 },
                 _ = &mut kill_channel_rx => {
                     killed_action = true;
-                    if let Err(e) = child_process.start_kill() {
+                    if let Err(e) = child_process_guard.start_kill() {
                         log::error!(
                             "Could not kill process in RunningActionsManager for action {} : {:?}",
                             hex::encode(self.action_id),

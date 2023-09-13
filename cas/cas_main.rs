@@ -21,11 +21,11 @@ use std::time::Duration;
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
-use drop_guard::guard;
 use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
 use hyper::server::conn::Http;
 use hyper::{Body, Response};
 use parking_lot::Mutex;
+use scopeguard::guard;
 use tokio::net::TcpListener;
 use tokio::task::spawn_blocking;
 use tonic::codec::CompressionEncoding;
@@ -378,13 +378,13 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
                 connected_clients_mux.inner.lock().insert(remote_addr);
                 // This is the safest way to guarantee that if our future
                 // is ever dropped we will cleanup our data.
-                let drop_guard = guard(connected_clients_mux.clone(), move |connected_clients_mux| {
+                let scope_guard = guard(connected_clients_mux.clone(), move |connected_clients_mux| {
                     connected_clients_mux.inner.lock().remove(&remote_addr);
                 });
                 let fut = Http::new().serve_connection(tcp_stream, svc.clone());
                 tokio::spawn(async move {
                     // Move it into our spawn, so if our spawn dies the cleanup happens.
-                    let _drop_guard = drop_guard;
+                    let _guard = scope_guard;
                     if let Err(e) = fut.await {
                         log::error!("Failed running service : {:?}", e);
                     }

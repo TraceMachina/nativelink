@@ -213,9 +213,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let actions_in_transit = self.actions_in_transit.clone();
                             let start_action_fut = self.metrics.clone().wrap(move |metrics| async move {
                                 metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
-                                .and_then(|_| async move {
-                                    running_actions_manager.create_and_add_action(worker_id_clone, start_execute).await
-                                })
+                                .and_then(|_| running_actions_manager.create_and_add_action(worker_id_clone, start_execute))
                                 .map(|r| {
                                     // Now that we either failed or registered our action, we can
                                     // consider the action to no longer be in transit.

@@ -133,8 +133,8 @@ PACKAGES = {
     "blake3": {
         "version": "1.4.1",
     },
-    "drop_guard": {
-        "version": "0.3.0",
+    "scopeguard": {
+        "version": "1.2.0",
     },
     "stdext": {
         "version": "0.3.1",
