@@ -23,12 +23,11 @@ use bincode::{
     DefaultOptions, Options,
 };
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
-use futures::{future::try_join_all, FutureExt};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
-use common::{log, DigestInfo, JoinHandleDropGuard};
+use common::{log, DigestInfo};
 use error::{make_err, Code, Error, ResultExt};
 use fastcdc::FastCDC;
 use traits::{StoreTrait, UploadSizeInfo};
@@ -176,43 +175,34 @@ impl StoreTrait for DedupStore {
         self: Pin<&Self>,
         digest: DigestInfo,
         reader: DropCloserReadHalf,
-        size_info: UploadSizeInfo,
+        _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let input_max_size = match size_info {
-            UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
-        };
-        let est_spawns = (input_max_size / self.upload_normal_size) + 1;
-        let mut spawns = Vec::with_capacity(est_spawns);
         let mut bytes_reader = StreamReader::new(reader);
-        let mut frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
-        while let Some(frame) = frame_reader.next().await {
-            let frame = frame.err_tip(|| "Failed to decode frame from fast_cdc")?;
-            let content_store = self.content_store.clone();
-            // Create a new spawn here so we do the sha256 on possibly a new thread (when needed).
-            spawns.push(
-                JoinHandleDropGuard::new(tokio::spawn(async move {
-                    let hash = blake3::hash(&frame[..]);
-                    let index_entry = DigestInfo::new(hash.into(), frame.len() as i64);
-                    let content_store_pin = Pin::new(content_store.as_ref());
-                    if content_store_pin.has(index_entry).await?.is_some() {
-                        // If our store has this digest, we don't need to upload it.
-                        return Ok(index_entry);
-                    }
-                    content_store_pin
-                        .update_oneshot(index_entry, frame)
-                        .await
-                        .err_tip(|| "Failed to update content store in dedup_store")?;
-                    Ok(index_entry)
-                }))
-                .map(|result| match result.err_tip(|| "Failed to run dedup get spawn") {
-                    Ok(inner_result) => inner_result,
-                    Err(e) => Err(e),
-                }),
-            );
-        }
-
-        // Wait for all data to finish uploading to content_store.
-        let index_entries = try_join_all(spawns).await?;
+        let frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
+        let content_store_pin = Pin::new(self.content_store.as_ref());
+        let index_entries = frame_reader
+            .map(|r| r.err_tip(|| "Failed to decode frame from fast_cdc"))
+            .map_ok(|frame| async move {
+                let hash = blake3::hash(&frame[..]).into();
+                let index_entry = DigestInfo::new(hash, frame.len() as i64);
+                if content_store_pin
+                    .has(index_entry)
+                    .await
+                    .err_tip(|| "Failed to call .has() in DedupStore::update()")?
+                    .is_some()
+                {
+                    // If our store has this digest, we don't need to upload it.
+                    return Result::<_, Error>::Ok(index_entry);
+                }
+                content_store_pin
+                    .update_oneshot(index_entry, frame)
+                    .await
+                    .err_tip(|| "Failed to update content store in dedup_store")?;
+                Ok(index_entry)
+            })
+            .try_buffered(self.max_concurrent_fetch_per_get)
+            .try_collect()
+            .await?;
 
         let serialized_index = self
             .bincode_options
