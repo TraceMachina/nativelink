@@ -486,6 +486,7 @@ dependencies = [
  "async-trait",
  "common",
  "config",
+ "drop_guard",
  "error",
  "futures",
  "grpc_store",
