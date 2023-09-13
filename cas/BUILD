@@ -20,7 +20,7 @@ rust_binary(
         "//util:metrics_utils",
         "@crate_index//:async-lock",
         "@crate_index//:clap",
-        "@crate_index//:drop_guard",
+        "@crate_index//:scopeguard",
         "@crate_index//:env_logger",
         "@crate_index//:futures",
         "@crate_index//:hyper",
