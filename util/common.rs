@@ -120,6 +120,19 @@ impl TryFrom<Digest> for DigestInfo {
     }
 }
 
+impl TryFrom<&Digest> for DigestInfo {
+    type Error = Error;
+
+    fn try_from(digest: &Digest) -> Result<Self, Self::Error> {
+        let packed_hash =
+            <[u8; 32]>::from_hex(&digest.hash).err_tip(|| format!("Invalid sha256 hash: {}", digest.hash))?;
+        Ok(DigestInfo {
+            size_bytes: digest.size_bytes,
+            packed_hash,
+        })
+    }
+}
+
 impl From<DigestInfo> for Digest {
     fn from(val: DigestInfo) -> Self {
         Digest {

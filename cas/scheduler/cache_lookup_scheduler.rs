@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use drop_guard::guard;
 use futures::stream::StreamExt;
 use tokio::select;
 use tokio::sync::watch;
@@ -55,7 +56,7 @@ pub struct CacheLookupScheduler {
 }
 
 async fn get_action_from_store(
-    ac_store: Arc<dyn Store>,
+    ac_store: &Arc<dyn Store>,
     action_digest: &DigestInfo,
     instance_name: String,
 ) -> Option<ProtoActionResult> {
@@ -83,19 +84,19 @@ async fn get_action_from_store(
     }
 }
 
-async fn validate_outputs_exist(cas_store: Arc<dyn Store>, action_result: &ProtoActionResult) -> bool {
+async fn validate_outputs_exist(cas_store: &Arc<dyn Store>, action_result: &ProtoActionResult) -> bool {
     // Verify that output_files and output_directories are available in the cas.
     let mut required_digests =
         Vec::with_capacity(action_result.output_files.len() + action_result.output_directories.len());
     for digest in action_result
         .output_files
         .iter()
-        .filter_map(|output_file| output_file.digest.clone())
+        .filter_map(|output_file| output_file.digest.as_ref())
         .chain(
             action_result
                 .output_directories
                 .iter()
-                .filter_map(|output_directory| output_directory.tree_digest.clone()),
+                .filter_map(|output_file| output_file.tree_digest.as_ref()),
         )
     {
         let Ok(digest) = DigestInfo::try_from(digest) else {
@@ -157,29 +158,38 @@ impl ActionScheduler for CacheLookupScheduler {
         });
         let (tx, rx) = watch::channel(current_state.clone());
         let tx = Arc::new(tx);
-        {
+        let drop_guard = {
             let mut cache_check_actions = self.cache_check_actions.lock();
             // Check this isn't a duplicate request first.
             if let Some(rx) = subscribe_to_existing_action(&cache_check_actions, &action_info.unique_qualifier) {
                 return Ok(rx);
             }
             cache_check_actions.insert(action_info.unique_qualifier.clone(), tx.clone());
-        }
+            // In the event we loose the reference to our `drop_guard`, it will remove
+            // the action from the cache_check_actions map.
+            let cache_check_actions = self.cache_check_actions.clone();
+            let unique_qualifier = action_info.unique_qualifier.clone();
+            guard((), move |_| {
+                cache_check_actions.lock().remove(&unique_qualifier);
+            })
+        };
+
         let ac_store = self.ac_store.clone();
         let cas_store = self.cas_store.clone();
         let action_scheduler = self.action_scheduler.clone();
-        let cache_check_actions = self.cache_check_actions.clone();
+        // We need this spawn because we are returning a stream and this spawn will populate the stream's data.
         tokio::spawn(async move {
+            // If our spawn ever dies, we will remove the action from the cache_check_actions map.
+            let _drop_guard = drop_guard;
+
+            // Perform cache check.
+            let action_digest = current_state.action_digest();
             let instance_name = action_info.instance_name().clone();
-            let unique_qualifier = action_info.unique_qualifier.clone();
-            if let Some(proto_action_result) =
-                get_action_from_store(ac_store, current_state.action_digest(), instance_name.clone()).await
-            {
-                if validate_outputs_exist(cas_store, &proto_action_result).await {
+            if let Some(action_result) = get_action_from_store(&ac_store, action_digest, instance_name).await {
+                if validate_outputs_exist(&cas_store, &action_result).await {
                     // Found in the cache, return the result immediately.
-                    Arc::make_mut(&mut current_state).stage = ActionStage::CompletedFromCache(proto_action_result);
+                    Arc::make_mut(&mut current_state).stage = ActionStage::CompletedFromCache(action_result);
                     let _ = tx.send(current_state);
-                    cache_check_actions.lock().remove(&unique_qualifier);
                     return;
                 }
             }
@@ -208,7 +218,6 @@ impl ActionScheduler for CacheLookupScheduler {
                     let _ = tx.send(current_state);
                 }
             }
-            cache_check_actions.lock().remove(&unique_qualifier);
         });
         Ok(rx)
     }
