@@ -1,0 +1,77 @@
+// This configuration will place objects in various folders in
+// `~/.cache/native-link`. It will store all data on disk and
+// allows for restarts of the underlying service. It is optimized
+// to use some in-memory optimizations for hot paths.
+{
+  "stores": {
+    "CAS_MAIN_STORE": {
+      "fast_slow": {
+        "fast": {
+          "memory": {
+            "eviction_policy": {
+              // 1gb
+              "max_bytes": 1000000000
+            }
+          }
+        },
+        "slow": {
+          "filesystem": {
+            "content_path": "/root/.cache/native-link/content_path-cas",
+            "temp_path": "/root/.cache/native-link/tmp_path-cas",
+            "eviction_policy": {
+              // 5gb.
+              "max_bytes": 5000000000,
+              // 200mb
+              "evict_bytes": 200000000
+            }
+          }
+        }
+      }
+    },
+    "AC_MAIN_STORE": {
+      "fast_slow": {
+        "fast": {
+          "memory": {
+            "eviction_policy": {
+              // 200mb
+              "max_bytes": 200000000
+            }
+          }
+        },
+        "slow": {
+           "filesystem": {
+             "content_path": "/root/.cache/native-link/content_path-cas_ac",
+             "temp_path": "/root/.cache/native-link/tmp_path-cas_ac",
+             "eviction_policy": {
+                // 1gb.
+                "max_bytes": 1000000000,
+             }
+          }
+        }
+      }
+    }
+  },
+  "servers": [{
+    "listen_address": "0.0.0.0:50051",
+    "services": {
+      "cas": {
+        "main": {
+          "cas_store": "CAS_MAIN_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "ac_store": "AC_MAIN_STORE"
+        }
+      },
+      "capabilities": {},
+      "bytestream": {
+        "cas_stores": {
+          "main": "CAS_MAIN_STORE",
+        },
+        // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
+        "max_bytes_per_stream": 64000, // 64kb.
+      }
+    }
+  }]
+}
