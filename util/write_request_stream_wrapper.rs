@@ -46,7 +46,7 @@ where
             .err_tip(|| "Error receiving first message in stream")?
             .err_tip(|| "Expected WriteRequest struct in stream")?;
 
-        let resource_info = ResourceInfo::new(&first_msg.resource_name).err_tip(|| {
+        let resource_info = ResourceInfo::new(&first_msg.resource_name, true).err_tip(|| {
             format!(
                 "Could not extract resource info from first message of stream: {}",
                 first_msg.resource_name

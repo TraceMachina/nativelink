@@ -226,7 +226,7 @@ impl ByteStreamServer {
 
         let read_limit =
             usize::try_from(read_request.read_limit).err_tip(|| "read_limit has is not convertible to usize")?;
-        let resource_info = ResourceInfo::new(&read_request.resource_name)?;
+        let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
         let instance_name = resource_info.instance_name;
         let store = self
             .stores
@@ -429,7 +429,7 @@ impl ByteStreamServer {
         &self,
         query_request: &QueryWriteStatusRequest,
     ) -> Result<Response<QueryWriteStatusResponse>, Error> {
-        let mut resource_info = ResourceInfo::new(&query_request.resource_name)?;
+        let mut resource_info = ResourceInfo::new(&query_request.resource_name, true)?;
 
         let store_clone = self
             .stores

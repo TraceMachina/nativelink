@@ -493,13 +493,7 @@ pub mod read_tests {
         store.update_oneshot(digest, VALUE1.into()).await?;
 
         let read_request = ReadRequest {
-            resource_name: format!(
-                "{}/uploads/{}/blobs/{}/{}",
-                INSTANCE_NAME,
-                "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
-                HASH1,
-                VALUE1.len()
-            ),
+            resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, HASH1, VALUE1.len()),
             read_offset: 0,
             read_limit: VALUE1.len() as i64,
         };
@@ -539,13 +533,7 @@ pub mod read_tests {
         store.update_oneshot(digest, raw_data.clone().into()).await?;
 
         let read_request = ReadRequest {
-            resource_name: format!(
-                "{}/uploads/{}/blobs/{}/{}",
-                INSTANCE_NAME,
-                "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
-                HASH1,
-                raw_data.len()
-            ),
+            resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, HASH1, raw_data.len()),
             read_offset: 0,
             read_limit: raw_data.len() as i64,
         };
@@ -572,9 +560,8 @@ pub mod read_tests {
             let bs_server = make_bytestream_server(store_manager.as_ref()).err_tip(|| "Couldn't make store")?;
             let read_request = ReadRequest {
                 resource_name: format!(
-                    "{}/uploads/{}/blobs/{}/{}",
+                    "{}/blobs/{}/{}",
                     INSTANCE_NAME,
-                    "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
                     HASH1,
                     55, // Dummy value
                 ),
