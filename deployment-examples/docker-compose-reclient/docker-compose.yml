@@ -1,0 +1,60 @@
+# Copyright 2023 The Turbo Cache Authors. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+version: '3.4'
+
+services:
+  turbo_cache_local_cas:
+    extends:
+      file: ../docker-compose/docker-compose.yml
+      service: turbo_cache_local_cas
+    volumes:
+      - type: bind
+        source: ./local-storage-cas.json
+        target: /root/local-storage-cas.json
+    ports: [ "50051:50051/tcp" ]
+
+  turbo_cache_scheduler:
+    extends:
+      file: ../docker-compose/docker-compose.yml
+      service: turbo_cache_scheduler
+    volumes:
+      - type: bind
+        source: ./scheduler.json
+        target: /root/scheduler.json
+    ports: [ "50052:50052/tcp", "50061:50061/tcp" ]
+
+  turbo_cache_executor:
+    extends:
+      file: ../docker-compose/docker-compose.yml
+      service: turbo_cache_executor
+    volumes:
+      - type: bind
+        source: ./worker.json
+        target: /root/worker.json
+      - type: bind
+        source: ./worker_precondition_script.sh
+        target: /root/worker_precondition_script.sh
+      - type: bind
+        source: ./run_in_container.sh
+        target: /root/run_in_container.sh
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    args:
+      ADDITIONAL_SETUP_WORKER_CMD: >-
+        DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y docker.io &&
+        rm -rf /var/lib/apt/lists/*
+    environment:
+      TURBO_CACHE_DIR: ${HOME}/.cache/turbo-cache
