@@ -126,4 +126,4 @@ This project was first created due to frustration with similar projects not work
 
 # License
 
-Software is licensed under the Apache 2.0 License. Copyright 2020-2023 Nathan (Blaise) Bruer
+Software is licensed under the Apache 2.0 License. Copyright 2020-2023 Trace Machina, Inc.

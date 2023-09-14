@@ -1,4 +1,4 @@
-// Copyright 2022 Nathan Fiedler, Nathan (Blaise) Bruer.  Some rights reserved.
+// Copyright 2022 Nathan Fiedler, Trace Machina, Inc.  Some rights reserved.
 // Originally licensed under MIT license.
 //
 // This implementation is heavily based on:
