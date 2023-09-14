@@ -1,0 +1,99 @@
+{
+  "stores": {
+    "GRPC_LOCAL_STORE": {
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": [{
+          "address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"
+        }],
+        "store_type": "cas"
+      }
+    },
+    "GRPC_LOCAL_AC_STORE": {
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": [{
+          "address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"
+        }],
+        "store_type": "ac"
+      }
+    }
+  },
+  "schedulers": {
+    "MAIN_SCHEDULER": {
+      "property_modifier": {
+        "modifications": [
+          {"add": {"name": "cpu_count", "value": "1"}},
+          {"remove": "OSFamily"},
+          {"remove": "InputRootAbsolutePath"},
+          {"remove": "label:action_default"},
+          {"remove": "label:action_large"}
+        ],
+        "scheduler": {
+          "simple": {
+            "supported_platform_properties": {
+              "cpu_count": "minimum",
+              "OSFamily": "priority",
+              "container-image": "priority"
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [{
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50052"
+      }
+    },
+    "services": {
+      "ac": {
+        // Chromium default is:
+        // projects/rbe-chrome-untrusted/instances/default_instance
+        "main": {
+          "ac_store": "GRPC_LOCAL_AC_STORE"
+        }
+      },
+      "cas": {
+        "main": {
+         "cas_store": "GRPC_LOCAL_STORE"
+        }
+      },
+      "bytestream": {
+        "cas_stores": {
+         "main": "GRPC_LOCAL_STORE"
+        },
+        "max_bytes_per_stream": 65536,
+      },
+      "execution": {
+        "main": {
+          "cas_store": "GRPC_LOCAL_STORE",
+          "scheduler": "MAIN_SCHEDULER",
+        }
+      },
+      "capabilities": {
+        "main": {
+          "remote_execution": {
+            "scheduler": "MAIN_SCHEDULER",
+          }
+        }
+      }
+    }
+  }, {
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50061"
+      }
+    },
+    "services": {
+      // Note: This should be served on a different port, because it has
+      // a different permission set than the other services.
+      // In other words, this service is a backend api. The ones above
+      // are a frontend api.
+      "worker_api": {
+        "scheduler": "MAIN_SCHEDULER",
+      },
+    }
+  }]
+}
