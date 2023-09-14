@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2023 The Turbo Cache Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,6 +46,79 @@ mod resource_info_tests {
     }
 
     #[tokio::test]
+    async fn compressor_specified_test() -> Result<(), Box<dyn std::error::Error>> {
+        const RESOURCE_NAME: &str = "foo_bar/uploads/UUID-HERE/compressed-blobs/COMPRESSOR/HASH-HERE/12345";
+        let resource_info = ResourceInfo::new(RESOURCE_NAME)?;
+
+        assert_eq!(resource_info.instance_name, "foo_bar");
+        assert_eq!(resource_info.uuid, Some("UUID-HERE"));
+        assert_eq!(resource_info.compressor, Some("COMPRESSOR"));
+        assert_eq!(resource_info.hash, "HASH-HERE");
+        assert_eq!(resource_info.expected_size, 12345);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn compressor_and_digest_specified_test() -> Result<(), Box<dyn std::error::Error>> {
+        const RESOURCE_NAME: &str = "foo_bar/uploads/UUID-HERE/compressed-blobs/COMPRESSOR/blake3/HASH-HERE/12345";
+        let resource_info = ResourceInfo::new(RESOURCE_NAME)?;
+
+        assert_eq!(resource_info.instance_name, "foo_bar");
+        assert_eq!(resource_info.uuid, Some("UUID-HERE"));
+        assert_eq!(resource_info.compressor, Some("COMPRESSOR"));
+        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.hash, "HASH-HERE");
+        assert_eq!(resource_info.expected_size, 12345);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn instance_name_has_slashes_test() -> Result<(), Box<dyn std::error::Error>> {
+        const RESOURCE_NAME: &str = "some/slashed/instance/blobs/HASH-HERE/12345";
+        let resource_info = ResourceInfo::new(RESOURCE_NAME)?;
+
+        assert_eq!(resource_info.instance_name, "some/slashed/instance");
+        assert_eq!(resource_info.uuid, None);
+        assert_eq!(resource_info.hash, "HASH-HERE");
+        assert_eq!(resource_info.expected_size, 12345);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn optional_metadata_test() -> Result<(), Box<dyn std::error::Error>> {
+        const RESOURCE_NAME: &str = "foo_bar/blobs/HASH-HERE/12345/this_is_some_metadata";
+        let resource_info = ResourceInfo::new(RESOURCE_NAME)?;
+
+        assert_eq!(resource_info.instance_name, "foo_bar");
+        assert_eq!(resource_info.uuid, None);
+        assert_eq!(resource_info.hash, "HASH-HERE");
+        assert_eq!(resource_info.optional_metadata, Some("this_is_some_metadata"));
+        assert_eq!(resource_info.expected_size, 12345);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn optional_metadata_with_slash_test() -> Result<(), Box<dyn std::error::Error>> {
+        const RESOURCE_NAME: &str = "foo_bar/blobs/HASH-HERE/12345/this_is_some_metadata/with_slashes";
+        let resource_info = ResourceInfo::new(RESOURCE_NAME)?;
+
+        assert_eq!(resource_info.instance_name, "foo_bar");
+        assert_eq!(resource_info.uuid, None);
+        assert_eq!(resource_info.hash, "HASH-HERE");
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some("this_is_some_metadata/with_slashes")
+        );
+        assert_eq!(resource_info.expected_size, 12345);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn without_resource_name_blobs_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "blobs/HASH-HERE/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME)?;
@@ -68,6 +141,13 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "HASH-HERE");
         assert_eq!(resource_info.expected_size, 12345);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn empty_name_test() -> Result<(), Box<dyn std::error::Error>> {
+        const RESOURCE_NAME: &str = "";
+        assert_eq!(true, ResourceInfo::new(RESOURCE_NAME).is_err());
         Ok(())
     }
 }
