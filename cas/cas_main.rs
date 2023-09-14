@@ -57,7 +57,7 @@ const METRICS_DISABLE_ENV: &str = "TURBO_CACHE_DISABLE_METRICS";
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
 #[clap(
-    author = "Nathan (Blaise) Bruer <turbo-cache.blaise@allada.com>",
+    author = "Trace Machina, Inc. <turbo-cache@tracemachina.com>",
     version = "0.0.1",
     about,
     long_about = None
