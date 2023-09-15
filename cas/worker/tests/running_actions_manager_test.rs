@@ -17,7 +17,7 @@ use std::env;
 use std::ffi::OsString;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::pin::Pin;
@@ -30,7 +30,6 @@ use futures::{FutureExt, TryFutureExt};
 use lazy_static::lazy_static;
 use prost::Message;
 use rand::{thread_rng, Rng};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 
 use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
@@ -1107,35 +1106,25 @@ exit 0
             let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
             #[cfg(target_family = "windows")]
             let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
-            let mut test_wrapper_script_handle = fs::create_file(&test_wrapper_script).await?;
-            test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
-                .await?;
+
+            // We use std::fs::File here because we sometimes get strange bugs here
+            // that result in: "Text file busy (os error 26)" if it is an executeable.
+            // It is likley because somewhere the file descriotor does not get closed
+            // in tokio's async context.
+            let mut test_wrapper_script_handle = std::fs::File::create(&test_wrapper_script)?;
+            test_wrapper_script_handle.write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())?;
             #[cfg(target_family = "unix")]
-            test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .as_mut()
-                .set_permissions(Permissions::from_mode(0o755))
-                .await?;
-            test_wrapper_script_handle.as_writer().await?.flush().await?;
-            test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .as_mut()
-                .sync_all()
-                .await?;
+            test_wrapper_script_handle.set_permissions(Permissions::from_mode(0o777))?;
+            test_wrapper_script_handle.sync_all()?;
+            drop(test_wrapper_script_handle);
+
             test_wrapper_script
         };
 
-        let mut full_wrapper_script_path = env::current_dir()?;
-        full_wrapper_script_path.push(test_wrapper_script);
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             root_work_directory.clone(),
             ExecutionConfiguration {
-                entrypoint_cmd: Some(full_wrapper_script_path.into_os_string().into_string().unwrap()),
+                entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: None,
             },
             Pin::into_inner(cas_store.clone()),
@@ -1227,35 +1216,25 @@ exit 0
             let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
             #[cfg(target_family = "windows")]
             let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
-            let mut test_wrapper_script_handle = fs::create_file(&test_wrapper_script).await?;
-            test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
-                .await?;
+
+            // We use std::fs::File here because we sometimes get strange bugs here
+            // that result in: "Text file busy (os error 26)" if it is an executeable.
+            // It is likley because somewhere the file descriotor does not get closed
+            // in tokio's async context.
+            let mut test_wrapper_script_handle = std::fs::File::create(&test_wrapper_script)?;
+            test_wrapper_script_handle.write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())?;
             #[cfg(target_family = "unix")]
-            test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .as_mut()
-                .set_permissions(Permissions::from_mode(0o755))
-                .await?;
-            test_wrapper_script_handle.as_writer().await?.flush().await?;
-            test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .as_mut()
-                .sync_all()
-                .await?;
+            test_wrapper_script_handle.set_permissions(Permissions::from_mode(0o777))?;
+            test_wrapper_script_handle.sync_all()?;
+            drop(test_wrapper_script_handle);
+
             test_wrapper_script
         };
 
-        let mut full_wrapper_script_path = env::current_dir()?;
-        full_wrapper_script_path.push(test_wrapper_script);
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             root_work_directory.clone(),
             ExecutionConfiguration {
-                entrypoint_cmd: Some(full_wrapper_script_path.into_os_string().into_string().unwrap()),
+                entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: Some(HashMap::from([
                     (
                         "PROPERTY".to_string(),

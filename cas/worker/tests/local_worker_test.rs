@@ -17,6 +17,7 @@ use std::env;
 use std::ffi::OsString;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
+use std::io::Write;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -360,7 +361,8 @@ mod local_worker_tests {
         fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
         let mut file = fs::create_file(OsString::from(format!("{}/{}", work_directory, "foo.txt"))).await?;
         file.as_writer().await?.write_all(b"Hello, world!").await?;
-        file.as_writer().await?.flush().await?;
+        file.as_writer().await?.as_mut().sync_all().await?;
+        drop(file);
         new_local_worker(
             Arc::new(LocalWorkerConfig {
                 work_directory: work_directory.clone(),
@@ -388,22 +390,24 @@ mod local_worker_tests {
         #[cfg(target_family = "unix")]
         let precondition_script = {
             let precondition_script = format!("{}/precondition.sh", temp_path);
-            let mut file = fs::create_file(OsString::from(&precondition_script)).await?;
-            file.as_writer().await?.write_all(b"#!/bin/sh\nexit 1\n").await?;
-            file.as_writer()
-                .await?
-                .as_mut()
-                .set_permissions(Permissions::from_mode(0o777))
-                .await?;
-            file.as_writer().await?.flush().await?;
+            // We use std::fs::File here because we sometimes get strange bugs here
+            // that result in: "Text file busy (os error 26)" if it is an executeable.
+            // It is likley because somewhere the file descriotor does not get closed
+            // in tokio's async context.
+            let mut file = std::fs::File::create(OsString::from(&precondition_script))?;
+            file.write_all(b"#!/bin/sh\nexit 1\n")?;
+            file.set_permissions(Permissions::from_mode(0o777))?;
+            file.sync_all()?;
+            drop(file);
             precondition_script
         };
         #[cfg(target_family = "windows")]
         let precondition_script = {
             let precondition_script = format!("{}/precondition.bat", temp_path);
-            let mut file = fs::create_file(OsString::from(&precondition_script)).await?;
-            file.as_writer().await?.write_all(b"@echo off\r\nexit 1").await?;
-            file.as_writer().await?.flush().await?;
+            let mut file = std::fs::File::create(OsString::from(&precondition_script))?;
+            file.write_all(b"@echo off\r\nexit 1")?;
+            file.sync_all()?;
+            drop(file);
             precondition_script
         };
         let local_worker_config = LocalWorkerConfig {
