@@ -645,7 +645,7 @@ impl RunningActionImpl {
 
         let mut child_process = command_builder
             .spawn()
-            .err_tip(|| format!("Could not execute command {:?}", command_proto.arguments))?;
+            .err_tip(|| format!("Could not execute command {:?}", args))?;
         let mut stdout_reader = child_process
             .stdout
             .take()
