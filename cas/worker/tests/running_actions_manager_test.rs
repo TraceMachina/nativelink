@@ -1107,35 +1107,23 @@ exit 0
             let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
             #[cfg(target_family = "windows")]
             let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
-            let mut test_wrapper_script_handle = fs::create_file(&test_wrapper_script).await?;
+            let mut test_wrapper_script_handle = tokio::fs::File::create(&test_wrapper_script).await?;
             test_wrapper_script_handle
-                .as_writer()
-                .await?
                 .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
                 .await?;
             #[cfg(target_family = "unix")]
             test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .as_mut()
                 .set_permissions(Permissions::from_mode(0o755))
                 .await?;
-            test_wrapper_script_handle.as_writer().await?.flush().await?;
-            test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .as_mut()
-                .sync_all()
-                .await?;
+            test_wrapper_script_handle.flush().await?;
+            drop(test_wrapper_script_handle.into_std().await);
             test_wrapper_script
         };
 
-        let mut full_wrapper_script_path = env::current_dir()?;
-        full_wrapper_script_path.push(test_wrapper_script);
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             root_work_directory.clone(),
             ExecutionConfiguration {
-                entrypoint_cmd: Some(full_wrapper_script_path.into_os_string().into_string().unwrap()),
+                entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: None,
             },
             Pin::into_inner(cas_store.clone()),
@@ -1227,35 +1215,23 @@ exit 0
             let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
             #[cfg(target_family = "windows")]
             let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
-            let mut test_wrapper_script_handle = fs::create_file(&test_wrapper_script).await?;
+            let mut test_wrapper_script_handle = tokio::fs::File::create(&test_wrapper_script).await?;
             test_wrapper_script_handle
-                .as_writer()
-                .await?
                 .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
                 .await?;
             #[cfg(target_family = "unix")]
             test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .as_mut()
                 .set_permissions(Permissions::from_mode(0o755))
                 .await?;
-            test_wrapper_script_handle.as_writer().await?.flush().await?;
-            test_wrapper_script_handle
-                .as_writer()
-                .await?
-                .as_mut()
-                .sync_all()
-                .await?;
+            test_wrapper_script_handle.flush().await?;
+            drop(test_wrapper_script_handle.into_std().await);
             test_wrapper_script
         };
 
-        let mut full_wrapper_script_path = env::current_dir()?;
-        full_wrapper_script_path.push(test_wrapper_script);
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
             root_work_directory.clone(),
             ExecutionConfiguration {
-                entrypoint_cmd: Some(full_wrapper_script_path.into_os_string().into_string().unwrap()),
+                entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: Some(HashMap::from([
                     (
                         "PROPERTY".to_string(),
