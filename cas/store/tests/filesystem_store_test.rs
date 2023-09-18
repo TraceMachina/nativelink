@@ -350,10 +350,10 @@ mod filesystem_store_tests {
         // Insert data into store.
         store_pin.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
-        let (writer, mut reader) = make_buf_channel_pair();
+        let (mut writer, mut reader) = make_buf_channel_pair();
         let store_clone = store.clone();
         let digest1_clone = digest1;
-        tokio::spawn(async move { Pin::new(store_clone.as_ref()).get(digest1_clone, writer).await });
+        tokio::spawn(async move { Pin::new(store_clone.as_ref()).get(digest1_clone, &mut writer).await });
 
         {
             // Check to ensure our first byte has been received. The future should be stalled here.
@@ -455,9 +455,9 @@ mod filesystem_store_tests {
         store_pin.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
         let mut reader = {
-            let (writer, reader) = make_buf_channel_pair();
+            let (mut writer, reader) = make_buf_channel_pair();
             let store_clone = store.clone();
-            tokio::spawn(async move { Pin::new(store_clone.as_ref()).get(digest1, writer).await });
+            tokio::spawn(async move { Pin::new(store_clone.as_ref()).get(digest1, &mut writer).await });
             reader
         };
         // Ensure we have received 1 byte in our buffer. This will ensure we have a reference to

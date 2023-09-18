@@ -416,7 +416,7 @@ impl StoreTrait for S3Store {
     async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
-        writer: DropCloserWriteHalf,
+        writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
@@ -432,7 +432,7 @@ impl StoreTrait for S3Store {
         self.retrier
             .retry(
                 retry_config,
-                unfold(writer, move |mut writer| async move {
+                unfold(writer, move |writer| async move {
                     let result = self
                         .s3_client
                         .get_object(GetObjectRequest {
