@@ -388,7 +388,7 @@ impl GrpcStore {
     async fn get_action_result_as_part(
         &self,
         digest: DigestInfo,
-        mut writer: DropCloserWriteHalf,
+        writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
@@ -570,7 +570,7 @@ impl StoreTrait for GrpcStore {
     async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
-        mut writer: DropCloserWriteHalf,
+        writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {

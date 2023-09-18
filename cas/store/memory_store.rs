@@ -109,7 +109,7 @@ impl StoreTrait for MemoryStore {
     async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
-        mut writer: DropCloserWriteHalf,
+        writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
@@ -118,7 +118,6 @@ impl StoreTrait for MemoryStore {
             .get(&digest)
             .await
             .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.hash_str())))?;
-
         let default_len = value.len() - offset;
         let length = length.unwrap_or(default_len).min(default_len);
         if length > 0 {

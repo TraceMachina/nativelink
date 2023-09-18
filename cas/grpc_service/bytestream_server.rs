@@ -244,7 +244,7 @@ impl ByteStreamServer {
 
         let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
 
-        let (tx, rx) = buf_channel::make_buf_channel_pair();
+        let (mut tx, rx) = buf_channel::make_buf_channel_pair();
 
         struct ReaderState {
             max_bytes_per_stream: usize,
@@ -260,7 +260,11 @@ impl ByteStreamServer {
             rx,
             max_bytes_per_stream: self.max_bytes_per_stream,
             maybe_get_part_result: None,
-            get_part_fut: store.get_part_arc(digest, tx, read_request.read_offset as usize, read_limit),
+            get_part_fut: Box::pin(async move {
+                store
+                    .get_part_arc(digest, &mut tx, read_request.read_offset as usize, read_limit)
+                    .await
+            }),
         });
 
         Ok(Response::new(Box::pin(unfold(state, move |state| async {

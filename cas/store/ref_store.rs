@@ -113,7 +113,7 @@ impl StoreTrait for RefStore {
     async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
-        writer: DropCloserWriteHalf,
+        writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {

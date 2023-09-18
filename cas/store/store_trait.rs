@@ -102,19 +102,19 @@ pub trait StoreTrait: Sync + Send + Unpin {
     async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
-        writer: DropCloserWriteHalf,
+        writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error>;
 
-    async fn get(self: Pin<&Self>, digest: DigestInfo, writer: DropCloserWriteHalf) -> Result<(), Error> {
+    async fn get(self: Pin<&Self>, digest: DigestInfo, writer: &mut DropCloserWriteHalf) -> Result<(), Error> {
         self.get_part(digest, writer, 0, None).await
     }
 
     async fn get_part_arc(
         self: Arc<Self>,
         digest: DigestInfo,
-        writer: DropCloserWriteHalf,
+        writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
@@ -132,11 +132,11 @@ pub trait StoreTrait: Sync + Send + Unpin {
         // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
-        let (tx, rx) = make_buf_channel_pair();
+        let (mut tx, rx) = make_buf_channel_pair();
 
         let (data_res, get_part_res) = join!(
             rx.collect_all_with_size_hint(length.unwrap_or(size_hint.unwrap_or(0))),
-            self.get_part(digest, tx, offset, length),
+            async move { self.get_part(digest, &mut tx, offset, length).await },
         );
         get_part_res
             .err_tip(|| "Failed to get_part in get_part_unchunked")

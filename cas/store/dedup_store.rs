@@ -220,7 +220,7 @@ impl StoreTrait for DedupStore {
     async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
-        mut writer: DropCloserWriteHalf,
+        writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {

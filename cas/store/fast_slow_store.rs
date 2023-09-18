@@ -67,12 +67,12 @@ impl FastSlowStore {
         // TODO(blaise.bruer) This is extremely inefficient, since we are just trying
         // to send the stream to /dev/null. Maybe we could instead make a version of
         // the stream that can send to the drain more efficiently?
-        let (tx, mut rx) = make_buf_channel_pair();
+        let (mut tx, mut rx) = make_buf_channel_pair();
         let drain_fut = async move {
             while !rx.recv().await?.is_empty() {}
             Ok(())
         };
-        let (drain_res, get_res) = join!(drain_fut, self.get(digest, tx));
+        let (drain_res, get_res) = join!(drain_fut, self.get(digest, &mut tx));
         get_res.err_tip(|| "Failed to populate()").merge(drain_res)
     }
 
@@ -192,7 +192,7 @@ impl StoreTrait for FastSlowStore {
     async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
-        mut writer: DropCloserWriteHalf,
+        writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
@@ -220,9 +220,9 @@ impl StoreTrait for FastSlowStore {
         let mut bytes_received: usize = 0;
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
-        let (slow_tx, mut slow_rx) = make_buf_channel_pair();
+        let (mut slow_tx, mut slow_rx) = make_buf_channel_pair();
         let data_stream_fut = async move {
-            let mut writer_pin = Pin::new(&mut writer);
+            let mut writer_pin = Pin::new(writer);
             loop {
                 let output_buf = slow_rx
                     .recv()
@@ -253,7 +253,7 @@ impl StoreTrait for FastSlowStore {
             }
         };
 
-        let slow_store_fut = slow_store.get(digest, slow_tx);
+        let slow_store_fut = slow_store.get(digest, &mut slow_tx);
         let fast_store_fut = fast_store.update(digest, fast_rx, UploadSizeInfo::ExactSize(sz));
 
         let (data_stream_res, slow_res, fast_res) = join!(data_stream_fut, slow_store_fut, fast_store_fut);
