@@ -98,7 +98,7 @@ impl StoreTrait for SizePartitioningStore {
             .await
     }
 
-    async fn get_part(
+    async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -107,11 +107,11 @@ impl StoreTrait for SizePartitioningStore {
     ) -> Result<(), Error> {
         if digest.size_bytes < self.size {
             return Pin::new(self.lower_store.as_ref())
-                .get_part(digest, writer, offset, length)
+                .get_part_ref(digest, writer, offset, length)
                 .await;
         }
         Pin::new(self.upper_store.as_ref())
-            .get_part(digest, writer, offset, length)
+            .get_part_ref(digest, writer, offset, length)
             .await
     }
 

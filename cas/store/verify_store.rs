@@ -151,14 +151,14 @@ impl StoreTrait for VerifyStore {
         update_res.merge(check_res)
     }
 
-    async fn get_part(
+    async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        self.pin_inner().get_part(digest, writer, offset, length).await
+        self.pin_inner().get_part_ref(digest, writer, offset, length).await
     }
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {

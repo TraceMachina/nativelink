@@ -413,7 +413,7 @@ impl StoreTrait for S3Store {
         complete_result
     }
 
-    async fn get_part(
+    async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
