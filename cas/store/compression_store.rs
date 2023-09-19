@@ -365,7 +365,7 @@ impl StoreTrait for CompressionStore {
         write_result.merge(update_result)
     }
 
-    async fn get_part(
+    async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -373,12 +373,12 @@ impl StoreTrait for CompressionStore {
         length: Option<usize>,
     ) -> Result<(), Error> {
         let offset = offset as u64;
-        let (mut tx, mut rx) = make_buf_channel_pair();
+        let (tx, mut rx) = make_buf_channel_pair();
 
         let inner_store = self.inner_store.clone();
         let get_part_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
             Pin::new(inner_store.as_ref())
-                .get_part(digest, &mut tx, 0, None)
+                .get_part(digest, tx, 0, None)
                 .await
                 .err_tip(|| "Inner store get in compression store failed")
         }))

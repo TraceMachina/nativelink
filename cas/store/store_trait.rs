@@ -44,6 +44,7 @@ pub trait StoreTrait: Sync + Send + Unpin {
     /// Look up a digest in the store and return None if it does not exist in
     /// the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
+    #[inline]
     async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
         let mut result = [None];
         self.has_with_results(&[digest], &mut result).await?;
@@ -54,6 +55,7 @@ pub trait StoreTrait: Sync + Send + Unpin {
     /// the same order as input.  The result will either be None if it does not
     /// exist in the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
+    #[inline]
     async fn has_many(self: Pin<&Self>, digests: &[DigestInfo]) -> Result<Vec<Option<usize>>, Error> {
         let mut results = vec![None; digests.len()];
         self.has_with_results(digests, &mut results).await?;
@@ -99,7 +101,8 @@ pub trait StoreTrait: Sync + Send + Unpin {
         Ok(())
     }
 
-    async fn get_part(
+    /// Retreives part of the data from the store and writes it to the given writer.
+    async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -107,14 +110,36 @@ pub trait StoreTrait: Sync + Send + Unpin {
         length: Option<usize>,
     ) -> Result<(), Error>;
 
-    async fn get(self: Pin<&Self>, digest: DigestInfo, writer: &mut DropCloserWriteHalf) -> Result<(), Error> {
+    /// Same as `get_part_ref`, but takes ownership of the writer. This is preferred
+    /// when the writer is definitly not going to be needed after the function returns.
+    /// This is useful because the read half of the writer will block until the writer
+    /// is dropped or EOF is sent. If the writer was passed as a reference, and the
+    /// reader was being waited with the `.get_part()`, it could deadlock if the writer
+    /// is not dropped or EOF sent. `.get_part_ref()` should be used when the writer
+    /// might be used after the function returns.
+    #[inline]
+    async fn get_part(
+        self: Pin<&Self>,
+        digest: DigestInfo,
+        mut writer: DropCloserWriteHalf,
+        offset: usize,
+        length: Option<usize>,
+    ) -> Result<(), Error> {
+        self.get_part_ref(digest, &mut writer, offset, length).await
+    }
+
+    /// Utility that works the same as ``.get_part()`, but writes all the data.
+    #[inline]
+    async fn get(self: Pin<&Self>, digest: DigestInfo, writer: DropCloserWriteHalf) -> Result<(), Error> {
         self.get_part(digest, writer, 0, None).await
     }
 
+    /// Utility for when `self` is an `Arc` to make the code easier to write.
+    #[inline]
     async fn get_part_arc(
         self: Arc<Self>,
         digest: DigestInfo,
-        writer: &mut DropCloserWriteHalf,
+        writer: DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
@@ -132,11 +157,11 @@ pub trait StoreTrait: Sync + Send + Unpin {
         // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
-        let (mut tx, rx) = make_buf_channel_pair();
+        let (tx, rx) = make_buf_channel_pair();
 
         let (data_res, get_part_res) = join!(
             rx.collect_all_with_size_hint(length.unwrap_or(size_hint.unwrap_or(0))),
-            async move { self.get_part(digest, &mut tx, offset, length).await },
+            self.get_part(digest, tx, offset, length),
         );
         get_part_res
             .err_tip(|| "Failed to get_part in get_part_unchunked")

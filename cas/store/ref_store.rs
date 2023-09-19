@@ -110,7 +110,7 @@ impl StoreTrait for RefStore {
         Pin::new(store.as_ref()).update(digest, reader, size_info).await
     }
 
-    async fn get_part(
+    async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -118,7 +118,9 @@ impl StoreTrait for RefStore {
         length: Option<usize>,
     ) -> Result<(), Error> {
         let store = self.get_store()?;
-        Pin::new(store.as_ref()).get_part(digest, writer, offset, length).await
+        Pin::new(store.as_ref())
+            .get_part_ref(digest, writer, offset, length)
+            .await
     }
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {

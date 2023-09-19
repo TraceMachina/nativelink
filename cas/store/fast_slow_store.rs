@@ -67,12 +67,12 @@ impl FastSlowStore {
         // TODO(blaise.bruer) This is extremely inefficient, since we are just trying
         // to send the stream to /dev/null. Maybe we could instead make a version of
         // the stream that can send to the drain more efficiently?
-        let (mut tx, mut rx) = make_buf_channel_pair();
+        let (tx, mut rx) = make_buf_channel_pair();
         let drain_fut = async move {
             while !rx.recv().await?.is_empty() {}
             Ok(())
         };
-        let (drain_res, get_res) = join!(drain_fut, self.get(digest, &mut tx));
+        let (drain_res, get_res) = join!(drain_fut, self.get(digest, tx));
         get_res.err_tip(|| "Failed to populate()").merge(drain_res)
     }
 
@@ -189,7 +189,7 @@ impl StoreTrait for FastSlowStore {
         Ok(())
     }
 
-    async fn get_part(
+    async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -201,7 +201,7 @@ impl StoreTrait for FastSlowStore {
         let fast_store = self.pin_fast_store();
         let slow_store = self.pin_slow_store();
         if fast_store.has(digest).await?.is_some() {
-            return fast_store.get_part(digest, writer, offset, length).await;
+            return fast_store.get_part_ref(digest, writer, offset, length).await;
         }
 
         let sz = slow_store
@@ -220,7 +220,7 @@ impl StoreTrait for FastSlowStore {
         let mut bytes_received: usize = 0;
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
-        let (mut slow_tx, mut slow_rx) = make_buf_channel_pair();
+        let (slow_tx, mut slow_rx) = make_buf_channel_pair();
         let data_stream_fut = async move {
             let mut writer_pin = Pin::new(writer);
             loop {
@@ -253,7 +253,7 @@ impl StoreTrait for FastSlowStore {
             }
         };
 
-        let slow_store_fut = slow_store.get(digest, &mut slow_tx);
+        let slow_store_fut = slow_store.get(digest, slow_tx);
         let fast_store_fut = fast_store.update(digest, fast_rx, UploadSizeInfo::ExactSize(sz));
 
         let (data_stream_res, slow_res, fast_res) = join!(data_stream_fut, slow_store_fut, fast_store_fut);
