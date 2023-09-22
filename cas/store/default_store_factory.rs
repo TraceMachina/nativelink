@@ -15,7 +15,8 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::Future;
+use futures::stream::FuturesOrdered;
+use futures::{Future, TryStreamExt};
 
 use compression_store::CompressionStore;
 use config::{self, stores::StoreConfig};
@@ -28,6 +29,7 @@ use memory_store::MemoryStore;
 use metrics_utils::Registry;
 use ref_store::RefStore;
 use s3_store::S3Store;
+use shard_store::ShardStore;
 use size_partitioning_store::SizePartitioningStore;
 use store::{Store, StoreManager};
 use verify_store::VerifyStore;
@@ -69,6 +71,16 @@ pub fn store_factory<'a>(
                 store_factory(&config.upper_store, store_manager, None).await?,
             )),
             StoreConfig::grpc(config) => Arc::new(GrpcStore::new(config).await?),
+            StoreConfig::shard(config) => {
+                let stores = config
+                    .stores
+                    .iter()
+                    .map(|store_config| store_factory(&store_config.store, store_manager, None))
+                    .collect::<FuturesOrdered<_>>()
+                    .try_collect::<Vec<_>>()
+                    .await?;
+                Arc::new(ShardStore::new(config, stores)?)
+            }
         };
         if let Some(store_metrics) = maybe_store_metrics {
             store.clone().register_metrics(store_metrics);
