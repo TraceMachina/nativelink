@@ -94,14 +94,18 @@ pub enum StoreConfig {
     /// store).
     fast_slow(Box<FastSlowStore>),
 
+    /// Shards the data to multiple stores. This is useful for cases
+    /// when you want to distribute the load across multiple stores.
+    /// The digest hash is used to determine which store to send the
+    /// data to.
+    shard(ShardStore),
+
     /// Stores the data on the filesystem. This store is designed for
     /// local persistent storage. Restarts of this program should restore
     /// the previous state, meaning anything uploaded will be persistent
     /// as long as the filesystem integrity holds. This store uses the
     /// filesystem's `atime` (access time) to hold the last touched time
-    /// of the file(s). We also use the RENAME_EXCHANGE flag to atomically
-    /// swap files if a file is being replaced. Only filesystems that
-    /// support `atime` and the RENAME_EXCHANGE flag are supported.
+    /// of the file(s).
     filesystem(FilesystemStore),
 
     /// Store used to reference a store in the root store manager.
@@ -130,6 +134,26 @@ pub enum StoreConfig {
     /// this store directly without being a child of any store there are no
     /// side effects and is the most efficient way to use it.
     grpc(GrpcStore),
+}
+
+/// Configuration for an individual shard of the store.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ShardConfig {
+    /// Store to shard the data to.
+    pub store: StoreConfig,
+
+    /// The weight of the store. This is used to determine how much data
+    /// should be sent to the store. The actual percentage is the sum of
+    /// all the store's weights divided by the individual store's weight.
+    ///
+    /// Default: 1
+    pub weight: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ShardStore {
+    /// Stores to shard the data to.
+    pub stores: Vec<ShardConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

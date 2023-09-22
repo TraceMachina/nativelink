@@ -30,6 +30,7 @@ rust_library(
         ":memory_store",
         ":ref_store",
         ":s3_store",
+        ":shard_store",
         ":size_partitioning_store",
         ":store",
         ":traits",
@@ -158,6 +159,25 @@ rust_library(
         "//util:error",
         "//util:metrics_utils",
         "@crate_index//:bytes",
+        "@crate_index//:futures",
+    ],
+)
+
+rust_library(
+    name = "shard_store",
+    srcs = ["shard_store.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    deps = [
+        ":traits",
+        "//config",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "//util:metrics_utils",
         "@crate_index//:futures",
     ],
 )
@@ -322,6 +342,22 @@ rust_test(
     srcs = ["tests/fast_slow_store_test.rs"],
     deps = [
         ":fast_slow_store",
+        ":memory_store",
+        ":traits",
+        "//config",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:rand",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_test(
+    name = "shard_store_test",
+    srcs = ["tests/shard_store_test.rs"],
+    deps = [
+        ":shard_store",
         ":memory_store",
         ":traits",
         "//config",
