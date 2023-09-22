@@ -1831,6 +1831,7 @@ dependencies = [
 name = "memory_store_test"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "common",
  "config",
  "error",
