@@ -77,6 +77,8 @@ members = [
   "gencargo/scheduler",
   "gencargo/scheduler_utils",
   "gencargo/serde_utils",
+  "gencargo/shard_store",
+  "gencargo/shard_store_test",
   "gencargo/simple_scheduler",
   "gencargo/simple_scheduler_test",
   "gencargo/size_partitioning_store",
@@ -215,6 +217,8 @@ s3_store_test = { path = "gencargo/s3_store_test" }
 scheduler = { path = "gencargo/scheduler" }
 scheduler_utils = { path = "gencargo/scheduler_utils" }
 serde_utils = { path = "gencargo/serde_utils" }
+shard_store = { path = "gencargo/shard_store" }
+shard_store_test = { path = "gencargo/shard_store_test" }
 simple_scheduler = { path = "gencargo/simple_scheduler" }
 simple_scheduler_test = { path = "gencargo/simple_scheduler_test" }
 size_partitioning_store = { path = "gencargo/size_partitioning_store" }

@@ -875,6 +875,7 @@ dependencies = [
  "metrics_utils",
  "ref_store",
  "s3_store",
+ "shard_store",
  "size_partitioning_store",
  "store",
  "traits",
@@ -2876,6 +2877,35 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "shard_store"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "buf_channel",
+ "common",
+ "config",
+ "error",
+ "futures",
+ "metrics_utils",
+ "traits",
+]
+
+[[package]]
+name = "shard_store_test"
+version = "0.0.0"
+dependencies = [
+ "common",
+ "config",
+ "error",
+ "memory_store",
+ "pretty_assertions",
+ "rand",
+ "shard_store",
+ "tokio",
+ "traits",
 ]
 
 [[package]]
