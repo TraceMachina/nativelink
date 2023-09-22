@@ -372,13 +372,18 @@ rust_test(
 rust_test(
     name = "memory_store_test",
     srcs = ["tests/memory_store_test.rs"],
+    env = {
+        "RUST_TEST_THREADS": "1", # This test can't run in parallel.
+    },
     deps = [
         ":memory_store",
         ":traits",
         "//config",
         "//util:common",
         "//util:error",
+        "@crate_index//:bytes",
         "@crate_index//:pretty_assertions",
+        "@crate_index//:procinfo",
         "@crate_index//:tokio",
     ],
 )

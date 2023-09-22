@@ -160,4 +160,7 @@ PACKAGES = {
     "ctor": {
         "version": "0.2.3",
     },
+    "procinfo": {
+        "version": "0.4.2",
+    },
 }

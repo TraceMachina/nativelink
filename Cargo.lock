@@ -3,100 +3,6 @@
 version = 3
 
 [[package]]
-name = "ac_server"
-version = "0.0.0"
-dependencies = [
- "ac_utils",
- "bytes",
- "common",
- "config",
- "error",
- "grpc_store",
- "prost",
- "proto",
- "store",
- "tonic",
-]
-
-[[package]]
-name = "ac_server_test"
-version = "0.0.0"
-dependencies = [
- "ac_server",
- "bytes",
- "common",
- "config",
- "default_store_factory",
- "error",
- "maplit",
- "pretty_assertions",
- "prometheus-client",
- "prost",
- "proto",
- "store",
- "tokio",
- "tonic",
-]
-
-[[package]]
-name = "ac_utils"
-version = "0.0.0"
-dependencies = [
- "buf_channel",
- "bytes",
- "common",
- "error",
- "futures",
- "prost",
- "sha2 0.10.7",
- "store",
- "tokio",
-]
-
-[[package]]
-name = "ac_utils_test"
-version = "0.0.0"
-dependencies = [
- "ac_utils",
- "common",
- "config",
- "error",
- "memory_store",
- "pretty_assertions",
- "rand",
- "store",
- "tokio",
-]
-
-[[package]]
-name = "action_messages"
-version = "0.0.0"
-dependencies = [
- "common",
- "error",
- "metrics_utils",
- "platform_property_manager",
- "prost",
- "prost-types",
- "proto",
- "sha2 0.10.7",
- "tonic",
-]
-
-[[package]]
-name = "action_messages_test"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "common",
- "error",
- "platform_property_manager",
- "pretty_assertions",
- "proto",
- "tokio",
-]
-
-[[package]]
 name = "addr2line"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -240,28 +146,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async_fixed_buffer"
-version = "0.0.0"
-dependencies = [
- "fixed-buffer",
- "futures",
- "parking_lot",
- "pin-project-lite",
- "tokio",
-]
-
-[[package]]
-name = "async_fixed_buffer_test"
-version = "0.0.0"
-dependencies = [
- "async_fixed_buffer",
- "error",
- "futures",
- "pretty_assertions",
- "tokio",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -397,29 +281,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "buf_channel"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "error",
- "futures",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "buf_channel_test"
-version = "0.0.0"
-dependencies = [
- "buf_channel",
- "bytes",
- "error",
- "futures",
- "pretty_assertions",
- "tokio",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -436,172 +297,6 @@ name = "bytes"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89b2fd2a0dcf38d7971e2194b6b6eebab45ae01067456a7fd93d5547a61b70be"
-
-[[package]]
-name = "bytestream_server"
-version = "0.0.0"
-dependencies = [
- "buf_channel",
- "common",
- "config",
- "error",
- "futures",
- "grpc_store",
- "parking_lot",
- "proto",
- "resource_info",
- "store",
- "tokio",
- "tonic",
- "write_request_stream_wrapper",
-]
-
-[[package]]
-name = "bytestream_server_test"
-version = "0.0.0"
-dependencies = [
- "bytestream_server",
- "common",
- "config",
- "default_store_factory",
- "error",
- "futures",
- "hyper",
- "maplit",
- "pretty_assertions",
- "prometheus-client",
- "proto",
- "store",
- "tokio",
- "tokio-stream",
- "tonic",
-]
-
-[[package]]
-name = "cache_lookup_scheduler"
-version = "0.0.0"
-dependencies = [
- "ac_utils",
- "action_messages",
- "async-trait",
- "common",
- "config",
- "error",
- "futures",
- "grpc_store",
- "parking_lot",
- "platform_property_manager",
- "proto",
- "scheduler",
- "scopeguard",
- "store",
- "tokio",
- "tokio-stream",
- "tonic",
- "worker",
-]
-
-[[package]]
-name = "cache_lookup_scheduler_test"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "cache_lookup_scheduler",
- "common",
- "config",
- "error",
- "memory_store",
- "mock_scheduler",
- "platform_property_manager",
- "pretty_assertions",
- "prost",
- "proto",
- "scheduler",
- "scheduler_utils",
- "store",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
-name = "capabilities_server"
-version = "0.0.0"
-dependencies = [
- "config",
- "error",
- "proto",
- "scheduler",
- "store",
- "tonic",
-]
-
-[[package]]
-name = "cas"
-version = "0.0.0"
-dependencies = [
- "ac_server",
- "async-lock",
- "axum",
- "bytestream_server",
- "capabilities_server",
- "cas_server",
- "clap",
- "common",
- "config",
- "default_scheduler_factory",
- "default_store_factory",
- "env_logger",
- "error",
- "execution_server",
- "futures",
- "hyper",
- "json5",
- "local_worker",
- "metrics_utils",
- "parking_lot",
- "prometheus-client",
- "scopeguard",
- "store",
- "tokio",
- "tonic",
- "tower",
- "worker_api_server",
-]
-
-[[package]]
-name = "cas_server"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "common",
- "config",
- "error",
- "futures",
- "grpc_store",
- "proto",
- "stdext",
- "store",
- "tokio",
- "tonic",
-]
-
-[[package]]
-name = "cas_server_test"
-version = "0.0.0"
-dependencies = [
- "cas_server",
- "common",
- "config",
- "default_store_factory",
- "error",
- "maplit",
- "pretty_assertions",
- "prometheus-client",
- "proto",
- "store",
- "tokio",
- "tonic",
-]
 
 [[package]]
 name = "cc"
@@ -679,66 +374,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "acbf1af155f9b9ef647e42cdc158db4b64a1b61f743629225fde6f3e0be2a7c7"
 
 [[package]]
-name = "common"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "error",
- "fs",
- "hex",
- "log",
- "prost",
- "proto",
- "serde",
- "tokio",
-]
-
-[[package]]
-name = "compression_store"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "bincode",
- "buf_channel",
- "byteorder",
- "bytes",
- "common",
- "config",
- "error",
- "futures",
- "lz4_flex",
- "serde",
- "tokio",
- "traits",
-]
-
-[[package]]
-name = "compression_store_test"
-version = "0.0.0"
-dependencies = [
- "bincode",
- "buf_channel",
- "common",
- "compression_store",
- "config",
- "error",
- "futures",
- "memory_store",
- "pretty_assertions",
- "rand",
- "tokio",
- "traits",
-]
-
-[[package]]
-name = "config"
-version = "0.0.0"
-dependencies = [
- "serde",
- "serde_utils",
-]
-
-[[package]]
 name = "constant_time_eq"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -809,80 +444,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dedup_store"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "bincode",
- "blake3",
- "buf_channel",
- "common",
- "config",
- "error",
- "fastcdc",
- "futures",
- "serde",
- "tokio",
- "tokio-util",
- "traits",
-]
-
-[[package]]
-name = "dedup_store_test"
-version = "0.0.0"
-dependencies = [
- "common",
- "config",
- "dedup_store",
- "error",
- "memory_store",
- "pretty_assertions",
- "rand",
- "tokio",
- "traits",
-]
-
-[[package]]
-name = "default_scheduler_factory"
-version = "0.0.0"
-dependencies = [
- "cache_lookup_scheduler",
- "config",
- "error",
- "futures",
- "grpc_scheduler",
- "metrics_utils",
- "property_modifier_scheduler",
- "scheduler",
- "simple_scheduler",
- "store",
- "tokio",
-]
-
-[[package]]
-name = "default_store_factory"
-version = "0.0.0"
-dependencies = [
- "compression_store",
- "config",
- "dedup_store",
- "error",
- "fast_slow_store",
- "filesystem_store",
- "futures",
- "grpc_store",
- "memory_store",
- "metrics_utils",
- "ref_store",
- "s3_store",
- "shard_store",
- "size_partitioning_store",
- "store",
- "traits",
- "verify_store",
-]
-
-[[package]]
 name = "diff"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -906,6 +467,64 @@ dependencies = [
  "block-buffer 0.10.4",
  "crypto-common",
  "subtle",
+]
+
+[[package]]
+name = "direct-cargo-bazel-deps"
+version = "0.0.1"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "axum",
+ "bincode",
+ "blake3",
+ "byteorder",
+ "bytes",
+ "clap",
+ "ctor",
+ "env_logger",
+ "filetime",
+ "fixed-buffer",
+ "futures",
+ "hashbrown 0.14.0",
+ "hex",
+ "http",
+ "hyper",
+ "json5",
+ "lazy_static",
+ "log",
+ "lru",
+ "lz4_flex",
+ "maplit",
+ "mock_instant",
+ "nix",
+ "parking_lot",
+ "pin-project-lite",
+ "pretty_assertions",
+ "procinfo",
+ "prometheus-client",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "rand",
+ "relative-path",
+ "rusoto_core",
+ "rusoto_mock",
+ "rusoto_s3",
+ "rusoto_signature",
+ "scopeguard",
+ "serde",
+ "sha2 0.10.7",
+ "shellexpand",
+ "shlex",
+ "stdext",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tonic-build",
+ "tower",
+ "uuid",
 ]
 
 [[package]]
@@ -997,176 +616,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "error"
-version = "0.0.0"
-dependencies = [
- "hex",
- "prost",
- "prost-types",
- "proto",
- "tokio",
- "tonic",
-]
-
-[[package]]
 name = "event-listener"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
 
 [[package]]
-name = "evicting_map"
-version = "0.0.0"
-dependencies = [
- "async-lock",
- "async-trait",
- "common",
- "config",
- "futures",
- "lru",
- "metrics_utils",
- "serde",
-]
-
-[[package]]
-name = "evicting_map_test"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "bytes",
- "common",
- "config",
- "error",
- "evicting_map",
- "hex",
- "mock_instant",
- "tokio",
-]
-
-[[package]]
-name = "execution_server"
-version = "0.0.0"
-dependencies = [
- "ac_utils",
- "action_messages",
- "common",
- "config",
- "error",
- "futures",
- "platform_property_manager",
- "proto",
- "rand",
- "scheduler",
- "stdext",
- "store",
- "tokio",
- "tokio-stream",
- "tonic",
-]
-
-[[package]]
-name = "fast_slow_store"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "buf_channel",
- "bytes",
- "common",
- "config",
- "error",
- "futures",
- "metrics_utils",
- "traits",
-]
-
-[[package]]
-name = "fast_slow_store_test"
-version = "0.0.0"
-dependencies = [
- "common",
- "config",
- "error",
- "fast_slow_store",
- "memory_store",
- "pretty_assertions",
- "rand",
- "tokio",
- "traits",
-]
-
-[[package]]
-name = "fastcdc"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "tokio-util",
-]
-
-[[package]]
-name = "fastcdc_test"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "fastcdc",
- "futures",
- "hex",
- "pretty_assertions",
- "rand",
- "sha2 0.10.7",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6999dc1837253364c2ebb0704ba97994bd874e8f195d665c50b7548f6ea92764"
-
-[[package]]
-name = "filesystem_store"
-version = "0.0.0"
-dependencies = [
- "async-lock",
- "async-trait",
- "buf_channel",
- "bytes",
- "common",
- "config",
- "error",
- "evicting_map",
- "filetime",
- "futures",
- "metrics_utils",
- "nix",
- "prometheus-client",
- "rand",
- "tokio",
- "tokio-stream",
- "traits",
-]
-
-[[package]]
-name = "filesystem_store_test"
-version = "0.0.0"
-dependencies = [
- "async-lock",
- "async-trait",
- "buf_channel",
- "common",
- "config",
- "error",
- "evicting_map",
- "filesystem_store",
- "filetime",
- "futures",
- "lazy_static",
- "pretty_assertions",
- "rand",
- "tokio",
- "tokio-stream",
- "traits",
-]
 
 [[package]]
 name = "filetime"
@@ -1230,26 +689,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a62bc1cf6f830c2ec14a513a9fb124d0a213a629668a4186f329db21fe045652"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "fs"
-version = "0.0.0"
-dependencies = [
- "error",
- "log",
- "tokio",
-]
-
-[[package]]
-name = "fs_test"
-version = "0.0.0"
-dependencies = [
- "common",
- "error",
- "pretty_assertions",
- "rand",
- "tokio",
 ]
 
 [[package]]
@@ -1342,15 +781,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gen_protos_tool"
-version = "0.0.0"
-dependencies = [
- "clap",
- "prost-build",
- "tonic-build",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1376,48 +806,6 @@ name = "gimli"
 version = "0.27.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c80984affa11d98d1b88b66ac8853f143217b399d3c74116778ff8fdb4ed2e"
-
-[[package]]
-name = "grpc_scheduler"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "async-trait",
- "common",
- "config",
- "error",
- "parking_lot",
- "platform_property_manager",
- "proto",
- "scheduler",
- "tokio",
- "tonic",
-]
-
-[[package]]
-name = "grpc_store"
-version = "0.0.0"
-dependencies = [
- "ac_utils",
- "async-trait",
- "buf_channel",
- "bytes",
- "common",
- "config",
- "error",
- "futures",
- "parking_lot",
- "prost",
- "proto",
- "rand",
- "retry",
- "shellexpand",
- "tokio",
- "tonic",
- "traits",
- "uuid",
- "write_request_stream_wrapper",
-]
 
 [[package]]
 name = "h2"
@@ -1678,69 +1066,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57bcfdad1b858c2db7c38303a6d2ad4dfaf5eb53dfeb0910128b2c26d6158503"
 
 [[package]]
-name = "local_worker"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "async-lock",
- "common",
- "config",
- "error",
- "fast_slow_store",
- "futures",
- "metrics_utils",
- "proto",
- "running_actions_manager",
- "store",
- "tokio",
- "tokio-stream",
- "tonic",
- "worker_api_client_wrapper",
- "worker_utils",
-]
-
-[[package]]
-name = "local_worker_test"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "common",
- "config",
- "ctor",
- "env_logger",
- "error",
- "fast_slow_store",
- "filesystem_store",
- "local_worker",
- "local_worker_test_utils",
- "memory_store",
- "mock_running_actions_manager",
- "platform_property_manager",
- "pretty_assertions",
- "prost",
- "proto",
- "rand",
- "tokio",
- "tonic",
-]
-
-[[package]]
-name = "local_worker_test_utils"
-version = "0.0.0"
-dependencies = [
- "common",
- "config",
- "error",
- "hyper",
- "local_worker",
- "mock_running_actions_manager",
- "mock_worker_api_client",
- "proto",
- "tokio",
- "tonic",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1813,42 +1138,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memory_store"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "buf_channel",
- "bytes",
- "common",
- "config",
- "error",
- "evicting_map",
- "metrics_utils",
- "traits",
-]
-
-[[package]]
-name = "memory_store_test"
-version = "0.0.0"
-dependencies = [
- "common",
- "config",
- "error",
- "memory_store",
- "pretty_assertions",
- "tokio",
- "traits",
-]
-
-[[package]]
-name = "metrics_utils"
-version = "0.0.0"
-dependencies = [
- "futures",
- "prometheus-client",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1879,44 +1168,6 @@ name = "mock_instant"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c1a54de846c4006b88b1516731cc1f6026eb5dc4bcb186aa071ef66d40524ec"
-
-[[package]]
-name = "mock_running_actions_manager"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "async-lock",
- "async-trait",
- "common",
- "error",
- "proto",
- "running_actions_manager",
- "tokio",
-]
-
-[[package]]
-name = "mock_scheduler"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "async-trait",
- "error",
- "platform_property_manager",
- "scheduler",
- "tokio",
-]
-
-[[package]]
-name = "mock_worker_api_client"
-version = "0.0.0"
-dependencies = [
- "async-lock",
- "async-trait",
- "proto",
- "tokio",
- "tonic",
- "worker_api_client_wrapper",
-]
 
 [[package]]
 name = "multimap"
@@ -1955,6 +1206,12 @@ dependencies = [
  "pin-utils",
  "static_assertions",
 ]
+
+[[package]]
+name = "nom"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf51a729ecf40266a2368ad335a5fdde43471f545a967109cd62146ecf8b66ff"
 
 [[package]]
 name = "num-traits"
@@ -2168,15 +1425,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26072860ba924cbfa98ea39c8c19b4dd6a4a25423dbdf219c1eca91aa0cf6964"
 
 [[package]]
-name = "platform_property_manager"
-version = "0.0.0"
-dependencies = [
- "config",
- "error",
- "proto",
-]
-
-[[package]]
 name = "ppv-lite86"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2212,6 +1460,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "procinfo"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ab1427f3d2635891f842892dda177883dca0639e05fe66796a62c9d2f23b49c"
+dependencies = [
+ "byteorder",
+ "libc",
+ "nom",
+ "rustc_version 0.2.3",
+]
+
+[[package]]
 name = "prometheus-client"
 version = "0.21.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2232,37 +1492,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "property_modifier_scheduler"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "async-trait",
- "config",
- "error",
- "parking_lot",
- "platform_property_manager",
- "scheduler",
- "tokio",
-]
-
-[[package]]
-name = "property_modifier_scheduler_test"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "common",
- "config",
- "error",
- "mock_scheduler",
- "platform_property_manager",
- "pretty_assertions",
- "property_modifier_scheduler",
- "scheduler",
- "scheduler_utils",
- "tokio",
 ]
 
 [[package]]
@@ -2317,15 +1546,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "213622a1460818959ac1181aaeb2dc9c7f63df720db7d788b3e24eacd1983e13"
 dependencies = [
  "prost",
-]
-
-[[package]]
-name = "proto"
-version = "0.0.0"
-dependencies = [
- "prost",
- "prost-types",
- "tonic",
 ]
 
 [[package]]
@@ -2397,33 +1617,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ref_store"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "buf_channel",
- "common",
- "config",
- "error",
- "store",
- "traits",
-]
-
-[[package]]
-name = "ref_store_test"
-version = "0.0.0"
-dependencies = [
- "common",
- "config",
- "error",
- "memory_store",
- "pretty_assertions",
- "ref_store",
- "store",
- "tokio",
-]
-
-[[package]]
 name = "regex"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2459,95 +1652,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4bf2521270932c3c7bed1a59151222bd7643c79310f2916f01925e1e16255698"
 
 [[package]]
-name = "resource_info"
-version = "0.0.0"
-dependencies = [
- "error",
-]
-
-[[package]]
-name = "resource_info_test"
-version = "0.0.0"
-dependencies = [
- "pretty_assertions",
- "resource_info",
- "tokio",
-]
-
-[[package]]
-name = "retry"
-version = "0.0.0"
-dependencies = [
- "error",
- "futures",
- "tokio",
-]
-
-[[package]]
-name = "retry_test"
-version = "0.0.0"
-dependencies = [
- "error",
- "futures",
- "pretty_assertions",
- "retry",
- "tokio",
-]
-
-[[package]]
-name = "running_actions_manager"
-version = "0.0.0"
-dependencies = [
- "ac_utils",
- "action_messages",
- "async-trait",
- "bytes",
- "common",
- "config",
- "error",
- "fast_slow_store",
- "filesystem_store",
- "filetime",
- "futures",
- "grpc_store",
- "hex",
- "metrics_utils",
- "parking_lot",
- "prost",
- "proto",
- "relative-path",
- "scopeguard",
- "store",
- "tokio",
- "tokio-stream",
- "tonic",
-]
-
-[[package]]
-name = "running_actions_manager_test"
-version = "0.0.0"
-dependencies = [
- "ac_utils",
- "action_messages",
- "common",
- "config",
- "error",
- "fast_slow_store",
- "filesystem_store",
- "futures",
- "lazy_static",
- "memory_store",
- "pretty_assertions",
- "prost",
- "prost-types",
- "proto",
- "rand",
- "running_actions_manager",
- "store",
- "tokio",
-]
-
-[[package]]
 name = "rusoto_core"
 version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2565,7 +1669,7 @@ dependencies = [
  "log",
  "rusoto_credential",
  "rusoto_signature",
- "rustc_version",
+ "rustc_version 0.4.0",
  "serde",
  "serde_json",
  "tokio",
@@ -2638,7 +1742,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "rusoto_credential",
- "rustc_version",
+ "rustc_version 0.4.0",
  "serde",
  "sha2 0.9.9",
  "tokio",
@@ -2652,11 +1756,20 @@ checksum = "d626bb9dae77e28219937af045c257c28bfd3f69333c512553507f5f9798cb76"
 
 [[package]]
 name = "rustc_version"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
+dependencies = [
+ "semver 0.9.0",
+]
+
+[[package]]
+name = "rustc_version"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfa0f585226d2e68097d4f95d113b15b83a82e819ab25717ec0590d9584ef366"
 dependencies = [
- "semver",
+ "semver 1.0.18",
 ]
 
 [[package]]
@@ -2685,78 +1798,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad4cc8da4ef723ed60bced201181d83791ad433213d8c24efffda1eec85d741"
 
 [[package]]
-name = "s3_store"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "buf_channel",
- "bytes",
- "common",
- "config",
- "error",
- "futures",
- "http",
- "lazy_static",
- "rand",
- "retry",
- "rusoto_core",
- "rusoto_s3",
- "rusoto_signature",
- "tokio",
- "tokio-util",
- "traits",
-]
-
-[[package]]
-name = "s3_store_test"
-version = "0.0.0"
-dependencies = [
- "async_fixed_buffer",
- "common",
- "config",
- "error",
- "futures",
- "http",
- "pretty_assertions",
- "rusoto_core",
- "rusoto_mock",
- "rusoto_s3",
- "s3_store",
- "tokio",
- "tokio-util",
- "traits",
-]
-
-[[package]]
 name = "schannel"
 version = "0.1.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c3733bf4cf7ea0880754e19cb5a462007c4a8c1914bff372ccc95b464f1df88"
 dependencies = [
  "windows-sys",
-]
-
-[[package]]
-name = "scheduler"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "async-trait",
- "error",
- "metrics_utils",
- "platform_property_manager",
- "tokio",
- "worker",
-]
-
-[[package]]
-name = "scheduler_utils"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "async-trait",
- "common",
- "platform_property_manager",
 ]
 
 [[package]]
@@ -2790,9 +1837,24 @@ dependencies = [
 
 [[package]]
 name = "semver"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d7eb9ef2c18661902cc47e535f9bc51b78acd254da71d375c2f6720d9a40403"
+dependencies = [
+ "semver-parser",
+]
+
+[[package]]
+name = "semver"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0293b4b29daaf487284529cc2f5675b8e57c61f70167ba415a463651fd6a918"
+
+[[package]]
+name = "semver-parser"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "serde"
@@ -2848,14 +1910,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_utils"
-version = "0.0.0"
-dependencies = [
- "serde",
- "shellexpand",
-]
-
-[[package]]
 name = "sha2"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2880,35 +1934,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shard_store"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "buf_channel",
- "common",
- "config",
- "error",
- "futures",
- "metrics_utils",
- "traits",
-]
-
-[[package]]
-name = "shard_store_test"
-version = "0.0.0"
-dependencies = [
- "common",
- "config",
- "error",
- "memory_store",
- "pretty_assertions",
- "rand",
- "shard_store",
- "tokio",
- "traits",
-]
-
-[[package]]
 name = "shellexpand"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2930,71 +1955,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8229b473baa5980ac72ef434c4415e70c4b5e71b423043adb4ba059f89c99a1"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "simple_scheduler"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "async-trait",
- "common",
- "config",
- "error",
- "futures",
- "hashbrown 0.14.0",
- "lru",
- "metrics_utils",
- "parking_lot",
- "platform_property_manager",
- "scheduler",
- "tokio",
- "worker",
-]
-
-[[package]]
-name = "simple_scheduler_test"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "common",
- "config",
- "error",
- "platform_property_manager",
- "pretty_assertions",
- "proto",
- "scheduler",
- "scheduler_utils",
- "simple_scheduler",
- "tokio",
- "worker",
-]
-
-[[package]]
-name = "size_partitioning_store"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "buf_channel",
- "common",
- "config",
- "error",
- "tokio",
- "traits",
-]
-
-[[package]]
-name = "size_partitioning_store_test"
-version = "0.0.0"
-dependencies = [
- "common",
- "config",
- "error",
- "memory_store",
- "pretty_assertions",
- "size_partitioning_store",
- "tokio",
- "traits",
 ]
 
 [[package]]
@@ -3033,15 +1993,6 @@ name = "stdext"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f3b6b32ae82412fb897ef134867d53a294f57ba5b758f06d71e865352c3e207"
-
-[[package]]
-name = "store"
-version = "0.0.0"
-dependencies = [
- "config",
- "error",
- "traits",
-]
 
 [[package]]
 name = "strsim"
@@ -3321,20 +2272,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "traits"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "buf_channel",
- "bytes",
- "common",
- "error",
- "futures",
- "metrics_utils",
- "serde",
-]
-
-[[package]]
 name = "try-lock"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3388,38 +2325,6 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
-
-[[package]]
-name = "verify_store"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "buf_channel",
- "common",
- "config",
- "error",
- "hex",
- "metrics_utils",
- "sha2 0.10.7",
- "tokio",
- "traits",
-]
-
-[[package]]
-name = "verify_store_test"
-version = "0.0.0"
-dependencies = [
- "buf_channel",
- "common",
- "config",
- "error",
- "futures",
- "memory_store",
- "pretty_assertions",
- "tokio",
- "traits",
- "verify_store",
-]
 
 [[package]]
 name = "version_check"
@@ -3618,99 +2523,6 @@ name = "windows_x86_64_msvc"
 version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a515f5799fe4961cb532f983ce2b23082366b898e52ffbce459c86f67c8378a"
-
-[[package]]
-name = "worker"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "error",
- "metrics_utils",
- "platform_property_manager",
- "proto",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "worker_api_client_wrapper"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "proto",
- "tonic",
-]
-
-[[package]]
-name = "worker_api_server"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "common",
- "config",
- "error",
- "futures",
- "platform_property_manager",
- "proto",
- "scheduler",
- "tokio",
- "tonic",
- "uuid",
- "worker",
-]
-
-[[package]]
-name = "worker_api_server_test"
-version = "0.0.0"
-dependencies = [
- "action_messages",
- "common",
- "config",
- "error",
- "platform_property_manager",
- "pretty_assertions",
- "prost-types",
- "proto",
- "scheduler",
- "simple_scheduler",
- "tokio",
- "tokio-stream",
- "tonic",
- "worker",
- "worker_api_server",
-]
-
-[[package]]
-name = "worker_utils"
-version = "0.0.0"
-dependencies = [
- "common",
- "config",
- "error",
- "futures",
- "proto",
- "shlex",
- "tokio",
- "tonic",
-]
-
-[[package]]
-name = "write_counter"
-version = "0.0.0"
-dependencies = [
- "pin-project-lite",
- "tokio",
-]
-
-[[package]]
-name = "write_request_stream_wrapper"
-version = "0.0.0"
-dependencies = [
- "error",
- "futures",
- "proto",
- "resource_info",
-]
 
 [[package]]
 name = "xml-rs"

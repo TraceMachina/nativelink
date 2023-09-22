@@ -1,5 +1,5 @@
 {
-  "checksum": "ab4d365f12cccf08d844992f1bece260d9d2fc782bbe6d68ed8b288ce9bfdf71",
+  "checksum": "1d8dfc1fbb159ba039e8fd9ad18d6bc8b7bf35a5abc337f0d225d9f30b472203",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -2619,6 +2619,10 @@
             {
               "id": "pretty_assertions 1.4.0",
               "target": "pretty_assertions"
+            },
+            {
+              "id": "procinfo 0.4.2",
+              "target": "procinfo"
             },
             {
               "id": "prometheus-client 0.21.2",
@@ -6510,6 +6514,44 @@
       },
       "license": "MIT"
     },
+    "nom 2.2.1": {
+      "name": "nom",
+      "version": "2.2.1",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/nom/2.2.1/download",
+          "sha256": "cf51a729ecf40266a2368ad335a5fdde43471f545a967109cd62146ecf8b66ff"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "nom",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "nom",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "default",
+            "stream",
+            "verbose-errors"
+          ],
+          "selects": {}
+        },
+        "edition": "2015",
+        "version": "2.2.1"
+      },
+      "license": "MIT"
+    },
     "num-traits 0.2.16": {
       "name": "num-traits",
       "version": "0.2.16",
@@ -7821,6 +7863,80 @@
         ]
       },
       "license": "MIT OR Apache-2.0"
+    },
+    "procinfo 0.4.2": {
+      "name": "procinfo",
+      "version": "0.4.2",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/procinfo/0.4.2/download",
+          "sha256": "6ab1427f3d2635891f842892dda177883dca0639e05fe66796a62c9d2f23b49c"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "procinfo",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "procinfo",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "byteorder 1.4.3",
+              "target": "byteorder"
+            },
+            {
+              "id": "libc 0.2.147",
+              "target": "libc"
+            },
+            {
+              "id": "nom 2.2.1",
+              "target": "nom"
+            },
+            {
+              "id": "procinfo 0.4.2",
+              "target": "build_script_build"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2015",
+        "version": "0.4.2"
+      },
+      "build_script_attrs": {
+        "data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "rustc_version 0.2.3",
+              "target": "rustc_version"
+            }
+          ],
+          "selects": {}
+        }
+      },
+      "license": "MIT/Apache-2.0"
     },
     "prometheus-client 0.21.2": {
       "name": "prometheus-client",
@@ -9234,6 +9350,45 @@
       },
       "license": "MIT/Apache-2.0"
     },
+    "rustc_version 0.2.3": {
+      "name": "rustc_version",
+      "version": "0.2.3",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/rustc_version/0.2.3/download",
+          "sha256": "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "rustc_version",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "rustc_version",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "semver 0.9.0",
+              "target": "semver"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2015",
+        "version": "0.2.3"
+      },
+      "license": "MIT/Apache-2.0"
+    },
     "rustc_version 0.4.0": {
       "name": "rustc_version",
       "version": "0.4.0",
@@ -9632,6 +9787,51 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "semver 0.9.0": {
+      "name": "semver",
+      "version": "0.9.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/semver/0.9.0/download",
+          "sha256": "1d7eb9ef2c18661902cc47e535f9bc51b78acd254da71d375c2f6720d9a40403"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "semver",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "semver",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "default"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "semver-parser 0.7.0",
+              "target": "semver_parser"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2015",
+        "version": "0.9.0"
+      },
+      "license": "MIT/Apache-2.0"
+    },
     "semver 1.0.18": {
       "name": "semver",
       "version": "1.0.18",
@@ -9691,6 +9891,36 @@
         ]
       },
       "license": "MIT OR Apache-2.0"
+    },
+    "semver-parser 0.7.0": {
+      "name": "semver-parser",
+      "version": "0.7.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/semver-parser/0.7.0/download",
+          "sha256": "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "semver_parser",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "semver_parser",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2015",
+        "version": "0.7.0"
+      },
+      "license": "MIT/Apache-2.0"
     },
     "serde 1.0.171": {
       "name": "serde",

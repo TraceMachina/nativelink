@@ -19,7 +19,9 @@ path = "../../cas/store/tests/memory_store_test.rs"
 doctest = false
 
 [dependencies]
+bytes = { workspace = true }
 pretty_assertions = { workspace = true }
+procinfo = { workspace = true }
 tokio = { workspace = true }
 
 # Local libraries.
