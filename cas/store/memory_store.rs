@@ -87,22 +87,20 @@ impl StoreTrait for MemoryStore {
             UploadSizeInfo::ExactSize(sz) => sz,
             UploadSizeInfo::MaxSize(sz) => sz,
         };
-        let buffer = reader
-            .collect_all_with_size_hint(max_size)
-            .await
-            .err_tip(|| "Failed to collect all bytes from reader in memory_store::update")?;
 
-        // Resize our buffer if our max_size was not accurate.
-        // The buffer might have reserved much more than the amount of data transferred.
-        // This will ensure we use less memory for the long term stored data.
-        let buffer = if buffer.len() != max_size {
+        // Internally Bytes might hold a reference to more data than just our data. To prevent
+        // this potential case, we make a full copy of our data for long-term storage.
+        let final_buffer = {
+            let buffer = reader
+                .collect_all_with_size_hint(max_size)
+                .await
+                .err_tip(|| "Failed to collect all bytes from reader in memory_store::update")?;
             let mut new_buffer = BytesMut::with_capacity(buffer.len());
             new_buffer.extend_from_slice(&buffer[..]);
             new_buffer.freeze()
-        } else {
-            buffer
         };
-        self.evicting_map.insert(digest, BytesWrapper(buffer)).await;
+
+        self.evicting_map.insert(digest, BytesWrapper(final_buffer)).await;
         Ok(())
     }
 
