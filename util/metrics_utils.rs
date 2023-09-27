@@ -457,6 +457,14 @@ impl Counter {
             return;
         }
         self.0.fetch_sub(value, Ordering::Relaxed);
+    } 
+
+    #[inline]
+    pub fn get(&self) -> u64 {
+        if !metrics_enabled() {
+            return 0; 
+        }
+        self.0.load(Ordering::Relaxed)
     }
 }
 
