@@ -44,7 +44,7 @@ use default_store_factory::store_factory;
 use error::{make_err, Code, Error, ResultExt};
 use execution_server::ExecutionServer;
 use local_worker::new_local_worker;
-use metrics_utils::{set_metrics_enabled_for_this_thread, Collector, CollectorState, MetricsComponent, Registry};
+use metrics_utils::{set_metrics_enabled_for_this_thread, Collector, CollectorState, MetricsComponent, Registry, Counter};
 use store::StoreManager;
 use worker_api_server::WorkerApiServer;
 
@@ -69,7 +69,7 @@ struct Args {
 }
 
 async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
-    let mut root_metrics_registry = <Registry>::with_prefix("turbo_cache");
+    let mut root_metrics_registry = <Registry>::with_prefix("turbo_cache"); 
 
     let store_manager = Arc::new(StoreManager::new());
     {
@@ -115,6 +115,7 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
     /// report metrics about what clients are connected.
     struct ConnectedClientsMetrics {
         inner: Mutex<HashSet<SocketAddr>>,
+        counter: Arc<Counter>,
     }
     impl MetricsComponent for ConnectedClientsMetrics {
         fn gather_metrics(&self, c: &mut CollectorState) {
@@ -127,6 +128,15 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
                     vec![("endpoint".into(), format!("{}", client).into())],
                 );
             }
+
+            // Record the total number of client connections
+            let total_connections = self.counter.get();
+
+            c.publish(
+                "total_client_connections",
+                &total_connections,
+                "Total client connections since server started",
+            );        
         }
     }
 
@@ -145,6 +155,7 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
             };
             let connected_clients_mux = Arc::new(ConnectedClientsMetrics {
                 inner: Mutex::new(HashSet::new()),
+                counter: Into::into(Counter::default()),
             });
             let server_metrics = root_metrics_registry.sub_registry_with_prefix(format!("server_{}", name));
             server_metrics.register_collector(Box::new(Collector::new(&connected_clients_mux)));
@@ -375,7 +386,9 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 // Wait for client to connect.
                 let (tcp_stream, remote_addr) = tcp_listener.accept().await?;
-                connected_clients_mux.inner.lock().insert(remote_addr);
+                connected_clients_mux.inner.lock().insert(remote_addr); 
+                connected_clients_mux.counter.inc();
+
                 // This is the safest way to guarantee that if our future
                 // is ever dropped we will cleanup our data.
                 let scope_guard = guard(connected_clients_mux.clone(), move |connected_clients_mux| {
