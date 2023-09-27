@@ -26,6 +26,7 @@ env_logger = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true }
 json5 = { workspace = true }
+lazy_static = { workspace = true }
 parking_lot = { workspace = true }
 prometheus-client = { workspace = true }
 scopeguard = { workspace = true }

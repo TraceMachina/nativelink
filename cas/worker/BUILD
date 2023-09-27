@@ -76,6 +76,7 @@ rust_library(
     deps = [
         "//proto",
         "@crate_index//:tonic",
+        "@crate_index//:prometheus-client",
     ],
 )
 
