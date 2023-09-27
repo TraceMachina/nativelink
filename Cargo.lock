@@ -556,6 +556,7 @@ dependencies = [
  "futures",
  "hyper",
  "json5",
+ "lazy_static",
  "local_worker",
  "metrics_utils",
  "parking_lot",
@@ -3637,6 +3638,7 @@ name = "worker_api_client_wrapper"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "prometheus-client",
  "proto",
  "tonic",
 ]

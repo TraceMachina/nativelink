@@ -31,5 +31,6 @@ rust_binary(
         "@crate_index//:tower",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
+        "@crate_index//:lazy_static",
     ],
 )

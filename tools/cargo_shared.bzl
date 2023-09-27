@@ -88,10 +88,7 @@ PACKAGES = {
     },
     "byteorder": {
         "version": "1.4.3",
-    },
-    "lazy_static": {
-        "version": "1.4.0",
-    },
+    }, 
     "filetime": {
         "version": "0.2.21",
     },
@@ -129,6 +126,9 @@ PACKAGES = {
     },
     "prometheus-client": {
         "version": "0.21.2",
+    },
+    "lazy_static": {
+        "version": "1.4.0"
     },
     "blake3": {
         "version": "1.4.1",

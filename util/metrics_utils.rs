@@ -28,6 +28,7 @@ use futures::Future;
 use prometheus_client::collector::Collector as PrometheusCollector;
 use prometheus_client::encoding::{EncodeMetric, MetricEncoder};
 use prometheus_client::metrics::info::Info;
+use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::MetricType;
 pub use prometheus_client::registry::Registry;
 use prometheus_client::registry::{Descriptor, LocalMetric, Prefix};
@@ -435,9 +436,9 @@ impl MetricPublisher for &AsyncCounterWrapper {
 
 /// Tracks an number.
 #[derive(Default)]
-pub struct Counter(AtomicU64);
+pub struct MUCounter(AtomicU64);
 
-impl Counter {
+impl MUCounter {
     #[inline]
     pub fn inc(&self) {
         self.add(1);
@@ -458,9 +459,17 @@ impl Counter {
         }
         self.0.fetch_sub(value, Ordering::Relaxed);
     }
+
+    #[inline]
+    pub fn get(&self) -> u64 {
+        if !metrics_enabled() {
+            return 0; // Return 0 when metrics are disabled or handle it differently
+        }
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
-impl MetricPublisher for &Counter {
+impl MetricPublisher for &MUCounter {
     #[inline]
     fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
         state.publish_with_labels(name, &self.0, help, labels);

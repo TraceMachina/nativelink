@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use common::{log, DigestInfo};
 use config::stores::EvictionPolicy;
-use metrics_utils::{CollectorState, Counter, CounterWithTime, MetricsComponent};
+use metrics_utils::{CollectorState, MUCounter, CounterWithTime, MetricsComponent};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct SerializedLRU {
@@ -117,13 +117,13 @@ struct State<T: LenEntry + Debug> {
     sum_store_size: u64,
 
     // Metrics.
-    evicted_bytes: Counter,
+    evicted_bytes: MUCounter,
     evicted_items: CounterWithTime,
-    replaced_bytes: Counter,
+    replaced_bytes: MUCounter,
     replaced_items: CounterWithTime,
-    removed_bytes: Counter,
+    removed_bytes: MUCounter,
     removed_items: CounterWithTime,
-    lifetime_inserted_bytes: Counter,
+    lifetime_inserted_bytes: MUCounter,
 }
 
 pub struct EvictingMap<T: LenEntry + Debug, I: InstantWrapper> {
@@ -147,13 +147,13 @@ where
             state: Mutex::new(State {
                 lru: LruCache::unbounded(),
                 sum_store_size: 0,
-                evicted_bytes: Counter::default(),
+                evicted_bytes: MUCounter::default(),
                 evicted_items: CounterWithTime::default(),
-                replaced_bytes: Counter::default(),
+                replaced_bytes: MUCounter::default(),
                 replaced_items: CounterWithTime::default(),
-                removed_bytes: Counter::default(),
+                removed_bytes: MUCounter::default(),
                 removed_items: CounterWithTime::default(),
-                lifetime_inserted_bytes: Counter::default(),
+                lifetime_inserted_bytes: MUCounter::default(),
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,

@@ -44,7 +44,8 @@ use default_store_factory::store_factory;
 use error::{make_err, Code, Error, ResultExt};
 use execution_server::ExecutionServer;
 use local_worker::new_local_worker;
-use metrics_utils::{set_metrics_enabled_for_this_thread, Collector, CollectorState, MetricsComponent, Registry};
+use metrics_utils::{set_metrics_enabled_for_this_thread, Collector, CollectorState, MetricsComponent, Registry, MUCounter};
+use lazy_static::lazy_static;
 use store::StoreManager;
 use worker_api_server::WorkerApiServer;
 
@@ -53,6 +54,10 @@ const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
 
 /// Name of environment variable to disable metrics.
 const METRICS_DISABLE_ENV: &str = "TURBO_CACHE_DISABLE_METRICS";
+
+lazy_static! {
+        static ref TOTAL_CLIENT_CONNECTIONS: MUCounter = MUCounter::default();
+}
 
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
@@ -69,7 +74,7 @@ struct Args {
 }
 
 async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
-    let mut root_metrics_registry = <Registry>::with_prefix("turbo_cache");
+    let mut root_metrics_registry = <Registry>::with_prefix("turbo_cache"); 
 
     let store_manager = Arc::new(StoreManager::new());
     {
@@ -127,6 +132,11 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
                     vec![("endpoint".into(), format!("{}", client).into())],
                 );
             }
+
+
+            // Record the total number of client connections
+            let total_connections = TOTAL_CLIENT_CONNECTIONS.get();
+            c.publish("total_client_connections", &total_connections, "Total client connections since server started");
         }
     }
 
@@ -376,6 +386,9 @@ async fn inner_main(cfg: CasConfig) -> Result<(), Box<dyn std::error::Error>> {
                 // Wait for client to connect.
                 let (tcp_stream, remote_addr) = tcp_listener.accept().await?;
                 connected_clients_mux.inner.lock().insert(remote_addr);
+               
+                TOTAL_CLIENT_CONNECTIONS.inc();
+
                 // This is the safest way to guarantee that if our future
                 // is ever dropped we will cleanup our data.
                 let scope_guard = guard(connected_clients_mux.clone(), move |connected_clients_mux| {
