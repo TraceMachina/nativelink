@@ -63,7 +63,7 @@ This project can be considered ~stable~ and is currently used in production syst
 We support building with Bazel or Cargo. Cargo **might** produce faster binaries because LTO (Link Time Optimization) is enabled for release versions, where Bazel currently does not support LTO for rust.
 
 ### Bazel requirements
-* Bazel 5.0.0+
+* Bazel 6.3.0+
 * gcc
 * g++
 * lld
@@ -81,7 +81,7 @@ bazel build //cas
 bazel build -c opt //cas
 ```
 > **Note**
-> Failing to use the `-c opt` flag will result in a very slow binary (~10x slower). 
+> Failing to use the `-c opt` flag will result in a very slow binary (~10x slower).
 
 These will place an executable in `./bazel-bin/cas/cas` that will start the service.
 
