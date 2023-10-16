@@ -205,7 +205,9 @@ where
     }
 
     async fn evict_items(&self, state: &mut State<T>) {
-        let Some((_, mut peek_entry)) = state.lru.peek_lru() else { return; };
+        let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
+            return;
+        };
 
         let max_bytes = if self.max_bytes != 0
             && self.evict_bytes != 0

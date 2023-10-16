@@ -213,7 +213,10 @@ impl ExecutionServer {
         let unique_qualifier = ActionInfoHashKey::try_from(request.into_inner().name.as_str())
             .err_tip(|| "Decoding operation name into ActionInfoHashKey")?;
         let Some(instance_info) = self.instance_infos.get(&unique_qualifier.instance_name) else {
-            return Err(Status::not_found(format!("No scheduler with the instance name {}", unique_qualifier.instance_name)));
+            return Err(Status::not_found(format!(
+                "No scheduler with the instance name {}",
+                unique_qualifier.instance_name
+            )));
         };
         let Some(rx) = instance_info.scheduler.find_existing_action(&unique_qualifier).await else {
             return Err(Status::not_found("Failed to find existing task"));

@@ -66,12 +66,11 @@ impl MockActionScheduler {
         result: Result<Arc<PlatformPropertyManager>, Error>,
     ) -> String {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let ActionSchedulerCalls::GetPlatformPropertyManager(req) = rx_call_lock
-            .recv()
-            .await
-            .expect("Could not receive msg in mpsc") else {
-                panic!("Got incorrect call waiting for get_platform_property_manager")
-            };
+        let ActionSchedulerCalls::GetPlatformPropertyManager(req) =
+            rx_call_lock.recv().await.expect("Could not receive msg in mpsc")
+        else {
+            panic!("Got incorrect call waiting for get_platform_property_manager")
+        };
         self.tx_resp
             .send(ActionSchedulerReturns::GetPlatformPropertyManager(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
@@ -81,12 +80,10 @@ impl MockActionScheduler {
 
     pub async fn expect_add_action(&self, result: Result<watch::Receiver<Arc<ActionState>>, Error>) -> ActionInfo {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let ActionSchedulerCalls::AddAction(req) = rx_call_lock
-            .recv()
-            .await
-            .expect("Could not receive msg in mpsc") else {
-                panic!("Got incorrect call waiting for get_platform_property_manager")
-            };
+        let ActionSchedulerCalls::AddAction(req) = rx_call_lock.recv().await.expect("Could not receive msg in mpsc")
+        else {
+            panic!("Got incorrect call waiting for get_platform_property_manager")
+        };
         self.tx_resp
             .send(ActionSchedulerReturns::AddAction(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
@@ -99,12 +96,11 @@ impl MockActionScheduler {
         result: Option<watch::Receiver<Arc<ActionState>>>,
     ) -> ActionInfoHashKey {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let ActionSchedulerCalls::FindExistingAction(req) = rx_call_lock
-            .recv()
-            .await
-            .expect("Could not receive msg in mpsc") else {
-                panic!("Got incorrect call waiting for find_existing_action")
-            };
+        let ActionSchedulerCalls::FindExistingAction(req) =
+            rx_call_lock.recv().await.expect("Could not receive msg in mpsc")
+        else {
+            panic!("Got incorrect call waiting for find_existing_action")
+        };
         self.tx_resp
             .send(ActionSchedulerReturns::FindExistingAction(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))

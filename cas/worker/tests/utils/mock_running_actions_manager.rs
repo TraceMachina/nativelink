@@ -75,12 +75,11 @@ impl MockRunningActionsManager {
         result: Result<Arc<MockRunningAction>, Error>,
     ) -> (String, StartExecute) {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let RunningActionManagerCalls::CreateAndAddAction(req) = rx_call_lock
-            .recv()
-            .await
-            .expect("Could not receive msg in mpsc") else {
-                panic!("Got incorrect call waiting for create_and_add_action")
-            };
+        let RunningActionManagerCalls::CreateAndAddAction(req) =
+            rx_call_lock.recv().await.expect("Could not receive msg in mpsc")
+        else {
+            panic!("Got incorrect call waiting for create_and_add_action")
+        };
         self.tx_resp
             .send(RunningActionManagerReturns::CreateAndAddAction(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))

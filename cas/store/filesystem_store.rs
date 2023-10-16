@@ -501,7 +501,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 // descriptors may be open at any given time. If we are streaming from
                 // File -> File, it can cause a deadlock if the Write file is not sending
                 // data because it is waiting for a file descriotor to open before sending data.
-                resumeable_temp_file.close_file().await.err_tip(|| "Could not close file due to timeout in FileSystemStore::update_file")?;
+                resumeable_temp_file
+                    .close_file()
+                    .await
+                    .err_tip(|| "Could not close file due to timeout in FileSystemStore::update_file")?;
                 continue;
             };
             let mut data = data_result.err_tip(|| "Failed to receive data in filesystem store")?;
