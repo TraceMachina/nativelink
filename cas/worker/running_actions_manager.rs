@@ -861,14 +861,15 @@ impl RunningActionImpl {
                                 .map(|mut file_info| {
                                     file_info.name_or_path = NameOrPath::Path(entry);
                                     file_info
-                                })?,
+                                })
+                                .err_tip(|| format!("Uploading file {full_path:?}"))?,
                         ));
                     }
                     metadata
                 };
                 if metadata.is_dir() {
                     Ok(OutputType::Directory(
-                        upload_directory(cas_store, full_path, work_directory)
+                        upload_directory(cas_store, &full_path, work_directory)
                             .and_then(|(root_dir, children)| async move {
                                 let tree = ProtoTree {
                                     root: Some(root_dir),
@@ -882,7 +883,8 @@ impl RunningActionImpl {
                                     tree_digest,
                                 })
                             })
-                            .await?,
+                            .await
+                            .err_tip(|| format!("Uploading directory {full_path:?}"))?,
                     ))
                 } else if metadata.is_symlink() {
                     let output_symlink = upload_symlink(&full_path, work_directory)
@@ -890,7 +892,8 @@ impl RunningActionImpl {
                         .map(|mut symlink_info| {
                             symlink_info.name_or_path = NameOrPath::Path(entry);
                             symlink_info
-                        })?;
+                        })
+                        .err_tip(|| format!("Uploading symlink {full_path:?}"))?;
                     match fs::metadata(&full_path).await {
                         Ok(metadata) => {
                             if metadata.is_dir() {
@@ -933,16 +936,20 @@ impl RunningActionImpl {
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
             let cursor = Cursor::new(execution_result.stdout);
-            let (digest, mut cursor) = compute_digest(cursor).await?;
-            cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor).await?;
+            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stdout digest")?;
+            cursor.rewind().await.err_tip(|| "Could not rewind stdout cursor")?;
+            upload_to_store(cas_store, digest, &mut cursor)
+                .await
+                .err_tip(|| "Uploading stdout")?;
             Result::<DigestInfo, Error>::Ok(digest)
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
             let cursor = Cursor::new(execution_result.stderr);
-            let (digest, mut cursor) = compute_digest(cursor).await?;
-            cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor).await?;
+            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stderr digest")?;
+            cursor.rewind().await.err_tip(|| "Could not stderr rewind cursor")?;
+            upload_to_store(cas_store, digest, &mut cursor)
+                .await
+                .err_tip(|| "Uploading stderr")?;
             Result::<DigestInfo, Error>::Ok(digest)
         });
 
