@@ -4,9 +4,9 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
     name = "rules_rust",
-    sha256 = "4a9cb4fda6ccd5b5ec393b2e944822a62e050c7c06f1ea41607f14c4fdec57a2",
+    sha256 = "814680e1ab535f799fd10e8739ddca901351ceb4d2d86dd8126c22d36e9fcbd9",
     urls = [
-        "https://github.com/bazelbuild/rules_rust/releases/download/0.25.1/rules_rust-v0.25.1.tar.gz",
+        "https://github.com/bazelbuild/rules_rust/releases/download/0.29.0/rules_rust-v0.29.0.tar.gz",
     ],
 )
 
@@ -27,7 +27,7 @@ load(
 
 rules_rust_dependencies()
 
-load("//tools:cargo_shared.bzl", "RUST_EDITION", "PACKAGES")
+load("//tools:cargo_shared.bzl", "PACKAGES", "RUST_EDITION")
 
 rust_register_toolchains(
     edition = RUST_EDITION,
@@ -39,9 +39,9 @@ rust_register_toolchains(
 
 load(
     "@rules_rust//crate_universe:defs.bzl",
+    "crate",
     "crates_repository",
     "render_config",
-    "crate",
 )
 
 crates_repository(
@@ -50,9 +50,10 @@ crates_repository(
     lockfile = "//:Cargo.Bazel.lock",
     packages = {
         name: crate.spec(
-            version = PACKAGES[name]["version"],
             features = PACKAGES[name].get("features", []),
-        ) for name in PACKAGES
+            version = PACKAGES[name]["version"],
+        )
+        for name in PACKAGES
     },
     render_config = render_config(
         default_package_name = "",
