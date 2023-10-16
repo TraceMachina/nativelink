@@ -146,10 +146,14 @@ impl S3Store {
             let credentials_provider =
                 DefaultCredentialsProvider::new().expect("failed to create credentials provider");
 
-            let region = config
-                .region
-                .parse::<Region>()
-                .map_err(|e| make_input_err!("{}", e.to_string()))?;
+            // let region = config
+            //     .region
+            //     .parse::<Region>()
+            //     .map_err(|e| make_input_err!("{}", e.to_string()))?;
+            let region = Region::Custom {
+                name: "us-central1".to_string(),
+                endpoint: "https://storage.googleapis.com".to_string(),
+            };
             S3Client::new_with(dispatcher, credentials_provider, region)
         };
         let jitter_amt = config.retry.jitter;

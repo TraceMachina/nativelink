@@ -297,7 +297,7 @@ impl SimpleSchedulerImpl {
     }
 
     fn find_recently_completed_action(
-        &mut self,
+        &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
         self.recently_completed_actions
@@ -315,6 +315,7 @@ impl SimpleSchedulerImpl {
                     .map(|running_action| &running_action.action)
             })
             .map(Self::subscribe_to_channel)
+            .or_else(|| self.find_recently_completed_action(unique_qualifier))
     }
 
     fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
@@ -713,7 +714,7 @@ impl ActionScheduler for SimpleScheduler {
         &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        let mut inner = self.get_inner_lock();
+        let inner = self.get_inner_lock();
         let result = inner
             .find_existing_action(unique_qualifier)
             .or_else(|| inner.find_recently_completed_action(unique_qualifier));
@@ -814,10 +815,21 @@ impl WorkerScheduler for SimpleScheduler {
                 })
                 .collect();
             for worker_id in &worker_ids_to_remove {
-                let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool",);
+                let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool");
                 log::warn!("{:?}", err);
                 inner.immediate_evict_worker(worker_id, err);
             }
+
+            for awaited_action in inner.queued_actions.values() {
+                let _ = awaited_action.notify_channel.send(awaited_action.current_state.clone());
+            }
+            for running_action in inner.active_actions.values() {
+                let _ = running_action
+                    .action
+                    .notify_channel
+                    .send(running_action.action.current_state.clone());
+            }
+
             Ok(())
         })
     }
