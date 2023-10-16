@@ -190,6 +190,17 @@ pub struct ServicesConfig {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct TlsConfig {
+    /// Path to the certificate file.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub cert_file: String,
+
+    /// Path to the private key file.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub key_file: String,
+}
+
+#[derive(Deserialize, Debug)]
 pub struct ServerConfig {
     /// Name of the server. This is used to help identify the service
     /// for telemetry and logs.
@@ -209,6 +220,12 @@ pub struct ServerConfig {
 
     /// Services to attach to server.
     pub services: Option<ServicesConfig>,
+
+    /// Tls Configuration for this server.
+    /// If not set, the server will not use TLS.
+    ///
+    /// Default: None
+    pub tls: Option<TlsConfig>,
 }
 
 #[allow(non_camel_case_types)]

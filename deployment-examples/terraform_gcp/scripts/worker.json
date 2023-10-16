@@ -1,0 +1,73 @@
+{
+  "stores": {
+    "AC_STORE": {
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": ["grpc://${TURBO_CACHE_CAS_ENDPOINT:-127.0.0.1}:50061"],
+        "store_type": "AC"
+      }
+    },
+    "CAS_STORE": {
+      "fast_slow": {
+        "fast": {
+          "filesystem": {
+            "content_path": "/worker/cas/content",
+            "temp_path": "/worker/cas/temp",
+            "eviction_policy": {
+              "max_bytes": "${TURBO_CACHE_CAS_FS_CONTENT_LIMIT:-100000000}"
+            }
+          }
+        },
+        "slow": {
+          "grpc": {
+            "instance_name": "main",
+            "endpoints": ["grpc://${TURBO_CACHE_CAS_ENDPOINT:-127.0.0.1}:50061"],
+            "store_type": "CAS"
+          }
+        }
+      }
+    }
+  },
+  "workers": [{
+    "local": {
+      "worker_api_endpoint": {
+        "uri": "grpc://${TURBO_CACHE_SCHEDULER_ENDPOINT:-127.0.0.1}:50061"
+      },
+      "cas_fast_slow_store": "CAS_STORE",
+      "ac_store": "AC_STORE",
+      "work_directory": "/worker/work",
+      "entrypoint_cmd": "/root/entrypoint.sh",
+      "additional_environment": {
+        "TURBO_CACHE_CPU_COUNT": {
+          "Property": "cpu_count"
+        },
+        "TURBO_CACHE_MEMORY_MB": {
+          "Property": "memory_mb"
+        },
+        "TURBO_CACHE_DOCKER_IMAGE": {
+          "Property": "docker_image"
+        }
+      },
+      "platform_properties": {
+        "cpu_count": {
+          "query_cmd": "nproc"
+        },
+        "memory_mb": {
+          // 1.5GB less for non-turbo-cache resources.
+          "query_cmd": "sh -c \"echo $(( $(free -m | grep Mem | awk '{print $2}') - 1500 ))\""
+        },
+        "docker_image": {
+          "values": [""]
+        }
+      }
+    }
+  }],
+  "servers": [{
+    "listen_address": "0.0.0.0:50061",
+    "services": {
+      "prometheus": {
+        "path": "/metrics"
+      }
+    }
+  }]
+}

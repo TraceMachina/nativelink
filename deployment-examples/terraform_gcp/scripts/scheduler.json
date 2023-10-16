@@ -1,0 +1,93 @@
+{
+  "stores": {
+    "AC_STORE": {
+      "fast_slow": {
+        "fast": {
+          "memory": {
+            "eviction_policy": {
+              "max_bytes": "${TURBO_CACHE_AC_MEMORY_CONTENT_LIMIT:-100000000}"
+            }
+          }
+        },
+        "slow": {
+          "grpc": {
+            "instance_name": "main",
+            "endpoints": ["grpc://${TURBO_CACHE_CAS_ENDPOINT:-127.0.0.1}:50061"],
+            "store_type": "AC"
+          }
+        }
+      }
+    },
+    "CAS_STORE": {
+      "fast_slow": {
+        "fast": {
+          "memory": {
+            "eviction_policy": {
+              "max_bytes": "${TURBO_CACHE_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
+            }
+          }
+        },
+        "slow": {
+          "grpc": {
+            "instance_name": "main",
+            "endpoints": ["grpc://${TURBO_CACHE_CAS_ENDPOINT:-127.0.0.1}:50061"],
+            "store_type": "CAS"
+          }
+        }
+      }
+    }
+  },
+  "schedulers": {
+    "MAIN_SCHEDULER": {
+      "simple": {
+        "supported_platform_properties": {
+          "cpu_count": "Minimum",
+          "memory_mb": "Minimum",
+          "docker_image": "Priority"
+        }
+      }
+    }
+  },
+  "servers": [{
+    "listen_address": "0.0.0.0:50051",
+    "tls": {
+      "cert_file": "${TURBO_CACHE_CERT_FILE:-}",
+      "key_file": "${TURBO_CACHE_KEY_FILE:-}"
+    },
+    "services": {
+      "ac": {
+        "main": {
+          "ac_store": "AC_STORE"
+        }
+      },
+      "execution": {
+        "main": {
+          "cas_store": "CAS_STORE",
+          "scheduler": "MAIN_SCHEDULER"
+        }
+      },
+      "capabilities": {
+        "main": {
+          "remote_execution": {
+            "scheduler": "MAIN_SCHEDULER"
+          }
+        }
+      }
+    }
+  }, {
+    // Non-public apis.
+    "listen_address": "0.0.0.0:50061",
+    "services": {
+      "prometheus": {
+        "path": "/metrics"
+      },
+      // Note: This should be served on a different port, because it has
+      // a different permission set than the other services.
+      // In other words, this service is a backend api. The ones above
+      // are a frontend api.
+      "worker_api": {
+        "scheduler": "MAIN_SCHEDULER"
+      }
+    }
+  }]
+}

@@ -179,46 +179,63 @@ impl ByteStreamServer {
         Server::new(self)
     }
 
-    fn create_or_join_upload_stream(
+    async fn create_or_join_upload_stream(
         &self,
         uuid: String,
         store: Arc<dyn Store>,
         digest: DigestInfo,
     ) -> Result<ActiveStreamGuard<'_>, Error> {
-        let mut active_uploads = self.active_uploads.lock();
-        if let Some(maybe_idle_stream) = active_uploads.get_mut(&uuid) {
-            if let Some(idle_stream) = maybe_idle_stream.1.take() {
-                log::info!("Joining existing stream {uuid}");
-                return Ok(idle_stream.into_active_stream(maybe_idle_stream.0.clone(), self));
+        let mut retries = 0;
+        loop {
+            if retries != 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            return Err(make_input_err!("Cannot upload same UUID simultaneously"));
-        }
+            let mut active_uploads = self.active_uploads.lock();
+            if let Some(maybe_idle_stream) = active_uploads.get_mut(&uuid) {
+                if let Some(idle_stream) = maybe_idle_stream.1.take() {
+                    log::info!("Joining existing stream {uuid}");
+                    return Ok(idle_stream.into_active_stream(maybe_idle_stream.0.clone(), self));
+                }
+                retries += 1;
+                if retries < 100 {
+                    continue;
+                }
+                log::warn!(
+                    "Cannot upload same UUID simultaneously {uuid} {}-{}",
+                    digest.hash_str(),
+                    digest.size_bytes
+                );
+                return Err(make_input_err!("Cannot upload same UUID simultaneously"));
+            }
 
-        let (tx, rx) = make_buf_channel_pair();
-        let store_update_fut = Box::pin(async move {
-            // We need to wrap `Store::update()` in a another future because we need to capture
-            // `store` to ensure it's lifetime follows the future and not the caller.
-            Pin::new(store.as_ref())
-                // Bytestream always uses digest size as the actual byte size.
-                .update(
-                    digest,
-                    rx,
-                    UploadSizeInfo::ExactSize(usize::try_from(digest.size_bytes).err_tip(|| "Invalid digest size")?),
-                )
-                .await
-        });
-        let bytes_received = Arc::new(AtomicU64::new(0));
-        // Our stream is "in use" if the key is in the map, but the value is None.
-        active_uploads.insert(uuid.clone(), (bytes_received.clone(), None));
-        Ok(ActiveStreamGuard {
-            stream_state: Some(StreamState {
-                tx,
-                store_update_fut,
-                uuid,
-            }),
-            bytes_received,
-            bytestream_server: self,
-        })
+            let (tx, rx) = make_buf_channel_pair();
+            let store_update_fut = Box::pin(async move {
+                // We need to wrap `Store::update()` in a another future because we need to capture
+                // `store` to ensure it's lifetime follows the future and not the caller.
+                Pin::new(store.as_ref())
+                    // Bytestream always uses digest size as the actual byte size.
+                    .update(
+                        digest,
+                        rx,
+                        UploadSizeInfo::ExactSize(
+                            usize::try_from(digest.size_bytes).err_tip(|| "Invalid digest size")?,
+                        ),
+                    )
+                    .await
+            });
+            let bytes_received = Arc::new(AtomicU64::new(0));
+            // Our stream is "in use" if the key is in the map, but the value is None.
+            active_uploads.insert(uuid.clone(), (bytes_received.clone(), None));
+            return Ok(ActiveStreamGuard {
+                stream_state: Some(StreamState {
+                    tx,
+                    store_update_fut,
+                    uuid,
+                }),
+                bytes_received,
+                bytestream_server: self,
+            });
+        }
     }
 
     async fn inner_read(&self, grpc_request: Request<ReadRequest>) -> Result<Response<ReadStream>, Error> {
@@ -355,7 +372,7 @@ impl ByteStreamServer {
             .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?;
         let digest = DigestInfo::try_new(&stream.hash, stream.expected_size)
             .err_tip(|| "Invalid digest input in ByteStream::write")?;
-        let mut active_stream_guard = self.create_or_join_upload_stream(uuid, store, digest)?;
+        let mut active_stream_guard = self.create_or_join_upload_stream(uuid, store, digest).await?;
         let expected_size = stream.expected_size as u64;
 
         async fn process_client_stream(

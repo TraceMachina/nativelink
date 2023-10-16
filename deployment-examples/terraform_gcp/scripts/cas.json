@@ -1,0 +1,126 @@
+{
+  "stores": {
+    "AC_STORE": {
+      "fast_slow": {
+        "fast": {
+          "memory": {
+            "eviction_policy": {
+              "max_bytes": "${TURBO_CACHE_AC_MEMORY_CONTENT_LIMIT:-100000000}"
+            }
+          }
+        },
+        "slow": {
+          "filesystem": {
+            "content_path": "/mnt/data/ac/content",
+            "temp_path": "/mnt/data/ac/temp",
+            "eviction_policy": {
+              "max_bytes": "${TURBO_CACHE_AC_FS_CONTENT_LIMIT:-100000000}"
+            }
+          }
+        }
+      }
+    },
+    "CAS_FS_STORE": {
+      "filesystem": {
+        "content_path": "/mnt/data/cas/content",
+        "temp_path": "/mnt/data/cas/temp",
+        "eviction_policy": {
+          "max_bytes": "${TURBO_CACHE_CAS_FS_CONTENT_LIMIT:-100000000}"
+        }
+      }
+    },
+    "CAS_STORE": {
+      "fast_slow": {
+        "fast": {
+          "size_partitioning": {
+            "size": "2097152", // 2mb.
+            "lower_store": {
+              "memory": {
+                "eviction_policy": {
+                  "max_bytes": "${TURBO_CACHE_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
+                }
+              }
+            },
+            "upper_store": {
+              "ref_store": {
+                "name": "CAS_FS_STORE"
+              }
+            }
+          }
+        },
+        "slow": {
+          "ref_store": {
+            "name": "CAS_FS_STORE"
+          }
+        }
+      }
+    }
+  },
+  "schedulers": {
+    "MAIN_SCHEDULER": {
+      "simple": {
+        "supported_platform_properties": {
+          "cpu_count": "Minimum"
+        }
+      }
+    }
+  },
+  "servers": [{
+    "listen_address": "0.0.0.0:50051",
+    "tls": {
+      "cert_file": "${TURBO_CACHE_CERT_FILE:-}",
+      "key_file": "${TURBO_CACHE_KEY_FILE:-}"
+    },
+    "services": {
+      "cas": {
+        "main": {
+          "cas_store": "CAS_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "ac_store": "AC_STORE"
+        }
+      },
+      "capabilities": {
+        "main": {}
+      },
+      "bytestream": {
+        "cas_stores": {
+          "main": "CAS_STORE"
+        },
+        // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
+        "max_bytes_per_stream": 64000 // 64kb.
+      }
+    }
+  }, {
+    // Non-public apis. We re-export the CAS services so we don't need to go through
+    // an external load balancer.
+    "listen_address": "0.0.0.0:50061",
+    "services": {
+      "prometheus": {
+        "path": "/metrics"
+      },
+      "cas": {
+        "main": {
+          "cas_store": "CAS_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "ac_store": "AC_STORE"
+        }
+      },
+      "capabilities": {
+        "main": {}
+      },
+      "bytestream": {
+        "cas_stores": {
+          "main": "CAS_STORE"
+        },
+        // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
+        "max_bytes_per_stream": 64000 // 64kb.
+      }
+    }
+  }]
+}

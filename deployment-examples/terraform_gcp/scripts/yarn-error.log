@@ -1,0 +1,36 @@
+Arguments: 
+  /snap/node/7823/bin/node /usr/local/bin/yarn init
+
+PATH: 
+  /home/allada/miniconda3/bin:/home/allada/miniconda3/condabin:/home/allada/.yarn/bin:/home/allada/.config/yarn/global/node_modules/.bin:/home/allada/.cargo/bin:/home/allada/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+
+Yarn version: 
+  1.22.17
+
+Node version: 
+  18.18.0
+
+Platform: 
+  linux x64
+
+Trace: 
+  Error: canceled
+      at Interface.<anonymous> (/usr/local/lib/node_modules/yarn/lib/cli.js:137143:13)
+      at Interface.emit (node:events:517:28)
+      at [_ttyWrite] [as _ttyWrite] (node:internal/readline/interface:1132:18)
+      at ReadStream.onkeypress (node:internal/readline/interface:271:20)
+      at ReadStream.emit (node:events:517:28)
+      at emitKeys (node:internal/readline/utils:357:14)
+      at emitKeys.next (<anonymous>)
+      at ReadStream.onData (node:internal/readline/emitKeypressEvents:64:36)
+      at ReadStream.emit (node:events:517:28)
+      at addChunk (node:internal/streams/readable:335:12)
+
+npm manifest: 
+  No manifest
+
+yarn manifest: 
+  No manifest
+
+Lockfile: 
+  No lockfile
