@@ -61,36 +61,40 @@
       }
     }
   },
-  "workers": [{
-    "local": {
-      "worker_api_endpoint": {
-        "uri": "grpc://127.0.0.1:50061",
-      },
-      "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
-      "ac_store": "AC_MAIN_STORE",
-      "work_directory": "/tmp/turbo_cache/work",
-      "platform_properties": {
-        "cpu_count": {
-          "values": ["16"],
-        },
-        "memory_kb": {
-          "values": ["500000"],
-        },
-        "network_kbps": {
-          "values": ["100000"],
-        },
-        "cpu_arch": {
-          "values": ["x86_64"],
-        },
-        "docker_image": {
-          "query_cmd": "docker images --format {{.Repository}}:{{.Tag}}",
-        }
-      }
-    }
-  }],
+  // "workers": [{
+  //   "local": {
+  //     "worker_api_endpoint": {
+  //       "uri": "grpc://127.0.0.1:50061",
+  //     },
+  //     "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
+  //     "ac_store": "AC_MAIN_STORE",
+  //     "work_directory": "/tmp/turbo_cache/work",
+  //     "platform_properties": {
+  //       "cpu_count": {
+  //         "values": ["16"],
+  //       },
+  //       "memory_kb": {
+  //         "values": ["500000"],
+  //       },
+  //       "network_kbps": {
+  //         "values": ["100000"],
+  //       },
+  //       "cpu_arch": {
+  //         "values": ["x86_64"],
+  //       },
+  //       "docker_image": {
+  //         "query_cmd": "true",
+  //       }
+  //     }
+  //   }
+  // }],
   "servers": [{
     "name": "public",
     "listen_address": "0.0.0.0:50051",
+    "tls": {
+      "cert_file": "/tmp/cert.pem",
+      "key_file": "/tmp/key.pem"
+    },
     "services": {
       "cas": {
         "main": {
@@ -123,22 +127,24 @@
         "max_bytes_per_stream": 64000, // 64kb.
       }
     }
-  }, {
-    "name": "private_workers_servers",
-    "listen_address": "0.0.0.0:50061",
-    "services": {
-      "prometheus": {
-        "path": "/metrics"
-      },
-      // Note: This should be served on a different port, because it has
-      // a different permission set than the other services.
-      // In other words, this service is a backend api. The ones above
-      // are a frontend api.
-      "worker_api": {
-        "scheduler": "MAIN_SCHEDULER",
-      }
-    }
-  }],
+  },
+  // {
+  //   "name": "private_workers_servers",
+  //   "listen_address": "0.0.0.0:50061",
+  //   "services": {
+  //     "prometheus": {
+  //       "path": "/metrics"
+  //     },
+  //     // Note: This should be served on a different port, because it has
+  //     // a different permission set than the other services.
+  //     // In other words, this service is a backend api. The ones above
+  //     // are a frontend api.
+  //     "worker_api": {
+  //       "scheduler": "MAIN_SCHEDULER",
+  //     }
+  //   }
+  // }
+],
   "global": {
     "max_open_files": 512
   }

@@ -28,8 +28,12 @@ hyper = { workspace = true }
 json5 = { workspace = true }
 parking_lot = { workspace = true }
 prometheus-client = { workspace = true }
+rcgen = { workspace = true }
+rustls-pemfile = { workspace = true }
 scopeguard = { workspace = true }
+tls-listener = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
 tonic = { workspace = true }
 tower = { workspace = true }
 

@@ -28,8 +28,12 @@ rust_binary(
         "@crate_index//:parking_lot",
         "@crate_index//:prometheus-client",
         "@crate_index//:axum",
+        "@crate_index//:tls-listener",
         "@crate_index//:tower",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
+        "@crate_index//:tokio-rustls",
+        "@crate_index//:rcgen",
+        "@crate_index//:rustls-pemfile",
     ],
 )
