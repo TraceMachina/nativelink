@@ -382,6 +382,7 @@ rust_test(
         "//util:common",
         "//util:error",
         "@crate_index//:bytes",
+        "@crate_index//:memory-stats",
         "@crate_index//:pretty_assertions",
         "@crate_index//:tokio",
     ],

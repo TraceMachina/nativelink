@@ -1,5 +1,5 @@
 {
-  "checksum": "d525a2b4c50e89ab5ad54e6552c839a110de5623c77d09b3f38eab066236e1a8",
+  "checksum": "e20d695c1b6eb23441e6126581ec3f80e3dd5d45305e301b36bd685264228987",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -2599,6 +2599,10 @@
             {
               "id": "maplit 1.0.2",
               "target": "maplit"
+            },
+            {
+              "id": "memory-stats 1.1.0",
+              "target": "memory_stats"
             },
             {
               "id": "mock_instant 0.3.1",
@@ -6101,6 +6105,53 @@
         }
       },
       "license": "MIT"
+    },
+    "memory-stats 1.1.0": {
+      "name": "memory-stats",
+      "version": "1.1.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/memory-stats/1.1.0/download",
+          "sha256": "34f79cf9964c5c9545493acda1263f1912f8d2c56c8a2ffee2606cb960acaacc"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "memory_stats",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "memory_stats",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [],
+          "selects": {
+            "cfg(any(target_os = \"linux\", target_os = \"android\", target_os = \"macos\", target_os = \"ios\"))": [
+              {
+                "id": "libc 0.2.147",
+                "target": "libc"
+              }
+            ],
+            "cfg(target_os = \"windows\")": [
+              {
+                "id": "winapi 0.3.9",
+                "target": "winapi"
+              }
+            ]
+          }
+        },
+        "edition": "2021",
+        "version": "1.1.0"
+      },
+      "license": "MIT OR Apache-2.0"
     },
     "mime 0.3.17": {
       "name": "mime",
@@ -13530,6 +13581,12 @@
     "cfg(all(target_arch = \"x86_64\", target_env = \"msvc\", not(windows_raw_dylib)))": [],
     "cfg(any(target_arch = \"aarch64\", target_arch = \"x86_64\", target_arch = \"x86\"))": [
       "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-gnu"
+    ],
+    "cfg(any(target_os = \"linux\", target_os = \"android\", target_os = \"macos\", target_os = \"ios\"))": [
+      "aarch64-unknown-linux-gnu",
+      "arm-unknown-linux-gnueabi",
+      "armv7-unknown-linux-gnueabi",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(any(target_os = \"macos\", target_os = \"ios\"))": [],
