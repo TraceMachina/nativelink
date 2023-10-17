@@ -78,7 +78,8 @@ def check(proto_packages):
             failed = True
             print("Could not read package %s: %s" % (pkg, e))
             continue
-        if expected == actual:
+        # Ignore differences between newlines on Unix and Windows.
+        if expected.splitlines() == actual.splitlines():
             print("%s OK" % dst)
         else:
             print("%s out of date" % dst)
@@ -94,7 +95,8 @@ def check(proto_packages):
     except OSError as e:
         failed = True
         print("Could not read package lib.rs: %s" % e)
-    if expected == actual:
+    # Ignore differences between newlines on Unix and Windows.
+    if expected.splitlines() == actual.splitlines():
         print("%s OK" % dst)
     else:
         print("%s out of date" % dst)
