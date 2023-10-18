@@ -74,11 +74,19 @@ Runtime dependencies:
 * `libssl-dev` or `libssl1.0-dev` (depending on your distro &amp; version)
 #### Bazel building for deployment
 ```sh
-bazel build //cas
+# On Unix
+bazel build cas
+
+# On Windows
+bazel build --config=windows cas
 ```
 #### Bazel building for release
 ```sh
-bazel build -c opt //cas
+# On Unix
+bazel build -c opt cas
+
+# On Windows
+bazel build --config=windows -c opt cas
 ```
 > **Note**
 > Failing to use the `-c opt` flag will result in a very slow binary (~10x slower).

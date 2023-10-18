@@ -8,7 +8,23 @@ on:
     branches: [ main ]
 
 jobs:
-  windows-tests:
+  windows-bazel-tests:
+    # The type of runner that the job will run on.
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v3.5.3
+      with:
+        fetch-depth: 0
+    - uses: bazelbuild/setup-bazelisk@v2
+    - name: Mount Bazel cache
+      uses: actions/cache@v3
+      with:
+        path: "C:/tmp"
+        key: bazel-windows
+    - name: Test Bazel build on Windows
+      run: bazel --output_user_root=C:/tmp test --config=windows ...
+      shell: bash
+  windows-cargo-tests:
     # The type of runner that the job will run on.
     runs-on: windows-latest
     steps:
@@ -19,7 +35,6 @@ jobs:
       run: cargo build --all
     - name: Test on windows
       run: cargo test --all
-
   cargo-tests:
     # The type of runner that the job will run on.
     runs-on: ubuntu-22.04
