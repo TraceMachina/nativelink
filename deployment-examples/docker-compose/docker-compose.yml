@@ -25,6 +25,8 @@ services:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
     volumes:
       - ${TURBO_CACHE_DIR:-~/.cache/turbo-cache}:/root/.cache/turbo-cache
+      - ./local_rootca.crt:/etc/ssl/certs/local_rootca.crt
+      - ./key.pem:/etc/ssl/certs/key.pem
       - type: bind
         source: .
         target: /root

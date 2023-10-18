@@ -41,6 +41,10 @@
   },
   "servers": [{
     "listen_address": "0.0.0.0:50051",
+    "tls": {
+      "cert_file": "/etc/ssl/certs/local_rootca.crt",
+      "key_file": "/etc/ssl/certs/key.pem"
+    },
     "services": {
       "cas": {
         "main": {
