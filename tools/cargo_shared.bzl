@@ -160,17 +160,10 @@ PACKAGES = {
     "ctor": {
         "version": "0.2.3",
     },
-    "tls-listener": {
-        "version": "0.7.0",
-        "features": ["hyper-h2", "rustls"],
-    },
     "tokio-rustls": {
         "version": "0.24.1",
     },
     "rustls-pemfile": {
         "version": "1.0.3",
-    },
-    "rcgen": {
-        "version": "0.11.3",
     },
 }
