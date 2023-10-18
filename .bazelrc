@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Use the earliest supported C++ version for protoc.
-build --cxxopt=-std=c++14 --host_cxxopt=-std=c++14 --repo_env=BAZEL_CXXOPTS=-std=c++14
+build --cxxopt=-std=c++14 --host_cxxopt=-std=c++14
 
 build --test_output=errors
 
@@ -49,3 +49,8 @@ build:tsan --config=nightly -c dbg
 build:tsan --@rules_rust//:extra_rustc_flags=-Zsanitizer=thread
 build:tsan --cache_test_results=no
 build:tsan --run_under=//tools:tsan.sh
+
+# Configuration options for Windows builds.
+startup:windows --windows_enable_symlinks
+build:windows --cxxopt=/std:c++14 --host_cxxopt=/std:c++14
+build:windows --enable_runfiles

@@ -1,5 +1,5 @@
 {
-  "checksum": "e20d695c1b6eb23441e6126581ec3f80e3dd5d45305e301b36bd685264228987",
+  "checksum": "2c3f1e765c34a9f17991d83113aef0f1ba948d0bffedde6568223a3053d148ef",
   "crates": {
     "addr2line 0.20.0": {
       "name": "addr2line",
@@ -12740,6 +12740,34 @@
         "compile_data_glob": [
           "**"
         ],
+        "crate_features": {
+          "common": [
+            "consoleapi",
+            "errhandlingapi",
+            "fileapi",
+            "handleapi",
+            "knownfolders",
+            "minwinbase",
+            "minwindef",
+            "ntdef",
+            "objbase",
+            "processenv",
+            "processthreadsapi",
+            "profileapi",
+            "psapi",
+            "shlobj",
+            "std",
+            "sysinfoapi",
+            "timezoneapi",
+            "winbase",
+            "wincon",
+            "winerror",
+            "winnt",
+            "ws2ipdef",
+            "ws2tcpip"
+          ],
+          "selects": {}
+        },
         "deps": {
           "common": [
             {
@@ -12983,6 +13011,39 @@
         "compile_data_glob": [
           "**"
         ],
+        "crate_features": {
+          "common": [
+            "Win32",
+            "Win32_Foundation",
+            "Win32_Globalization",
+            "Win32_NetworkManagement",
+            "Win32_NetworkManagement_IpHelper",
+            "Win32_Networking",
+            "Win32_Networking_WinSock",
+            "Win32_Security",
+            "Win32_Security_Authentication",
+            "Win32_Security_Authentication_Identity",
+            "Win32_Security_Credentials",
+            "Win32_Security_Cryptography",
+            "Win32_Storage",
+            "Win32_Storage_FileSystem",
+            "Win32_System",
+            "Win32_System_Com",
+            "Win32_System_Console",
+            "Win32_System_Diagnostics",
+            "Win32_System_Diagnostics_Debug",
+            "Win32_System_IO",
+            "Win32_System_Memory",
+            "Win32_System_Pipes",
+            "Win32_System_SystemServices",
+            "Win32_System_Threading",
+            "Win32_System_WindowsProgramming",
+            "Win32_UI",
+            "Win32_UI_Shell",
+            "default"
+          ],
+          "selects": {}
+        },
         "deps": {
           "common": [
             {
@@ -13578,9 +13639,12 @@
     "cfg(all(target_arch = \"x86_64\", target_env = \"gnu\", not(target_abi = \"llvm\"), not(windows_raw_dylib)))": [
       "x86_64-unknown-linux-gnu"
     ],
-    "cfg(all(target_arch = \"x86_64\", target_env = \"msvc\", not(windows_raw_dylib)))": [],
+    "cfg(all(target_arch = \"x86_64\", target_env = \"msvc\", not(windows_raw_dylib)))": [
+      "x86_64-pc-windows-msvc"
+    ],
     "cfg(any(target_arch = \"aarch64\", target_arch = \"x86_64\", target_arch = \"x86\"))": [
       "aarch64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(any(target_os = \"linux\", target_os = \"android\", target_os = \"macos\", target_os = \"ios\"))": [
@@ -13600,12 +13664,14 @@
       "aarch64-unknown-linux-gnu",
       "arm-unknown-linux-gnueabi",
       "armv7-unknown-linux-gnueabi",
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(not(any(target_arch = \"wasm32\", target_arch = \"wasm64\")))": [
       "aarch64-unknown-linux-gnu",
       "arm-unknown-linux-gnueabi",
       "armv7-unknown-linux-gnueabi",
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(not(any(target_os = \"windows\", target_os = \"macos\", target_os = \"ios\")))": [
@@ -13624,6 +13690,7 @@
       "aarch64-unknown-linux-gnu",
       "arm-unknown-linux-gnueabi",
       "armv7-unknown-linux-gnueabi",
+      "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(not(windows))": [
@@ -13639,7 +13706,9 @@
     "cfg(target_os = \"hermit\")": [],
     "cfg(target_os = \"redox\")": [],
     "cfg(target_os = \"wasi\")": [],
-    "cfg(target_os = \"windows\")": [],
+    "cfg(target_os = \"windows\")": [
+      "x86_64-pc-windows-msvc"
+    ],
     "cfg(tokio_taskdump)": [],
     "cfg(unix)": [
       "aarch64-unknown-linux-gnu",
@@ -13647,10 +13716,15 @@
       "armv7-unknown-linux-gnueabi",
       "x86_64-unknown-linux-gnu"
     ],
-    "cfg(windows)": [],
+    "cfg(windows)": [
+      "x86_64-pc-windows-msvc"
+    ],
     "i686-pc-windows-gnu": [],
     "x86_64-pc-windows-gnu": [],
     "x86_64-pc-windows-gnullvm": [],
+    "x86_64-pc-windows-msvc": [
+      "x86_64-pc-windows-msvc"
+    ],
     "x86_64-unknown-linux-gnu": [
       "x86_64-unknown-linux-gnu"
     ]
