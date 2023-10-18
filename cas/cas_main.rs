@@ -22,12 +22,16 @@ use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
 use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
+use futures::FutureExt;
 use hyper::server::conn::Http;
 use hyper::{Body, Response};
 use parking_lot::Mutex;
+use rustls_pemfile::{certs, pkcs8_private_keys};
 use scopeguard::guard;
 use tokio::net::TcpListener;
 use tokio::task::spawn_blocking;
+use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig as TlsServerConfig};
+use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
@@ -386,13 +390,56 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             )
         }
 
+        // Configure our TLS acceptor if we have TLS configured.
+        let maybe_tls_acceptor = server_cfg.tls.map_or(Ok(None), |tls_config| {
+            let mut cert_reader = std::io::BufReader::new(
+                std::fs::File::open(&tls_config.cert_file)
+                    .err_tip(|| format!("Could not open cert file {}", tls_config.cert_file))?,
+            );
+            let certs = certs(&mut cert_reader)
+                .err_tip(|| format!("Could not extract certs from file {}", tls_config.cert_file))?
+                .into_iter()
+                .map(Certificate)
+                .collect();
+            let mut key_reader = std::io::BufReader::new(
+                std::fs::File::open(&tls_config.key_file)
+                    .err_tip(|| format!("Could not open key file {}", tls_config.key_file))?,
+            );
+            let keys = pkcs8_private_keys(&mut key_reader)
+                .err_tip(|| format!("Could not extract key(s) from file {}", tls_config.key_file))?;
+            if keys.len() != 1 {
+                return Err(Box::new(make_err!(
+                    Code::InvalidArgument,
+                    "Expected 1 key in file {}, found {} keys",
+                    tls_config.key_file,
+                    keys.len()
+                )));
+            }
+            let mut config = TlsServerConfig::builder()
+                .with_safe_defaults()
+                .with_no_client_auth()
+                .with_single_cert(certs, PrivateKey(keys.into_iter().next().unwrap().into()))
+                .map_err(|e| make_err!(Code::Internal, "Could not create TlsServerConfig : {:?}", e))?;
+
+            config.alpn_protocols.push("h2".into());
+            Ok(Some(TlsAcceptor::from(Arc::new(config))))
+        })?;
+
         let socket_addr = server_cfg.listen_address.parse::<SocketAddr>()?;
-        let tcp_listener = TcpListener::bind(&socket_addr).await?;
         log::warn!("Ready, listening on {}", socket_addr);
         root_futures.push(Box::pin(async move {
             loop {
                 // Wait for client to connect.
-                let (tcp_stream, remote_addr) = tcp_listener.accept().await?;
+                let (tcp_stream, remote_addr) = match tcp_listener.accept().await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        log::error!(
+                            "{:?}",
+                            Result::<(), _>::Err(e).err_tip(|| "Failed to accept tcp connection")
+                        );
+                        continue;
+                    }
+                };
                 connected_clients_mux.inner.lock().insert(remote_addr);
                 connected_clients_mux.counter.inc();
 
@@ -401,7 +448,22 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 let scope_guard = guard(connected_clients_mux.clone(), move |connected_clients_mux| {
                     connected_clients_mux.inner.lock().remove(&remote_addr);
                 });
-                let fut = Http::new().serve_connection(tcp_stream, svc.clone());
+                let (http, svc) = (http.clone(), svc.clone());
+                let fut = if let Some(tls_acceptor) = &maybe_tls_acceptor {
+                    let tls_stream = match tls_acceptor.accept(tcp_stream).await {
+                        Ok(result) => result,
+                        Err(e) => {
+                            log::error!(
+                                "{:?}",
+                                Result::<(), _>::Err(e).err_tip(|| "Failed to accept tls stream")
+                            );
+                            continue;
+                        }
+                    };
+                    http.serve_connection(tls_stream, svc).left_future()
+                } else {
+                    http.serve_connection(tcp_stream, svc).right_future()
+                };
                 tokio::spawn(async move {
                     // Move it into our spawn, so if our spawn dies the cleanup happens.
                     let _guard = scope_guard;
