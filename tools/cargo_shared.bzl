@@ -160,4 +160,7 @@ PACKAGES = {
     "ctor": {
         "version": "0.2.3",
     },
+    "memory-stats": {
+        "version": "1.1.0",
+    },
 }

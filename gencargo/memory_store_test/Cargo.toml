@@ -20,6 +20,7 @@ doctest = false
 
 [dependencies]
 bytes = { workspace = true }
+memory-stats = { workspace = true }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true }
 
