@@ -33,7 +33,7 @@ PACKAGES = {
     },
     "tonic": {
         "version": "0.9.2",
-        "features": ["gzip"],
+        "features": ["gzip", "tls", "transport"],
     },
     "log": {
         "version": "0.4.19",
@@ -159,5 +159,8 @@ PACKAGES = {
     },
     "ctor": {
         "version": "0.2.3",
+    },
+    "tokio-rustls": {
+        "version": "0.24.1",
     },
 }
