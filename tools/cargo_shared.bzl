@@ -35,6 +35,19 @@ PACKAGES = {
         "version": "0.9.2",
         "features": ["gzip"],
     },
+    "tls-listener": {
+        "version": "0.7.0",
+        "features": ["hyper-h2", "rustls"],
+    },
+    "tokio-rustls": {
+        "version": "0.24.1",
+    },
+    "rustls-pemfile": {
+        "version": "1.0.3",
+    },
+    "rcgen": {
+        "version": "0.11.3",
+    },
     "log": {
         "version": "0.4.19",
     },

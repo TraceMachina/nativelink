@@ -131,18 +131,22 @@ prost = "0.11.9"
 prost-build = "0.11.9"
 prost-types = "0.11.9"
 rand = "0.8.5"
+rcgen = "0.11.3"
 relative-path = "1.8.0"
 rusoto_core = "0.48.0"
 rusoto_mock = "=0.48.0"
 rusoto_s3 = "0.48.0"
 rusoto_signature = "0.48.0"
+rustls-pemfile = "1.0.3"
 scopeguard = "1.2.0"
 serde = "1.0.167"
 sha2 = "0.10.7"
 shellexpand = "3.1.0"
 shlex = "1.1.0"
 stdext = "0.3.1"
+tls-listener = { version = "0.7.0", features = ["hyper-h2", "rustls"] }
 tokio = { version = "1.29.1", features = ["macros", "io-util", "fs", "rt-multi-thread", "parking_lot"] }
+tokio-rustls = "0.24.1"
 tokio-stream = { version = "0.1.14", features = ["fs", "sync"] }
 tokio-util = { version = "0.7.8", features = ["io", "io-util", "codec"] }
 tonic = { version = "0.9.2", features = ["gzip"] }
