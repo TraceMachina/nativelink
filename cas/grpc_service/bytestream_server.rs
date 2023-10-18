@@ -87,7 +87,10 @@ impl<'a> Drop for ActiveStreamGuard<'a> {
         let mut active_uploads = self.bytestream_server.active_uploads.lock();
         let uuid = stream_state.uuid.clone();
         let Some(active_uploads_slot) = active_uploads.get_mut(&uuid) else {
-            log::error!("Failed to find active upload for UUID: {}. This should never happen.", uuid);
+            log::error!(
+                "Failed to find active upload for UUID: {}. This should never happen.",
+                uuid
+            );
             return;
         };
         let sleep_fn = self.bytestream_server.sleep_fn.clone();
