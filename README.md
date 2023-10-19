@@ -47,6 +47,20 @@ bazel test //... \
 ```
 This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/allada/turbo-cache/tree/master/config) for configuration documentation and [here](https://github.com/allada/turbo-cache/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
 
+## Experimental Nix setup
+
+> **Warning**
+>
+> This feature is in experimental state. Bazel from the flake `devShell` still
+> uses your local C++ toolchain and requires a fairly recent Clang.
+
+If you're using the nix package manager you can install a statically linked
+`cas` executable built from the upstream sources:
+
+```bash
+nix run github:TraceMachina/turbo-cache#cas-release
+```
+
 ## Example Deployments
 We currently have a few example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
 
