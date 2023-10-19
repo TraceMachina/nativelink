@@ -15,6 +15,18 @@ Should you wish to work on an issue, please claim it first by commenting on
 the GitHub issue that you want to work on it. This is to prevent duplicated
 efforts from contributors on the same issue.
 
+## Nix development flake
+
+You can use the Nix development flake to automatically set up Bazel, Cargo and
+various Cloud CLIs for you:
+
+1. Install the [nix package manger](https://nixos.org/download.html) and enable
+   [flakes](https://nixos.wiki/wiki/Flakes).
+2. Optionally, install [direnv](https://direnv.net/docs/installation.html) and
+   hook it into your shell.
+3. We currently don't ship a C++ toolchain as part of the flake. Make sure to
+   install a recent version of Clang.
+
 ## Pull Request Checklist
 
 - Branch from the main branch and, if needed, rebase to the current main
