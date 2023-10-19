@@ -31,6 +31,7 @@ use ref_store::RefStore;
 use s3_store::S3Store;
 use shard_store::ShardStore;
 use size_partitioning_store::SizePartitioningStore;
+use redis_store::RedisStore;
 use store::{Store, StoreManager};
 use verify_store::VerifyStore;
 
@@ -45,6 +46,7 @@ pub fn store_factory<'a>(
         let store: Arc<dyn Store> = match backend {
             StoreConfig::memory(config) => Arc::new(MemoryStore::new(config)),
             StoreConfig::s3_store(config) => Arc::new(S3Store::new(config)?),
+            StoreConfig::redis_store(config) => Arc::new(RedisStore::new(config)).await?,
             StoreConfig::verify(config) => Arc::new(VerifyStore::new(
                 config,
                 store_factory(&config.backend, store_manager, None).await?,

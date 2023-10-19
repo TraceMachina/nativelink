@@ -32,6 +32,7 @@ rust_library(
         ":s3_store",
         ":shard_store",
         ":size_partitioning_store",
+        ":redis_store",
         ":store",
         ":traits",
         ":verify_store",
@@ -89,6 +90,8 @@ rust_library(
         "@crate_index//:tokio",
     ],
 )
+
+# TODO: Add redis store as library
 
 rust_library(
     name = "ref_store",
@@ -321,6 +324,8 @@ rust_test(
         "@crate_index//:tokio",
     ],
 )
+
+# Add redis store test here
 
 rust_test(
     name = "ref_store_test",
