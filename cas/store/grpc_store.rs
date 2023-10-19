@@ -25,6 +25,7 @@ use prost::Message;
 use proto::build::bazel::remote::execution::v2::digest_function;
 use rand::{rngs::OsRng, Rng};
 use tokio::time::sleep;
+use tonic::transport::Channel;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
 use uuid::Uuid;
 
@@ -111,6 +112,12 @@ impl GrpcStore {
         })
     }
 
+    fn get_retry_config(&self) -> impl Iterator<Item = Duration> + '_ {
+        ExponentialBackoff::new(Duration::from_millis(self.retry.delay as u64))
+            .map(|d| (self.jitter_fn)(d))
+            .take(self.retry.max_retries) // Remember this is number of retries, so will run max_retries + 1.
+    }
+
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
     where
         F: FnMut(I) -> Fut + Send + Copy,
@@ -118,9 +125,7 @@ impl GrpcStore {
         R: Send,
         I: Send + Clone,
     {
-        let retry_config = ExponentialBackoff::new(Duration::from_millis(self.retry.delay as u64))
-            .map(|d| (self.jitter_fn)(d))
-            .take(self.retry.max_retries); // Remember this is number of retries, so will run max_retries + 1.
+        let retry_config = self.get_retry_config();
         self.retrier
             .retry(
                 retry_config,
@@ -263,50 +268,86 @@ impl GrpcStore {
             "CAS operation on AC store"
         );
 
-        let mut client = self.bytestream_client.clone();
-
-        let error = Arc::new(Mutex::new(None));
-        struct LocalState {
+        struct LocalState<T, E>
+        where
+            T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
+            E: Into<Error> + 'static,
+        {
             instance_name: String,
-            error: Arc<Mutex<Option<Error>>>,
+            error: Mutex<Option<Error>>,
+            read_stream: Mutex<Option<WriteRequestStreamWrapper<T, E>>>,
+            client: ByteStreamClient<Channel>,
         }
 
-        let local_state = LocalState {
+        let local_state = Arc::new(LocalState {
             instance_name: self.instance_name.clone(),
-            error: error.clone(),
-        };
-
-        let stream = unfold((stream, local_state), move |(mut stream, local_state)| async {
-            let maybe_message = stream.next().await;
-            if let Ok(maybe_message) = maybe_message {
-                if let Some(mut message) = maybe_message {
-                    // `resource_name` pattern is: "{instance_name}/uploads/{uuid}/blobs/{hash}/{size}".
-                    let first_slash_pos = match message.resource_name.find('/') {
-                        Some(pos) => pos,
-                        None => {
-                            log::error!("{}", "Resource name should follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}");
-                            return None;
-                        }
-                    };
-                    message.resource_name = format!(
-                        "{}/{}",
-                        &local_state.instance_name,
-                        message.resource_name.get((first_slash_pos + 1)..).unwrap()
-                    );
-                    return Some((message, (stream, local_state)));
-                }
-                return None;
-            }
-            // TODO(allada) I'm sure there's a way to do this without a mutex, but rust can be super
-            // picky with borrowing through a stream await.
-            *local_state.error.lock() = Some(maybe_message.unwrap_err());
-            None
+            error: Mutex::new(None),
+            read_stream: Mutex::new(Some(stream)),
+            client: self.bytestream_client.clone(),
         });
 
-        let result = client.write(stream).await.err_tip(|| "in GrpcStore::write")?;
-        if let Some(err) = error.lock().take() {
-            return Err(err);
-        }
+        let retry_config = self.get_retry_config();
+        let result = self
+            .retrier
+            .retry(
+                retry_config,
+                unfold(local_state, move |local_state| async move {
+                    let stream = unfold((None, local_state.clone()), move |(stream, local_state)| async {
+                        // Only consume the stream on the first request to read,
+                        // then pass it for future requests in the unfold.
+                        let Some(mut stream) = stream.or_else(|| local_state.read_stream.lock().take()) else {
+                            return None;
+                        };
+                        let maybe_message = stream.next().await;
+                        if let Ok(maybe_message) = maybe_message {
+                            if let Some(mut message) = maybe_message {
+                                // `resource_name` pattern is: "{instance_name}/uploads/{uuid}/blobs/{hash}/{size}".
+                                let first_slash_pos = match message.resource_name.find('/') {
+                                    Some(pos) => pos,
+                                    None => {
+                                        log::error!("{}", "Resource name should follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}");
+                                        return None;
+                                    }
+                                };
+                                message.resource_name = format!(
+                                    "{}/{}",
+                                    &local_state.instance_name,
+                                    message.resource_name.get((first_slash_pos + 1)..).unwrap()
+                                );
+                                return Some((message, (Some(stream), local_state)));
+                            }
+                            return None;
+                        }
+                        // TODO(allada) I'm sure there's a way to do this without a mutex, but rust can be super
+                        // picky with borrowing through a stream await.
+                        *local_state.error.lock() = Some(maybe_message.unwrap_err());
+                        None
+                    });
+
+                    let result = local_state.client.clone()
+                            .write(stream)
+                            .await
+                            .err_tip(|| "in GrpcStore::write");
+
+                    // If the stream has been consumed, don't retry, but
+                    // otherwise it's ok to try again.
+                    let result = if local_state.read_stream.lock().is_some() {
+                        result.map_or_else(RetryResult::Retry, RetryResult::Ok)
+                    } else {
+                        result.map_or_else(RetryResult::Err, RetryResult::Ok)
+                    };
+
+                    // If there was an error with the stream, then don't retry.
+                    let result = if let Some(err) = local_state.error.lock().take() {
+                        RetryResult::Err(err)
+                    } else {
+                        result
+                    };
+
+                    Some((result, local_state))
+                }),
+            )
+            .await?;
         Ok(result)
     }
 
