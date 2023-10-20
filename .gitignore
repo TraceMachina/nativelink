@@ -6,3 +6,5 @@ target/
 terraform.tfstate*
 .update_scheduler_ips.zip
 __pycache__
+.devenv/
+.direnv/
