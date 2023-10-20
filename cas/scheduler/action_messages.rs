@@ -685,7 +685,6 @@ impl From<&ActionStage> for execution_stage::Value {
 
 impl From<ActionStage> for ExecuteResponse {
     fn from(val: ActionStage) -> Self {
-        const RESPONSE_MESSAGE: &str = "TODO(blaise.bruer) We should put a reference something like bb_browser";
 
         fn logs_from(server_logs: HashMap<String, DigestInfo>) -> HashMap<String, LogFile> {
             let mut logs = HashMap::with_capacity(server_logs.len());
@@ -714,7 +713,7 @@ impl From<ActionStage> for ExecuteResponse {
                     result: Some(action_result.into()),
                     cached_result: false,
                     status,
-                    message: RESPONSE_MESSAGE.to_string(),
+                    message: String::new(),
                 }
             }
             // Handled separately as there are no server logs and the action
@@ -724,7 +723,7 @@ impl From<ActionStage> for ExecuteResponse {
                 result: Some(proto_action_result),
                 cached_result: true,
                 status: Some(Status::default()),
-                message: RESPONSE_MESSAGE.to_string(),
+                message: String::new(),
             },
         }
     }
