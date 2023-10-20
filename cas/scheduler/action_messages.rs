@@ -685,7 +685,7 @@ impl From<&ActionStage> for execution_stage::Value {
 
 impl From<ActionStage> for ExecuteResponse {
     fn from(val: ActionStage) -> Self {
-        const RESPONSE_MESSAGE: &str = "TODO(blaise.bruer) We should put a reference something like bb_browser";
+        const RESPONSE_MESSAGE: &str = "";
 
         fn logs_from(server_logs: HashMap<String, DigestInfo>) -> HashMap<String, LogFile> {
             let mut logs = HashMap::with_capacity(server_logs.len());
