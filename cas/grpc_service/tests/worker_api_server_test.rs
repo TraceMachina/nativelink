@@ -337,7 +337,7 @@ pub mod execution_response_tests {
                     details: Default::default(),
                 }),
                 server_logs,
-                message: "TODO(blaise.bruer) We should put a reference something like bb_browser".to_string(),
+                message: String::new(),
             })),
         };
         {
