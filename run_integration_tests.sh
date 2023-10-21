@@ -16,7 +16,7 @@
 set -euo pipefail
 
 if [[ $EUID -eq 0 ]]; then
-  echo "This script shoudl not be run as root."
+  echo "This script should not be run as root."
   exit 1
 fi
 
@@ -46,8 +46,6 @@ EOT
   esac
 done
 
-echo "What operating system OSTYPE: $OSTYPE"
-
 if ! docker --version; then
   echo "This script must be run as root due to docker permission issues (try with 'sudo')"
   exit 1
@@ -56,7 +54,6 @@ fi
 if [[ "${#TEST_PATTERNS[@]}" -eq 0 ]]; then
   TEST_PATTERNS=("*")
 fi
-
 
 SELF_DIR=$(realpath $(dirname $0))
 cd "$SELF_DIR/deployment-examples/docker-compose"
@@ -72,11 +69,10 @@ sudo docker-compose rm --stop -f
 
 echo "What operating system OSTYPE: $OSTYPE"
 
-
 export TMPDIR=$HOME/.cache/turbo-cache/
-sudo mkdir -p "$TMPDIR"
+mkdir -p "$TMPDIR"
 
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+if [[ "$OSTYPE" == "-linux-gnu"* ]]; then
   export CACHE_DIR=$(mktemp -d --tmpdir="$TMPDIR" --suffix="-turbo-cache-integration-test")
 elif [[ "$OSTYPE" == "darwin"* ]]; then
   # Create a temporary directory using mktemp with a random template, then add a suffix
