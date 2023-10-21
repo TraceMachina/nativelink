@@ -75,10 +75,8 @@ mkdir -p "$TMPDIR"
 if [[ "$OSTYPE" == "-linux-gnu"* ]]; then
   export CACHE_DIR=$(mktemp -d --tmpdir="$TMPDIR" --suffix="-turbo-cache-integration-test")
 elif [[ "$OSTYPE" == "darwin"* ]]; then
-  # Create a temporary directory using mktemp with a random template, then add a suffix
+  # Create a temporary directory using mktemp with a random template, then add a suffix.
   export CACHE_DIR=$(mktemp -d "${TMPDIR}turbo-cache-integration-test")
-  echo "CACHE_DIR for macOS is: $CACHE_DIR"  # <-- Added print statement here
-  # exit 1
 else
   # Unknown OS
   echo "Unknown operating system. Exiting."
@@ -99,7 +97,6 @@ for pattern in "${TEST_PATTERNS[@]}"; do
   find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
     # Cleanup.
     echo "Cleaning up cache directories TURBOC_CACHE_DIR: $TURBO_CACHE_DIR"
-    
     echo "Checking for existince of the TURBO_CACHE_DIR"
     if [ -d "$TURBO_CACHE_DIR" ]; then
       sudo find "$TURBO_CACHE_DIR" -delete # add for linux
