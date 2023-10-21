@@ -15,6 +15,11 @@
 
 set -euo pipefail
 
+if [[ $EUID -eq 0 ]]; then
+  echo "This script shoudl not be run as root."
+  exit 1
+fi
+
 TEST_PATTERNS=()
 
 while [[ $# -gt 0 ]]; do
@@ -41,6 +46,8 @@ EOT
   esac
 done
 
+echo "What operating system OSTYPE: $OSTYPE"
+
 if ! docker --version; then
   echo "This script must be run as root due to docker permission issues (try with 'sudo')"
   exit 1
@@ -49,6 +56,7 @@ fi
 if [[ "${#TEST_PATTERNS[@]}" -eq 0 ]]; then
   TEST_PATTERNS=("*")
 fi
+
 
 SELF_DIR=$(realpath $(dirname $0))
 cd "$SELF_DIR/deployment-examples/docker-compose"
@@ -60,13 +68,29 @@ sudo rm -rf ~/.cache/turbo-cache
 mkdir -p ~/.cache/turbo-cache
 
 # Ensure our docker compose is not running.
-docker-compose rm --stop -f
+sudo docker-compose rm --stop -f
+
+echo "What operating system OSTYPE: $OSTYPE"
+
 
 export TMPDIR=$HOME/.cache/turbo-cache/
-mkdir -p "$TMPDIR"
-export CACHE_DIR=$(mktemp -d --suffix="-turbo-cache-integration-test")
+sudo mkdir -p "$TMPDIR"
+
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+  export CACHE_DIR=$(mktemp -d --tmpdir="$TMPDIR" --suffix="-turbo-cache-integration-test")
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+  # Create a temporary directory using mktemp with a random template, then add a suffix
+  export CACHE_DIR=$(mktemp -d "${TMPDIR}turbo-cache-integration-test")
+  echo "CACHE_DIR for macOS is: $CACHE_DIR"  # <-- Added print statement here
+  # exit 1
+else
+  # Unknown OS
+  echo "Unknown operating system. Exiting."
+  exit 1
+fi
+
 export BAZEL_CACHE_DIR="$CACHE_DIR/bazel"
-trap "sudo rm -rf $CACHE_DIR; docker-compose rm --stop -f" EXIT
+trap "sudo rm -rf $CACHE_DIR; sudo docker-compose rm --stop -f" EXIT
 
 echo "" # New line.
 
@@ -78,11 +102,19 @@ mkdir -p "$TURBO_CACHE_DIR"
 for pattern in "${TEST_PATTERNS[@]}"; do
   find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
     # Cleanup.
-    sudo find "$TURBO_CACHE_DIR" -delete
+    echo "Cleaning up cache directories TURBOC_CACHE_DIR: $TURBO_CACHE_DIR"
+    
+    echo "Checking for existince of the TURBO_CACHE_DIR"
+    if [ -d "$TURBO_CACHE_DIR" ]; then
+      sudo find "$TURBO_CACHE_DIR" -delete # add for linux
+    else
+      echo "Directory $TURBO_CACHE_DIR does not exist."
+    fi
+
     bazel --output_base="$BAZEL_CACHE_DIR" clean
     FILENAME=$(basename $fullpath)
     echo "Running test $FILENAME"
-    docker-compose up -d
+    sudo docker-compose up -d
     set +e
     bash -euo pipefail "$fullpath"
     EXIT_CODE="$?"
@@ -91,10 +123,10 @@ for pattern in "${TEST_PATTERNS[@]}"; do
       echo "$FILENAME passed"
     else
       echo "$FILENAME failed with exit code $EXIT_CODE"
-      docker-compose logs
+      sudo docker-compose logs
       exit $EXIT_CODE
     fi
-    docker-compose rm --stop -f
+    sudo docker-compose rm --stop -f
     echo "" # New line.
   done
 done
