@@ -66,7 +66,12 @@ impl GrpcScheduler {
                             log::info!("Client disconnected in GrpcScheduler");
                             return;
                         }
-                        Ok(Some(response)) = result_stream.message() => {
+                        response = result_stream.message() => {
+                            // When the upstream closes the channel, close the
+                            // downstream too.
+                            let Ok(Some(response)) = response else {
+                                return;
+                            };
                             match response.try_into() {
                                 Ok(response) => {
                                     if let Err(err) = tx.send(Arc::new(response)) {
