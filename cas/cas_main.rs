@@ -82,7 +82,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 &name,
                 store_factory(&store_cfg, &store_manager, Some(store_metrics))
                     .await
-                    .err_tip(|| format!("Failed to create store '{}'", name))?,
+                    .err_tip(|| format!("Failed to create store '{name}'"))?,
             );
         }
     }
@@ -133,7 +133,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     "connected_clients",
                     &1,
                     "The endpoint of the connected clients",
-                    vec![("endpoint".into(), format!("{}", client).into())],
+                    vec![("endpoint".into(), format!("{client}").into())],
                 );
             }
 
@@ -154,7 +154,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
         .enumerate()
         .map(|(i, server_cfg)| {
             let name = if server_cfg.name.is_empty() {
-                format!("{}", i)
+                format!("{i}")
             } else {
                 server_cfg.name.clone()
             };
@@ -163,7 +163,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 counter: Counter::default(),
                 server_start_ts: server_start_timestamp,
             });
-            let server_metrics = root_metrics_registry.sub_registry_with_prefix(format!("server_{}", name));
+            let server_metrics = root_metrics_registry.sub_registry_with_prefix(format!("server_{name}"));
             server_metrics.register_collector(Box::new(Collector::new(&connected_clients_mux)));
 
             (server_cfg, connected_clients_mux)
@@ -342,7 +342,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             fn error_to_response<E: std::error::Error>(e: E) -> hyper::Response<Body> {
                 hyper::Response::builder()
                     .status(500)
-                    .body(format!("Error: {:?}", e).into())
+                    .body(format!("Error: {e:?}").into())
                     .unwrap()
             }
             let path = if prometheus_cfg.path.is_empty() {
@@ -442,7 +442,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                             .await
                             .err_tip(|| "Could not make LocalWorker")?;
                     let name = if local_worker.name().is_empty() {
-                        format!("worker_{}", i)
+                        format!("worker_{i}")
                     } else {
                         local_worker.name().clone()
                     };
@@ -464,7 +464,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
     }
 
     if let Err(e) = select_all(root_futures).await.0 {
-        panic!("{:?}", e);
+        panic!("{e:?}");
     }
     unreachable!("None of the futures should resolve in main()");
 }
