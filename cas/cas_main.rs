@@ -95,8 +95,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             let scheduler_metrics = root_scheduler_metrics.sub_registry_with_prefix(&name);
             let (maybe_action_scheduler, maybe_worker_scheduler) =
                 scheduler_factory(&scheduler_cfg, &store_manager, scheduler_metrics)
-                    .await
-                    .err_tip(|| format!("Failed to create scheduler '{}'", name))?;
+                    .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
             if let Some(action_scheduler) = maybe_action_scheduler {
                 action_schedulers.insert(name.clone(), action_scheduler);
             }
