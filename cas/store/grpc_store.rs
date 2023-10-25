@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::convert;
 use std::marker::Send;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -22,7 +23,7 @@ use bytes::BytesMut;
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{future, Future, Stream, TryStreamExt};
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::digest_function;
+use proto::build::bazel::remote::execution::v2::{digest_function, Digest};
 use rand::{rngs::OsRng, Rng};
 use tokio::time::sleep;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
@@ -37,7 +38,7 @@ use proto::build::bazel::remote::execution::v2::{
     action_cache_client::ActionCacheClient, content_addressable_storage_client::ContentAddressableStorageClient,
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
     FindMissingBlobsRequest, FindMissingBlobsResponse, GetActionResultRequest, GetTreeRequest, GetTreeResponse,
-    UpdateActionResultRequest,
+    UpdateActionResultRequest, Tree, Directory
 };
 use proto::google::bytestream::{
     byte_stream_client::ByteStreamClient, QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse,
@@ -438,6 +439,47 @@ impl GrpcStore {
             .await
             .map(|_| ())
     }
+
+    async fn add_node_to_tree(&self, digest: DigestInfo) -> Result<Tree, Error> {
+        Ok(())
+    } 
+
+    async fn convert_directory_to_digest(&self, directory: Directory) -> Result<DigestInfo, Error> {
+        Ok(()) 
+    }
+
+    // TODO(BlakeHatch) figure out how to convert between an Action and the Digest on the CAS tree 
+    async fn prune_tree(&self, tree_grpc_request: Request<GetTreeRequest>, stale_items: Vec<DigestInfo>) -> Result<(), Error> {
+        //TODO(BlakeHatch): Figure out correct way to write this
+        let response = self.get_tree(tree_grpc_request).await?; // This is your Response<Streaming<GetTreeResponse>>
+        let mut new_tree = Tree::default;
+
+        let mut stream = response.into_inner();
+
+        // Re-add directories to tree if it's not in the stale items list.
+        while let Some(tree_response) = stream.message().await? {
+            for directory in tree_response.directories { // directories is a repeated field containing Directory messages
+                // Now you can access the fields of the Directory message
+                let node_props = directory.node_properties;
+                let files = directory.files;
+                let directories = directory.directories;
+                // Do something with name, files, directories...
+
+                let digest = self.convert_directory_to_digest(directory).await?;
+
+                // Delete from store if it's stale and don't add to new tree.
+                if stale_items.contains(&digest) {
+                    self.delete(digest);
+                }
+                else {
+                    new_tree(digest);
+                }
+                
+            }
+        }
+
+        Ok(new_tree)
+    }
 }
 
 #[async_trait]
@@ -567,6 +609,13 @@ impl StoreTrait for GrpcStore {
         Ok(())
     }
 
+    async fn delete(
+        self: Pin<&Self>,
+        _digest: DigestInfo,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
@@ -632,5 +681,5 @@ impl StoreTrait for GrpcStore {
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
-    }
+    }   
 }

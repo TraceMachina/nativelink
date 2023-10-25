@@ -77,6 +77,13 @@ pub trait StoreTrait: Sync + Send + Unpin {
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error>;
 
+    /// Delete a digest from the store.
+    /// If the digest does not exist in the store, return Ok(()).
+    async fn delete(
+        self: Pin<&Self>,
+        digest: DigestInfo,
+    ) -> Result<(), Error>;
+
     // Utility to send all the data to the store when you have all the bytes.
     async fn update_oneshot(self: Pin<&Self>, digest: DigestInfo, data: Bytes) -> Result<(), Error> {
         // TODO(blaise.bruer) This is extremely inefficient, since we have exactly

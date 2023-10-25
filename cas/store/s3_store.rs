@@ -31,7 +31,7 @@ use rusoto_core::request::{DispatchSignedRequest, DispatchSignedRequestFuture};
 use rusoto_core::{region::Region, ByteStream, HttpClient, HttpDispatchError, RusotoError};
 use rusoto_s3::{
     AbortMultipartUploadRequest, CompleteMultipartUploadRequest, CompletedMultipartUpload, CompletedPart,
-    CreateMultipartUploadRequest, GetObjectError, GetObjectRequest, HeadObjectError, HeadObjectRequest,
+    CreateMultipartUploadRequest, GetObjectError, GetObjectRequest, DeleteObjectRequest, HeadObjectError, HeadObjectRequest,
     PutObjectRequest, S3Client, UploadPartRequest, S3,
 };
 use rusoto_signature::signature::SignedRequest;
@@ -411,6 +411,24 @@ impl StoreTrait for S3Store {
             }
         }
         complete_result
+    }
+
+    async fn delete(
+        self: Pin<&Self>,
+        _digest: DigestInfo,
+    ) -> Result<(), Error> {
+        let s3_path = &self.make_s3_path(&_digest);
+        let delete_request = DeleteObjectRequest {
+            bucket: self.bucket.to_owned(),
+            key: s3_path.to_owned(),
+            ..Default::default()
+        };
+        self.s3_client
+            .delete_object(delete_request)
+            .await
+            .map_or_else(|e| Err(make_err!(Code::Unknown, "{:?}", e)), |_| Ok(()))
+            .err_tip(|| "Failed to delete object from s3")?;
+        Ok(())
     }
 
     async fn get_part_ref(
