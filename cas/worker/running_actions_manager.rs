@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2023 The Turbo Cache Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -481,6 +481,71 @@ impl RunningActionImpl {
             }),
             did_cleanup: AtomicBool::new(false),
         }
+    }
+    
+    async fn walk_merkle_tree(self: Arc<Self>, ac_store: Arc<dyn Store + Send + Sync>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let root_directory_digest = &self.action_info
+            .input_root_digest
+            .clone();
+    
+        let ac_store_pin = Pin::new(ac_store.as_ref());
+        let root_directory = get_and_decode_digest::<Directory>(ac_store_pin, &root_directory_digest)
+        .await
+        .err_tip(|| "Converting root_directory_digest to Directory")?;
+    
+        let stale_list = Arc::new(Mutex::new(Vec::new()));
+        
+        let self_clone = Arc::clone(&self);
+        self_clone.dfs_walk(ac_store, root_directory, stale_list, 64).await?;
+    
+        Ok(())
+    }
+
+    // TODO(blakehatch) Figure out what to put in store, thinking action store
+    fn dfs_walk(
+        self: Arc<Self>,
+        ac_store: Arc<dyn Store + Send + Sync>,
+        directory: Directory,
+        stale_list: Arc<Mutex<Vec<i64>>>,
+        stale_threshold: i64
+    ) -> Pin<Box<dyn Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>> + Send>> {
+        Box::pin(async move {
+            // Print the current directory for debugging
+            println!("Processing directory: {:?}", directory);
+    
+            // Process the current directory
+            // ...
+    
+            // Recursively walk the child directories
+            let mut futures_vec: Vec<_> = Vec::new();
+            for directory_node in &directory.directories {
+                let digest_info: DigestInfo = directory_node
+                                                    .digest
+                                                    .as_ref()
+                                                    .ok_or_else(|| Error::new(Code::InvalidArgument, "Digest is missing".to_string()))?
+                                                    .try_into()
+                                                    .map_err(|_| Error::new(Code::InvalidArgument, "Failed to convert Digest to DigestInfo".to_string()))?;
+                let ac_store_clone = ac_store.clone();
+                let digest_info_clone = digest_info.clone();
+    
+                let ac_store_pin = Pin::new(ac_store_clone.as_ref());
+                let child_directory = get_and_decode_digest::<Directory>(ac_store_pin, &digest_info_clone).await?;
+    
+                // Print the child directory for debugging
+                println!("Processing child directory: {:?}", child_directory);
+    
+                // Recursive call of the walk 
+                let self_clone = Arc::clone(&self);
+                let stale_list_clone = Arc::clone(&stale_list);
+                let ac_store_clone = ac_store.clone();
+                let future = self_clone.dfs_walk(ac_store_clone, child_directory, stale_list_clone, stale_threshold);
+                futures_vec.push(future);
+            }
+    
+            try_join_all(futures_vec).await?;
+    
+            Ok(())
+        })
     }
 
     fn metrics(&self) -> &Arc<Metrics> {
@@ -1080,6 +1145,8 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
 
     async fn kill_all(&self);
 
+    async fn find_stale_build_actions(root_action: Arc<RunningActionImpl>, ac_store: Arc<dyn Store + Send + Sync>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>;
+
     fn metrics(&self) -> &Arc<Metrics>;
 }
 
@@ -1128,7 +1195,8 @@ pub struct RunningActionsManagerImpl {
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
     action_done_tx: watch::Sender<()>,
-    callbacks: Callbacks,
+    callbacks: Callbacks, 
+    find_stale_build_actions: Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
     metrics: Arc<Metrics>,
 }
 
@@ -1162,6 +1230,7 @@ impl RunningActionsManagerImpl {
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
             callbacks,
+            find_stale_build_actions: Ok(()),
             metrics: Arc::new(Metrics::default()),
         })
     }
@@ -1250,7 +1319,7 @@ impl RunningActionsManagerImpl {
                 log::error!("Error sending kill to running action {}", hex::encode(action.action_id));
             }
         }
-    }
+    }   
 }
 
 #[async_trait]
@@ -1393,11 +1462,21 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .subscribe()
             .wait_for(|_| self.running_actions.lock().is_empty())
             .await;
-    }
+    }   
 
     #[inline]
     fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    async fn find_stale_build_actions(root_action: Arc<RunningActionImpl>, ac_store: Arc<dyn Store + Send + Sync>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+        // Store these in a Vec
+        root_action.walk_merkle_tree(ac_store).await?;
+
+        // Comb through list of all items in merkle tree and find those older than x threshold
+
+        // Remove stale actions
+        Ok(())
     }
 }
 

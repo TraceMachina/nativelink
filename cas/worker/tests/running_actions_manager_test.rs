@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2023 The Turbo Cache Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ use tokio::sync::oneshot;
 
 use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
-use action_messages::{ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
+use action_messages::{ActionResult, ActionInfo, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use common::{fs, DigestInfo};
 use config::cas_server::EnvironmentSource;
 use error::{Code, Error, ResultExt};
@@ -46,6 +46,7 @@ use proto::build::bazel::remote::execution::v2::{
     platform::Property, Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
     FileNode, NodeProperties, Platform, SymlinkNode, Tree,
 };
+use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
 use running_actions_manager::{
     download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
@@ -1852,4 +1853,86 @@ exit 0
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_walk_tree() -> Result<(), Box<dyn std::error::Error>> {
+        // Setup: Create a mock merkle tree with directories and files
+        let action_info = ActionInfo {
+            command_digest: DigestInfo::new([0u8; 32], 0),
+            input_root_digest: DigestInfo::new([0u8; 32], 0),
+            timeout: Duration::MAX,
+            platform_properties: PlatformProperties {
+                properties: HashMap::new(),
+            },
+            priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::UNIX_EPOCH,
+            unique_qualifier: ActionInfoHashKey {
+                instance_name: "instance".to_string(),
+                digest: DigestInfo::new([0u8; 32], 0),
+                salt: 0,
+            },
+            skip_cache_lookup: true,
+        };
+
+        let execution_metadata = ExecutionMetadata::default();
+            let action_id = "mock_action_id".to_string();
+            let work_directory = "mock_work_directory".to_string();
+            let timeout = Duration::from_secs(60);
+            let running_actions_manager = Arc::new(RunningActionsManagerImpl::default());
+
+            let mock_root_action = Arc::new(RunningActionImpl::new(
+                execution_metadata,
+                action_id,
+                work_directory,
+                action_info,
+                timeout,
+                running_actions_manager,
+            ));
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+            String::new(),
+            ExecutionConfiguration::default(),
+            Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
+            Duration::MAX,
+        )?);
+
+        // Call walk_merkle_tree
+        let walk_result = running_actions_manager.find_stale_build_actions().await?;
+
+        // Assertions: Verify that the walk was performed correctly
+        assert!(walk_result.is_ok(), "Walk of the Merkle tree failed");
+        //TODO(BlakeHatch) Figure out how to do this comparison, probably just have exhaustive list before.
+        //assert_eq!(walk_result.unwrap(), mock_merkle_tree, "The walked Merkle tree does not match the mock Merkle tree");
+
+        Ok(())
+    }
+
+    // TODO(BlakeHatch) implement these
+    // #[tokio::test]
+    // async fn test_get_stale_build_actions() -> Result<(), Box<dyn std::error::Error>> {
+    //     let stale_duration = Duration::from_secs(60 * 60 * 24); // 24 hours
+    //     let stale_actions = running_actions_manager.get_stale_build_actions(stale_duration).await?;
+
+    //     // Assertions: Verify that the stale actions were fetched correctly
+    //     assert!(stale_actions.is_ok(), "Fetching of stale build actions failed");
+
+    //     Ok(())
+    // }
+
+    // #[tokio::test]
+    // async fn test_remove_stale_build_actions() -> Result<(), Box<dyn std::error::Error>> {
+    //     let stale_duration = Duration::from_secs(60 * 60 * 24); // 24 hours
+    //     let remove_result = running_actions_manager.remove_stale_build_actions(stale_duration).await?;
+
+    //     // Assertions: Verify that the stale actions were removed correctly
+    //     assert!(remove_result.is_ok(), "Removal of stale build actions failed");
+
+    //     Ok(())
+    // }:wait
 }
+
