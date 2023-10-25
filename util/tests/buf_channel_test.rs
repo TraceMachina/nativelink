@@ -15,7 +15,7 @@
 use bytes::Bytes;
 use tokio::try_join;
 
-use buf_channel::make_buf_channel_pair;
+use buf_channel::{make_buf_channel_pair, make_buf_channel_pair_optimistic_writer};
 use error::{make_err, Code, Error, ResultExt};
 
 #[cfg(test)]
@@ -233,7 +233,26 @@ mod buf_channel_tests {
             assert_eq!(rx.recv().await?, Bytes::from(DATA1));
             assert_eq!(
                 rx.recv().await,
-                Err(make_err!(Code::Internal, "Writer was dropped before EOF was sent"))
+                Err(make_err!(Code::Internal, "Received erroneous partial chunk: Error {{ code: Internal, messages: [\"Writer was dropped before EOF was sent\"] }}"))
+            );
+            Result::<(), Error>::Ok(())
+        };
+        try_join!(tx_fut, rx_fut)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rx_doesnt_treat_optimistic_tx_drops_test_as_error() -> Result<(), Error> {
+        let (mut tx, mut rx) = make_buf_channel_pair_optimistic_writer();
+        let tx_fut = async move {
+            tx.send(DATA1.into()).await?;
+            Result::<(), Error>::Ok(())
+        };
+        let rx_fut = async move {
+            assert_eq!(rx.recv().await?, Bytes::from(DATA1));
+            assert_eq!(
+                rx.recv().await,
+                Err(make_err!(Code::Internal, "Failed to send closing ok message to write"))
             );
             Result::<(), Error>::Ok(())
         };
