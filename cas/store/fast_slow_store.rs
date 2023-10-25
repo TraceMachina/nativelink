@@ -189,6 +189,13 @@ impl StoreTrait for FastSlowStore {
         Ok(())
     }
 
+    async fn delete(
+        self: Pin<&Self>,
+        _digest: DigestInfo,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,

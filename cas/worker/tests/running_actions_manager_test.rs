@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2023 The Turbo Cache Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ use tokio::sync::oneshot;
 
 use ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
-use action_messages::{ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
+use action_messages::{ActionResult, ActionInfo, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
 use common::{fs, DigestInfo};
 use config::cas_server::EnvironmentSource;
 use error::{Code, Error, ResultExt};
@@ -46,6 +46,7 @@ use proto::build::bazel::remote::execution::v2::{
     platform::Property, Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
     FileNode, NodeProperties, Platform, SymlinkNode, Tree,
 };
+use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
 use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
 use running_actions_manager::{
     download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
@@ -1852,4 +1853,90 @@ exit 0
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn collect_stale_actions() -> Result<(), Box<dyn std::error::Error>> {
+        const FILE1_NAME: &str = "file1.txt";
+        const FILE1_CONTENT: &str = "HELLOFILE1";
+        const FILE2_NAME: &str = "file2.exec";
+        const FILE2_CONTENT: &str = "HELLOFILE2";
+        const FILE2_MODE: u32 = 0o710;
+        const FILE2_MTIME: u64 = 5;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
+            String::new(),
+            ExecutionConfiguration::default(),
+            Pin::into_inner(cas_store.clone()),
+            Pin::into_inner(ac_store.clone()),
+            config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
+            Duration::MAX,
+        )?);
+
+        let running_action_impl = running_actions_manager
+        .create_and_add_action(
+            WORKER_ID.to_string(),
+            StartExecute {
+                execute_request: Some(ExecuteRequest {
+                    action_digest: Some(action_digest.into()),
+                    ..Default::default()
+                }),
+                salt: SALT,
+                queued_timestamp: Some(queued_timestamp.into()),
+            },
+        )
+        .await?;
+
+        // List of digests likely read in from a file
+        let mut digests = vec![
+            DigestInfo::new("digest1", 123),
+            DigestInfo::new("digest2", 456),
+            DigestInfo::new("digest3", 789),
+            // Add more digests as needed
+        ];
+
+        // Make ActionResults associated with the digests
+        let action_results: Vec<ActionResult> = digests.iter().map(|digest| {
+            ActionResult {
+                action_digest: Some(digest.clone().into()),
+                timestamp: Some(ProstTimestamp::from(digest.timestamp)),
+                ..Default::default()
+            }
+        }).collect();
+
+        let stale_digests = find_stale_build_actions(running_actions_manager, ac_store, digests).await?;
+
+        // Step 4: Assert
+        // ...
+        // TODO(BlakeHatch) make some of the build actions stale.
+        assert!(!stale_digests.is_empty(), "No stale build actions found");
+        
+        Ok(())
+        
+    }
+
+    // TODO(BlakeHatch) implement these
+    // #[tokio::test]
+    // async fn test_get_stale_build_actions() -> Result<(), Box<dyn std::error::Error>> {
+    //     let stale_duration = Duration::from_secs(60 * 60 * 24); // 24 hours
+    //     let stale_actions = running_actions_manager.get_stale_build_actions(stale_duration).await?;
+
+    //     // Assertions: Verify that the stale actions were fetched correctly
+    //     assert!(stale_actions.is_ok(), "Fetching of stale build actions failed");
+
+    //     Ok(())
+    // }
+
+    // #[tokio::test]
+    // async fn test_remove_stale_build_actions() -> Result<(), Box<dyn std::error::Error>> {
+    //     let stale_duration = Duration::from_secs(60 * 60 * 24); // 24 hours
+    //     let remove_result = running_actions_manager.remove_stale_build_actions(stale_duration).await?;
+
+    //     // Assertions: Verify that the stale actions were removed correctly
+    //     assert!(remove_result.is_ok(), "Removal of stale build actions failed");
+
+    //     Ok(())
+    // }:wait
 }
+

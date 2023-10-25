@@ -438,6 +438,28 @@ impl GrpcStore {
             .await
             .map(|_| ())
     }
+
+    pub async fn prune_tree(&self, stale_items: Vec<DigestInfo>, grpc_request: Request<GetTreeRequest>) -> Result<(), Error> {
+        let root_node = self.get_tree(grpc_request).await?;
+
+        // Perform a Depth-First Search (DFS) on the tree using recursion
+        self.dfs_prune(root_node, stale_items).await
+    }
+
+    // TODO(BlakeHatch) figure out how to convert between an Action and the Digest on the CAS tree 
+
+    async fn dfs_prune(&self, node: Response<Streaming<GetTreeResponse>>, stale_items: Vec<DigestInfo>) -> Result<(), Error> {
+        //TODO(BlakeHatch): Figure out correct way to write this
+        for child in node.children {
+            // Perform comparison of the stale items
+            if stale_items.contains(&node.digest) {
+                // If the node is in the stale items list, remove it
+                self.(node).await?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -567,6 +589,13 @@ impl StoreTrait for GrpcStore {
         Ok(())
     }
 
+    async fn delete(
+        self: Pin<&Self>,
+        _digest: DigestInfo,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
@@ -632,5 +661,5 @@ impl StoreTrait for GrpcStore {
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
-    }
+    }   
 }

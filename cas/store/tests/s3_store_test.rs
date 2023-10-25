@@ -303,6 +303,37 @@ mod s3_store_tests {
     }
 
     #[tokio::test]
+    async fn simple_del_ac() -> Result<(), Error> {
+        const AC_ENTRY_SIZE: u64 = 1000; // Any size that is not VALUE.len().
+
+        let s3_client = S3Client::new_with(
+            MockRequestDispatcher::with_status(StatusCode::OK.into()),
+            MockCredentialsProvider,
+            Region::UsEast1,
+        );
+        let store = S3Store::new_with_client_and_jitter(
+            &config::stores::S3Store {
+                bucket: BUCKET_NAME.to_string(),
+                ..Default::default()
+            },
+            s3_client,
+            Box::new(move |_delay| Duration::from_secs(0)),
+        )?;
+        let store_pin = Pin::new(&store);
+
+        let delete_result = store_pin
+            .delete(DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?)
+            .await?;
+        assert_eq!(
+            delete_result,
+            (),
+            "Hash for key: {} did not delete.",
+            VALID_HASH1,
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn smoke_test_get_part() -> Result<(), Error> {
         const AC_ENTRY_SIZE: u64 = 1000; // Any size that is not raw_send_data.len().
 

@@ -622,6 +622,13 @@ impl<Fe: FileEntry> StoreTrait for FilesystemStore<Fe> {
             .err_tip(|| format!("While processing with temp file {:?}", temp_full_path))
     }
 
+    async fn delete(
+        self: Pin<&Self>,
+        _digest: DigestInfo,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,

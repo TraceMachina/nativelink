@@ -110,6 +110,13 @@ impl StoreTrait for RefStore {
         Pin::new(store.as_ref()).update(digest, reader, size_info).await
     }
 
+    async fn delete(
+        self: Pin<&Self>,
+        _digest: DigestInfo,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn get_part_ref(
         self: Pin<&Self>,
         digest: DigestInfo,
