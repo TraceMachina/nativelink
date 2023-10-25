@@ -101,6 +101,9 @@ pub trait StoreTrait: Sync + Send + Unpin {
         Ok(())
     }
 
+    /// Retrieves all Digests in the store.
+    async fn get_all_digests(self: Pin<&Self>) -> Result<Vec<DigestInfo>, Error>;
+
     /// Retreives part of the data from the store and writes it to the given writer.
     async fn get_part_ref(
         self: Pin<&Self>,

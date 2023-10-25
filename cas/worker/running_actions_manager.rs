@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2023 The Turbo Cache Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -482,6 +482,29 @@ impl RunningActionImpl {
             did_cleanup: AtomicBool::new(false),
         }
     }
+   
+    async fn find_all_stale_actions(self: Arc<Self>, ac_store: Arc<dyn Store + Send + Sync>, stale_treshold: Arc<i64>) -> Result<Vec<DigestInfo>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let mut stale_digests = Vec::new();
+        let now = SystemTime::now();
+
+        //Iterate through ac_store grabbing the digests
+        let digests = ac_store.get_all_digests().await?;
+
+        for digest in digests {
+            //Decode the digest into an ActionResult using get_and_decode_digest::
+            let action_result = get_and_decode_digest::<ActionResult>(ac_store.clone(), &digest).await?;
+
+            //Get timestamp of completion from Action metadata and compare to current time
+            let completion_time = action_result.execution_metadata.completion_timestamp;
+            if now.duration_since(completion_time)? > stale_treshold {
+                //If it happened too long ago add the digest to a list of stale digests
+                stale_digests.push(digest);
+            }
+        }
+
+        //return list of stale digests
+        Ok(stale_digests)
+    } 
 
     fn metrics(&self) -> &Arc<Metrics> {
         &self.running_actions_manager.metrics
@@ -1080,6 +1103,8 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
 
     async fn kill_all(&self);
 
+    async fn find_stale_build_actions(root_action: Arc<RunningActionImpl>, ac_store: Arc<dyn Store + Send + Sync>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>;
+
     fn metrics(&self) -> &Arc<Metrics>;
 }
 
@@ -1128,7 +1153,8 @@ pub struct RunningActionsManagerImpl {
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
     action_done_tx: watch::Sender<()>,
-    callbacks: Callbacks,
+    callbacks: Callbacks, 
+    find_stale_build_actions: Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
     metrics: Arc<Metrics>,
 }
 
@@ -1162,6 +1188,7 @@ impl RunningActionsManagerImpl {
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
             callbacks,
+            find_stale_build_actions: Ok(()),
             metrics: Arc::new(Metrics::default()),
         })
     }
@@ -1250,7 +1277,7 @@ impl RunningActionsManagerImpl {
                 log::error!("Error sending kill to running action {}", hex::encode(action.action_id));
             }
         }
-    }
+    }   
 }
 
 #[async_trait]
@@ -1393,11 +1420,22 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .subscribe()
             .wait_for(|_| self.running_actions.lock().is_empty())
             .await;
-    }
+    }   
 
     #[inline]
     fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    async fn find_stale_build_actions(root_action: Arc<RunningActionImpl>, ac_store: Arc<dyn Store + Send + Sync>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let mut stale_digests: Vec<DigestInfo> = Vec::new();
+        // Your code to populate digest_infos goes here
+        
+        // Store these in a Vec
+        stale_digests = root_action.find_all_stale_actions(ac_store, stale_treshold).await?;
+
+        // Remove stale actions
+        Ok(stale_digests)
     }
 }
 

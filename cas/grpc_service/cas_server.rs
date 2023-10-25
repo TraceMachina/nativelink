@@ -302,4 +302,27 @@ impl ContentAddressableStorage for CasServer {
         }
         resp
     }
+
+    pub async fn prune_tree(&self, stale_items: Vec<DigestInfo>, grpc_request: Request<GetTreeRequest>) -> Result<(), Error> {
+        let root_node = self.get_tree(grpc_request).await?;
+
+        // Perform a Depth-First Search (DFS) on the tree using recursion
+        self.dfs_prune(root_node, stale_items).await
+    }
+
+    // TODO(BlakeHatch) figure out how to convert between an Action and the Digest on the CAS tree 
+
+    async fn dfs_prune(&self, node: TreeNode, stale_items: Vec<DigestInfo>) -> Result<(), Error> {
+        for child in node.children {
+            self.dfs_prune(child, stale_items.clone()).await?;
+        }
+
+        // Perform comparison of the stale items
+        if stale_items.contains(&node.digest) {
+            // If the node is in the stale items list, remove it
+            self.remove_node(node).await?;
+        }
+
+        Ok(())
+    }
 }
