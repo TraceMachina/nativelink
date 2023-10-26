@@ -8,22 +8,6 @@ on:
     branches: [ main ]
 
 jobs:
-  windows-bazel-tests:
-    # The type of runner that the job will run on.
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v3.5.3
-      with:
-        fetch-depth: 0
-    - uses: bazelbuild/setup-bazelisk@v2
-    - name: Mount Bazel cache
-      uses: actions/cache@v3
-      with:
-        path: "C:/tmp"
-        key: bazel-windows
-    - name: Test Bazel build on Windows
-      run: bazel --output_user_root=C:/tmp test --config=windows ...
-      shell: bash
   windows-cargo-tests:
     # The type of runner that the job will run on.
     runs-on: windows-latest
@@ -77,34 +61,6 @@ jobs:
           cargo build --all && \
           cargo test --all \
         '
-
-  unit-test:
-    # The type of runner that the job will run on.
-    runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        # Which OS versions we will test on.
-        os_version: [ 20.04, 22.04 ]
-    steps:
-    - uses: actions/checkout@v3.5.3
-      with:
-        fetch-depth: 0
-
-    - uses: docker/setup-buildx-action@v2
-    - uses: docker/build-push-action@v4
-      with:
-        context: .
-        file: ./deployment-examples/docker-compose/Dockerfile
-        build-args: |
-          OPT_LEVEL=fastbuild
-          OS_VERSION=${{ matrix.os_version }}
-        load: true # This brings the build into `docker images` from buildx.
-        tags: allada/turbo-cache:test
-        target: builder
-
-    - name: Bazel test
-      run: docker run --rm -v $PWD:/root/turbo-cache allada/turbo-cache:test bazel test -c fastbuild //...
-
   docker-compose-compiles-turbo-cache:
     # The type of runner that the job will run on.
     runs-on: ubuntu-22.04
