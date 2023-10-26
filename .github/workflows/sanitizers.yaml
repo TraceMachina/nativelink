@@ -1,0 +1,37 @@
+---
+name: Sanitizers
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  sanitized-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04]
+        sanitizer: [asan]
+    name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - uses: >- # Custom commit at 2023-10-23
+          bazelbuild/setup-bazelisk@5bc144ec07bd24eaa9b5c3e8c9af4006b033b629
+
+      - name: Mount bazel cache
+        uses: >- # v3.3.2
+          actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84
+        with:
+          path: ~/.cache/bazel
+          key: ${{ matrix.os }}-bazel-${{ matrix.sanitizer }}
+
+      - name: Run Bazel tests
+        run: bazel test --config=${{ matrix.sanitizer }} //...
+        shell: bash
