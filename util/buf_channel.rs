@@ -27,6 +27,7 @@ use error::{error_if, make_err, Code, Error, ResultExt};
 /// utility like managing EOF in a more friendly way, ensure if no EOF is received
 /// it will send an error to the receiver channel before shutting down and count
 /// the number of bytes sent.
+#[must_use]
 pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
     // We allow up to 2 items in the buffer at any given time. There is no major
     // reason behind this magic number other than thinking it will be nice to give
@@ -39,6 +40,7 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
             tx: Some(tx),
             bytes_written: 0,
             close_rx,
+            disable_eof_check: false,
         },
         DropCloserReadHalf {
             rx,
@@ -56,6 +58,7 @@ pub struct DropCloserWriteHalf {
     /// Receiver channel used to know the error (or success) value of the
     /// receiver end's drop status (ie: if the receiver dropped unexpectedly).
     close_rx: oneshot::Receiver<Result<(), Error>>,
+    disable_eof_check: bool,
 }
 
 impl DropCloserWriteHalf {
@@ -98,21 +101,18 @@ impl DropCloserWriteHalf {
         S: Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin,
     {
         loop {
-            match reader.next().await {
-                Some(maybe_chunk) => {
-                    let chunk = maybe_chunk.err_tip(|| "Failed to forward message")?;
-                    if chunk.is_empty() {
-                        // Don't send EOF here. We instead rely on None result to be EOF.
-                        continue;
-                    }
-                    self.send(chunk).await?;
+            if let Some(maybe_chunk) = reader.next().await {
+                let chunk = maybe_chunk.err_tip(|| "Failed to forward message")?;
+                if chunk.is_empty() {
+                    // Don't send EOF here. We instead rely on None result to be EOF.
+                    continue;
                 }
-                None => {
-                    if forward_eof {
-                        self.send_eof().await?;
-                    }
-                    break;
+                self.send(chunk).await?;
+            } else {
+                if forward_eof {
+                    self.send_eof().await?;
                 }
+                break;
             }
         }
         Ok(())
@@ -120,15 +120,23 @@ impl DropCloserWriteHalf {
 
     /// Returns the number of bytes written so far. This does not mean the receiver received
     /// all of the bytes written to the stream so far.
-    pub fn get_bytes_written(&self) -> u64 {
+    #[must_use]
+    pub const fn get_bytes_written(&self) -> u64 {
         self.bytes_written
     }
 
     /// Returns if the pipe was broken. This is good for determining if the reader broke the
     /// pipe or the writer broke the pipe, since this will only return true if the pipe was
     /// broken by the writer.
-    pub fn is_pipe_broken(&self) -> bool {
+    #[must_use]
+    pub const fn is_pipe_broken(&self) -> bool {
         self.tx.is_none()
+    }
+
+    /// Some remote receivers drop connections before we can send the EOF check.
+    /// If the receiver handles failing streams it is safe to disable it.
+    pub fn set_ignore_eof(&mut self) {
+        self.disable_eof_check = true;
     }
 }
 
@@ -139,16 +147,21 @@ impl Drop for DropCloserWriteHalf {
             eprintln!("No tokio runtime active. Tx was dropped but can't send error.");
             return; // Cant send error, no runtime.
         }
-        if let Some(tx) = self.tx.take() {
-            // If we do not notify the receiver of the premature close of the stream (ie: without EOF)
-            // we could end up with the receiver thinking everything is good and saving this bad data.
-            tokio::spawn(async move {
-                let _ = tx
-                    .send(Err(
-                        make_err!(Code::Internal, "Writer was dropped before EOF was sent",),
-                    ))
-                    .await; // Nowhere to send failure to write here.
-            });
+        // Some remote receivers out of our control may close connections before
+        // we can send the EOF check. If the remote receiver can be trusted to
+        // handle incomplete data on its side we can disable this check.
+        if !self.disable_eof_check {
+            if let Some(tx) = self.tx.take() {
+                // If we do not notify the receiver of the premature close of the stream (ie: without EOF)
+                // we could end up with the receiver thinking everything is good and saving this bad data.
+                tokio::spawn(async move {
+                    let _ = tx
+                        .send(Err(
+                            make_err!(Code::Internal, "Writer was dropped before EOF was sent",),
+                        ))
+                        .await; // Nowhere to send failure to write here.
+                });
+            }
         }
     }
 }
@@ -195,7 +208,7 @@ impl DropCloserReadHalf {
                 Ok(chunk)
             }
 
-            Some(Err(e)) => Err(e),
+            Some(Err(e)) => Err(make_err!(Code::Internal, "Received erroneous partial chunk: {e}")),
 
             // None is a safe EOF received.
             None => {
