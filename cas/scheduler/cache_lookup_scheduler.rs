@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::stream::StreamExt;
@@ -22,12 +24,12 @@ use scopeguard::guard;
 use tokio::select;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
-use tonic::Request;
+use tonic::{Code, Request};
 
 use ac_utils::get_and_decode_digest;
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState};
 use common::DigestInfo;
-use error::Error;
+use error::{Error, ResultExt};
 use grpc_store::GrpcStore;
 use parking_lot::{Mutex, MutexGuard};
 use platform_property_manager::PlatformPropertyManager;
@@ -82,6 +84,57 @@ async fn get_action_from_store(
             .await
             .ok()
     }
+}
+
+pub async fn sort_digests_old_to_new(
+    digests: impl Iterator<Item = DigestInfo>,
+    ac_store: &Arc<dyn Store>,
+) -> Result<impl Iterator<Item = DigestInfo>, Error> {
+    let digests_vec: Vec<_> = digests.collect();
+    let mut digest_times = Vec::with_capacity(digests_vec.len());
+    for digest in &digests_vec {
+        let action_result = match get_action_from_store(ac_store, digest, "".to_string()).await {
+            Some(result) => result,
+            None => continue,
+        };
+        let execution_metadata = action_result
+            .execution_metadata
+            .err_tip(|| tonic::Status::new(Code::Unknown, "Execution metadata is missing".to_string()))?;
+
+        let completion_time: SystemTime = match execution_metadata.execution_completed_timestamp {
+            Some(timestamp) => match timestamp.try_into() {
+                Ok(time) => time,
+                Err(_) => SystemTime::UNIX_EPOCH,
+            },
+            None => {
+                return Err(
+                    tonic::Status::new(Code::Unknown, "Execution completed timestamp is missing".to_string()).into(),
+                )
+            }
+        };
+
+        digest_times.push((*digest, completion_time));
+    }
+
+    digest_times.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let sorted_digests: Vec<DigestInfo> = digest_times.into_iter().map(|(digest, _)| digest).collect();
+
+    Ok(sorted_digests.into_iter())
+}
+
+pub async fn walk_ac_and_order_items(
+    digests: impl Iterator<Item = DigestInfo>,
+    ac_store: &Arc<dyn Store>,
+) -> Result<impl Iterator<Item = DigestInfo>, Error> {
+    //let sorted_digests = sort_digests_old_to_new(digests, ac_store).await?.collect::<Vec<_>>();
+    let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
+    let digests_vec: Vec<_> = digests.collect();
+    let mut results = vec![None; digests_vec.len()]; // Create results array
+
+    pinned_store.has_with_results(&digests_vec, &mut results).await?;
+
+    Ok(digests_vec.into_iter())
 }
 
 async fn validate_outputs_exist(cas_store: &Arc<dyn Store>, action_result: &ProtoActionResult) -> bool {
