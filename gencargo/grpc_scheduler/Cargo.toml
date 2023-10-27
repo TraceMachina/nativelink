@@ -20,7 +20,9 @@ doctest = false
 
 [dependencies]
 async-trait = { workspace = true }
+futures = { workspace = true }
 parking_lot = { workspace = true }
+rand = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 
@@ -32,3 +34,4 @@ config = { workspace = true }
 proto = { workspace = true }
 common = { workspace = true }
 error = { workspace = true }
+retry = { workspace = true }

@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
 
-use crate::stores::StoreRefName;
+use crate::stores::{Retry, StoreRefName};
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
@@ -128,6 +128,9 @@ pub struct GrpcScheduler {
     /// The upstream scheduler to forward requests to.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub endpoint: String,
+    /// Retry configuration to use when a network request fails.
+    #[serde(default)]
+    pub retry: Retry,
 }
 
 #[derive(Deserialize, Debug)]
