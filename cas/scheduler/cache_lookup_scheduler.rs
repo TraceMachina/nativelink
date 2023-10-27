@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::iter::zip;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -82,6 +83,22 @@ async fn get_action_from_store(
             .await
             .ok()
     }
+}
+
+pub async fn walk_ac_and_order_items(
+    digests: &[DigestInfo],
+    ac_store: &Arc<dyn Store>,
+) -> Result<Vec<DigestInfo>, Error> {
+    let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
+
+    let len = digests.len();
+    let mut results: Vec<Option<usize>> = vec![None; len];
+
+    pinned_store.has_with_results(digests, &mut results).await?;
+
+    Ok(zip(digests, results)
+        .filter_map(|(digest, result)| result.map_or_else(|| Some(*digest), |_| None))
+        .collect())
 }
 
 async fn validate_outputs_exist(cas_store: &Arc<dyn Store>, action_result: &ProtoActionResult) -> bool {
