@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::stream::StreamExt;
@@ -82,6 +84,45 @@ async fn get_action_from_store(
             .await
             .ok()
     }
+}
+
+async fn sort_digests_old_to_new(
+    digests: Vec<DigestInfo>,
+    ac_store: &Arc<(dyn Store + 'static)>,
+) -> Result<Vec<DigestInfo>, Error> {
+    let mut digest_times: Vec<(DigestInfo, SystemTime)> = Vec::new();
+    for digest in &digests {
+        let action_result = get_action_from_store(ac_store, digest, "".to_string());
+        let action_result = action_result.await.unwrap();
+        let completion_time: SystemTime = action_result
+            .execution_metadata
+            .unwrap()
+            .execution_completed_timestamp
+            .unwrap()
+            .try_into()
+            .unwrap();
+        digest_times.push((digest.clone(), completion_time));
+    }
+
+    digest_times.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let sorted_digests = digest_times.into_iter().map(|(digest, _)| digest).collect();
+
+    Ok(sorted_digests)
+}
+
+pub async fn walk_ac_and_order_items(
+    digests: Vec<DigestInfo>,
+    ac_store: &Arc<dyn Store>,
+) -> Result<Vec<DigestInfo>, Error> {
+    let sorted_digests = sort_digests_old_to_new(digests, ac_store).await?;
+    let pinned_store: Pin<&dyn Store> = Pin::new(&**ac_store);
+
+    for digest in &sorted_digests {
+        pinned_store.has(*digest).await?;
+    }
+
+    Ok(sorted_digests)
 }
 
 async fn validate_outputs_exist(cas_store: &Arc<dyn Store>, action_result: &ProtoActionResult) -> bool {
