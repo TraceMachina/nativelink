@@ -17,8 +17,6 @@ if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
   exit 1
 fi
 
-echo "Results: "
-
 RESULTS=$(curl --retry 5 --insecure --cacert ./example-do-not-use-in-prod-rootca.crt --key ./example-do-not-use-in-prod-key.pem https://127.0.0.1:50071/status 2>&1)
 
 echo "Results from curl: $RESULTS"
