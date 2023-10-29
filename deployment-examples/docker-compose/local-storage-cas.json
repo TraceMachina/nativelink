@@ -69,5 +69,32 @@
         "path": "/metrics"
       }
     }
+  },
+  {
+    "listen_address": "0.0.0.0:50071",
+    "tls": {
+      "cert_file": "/root/example-do-not-use-in-prod-rootca.crt",
+      "key_file": "/root/example-do-not-use-in-prod-key.pem"
+    },
+    "services": {
+      "cas": {
+        "main": {
+          "cas_store": "CAS_MAIN_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "ac_store": "AC_MAIN_STORE"
+        }
+      },
+      "capabilities": {},
+      "bytestream": {
+        "cas_stores": {
+          "main": "CAS_MAIN_STORE",
+        },
+        // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
+        "max_bytes_per_stream": 64000, // 64kb.
+      }
+    }
   }]
 }
