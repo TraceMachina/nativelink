@@ -9,3 +9,4 @@ __pycache__
 .devenv/
 .direnv/
 .DS_Store
+result

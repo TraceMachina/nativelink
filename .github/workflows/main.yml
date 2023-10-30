@@ -16,7 +16,7 @@ jobs:
       with:
         fetch-depth: 0
     - name: Compile on windows
-      run: cargo build --all
+      run: cargo build --package cas
     - name: Test on windows
       run: cargo test --all
   cargo-tests:
@@ -58,7 +58,7 @@ jobs:
       run: |
         docker run --rm -w /root/turbo-cache -v $PWD:/root/turbo-cache allada/turbo-cache:cargo bash -c ' \
           . /root/.cargo/env && \
-          cargo build --all && \
+          cargo build --package cas && \
           cargo test --all \
         '
   docker-compose-compiles-turbo-cache:

@@ -60,7 +60,18 @@ The terraform deployment is very easy to setup and configure, all you need is a 
 This project can be considered ~stable~ and is currently used in production systems. Future API changes will be kept to a minimum.
 
 ## Build Requirements
-We support building with Bazel or Cargo. Cargo **might** produce faster binaries because LTO (Link Time Optimization) is enabled for release versions, where Bazel currently does not support LTO for rust.
+We support building with Bazel, Cargo and Cargo wrapped in Nix. Cargo **might**
+produce faster binaries because LTO (Link Time Optimization) is enabled for
+release versions, where Bazel currently does not support LTO for Rust.
+
+### Static Nix build
+
+```bash
+nix build github:trace-machina/turbo-cache
+```
+
+To verify reproducibility you can also download a reproducible artifact directly from the [workflows page](https://github.com/TraceMachina/turbo-cache/actions/workflows/static-executable.yaml). Remember to use `chmod +x` on the fetched executable at
+`bin/cas`.
 
 ### Bazel requirements
 * Bazel 6.3.0+
@@ -98,11 +109,11 @@ These will place an executable in `./bazel-bin/cas/cas` that will start the serv
 * `libssl-dev` package installed (ie: `apt install libssl-dev` or `yum install libssl-dev`)
 #### Cargo building for deployment
 ```sh
-cargo build
+cargo build --package cas
 ```
 #### Cargo building for release
 ```sh
-cargo build --release
+cargo build --package cas --release
 ```
 > **Note**
 > Failing to use the `-c opt` flag will result in a very slow binary (~10x slower).
