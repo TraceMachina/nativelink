@@ -91,8 +91,6 @@ rust_library(
     ],
 )
 
-# TODO: Add redis store as library
-
 rust_library(
     name = "ref_store",
     srcs = ["ref_store.rs"],
@@ -310,6 +308,24 @@ rust_library(
     ],
 )
 
+rust_library(
+    name = "redis_store",
+    srcs = ["redis_store.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    visibility = ["//cas:__pkg__"],
+    deps = [
+        ":traits",
+        "//config",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:tokio",
+        "@crate_index//:redis",
+        "@crate_index//:async-trait",
+        "@crate_index//:pretty_assertions",
+    ]
+)
+
 rust_test(
     name = "size_partitioning_store_test",
     srcs = ["tests/size_partitioning_store_test.rs"],
@@ -325,7 +341,17 @@ rust_test(
     ],
 )
 
-# Add redis store test here
+rust_library(
+    name = "redis_store_test",
+    srcs = ["tests/redis_store_test.rs"],
+    deps = [
+        ":redis_store",
+        "//config",
+        "@crate_index//:redis",
+        "@crate_index//:redis-test",
+        "@crate_index//:pretty_assertions",
+    ]
+)
 
 rust_test(
     name = "ref_store_test",

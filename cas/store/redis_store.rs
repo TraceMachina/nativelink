@@ -18,15 +18,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::join;
 
-use redis::AsyncCommands;
-use std::sync::Arc;
-use traits::StoreTrait;
-
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
 use error::{Error, ResultExt};
+use redis::AsyncCommands;
 use traits::{StoreTrait, UploadSizeInfo};
-
 
 pub struct RedisStore {
     client: redis::Client,
@@ -73,7 +69,9 @@ impl StoreTrait for RedisStore {
     ) -> Result<(), Error> {
         let mut conn = self.client.get_async_connection().await?;
         let value: Vec<u8> = conn.get(digest.hash()).await?;
-        writer.write_all(&value[offset..length.unwrap_or_else(|| value.len())]).await?;
+        writer
+            .write_all(&value[offset..length.unwrap_or_else(|| value.len())])
+            .await?;
         Ok(())
     }
 

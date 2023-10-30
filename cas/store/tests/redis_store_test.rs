@@ -13,9 +13,8 @@
 // limitations under the License.
 
 use redis::{ConnectionLike, RedisError};
-use redis_test::{MockCmd, MockRedisConnection};
 use redis_store::RedisStore;
-
+use redis_test::{MockCmd, MockRedisConnection};
 
 fn my_exists<C: ConnectionLike>(conn: &mut C, key: &str) -> Result<bool, RedisError> {
     let exists: bool = redis::cmd("EXISTS").arg(key).query(conn)?;
@@ -61,9 +60,10 @@ mod s3_store_tests {
 
     #[tokio::test]
     async fn test_update() {
-        let mock_connection = MockRedisConnection::new(vec![
-            MockCmd::new(redis::cmd("SET").arg("hash").arg("test data"), Ok(())),
-        ]);
+        let mock_connection = MockRedisConnection::new(vec![MockCmd::new(
+            redis::cmd("SET").arg("hash").arg("test data"),
+            Ok(()),
+        )]);
         let store = Arc::new(RedisStore::new(&mock_connection));
         let digest = DigestInfo::new("hash", 1);
         let (reader, mut writer) = tokio::io::duplex(10);
@@ -73,12 +73,11 @@ mod s3_store_tests {
         let result = store.update(digest, reader, UploadSizeInfo::new(1)).await;
         assert!(result.is_ok());
     }
-    
+
     #[tokio::test]
     async fn test_get_part_ref() {
-        let mock_connection = MockRedisConnection::new(vec![
-            MockCmd::new(redis::cmd("GET").arg("hash"), Ok("test data")),
-        ]);
+        let mock_connection =
+            MockRedisConnection::new(vec![MockCmd::new(redis::cmd("GET").arg("hash"), Ok("test data"))]);
         let store = Arc::new(RedisStore::new(&mock_connection));
         let digest = DigestInfo::new("hash", 1);
         let (mut reader, writer) = tokio::io::duplex(10);
@@ -88,22 +87,22 @@ mod s3_store_tests {
     }
 
     #[cfg(test)]
-    mod tests {use super::*;
-    
+    mod tests {
+        use super::*;
+
         #[test]
         fn test_my_exists() {
             let mut conn = setup_connection();
             let key = "test_key";
-    
+
             let result = my_exists(&mut conn, key);
-    
+
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), true);
-    
+
             teardown_connection(conn);
         }
     }
-        
 
     #[tokio::test]
     async fn test_size_partitioning_store_with_redis_store() {
@@ -112,7 +111,10 @@ mod s3_store_tests {
         let redis_store = Arc::new(RedisStore::new(&mut mock_connection));
 
         // Create a new SizePartitioningStore with the RedisStore as the lower_store.
-        let size_partitioning_store = Arc::new(SizePartitioningStore::new(256 * 1024, redis_store, /* upper_store goes here */));
+        let size_partitioning_store = Arc::new(SizePartitioningStore::new(
+            256 * 1024,
+            redis_store, /* upper_store goes here */
+        ));
 
         // Test the SizePartitioningStore using the same tests as the other stores.
         super::test_store(size_partitioning_store).await;
@@ -131,9 +133,10 @@ mod s3_store_tests {
 
     #[tokio::test]
     async fn test_error_handling() {
-        let mut mock_connection = MockRedisConnection::new(vec![
-            MockCmd::new(redis::cmd("GET").arg("nonexistent_key"), Err(RedisError::from((ErrorKind::TypeError, "Key does not exist")))),
-        ]);
+        let mut mock_connection = MockRedisConnection::new(vec![MockCmd::new(
+            redis::cmd("GET").arg("nonexistent_key"),
+            Err(RedisError::from((ErrorKind::TypeError, "Key does not exist"))),
+        )]);
         let mut store = RedisStore::new(&mut mock_connection);
         assert!(store.get("nonexistent_key").await.is_err());
     }
@@ -145,8 +148,12 @@ mod s3_store_tests {
             MockCmd::new(redis::cmd("SET").arg("key2").arg("value2"), Ok(())),
         ]));
         let store = Arc::new(RedisStore::new(&mock_connection));
-        let task1 = tokio::spawn(async move { store.put("key1", "value1").await.unwrap(); });
-        let task2 = tokio::spawn(async move { store.put("key2", "value2").await.unwrap(); });
+        let task1 = tokio::spawn(async move {
+            store.put("key1", "value1").await.unwrap();
+        });
+        let task2 = tokio::spawn(async move {
+            store.put("key2", "value2").await.unwrap();
+        });
         tokio::try_join!(task1, task2).unwrap();
     }
 
@@ -192,5 +199,4 @@ mod s3_store_tests {
         store.get_part_ref(digest, &mut writer, 0, None).await.unwrap();
         assert_eq!(writer.into_inner(), "test_value".as_bytes());
     }
-
 }

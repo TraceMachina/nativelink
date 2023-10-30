@@ -51,6 +51,6 @@ build:tsan --cache_test_results=no
 build:tsan --run_under=//tools:tsan.sh
 
 # Configuration options for Windows builds.
-startup:windows --windows_enable_symlinks
+startup --windows_enable_symlinks
 build:windows --cxxopt=/std:c++14 --host_cxxopt=/std:c++14
 build:windows --enable_runfiles
