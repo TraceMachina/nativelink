@@ -700,6 +700,7 @@ mod scheduler_tests {
             },
             server_logs: HashMap::default(),
             error: None,
+            message: String::new(),
         };
         scheduler
             .update_action(
@@ -798,6 +799,7 @@ mod scheduler_tests {
             },
             server_logs: HashMap::default(),
             error: None,
+            message: String::new(),
         };
         scheduler
             .update_action(
@@ -882,6 +884,7 @@ mod scheduler_tests {
             },
             server_logs: HashMap::default(),
             error: None,
+            message: String::new(),
         };
         let update_action_result = scheduler
             .update_action(
@@ -993,6 +996,7 @@ mod scheduler_tests {
             },
             server_logs: HashMap::default(),
             error: None,
+            message: String::new(),
         };
 
         scheduler
@@ -1095,6 +1099,7 @@ mod scheduler_tests {
             },
             server_logs: HashMap::default(),
             error: None,
+            message: String::new(),
         };
 
         // Tell scheduler our first task is completed.
@@ -1327,6 +1332,7 @@ mod scheduler_tests {
                         Code::Internal,
                         "Job cancelled because it attempted to execute too many times and failed"
                     ))),
+                    message: String::new(),
                 }),
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);

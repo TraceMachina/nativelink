@@ -257,6 +257,7 @@ mod local_worker_tests {
             },
             server_logs: HashMap::new(),
             error: None,
+            message: String::new(),
         };
         let running_action = Arc::new(MockRunningAction::new());
 
@@ -325,8 +326,9 @@ mod local_worker_tests {
                 work_directory: work_directory.clone(),
                 ..Default::default()
             }),
+            cas_store.clone(),
+            Some(ac_store),
             cas_store,
-            ac_store,
         )
         .await?;
 
@@ -368,8 +370,9 @@ mod local_worker_tests {
                 work_directory: work_directory.clone(),
                 ..Default::default()
             }),
+            cas_store.clone(),
+            Some(ac_store),
             cas_store,
-            ac_store,
         )
         .await?;
 

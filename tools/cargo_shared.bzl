@@ -176,4 +176,7 @@ PACKAGES = {
     "memory-stats": {
         "version": "1.1.0",
     },
+    "formatx": {
+        "version": "0.2.1",
+    },
 }

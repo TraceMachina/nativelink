@@ -42,6 +42,7 @@ rust_library(
         "//util:metrics_utils",
         "@crate_index//:bytes",
         "@crate_index//:filetime",
+        "@crate_index//:formatx",
         "@crate_index//:futures",
         "@crate_index//:hex",
         "@crate_index//:parking_lot",
