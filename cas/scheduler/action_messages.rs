@@ -584,6 +584,7 @@ pub struct ActionResult {
     pub execution_metadata: ExecutionMetadata,
     pub server_logs: HashMap<String, DigestInfo>,
     pub error: Option<Error>,
+    pub message: String,
 }
 
 impl Default for ActionResult {
@@ -610,6 +611,7 @@ impl Default for ActionResult {
             },
             server_logs: Default::default(),
             error: None,
+            message: String::new(),
         }
     }
 }
@@ -683,40 +685,41 @@ impl From<&ActionStage> for execution_stage::Value {
     }
 }
 
+pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
+    fn logs_from(server_logs: HashMap<String, DigestInfo>) -> HashMap<String, LogFile> {
+        let mut logs = HashMap::with_capacity(server_logs.len());
+        for (k, v) in server_logs {
+            logs.insert(
+                k.clone(),
+                LogFile {
+                    digest: Some(v.into()),
+                    human_readable: false,
+                },
+            );
+        }
+        logs
+    }
+
+    let status = Some(action_result.error.clone().map_or_else(Status::default, |v| v.into()));
+    let message = action_result.message.clone();
+    ExecuteResponse {
+        server_logs: logs_from(action_result.server_logs.clone()),
+        result: Some(action_result.into()),
+        cached_result: false,
+        status,
+        message,
+    }
+}
+
 impl From<ActionStage> for ExecuteResponse {
     fn from(val: ActionStage) -> Self {
-        const RESPONSE_MESSAGE: &str = "TODO(blaise.bruer) We should put a reference something like bb_browser";
-
-        fn logs_from(server_logs: HashMap<String, DigestInfo>) -> HashMap<String, LogFile> {
-            let mut logs = HashMap::with_capacity(server_logs.len());
-            for (k, v) in server_logs {
-                logs.insert(
-                    k.clone(),
-                    LogFile {
-                        digest: Some(v.into()),
-                        human_readable: false,
-                    },
-                );
-            }
-            logs
-        }
-
         match val {
             // We don't have an execute response if we don't have the results. It is defined
             // behavior to return an empty proto struct.
             ActionStage::Unknown | ActionStage::CacheCheck | ActionStage::Queued | ActionStage::Executing => {
                 Self::default()
             }
-            ActionStage::Completed(action_result) => {
-                let status = Some(action_result.error.clone().map_or_else(Status::default, |v| v.into()));
-                Self {
-                    server_logs: logs_from(action_result.server_logs.clone()),
-                    result: Some(action_result.into()),
-                    cached_result: false,
-                    status,
-                    message: RESPONSE_MESSAGE.to_string(),
-                }
-            }
+            ActionStage::Completed(action_result) => to_execute_response(action_result),
             // Handled separately as there are no server logs and the action
             // result is already in Proto format.
             ActionStage::CompletedFromCache(proto_action_result) => Self {
@@ -724,7 +727,7 @@ impl From<ActionStage> for ExecuteResponse {
                 result: Some(proto_action_result),
                 cached_result: true,
                 status: Some(Status::default()),
-                message: RESPONSE_MESSAGE.to_string(),
+                message: String::new(), // Will be populated later if applicable.
             },
         }
     }
@@ -790,6 +793,7 @@ impl TryFrom<ExecuteResponse> for ActionStage {
                 .status
                 .clone()
                 .and_then(|v| if v.code == 0 { None } else { Some(v.into()) }),
+            message: execute_response.message,
         };
 
         if execute_response.cached_result {

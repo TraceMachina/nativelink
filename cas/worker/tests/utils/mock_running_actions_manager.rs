@@ -122,11 +122,15 @@ impl RunningActionsManager for MockRunningActionsManager {
         }
     }
 
-    async fn cache_action_result(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error> {
+    async fn cache_action_result(
+        &self,
+        action_digest: DigestInfo,
+        action_result: &mut ActionResult,
+    ) -> Result<(), Error> {
         self.tx_call
             .send(RunningActionManagerCalls::CacheActionResult(Box::new((
                 action_digest,
-                action_result,
+                action_result.clone(),
             ))))
             .expect("Could not send request to mpsc");
         Ok(())

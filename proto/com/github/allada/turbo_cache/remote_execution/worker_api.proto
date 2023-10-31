@@ -169,3 +169,14 @@ message StartExecute {
 
     reserved 4; // NextId.
 }
+
+/// This is a special message used to save actions into the CAS that can be used
+/// by programs like bb_browswer to inspect the history of a build.
+/// Note: Ensure this is always compatible with:
+/// https://github.com/buildbarn/bb-remote-execution/blob/e95e066eb624dc9099682394ec18c12e218e8fc4/pkg/proto/cas/cas.proto#L23
+message HistoricalExecuteResponse {
+    reserved 2;
+
+    build.bazel.remote.execution.v2.Digest action_digest = 1;
+    build.bazel.remote.execution.v2.ExecuteResponse execute_response = 3;
+}
