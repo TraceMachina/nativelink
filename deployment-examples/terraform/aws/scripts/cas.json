@@ -10,15 +10,11 @@
             "fast": {
               "memory": {
                 "eviction_policy": {
-                  "max_bytes": "${TURBO_CACHE_AC_CONTENT_LIMIT:-100000000}",
+                  "max_bytes": "${TURBO_CACHE_AC_CONTENT_LIMIT:-100000000}"
                 }
               }
             },
             "slow": {
-              // TODO(allada) This needs to be some kind of sharding store, because s3 has
-              // a 5k requests/s per path limit. To get around this we just need to create
-              // enough shards and point them to the same bucket/path but with some key
-              // to distinguish each shard based on the key.
               "s3_store": {
                 "region": "${TURBO_CACHE_AWS_REGION:-us-east-1}",
                 "bucket": "${TURBO_CACHE_AWS_S3_CAS_BUCKET:-not_set}",
@@ -26,7 +22,7 @@
                 "retry": {
                   "max_retries": 6,
                   "delay": 0.3,
-                  "jitter": 0.5,
+                  "jitter": 0.5
                 },
                 "additional_max_concurrent_requests": 10
               }
@@ -49,10 +45,6 @@
                   }
                 },
                 "slow": {
-                  // TODO(allada) This needs to be some kind of sharding store, because s3 has
-                  // a 5k requests/s per path limit. To get around this we just need to create
-                  // enough shards and point them to the same bucket/path but with some key
-                  // to distinguish each shard based on the key.
                   "s3_store": {
                     "region": "${TURBO_CACHE_AWS_REGION:-us-east-1}",
                     "bucket": "${TURBO_CACHE_AWS_S3_CAS_BUCKET:-not_set}",
@@ -60,7 +52,7 @@
                     "retry": {
                       "max_retries": 6,
                       "delay": 0.3,
-                      "jitter": 0.5,
+                      "jitter": 0.5
                     },
                     "additional_max_concurrent_requests": 10
                   }
@@ -80,15 +72,11 @@
                       // in the scheduler.
                       "memory": {
                         "eviction_policy": {
-                          "max_bytes": "${TURBO_CACHE_CAS_CONTENT_LIMIT:-1000000000}",
+                          "max_bytes": "${TURBO_CACHE_CAS_CONTENT_LIMIT:-1000000000}"
                         }
                       }
                     },
                     "slow": {
-                      // TODO(allada) This needs to be some kind of sharding store, because s3 has
-                      // a 5k requests/s per path limit. To get around this we just need to create
-                      // enough shards and point them to the same bucket/path but with some key
-                      // to distinguish each shard based on the key.
                       "s3_store": {
                         "region": "${TURBO_CACHE_AWS_REGION:-us-east-1}",
                         "bucket": "${TURBO_CACHE_AWS_S3_CAS_BUCKET:-not_set}",
@@ -96,7 +84,7 @@
                         "retry": {
                           "max_retries": 6,
                           "delay": 0.3,
-                          "jitter": 0.5,
+                          "jitter": 0.5
                         },
                         "additional_max_concurrent_requests": 10
                       }

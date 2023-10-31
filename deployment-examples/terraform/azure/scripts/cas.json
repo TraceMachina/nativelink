@@ -1,0 +1,133 @@
+{
+  "stores": {
+    "AC_AZURE_BLOB_STORE": {
+      "compression": {
+        "compression_algorithm": {
+          "LZ4": {}
+        },
+        "backend": {
+          "fast_slow": {
+            "fast": {
+              "memory": {
+                "eviction_policy": {
+                  "max_bytes": "${TURBO_CACHE_AC_CONTENT_LIMIT:-100000000}"
+                }
+              }
+            },
+            "slow": {
+              "azure_blob_store": {
+                "connection_string": "${TURBO_CACHE_AZURE_CONNECTION_STRING:-not_set}",
+                "container_name": "${TURBO_CACHE_AZURE_CONTAINER_NAME:-not_set}",
+                "blob_prefix": "ac/",
+                "retry": {
+                  "max_retries": 6,
+                  "delay": 0.3,
+                  "jitter": 0.5
+                },
+                "additional_max_concurrent_requests": 10
+              }
+            }
+          }
+        }
+      }
+    },
+    "CAS_AZURE_BLOB_STORE": {
+      "verify": {
+        "backend": {
+          "dedup": {
+            "index_store": {
+              "fast_slow": {
+                "fast": {
+                  "memory": {
+                    "eviction_policy": {
+                      "max_bytes": "${TURBO_CACHE_CAS_INDEX_CACHE_LIMIT:-100000000}"
+                    }
+                  }
+                },
+                "slow": {
+                  "azure_blob_store": {
+                    "connection_string": "${TURBO_CACHE_AZURE_CONNECTION_STRING:-not_set}",
+                    "container_name": "${TURBO_CACHE_AZURE_CONTAINER_NAME:-not_set}",
+                    "blob_prefix": "cas-index/",
+                    "retry": {
+                      "max_retries": 6,
+                      "delay": 0.3,
+                      "jitter": 0.5
+                    },
+                    "additional_max_concurrent_requests": 10
+                  }
+                }
+              }
+            },
+            "content_store": {
+              "compression": {
+                "compression_algorithm": {
+                  "LZ4": {}
+                },
+                "backend": {
+                  "fast_slow": {
+                    "fast": {
+                      "memory": {
+                        "eviction_policy": {
+                          "max_bytes": "${TURBO_CACHE_CAS_CONTENT_LIMIT:-1000000000}"
+                        }
+                      }
+                    },
+                    "slow": {
+                      "azure_blob_store": {
+                        "connection_string": "${TURBO_CACHE_AZURE_CONNECTION_STRING:-not_set}",
+                        "container_name": "${TURBO_CACHE_AZURE_CONTAINER_NAME:-not_set}",
+                        "blob_prefix": "cas/",
+                        "retry": {
+                          "max_retries": 6,
+                          "delay": 0.3,
+                          "jitter": 0.5
+                        },
+                        "additional_max_concurrent_requests": 10
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "verify_size": true,
+        "verify_hash": true
+      }
+    }
+  },
+  "schedulers": {
+    "MAIN_SCHEDULER": {
+      "simple": {
+        "supported_platform_properties": {
+          "cpu_count": "Minimum"
+        }
+      }
+    }
+  },
+  "servers": [{
+    "listen_address": "0.0.0.0:50051",
+    "services": {
+      "cas": {
+        "main": {
+          "cas_store": "CAS_AZURE_BLOB_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "ac_store": "AC_AZURE_BLOB_STORE"
+        }
+      },
+      "capabilities": {
+        "main": {}
+      },
+      "bytestream": {
+        "cas_stores": {
+          "main": "CAS_AZURE_BLOB_STORE"
+        },
+        "max_bytes_per_stream": 64000
+      }
+    }
+  }]
+}
