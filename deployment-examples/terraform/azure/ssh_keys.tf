@@ -1,4 +1,4 @@
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2023 The Turbo Cache Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,17 +13,20 @@
 # limitations under the License.
 
 resource "tls_private_key" "ssh_key" {
-  algorithm = "ED25519"
+  algorithm = "RSA" 
+  rsa_bits  = 2048
 }
 
-resource "aws_key_pair" "turbo_cache_key" {
-  key_name   = "turbo-cache-key"
-  public_key = data.tls_public_key.turbo_cache_pem.public_key_openssh
+resource "azurerm_ssh_public_key" "turbo_cache_key" {
+  name                = "turbo-cache-key"
+  resource_group_name = data.azurerm_resource_group.name
+  location            = data.azurerm_resource_group.location
+  public_key          = tls_private_key.ssh_key.public_key_openssh
 }
 
 data "tls_public_key" "turbo_cache_pem" {
-  private_key_openssh = tls_private_key.ssh_key.private_key_openssh
+  private_key_pem = tls_private_key.ssh_key.private_key_pem
   # This is left here for convenience. Comment out the line above and uncomment and modify this
   # line to use a custom SSH key.
-  # private_key_openssh = file(pathexpand("~/.ssh/id_rsa"))
+  # private_key_pem = file(pathexpand("~/.ssh/id_rsa"))
 }

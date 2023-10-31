@@ -1,4 +1,4 @@
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2023 The Turbo Cache Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,26 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# --- Begin commonly account variables ---
-
-data "aws_caller_identity" "current" {}
-
-data "aws_availability_zones" "available" {
-  state = "available"
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 3.27"
+    }
+  }
+  required_version = ">= 0.14.9"
 }
 
-data "aws_vpc" "main" {
-  state = "available"
+provider "aws" {
+  profile = "default"
+  region  = "us-west-2"
 }
-
-data "aws_region" "current" {}
-
-data "aws_subnet_ids" "main" {
-  vpc_id = data.aws_vpc.main.id
-}
-
-data "aws_route53_zone" "main" {
-  name = "${var.base_domain}."
-}
-
-# --- End commonly account variables ---

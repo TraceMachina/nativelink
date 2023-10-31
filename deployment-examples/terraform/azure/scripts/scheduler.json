@@ -1,0 +1,142 @@
+{
+  "stores": {
+    "AC_Azure_Blob_Store": {
+      "compression": {
+        "compression_algorithm": {
+          "LZ4": {}
+        },
+        "backend": {
+          "fast_slow": {
+            "fast": {
+              "memory": {
+                "eviction_policy": {
+                  "max_bytes": "${TURBO_CACHE_AC_CONTENT_LIMIT:-100000000}"
+                }
+              }
+            },
+            "slow": {
+              "azure_blob_store": {
+                "connection_string": "${TURBO_CACHE_AZURE_CONNECTION_STRING:-not_set}",
+                "container_name": "${TURBO_CACHE_AZURE_CONTAINER:-not_set}",
+                "blob_prefix": "ac/",
+                "retry": {
+                  "max_retries": 6,
+                  "delay": 0.3,
+                  "jitter": 0.5
+                },
+                "additional_max_concurrent_requests": 10
+              }
+            }
+          }
+        }
+      }
+    },
+    "CAS_Azure_Blob_Store": {
+      "dedup": {
+        "index_store": {
+          "fast_slow": {
+            "fast": {
+              "memory": {
+                "eviction_policy": {
+                  "max_bytes": "${TURBO_CACHE_CAS_INDEX_CACHE_LIMIT:-100000000}"
+                }
+              }
+            },
+            "slow": {
+              "azure_blob_store": {
+                "connection_string": "${TURBO_CACHE_AZURE_CONNECTION_STRING:-not_set}",
+                "container_name": "${TURBO_CACHE_AZURE_CONTAINER:-not_set}",
+                "blob_prefix": "cas-index/",
+                "retry": {
+                  "max_retries": 6,
+                  "delay": 0.3,
+                  "jitter": 0.5
+                },
+                "additional_max_concurrent_requests": 10
+              }
+            }
+          }
+        },
+        "content_store": {
+          "compression": {
+            "compression_algorithm": {
+              "LZ4": {}
+            },
+            "backend": {
+              "fast_slow": {
+                "fast": {
+                  "memory": {
+                    "eviction_policy": {
+                      "max_bytes": "${TURBO_CACHE_CAS_CONTENT_LIMIT:-1000000000}"
+                    }
+                  }
+                },
+                "slow": {
+                  "azure_blob_store": {
+                    "connection_string": "${TURBO_CACHE_AZURE_CONNECTION_STRING:-not_set}",
+                    "container_name": "${TURBO_CACHE_AZURE_CONTAINER:-not_set}",
+                    "blob_prefix": "cas/",
+                    "retry": {
+                      "max_retries": 6,
+                      "delay": 0.3,
+                      "jitter": 0.5
+                    },
+                    "additional_max_concurrent_requests": 10
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "schedulers": {
+    "MAIN_SCHEDULER": {
+      "simple": {
+        "supported_platform_properties": {
+          "cpu_count": "Minimum",
+          "cpu_arch": "Exact",
+          "memory_kb": "Minimum",
+          "kernel_version": "Exact"
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "listen_address": "0.0.0.0:50052",
+      "services": {
+        "ac": {
+          "main": {
+            "ac_store": "AC_Azure_Blob_Store"
+          }
+        },
+        "execution": {
+          "main": {
+            "cas_store": "CAS_Azure_Blob_Store",
+            "scheduler": "MAIN_SCHEDULER"
+          }
+        },
+        "capabilities": {
+          "main": {
+            "remote_execution": {
+              "scheduler": "MAIN_SCHEDULER"
+            }
+          }
+        }
+      }
+    },
+    {
+      "listen_address": "0.0.0.0:50061",
+      "services": {
+        "prometheus": {
+          "path": "/metrics"
+        },
+        "worker_api": {
+          "scheduler": "MAIN_SCHEDULER"
+        }
+      }
+    }
+  ]
+}
