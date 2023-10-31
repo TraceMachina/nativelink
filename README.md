@@ -12,7 +12,7 @@ The goals of this project are:
 
 ## Overview
 
-Turbo Cache is a project that implements the [Bazel Remote Execution protocol](https://github.com/bazelbuild/remote-apis) (both CAS/Cache and remote execution portion).
+Turbo Cache is a project that implements the Bazel's [Remote Execution protocol](https://github.com/bazelbuild/remote-apis) (both CAS/Cache and remote execution portion).
 
 When properly configured this project will provide extremely fast and efficient build cache for any systems that communicate using the [RBE protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) and/or extremely fast, efficient and low foot-print remote execution capability.
 
@@ -37,7 +37,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # to compile, but will result in a much faster binary.
 cargo run --release --bin cas -- ./config/examples/basic_cas.json
 ```
-In a separate terminal session, run the following command to connect the running server launched above to Bazel or another BRE client:
+In a separate terminal session, run the following command to connect the running server launched above to Bazel or another RBE client:
 ```sh
 bazel test //... \
   --remote_instance_name=main \
