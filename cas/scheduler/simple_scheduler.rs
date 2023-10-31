@@ -814,10 +814,11 @@ impl WorkerScheduler for SimpleScheduler {
                 })
                 .collect();
             for worker_id in &worker_ids_to_remove {
-                let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool",);
+                let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool");
                 log::warn!("{:?}", err);
                 inner.immediate_evict_worker(worker_id, err);
             }
+
             Ok(())
         })
     }

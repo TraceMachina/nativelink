@@ -205,7 +205,7 @@ pub struct ServerConfig {
     /// Name of the server. This is used to help identify the service
     /// for telemetry and logs.
     ///
-    /// Default: (index of server in config)
+    /// Default: <index of server in config>
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub name: String,
 
@@ -259,10 +259,15 @@ pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
     #[default]
     SuccessOnly,
+
     /// Don't upload any action results.
     Never,
+
     /// Upload all action results that complete.
     Everything,
+
+    /// Only upload action results that fail.
+    FailuresOnly,
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -271,6 +276,64 @@ pub enum EnvironmentSource {
     Property(String),
     /// The raw value to set.
     Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct UploadActionResultConfig {
+    /// Underlying AC store that the worker will use to publish execution results
+    /// into. Objects placed in this store should be reachable from the
+    /// scheduler/client-cas after they have finished updating.
+    /// Default: <No uploading is done>
+    pub ac_store: Option<StoreRefName>,
+
+    /// In which situations should the results be published to the ac_store, if
+    /// set to SuccessOnly then only results with an exit code of 0 will be
+    /// uploaded, if set to Everything all completed results will be uploaded.
+    ///
+    /// Default: UploadCacheResultsStrategy::SuccessOnly
+    #[serde(default)]
+    pub upload_ac_results_strategy: UploadCacheResultsStrategy,
+
+    /// Store to upload historical results to. This should be a CAS store if set.
+    ///
+    /// Default: <CAS store of parent>
+    pub historical_results_store: Option<StoreRefName>,
+
+    /// In which situations should the results be published to the historical CAS.
+    /// The historical CAS is where failures are published. These messages conform
+    /// to the CAS key-value lookup format and are always a `HistoricalExecuteResponse`
+    /// serialized message.
+    ///
+    /// Default: UploadCacheResultsStrategy::FailuresOnly
+    #[serde(default)]
+    pub upload_historical_results_strategy: Option<UploadCacheResultsStrategy>,
+
+    /// Template to use for the `ExecuteResponse.message` property. This message
+    /// is attached to the response before it is sent to the client. The following
+    /// special variables are supported:
+    /// - {digest_function} - Digest function used to calculate the action digest.
+    /// - {action_digest_hash} - Action digest hash.
+    /// - {action_digest_size} - Action digest size.
+    /// - {historical_results_hash} - HistoricalExecuteResponse digest hash.
+    /// - {historical_results_size} - HistoricalExecuteResponse digest size.
+    /// A common use case of this is to provide a link to the web page that contains more
+    /// useful information for the user.
+    ///
+    /// An example that is fully compatible with `bb_browser` is:
+    /// "https://example.com/my-instance-name-here/blobs/{digest_function}/action/{action_digest_hash}-{action_digest_size}/"
+    ///
+    /// Default: "" (no message)
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub success_message_template: String,
+
+    /// Same as `success_message_template` but for failure case.
+    ///
+    /// An example that is fully compatible with `bb_browser` is:
+    /// "https://example.com/{instance_name}/blobs/{digest_function}/historical_execute_response/{historical_results_hash}-{historical_results_size}/"
+    ///
+    /// Default: "" (no message)
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub failure_message_template: String,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -307,17 +370,9 @@ pub struct LocalWorkerConfig {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cas_fast_slow_store: StoreRefName,
 
-    /// Underlying AC store that the worker will use to publish execution results
-    /// into. Objects placed in this store should be reachable from the
-    /// scheduler/client-cas after they have finished updating.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
-    pub ac_store: StoreRefName,
-
-    /// In which situations should the results be published to the ac_store, if
-    /// set to SuccessOnly then only results with an exit code of 0 will be
-    /// uploaded, if set to Everything all completed results will be uploaded.
+    /// Configuration for uploading action results.
     #[serde(default)]
-    pub ac_store_strategy: UploadCacheResultsStrategy,
+    pub upload_action_result: UploadActionResultConfig,
 
     /// The directory work jobs will be executed from. This directory will be fully
     /// managed by the worker service and will be purged on startup.

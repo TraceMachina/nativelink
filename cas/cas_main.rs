@@ -495,16 +495,35 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                                     local_worker_cfg.cas_fast_slow_store
                                 )
                             })?;
-                    let ac_store = store_manager.get_store(&local_worker_cfg.ac_store).err_tip(|| {
-                        format!(
-                            "Failed to find store for ac_store_ref in worker config : {}",
-                            local_worker_cfg.ac_store
-                        )
-                    })?;
-                    let local_worker =
-                        new_local_worker(Arc::new(local_worker_cfg), fast_slow_store.clone(), ac_store.clone())
-                            .await
-                            .err_tip(|| "Could not make LocalWorker")?;
+
+                    let maybe_ac_store = if let Some(ac_store_ref) = &local_worker_cfg.upload_action_result.ac_store {
+                        Some(store_manager.get_store(ac_store_ref).err_tip(|| {
+                            format!("Failed to find store for ac_store in worker config : {}", ac_store_ref)
+                        })?)
+                    } else {
+                        None
+                    };
+                    // Note: Defaults to fast_slow_store if not specified. If this ever changes it must
+                    // be updated in config documentation for the `historical_results_store` the field.
+                    let historical_store =
+                        if let Some(cas_store_ref) = &local_worker_cfg.upload_action_result.historical_results_store {
+                            store_manager.get_store(cas_store_ref).err_tip(|| {
+                                format!(
+                                    "Failed to find store for historical_results_store in worker config : {}",
+                                    cas_store_ref
+                                )
+                            })?
+                        } else {
+                            fast_slow_store.clone()
+                        };
+                    let local_worker = new_local_worker(
+                        Arc::new(local_worker_cfg),
+                        fast_slow_store,
+                        maybe_ac_store,
+                        historical_store,
+                    )
+                    .await
+                    .err_tip(|| "Could not make LocalWorker")?;
                     let name = if local_worker.name().is_empty() {
                         format!("worker_{i}")
                     } else {

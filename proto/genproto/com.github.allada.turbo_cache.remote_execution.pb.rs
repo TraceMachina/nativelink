@@ -151,6 +151,22 @@ pub struct StartExecute {
     #[prost(message, optional, tag = "3")]
     pub queued_timestamp: ::core::option::Option<::prost_types::Timestamp>,
 }
+/// / This is a special message used to save actions into the CAS that can be used
+/// / by programs like bb_browswer to inspect the history of a build.
+/// / Note: Ensure this is always compatible with:
+/// / <https://github.com/buildbarn/bb-remote-execution/blob/e95e066eb624dc9099682394ec18c12e218e8fc4/pkg/proto/cas/cas.proto#L23>
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HistoricalExecuteResponse {
+    #[prost(message, optional, tag = "1")]
+    pub action_digest: ::core::option::Option<
+        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
+    >,
+    #[prost(message, optional, tag = "3")]
+    pub execute_response: ::core::option::Option<
+        super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteResponse,
+    >,
+}
 /// Generated client implementations.
 pub mod worker_api_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
