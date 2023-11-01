@@ -102,6 +102,27 @@ impl DropCloserWriteHalf {
             .map_err(|_| make_err!(Code::Internal, "Receiver went away before receiving EOF"))?
     }
 
+    /// Binds a reader and a writer together. This will send all the data from the reader
+    /// to the writer until an EOF is received.
+    pub async fn bind(&mut self, reader: &mut DropCloserReadHalf) -> Result<(), Error> {
+        loop {
+            let chunk = reader
+                .recv()
+                .await
+                .err_tip(|| "In DropCloserWriteHalf::bind::recv")?;
+            if chunk.is_empty() {
+                self.send_eof()
+                    .await
+                    .err_tip(|| "In DropCloserWriteHalf::bind::send_eof")?;
+                break;
+            }
+            self.send(chunk)
+                .await
+                .err_tip(|| "In DropCloserWriteHalf::bind::send")?;
+        }
+        Ok(())
+    }
+
     /// Returns the number of bytes written so far. This does not mean the receiver received
     /// all of the bytes written to the stream so far.
     #[must_use]
@@ -169,6 +190,11 @@ pub struct DropCloserReadHalf {
 }
 
 impl DropCloserReadHalf {
+    /// Returns if the stream has data ready.
+    pub fn is_empty(&self) -> bool {
+        self.partial.is_none() || self.rx.is_empty()
+    }
+
     /// Receive a chunk of data.
     pub async fn recv(&mut self) -> Result<Bytes, Error> {
         let maybe_chunk = match self.partial.take() {
