@@ -69,15 +69,6 @@ PACKAGES = {
     "rand": {
         "version": "0.8.5",
     },
-    "rusoto_s3": {
-        "version": "0.48.0",
-    },
-    "rusoto_core": {
-        "version": "0.48.0",
-    },
-    "rusoto_signature": {
-        "version": "0.48.0",
-    },
     "http": {
         "version": "^0.2",
     },
@@ -130,6 +121,11 @@ PACKAGES = {
     },
     "hyper": {
         "version": "0.14.27",
+        "features": ["tcp", "client"],
+    },
+    "hyper-rustls": {
+        "version": "0.24.2",
+        "features": ["webpki-tokio"],
     },
     "axum": {
         "version": "0.6.18",
@@ -164,9 +160,6 @@ PACKAGES = {
     "mock_instant": {
         "version": "0.3.1",
     },
-    "rusoto_mock": {
-        "version": "=0.48.0",
-    },
     "ctor": {
         "version": "0.2.3",
     },
@@ -178,5 +171,23 @@ PACKAGES = {
     },
     "once_cell": {
         "version": "1.18.0",
+    },
+    "aws-config": {
+        "version": "0.57.1",
+    },
+    "aws-sdk-config": {
+        "version": "0.35.0",
+    },
+    "aws-sdk-s3": {
+        "version": "0.35.0",
+        # TODO(aaronmondal): Make "test-util" a dev-dependency feature.
+        "features": ["rt-tokio", "test-util"],
+    },
+    "aws-smithy-runtime": {
+        "version": "0.57.1",
+        "features": ["client", "connector-hyper-0-14-x"],
+    },
+    "aws-smithy-types": {
+        "version": "0.57.1",
     },
 }
