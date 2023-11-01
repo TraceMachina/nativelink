@@ -14,7 +14,7 @@
 
 use nativelink_util::common::DigestInfo;
 
-const ZERO_BYTE_DIGESTS: [DigestInfo; 2] = [
+pub const ZERO_BYTE_DIGESTS: [DigestInfo; 2] = [
     // Sha256 hash of zero bytes.
     DigestInfo::new(
         [

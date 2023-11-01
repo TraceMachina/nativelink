@@ -37,6 +37,9 @@ nativelink-worker = { path = "nativelink-worker" }
 
 async-lock = "3.3.0"
 axum = "0.6.20"
+
+# The cc crate must be pinned to be compatible with the zig-cc toolchain.
+cc = "1.0.83"
 clap = { version = "4.5.4", features = ["derive"] }
 console-subscriber = { version = "0.2.0" }
 futures = "0.3.30"
