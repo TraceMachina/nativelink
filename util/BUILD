@@ -11,6 +11,7 @@ rust_library(
         "@crate_index//:prost-types",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
+        "@crate_index//:redis",
     ],
 )
 

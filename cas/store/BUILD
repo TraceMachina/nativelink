@@ -31,6 +31,7 @@ rust_library(
         ":ref_store",
         ":s3_store",
         ":shard_store",
+        ":redis_store",
         ":size_partitioning_store",
         ":store",
         ":traits",
@@ -39,6 +40,7 @@ rust_library(
         "//util:error",
         "//util:metrics_utils",
         "@crate_index//:futures",
+        "@crate_index//:redis"
     ],
 )
 
@@ -307,6 +309,29 @@ rust_library(
     ],
 )
 
+rust_library(
+    name = "redis_store",
+    srcs = ["redis_store.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    visibility = ["//cas:__pkg__"],
+    deps = [
+        ":traits",
+        "//config",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:futures",
+        "@crate_index//:tokio",
+        "@crate_index//:sha2",
+        "@crate_index//:bytes",
+        "@crate_index//:byteorder",
+        "@crate_index//:hex",
+        "@crate_index//:redis",
+        "@crate_index//:redis-test",
+        "@crate_index//:pretty_assertions",
+    ]
+)
+
 rust_test(
     name = "size_partitioning_store_test",
     srcs = ["tests/size_partitioning_store_test.rs"],
@@ -319,6 +344,27 @@ rust_test(
         "//util:error",
         "@crate_index//:pretty_assertions",
         "@crate_index//:tokio",
+    ],
+)
+
+rust_test(
+    name = "redis_store_test",
+    srcs = ["tests/redis_store_test.rs"],
+    deps = [
+        ":traits",
+        ":redis_store",
+        ":s3_store",
+        "//config",
+        "//util:buf_channel",
+        "//util:async_fixed_buffer",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:bytes",
+        "@crate_index//:hex",
+        "@crate_index//:redis",
+        "@crate_index//:tokio",
+        "@crate_index//:redis-test",
+        "@crate_index//:pretty_assertions",
     ],
 )
 

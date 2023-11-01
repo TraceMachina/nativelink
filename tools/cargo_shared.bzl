@@ -179,4 +179,12 @@ PACKAGES = {
     "once_cell": {
         "version": "1.18.0",
     },
+    "redis": {
+        "version": "0.23.3",
+        "features": ["tokio-comp", "tokio-rustls-comp"],
+    },
+    "redis-test": {
+        "version": "0.2.3",
+        "features": ["aio"],
+    },
 }
