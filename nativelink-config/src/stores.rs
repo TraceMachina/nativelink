@@ -163,6 +163,13 @@ pub enum StoreConfig {
     /// side effects and is the most efficient way to use it.
     grpc(GrpcStore),
 
+    /// Stores data in any stores compatible with Redis APIs.
+    ///
+    /// Paris well with SizePartitioning and/or FastSlow stores.
+    /// Ideal for accepting small object sizes, most redis implementations
+    /// have size limits per object.
+    redis_store(RedisStore),
+
     /// Noop store is a store that sends streams into the void and all data
     /// retrieval will return 404 (NotFound). This can be useful for cases
     /// where you may need to partition your data and part of your data needs
@@ -582,6 +589,23 @@ pub enum ErrorCode {
     DataLoss = 15,
     Unauthenticated = 16,
     // Note: This list is duplicated from nativelink-error/lib.rs.
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RedisStore {
+    /// The hostname or IP address of the Redis server can include username, passowrd, tls, and database number.
+    /// Ex: "redis://:password@redis-server-url:6380/0"
+    #[serde(default)]
+    // Note: This is currently only one address, our config is future-proofed for the addition of manual multiplexing.
+    pub address: Vec<String>,
+
+    #[serde(default)]
+    /// The response timeout for the Redis connection in seconds.
+    pub response_timeout: u64,
+
+    #[serde(default)]
+    /// The connection timeout for the Redis connection in seconds.
+    pub connection_timeout: u64,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
