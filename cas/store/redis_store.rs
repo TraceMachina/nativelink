@@ -12,39 +12,130 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bytes::Bytes;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use async_trait::async_trait;
-use tokio::join;
-
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
-use error::{Error, ResultExt};
+use error::{Code, Error, ResultExt};
+use futures::future::try_join_all;
+//use futures::stream::FuturesUnordered;
+use hex::encode;
+use redis::aio::ConnectionLike;
 use redis::AsyncCommands;
+use redis_test::{MockCmd, MockRedisConnection};
 use traits::{StoreTrait, UploadSizeInfo};
 
-pub struct RedisStore {
-    client: redis::Client,
+#[async_trait]
+pub trait RedisConnectionTrait: ConnectionLike + AsyncCommands + Send + Sync {
+    fn new_mock_connection(mock_commands: Vec<MockCmd>) -> Self;
+    async fn new_connection(url: &str) -> Result<Self, Error>;
 }
 
-impl RedisStore {
-    pub async fn new(host: &str, port: u16) -> Result<Self, redis::RedisError> {
-        let client = redis::Client::open(format!("redis://{}:{}", host, port))?;
-        Ok(RedisStore { client })
+#[async_trait]
+impl RedisConnectionTrait for MockRedisConnection {
+    fn new_mock_connection(mock_commands: Vec<MockCmd>) -> Self {
+        MockRedisConnection::new(mock_commands)
+    }
+    async fn new_connection(_url: &str) -> Result<Self, Error> {
+        Err(Error::new(
+            Code::InvalidArgument,
+            "MockRedisConnection cannot create a real connection".to_string(),
+        ))
     }
 }
 
 #[async_trait]
-impl StoreTrait for RedisStore {
+impl RedisConnectionTrait for redis::aio::Connection {
+    fn new_mock_connection(_mock_commands: Vec<MockCmd>) -> Self {
+        panic!("Cannot create a mock connection from a real connection")
+    }
+    async fn new_connection(url: &str) -> Result<Self, Error> {
+        let client = redis::Client::open(url)?;
+        client.get_async_connection().await.map_err(|e| Error::from(e))
+    }
+}
+
+pub struct RedisStore<T: RedisConnectionTrait + 'static> {
+    conn: Arc<Mutex<T>>,
+}
+
+impl<T: RedisConnectionTrait + 'static> RedisStore<T> {
+    pub async fn new(config: config::stores::RedisStore) -> Result<Self, Error> {
+        let conn = Self::configure_connection(&config).await?;
+        Ok(RedisStore { conn })
+    }
+
+    async fn configure_connection(config: &config::stores::RedisStore) -> Result<Arc<Mutex<T>>, Error> {
+        let conn = if let Some(use_mock) = config.use_mock {
+            if use_mock {
+                let mock_commands = config.mock_commands.clone().unwrap_or_default();
+                let mock_data = config.mock_data.clone().unwrap_or_default();
+                let mut mock_cmds = Vec::new();
+                let mut data_iter = mock_data.iter();
+                for cmd in &mock_commands {
+                    let mock_cmd = match cmd.as_str() {
+                        "SET" => {
+                            let digest = data_iter
+                                .next()
+                                .ok_or(Error::new(Code::NotFound, "Missing digest for SET".to_string()))?;
+                            let data = data_iter
+                                .next()
+                                .ok_or(Error::new(Code::NotFound, "Missing data for SET".to_string()))?;
+                            MockCmd::new(redis::cmd(cmd).arg(digest).arg(data), Ok(1))
+                        }
+                        "EXISTS" => {
+                            let digest = data_iter
+                                .next()
+                                .ok_or(Error::new(Code::NotFound, "Missing digest for EXISTS".to_string()))?;
+                            MockCmd::new(redis::cmd(cmd).arg(digest), Ok(1))
+                        }
+                        _ => return Err(Error::new(Code::NotFound, format!("Unsupported command: {}", cmd))),
+                    };
+                    mock_cmds.push(mock_cmd);
+                }
+                Ok(Arc::new(Mutex::new(T::new_mock_connection(mock_cmds))))
+            } else {
+                T::new_connection(config.url.as_str())
+                    .await
+                    .map(|connection| Arc::new(Mutex::new(connection)))
+            }
+        } else {
+            T::new_connection(config.url.as_str())
+                .await
+                .map(|connection| Arc::new(Mutex::new(connection)))
+        };
+        conn
+    }
+}
+
+#[async_trait]
+impl<T: RedisConnectionTrait + 'static> StoreTrait for RedisStore<T> {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        let mut conn = self.client.get_async_connection().await?;
-        for (digest, result) in digests.iter().zip(results.iter_mut()) {
-            *result = conn.exists(digest.hash()).await?;
+        // TODO: Do not collect use buffer_unordered(SOME_N_LIMIT)
+        let futures: Vec<_> = digests
+            .iter()
+            .enumerate()
+            .map(|(index, digest)| async move {
+                let conn = Arc::clone(&self.conn);
+                let mut conn = conn.lock().await;
+                let packed_hash = encode(digest.packed_hash);
+                let exists: bool = conn.exists(&packed_hash).await?;
+                Ok::<(usize, _), Error>((index, exists))
+            })
+            .collect();
+
+        let results_vec: Vec<_> = try_join_all(futures).await?;
+
+        for (index, exists) in results_vec {
+            results[index] = Some(exists as usize);
         }
         Ok(())
     }
@@ -55,8 +146,20 @@ impl StoreTrait for RedisStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let mut conn = self.client.get_async_connection().await?;
-        let _: () = conn.set(digest.hash(), reader).await?;
+        let size = match size_info {
+            UploadSizeInfo::ExactSize(size) => size,
+            UploadSizeInfo::MaxSize(size) => size,
+        };
+
+        let buffer = reader
+            .collect_all_with_size_hint(size)
+            .await
+            .err_tip(|| "Failed to collect all bytes from reader in redis_store::update")?;
+
+        let conn = Arc::clone(&self.conn);
+        let mut conn = conn.lock().await;
+        let packed_hash = encode(digest.packed_hash);
+        let _: () = conn.set(&packed_hash, &buffer[..]).await?;
         Ok(())
     }
 
@@ -67,11 +170,23 @@ impl StoreTrait for RedisStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        let mut conn = self.client.get_async_connection().await?;
-        let value: Vec<u8> = conn.get(digest.hash()).await?;
+        let conn = Arc::clone(&self.conn);
+        let mut conn = conn.lock().await;
+        let packed_hash = encode(digest.packed_hash);
+        let value = conn.get::<_, Vec<u8>>(&packed_hash).await?;
+        let default_len = value.len() - offset;
+        let bytes_wrapper = Bytes::from(value);
+        let length = length.unwrap_or(default_len).min(default_len);
+        if length > 0 {
+            writer
+                .send(bytes_wrapper.slice(offset..(offset + length)))
+                .await
+                .err_tip(|| "Failed to write data in Redis store")?;
+        }
         writer
-            .write_all(&value[offset..length.unwrap_or_else(|| value.len())])
-            .await?;
+            .send_eof()
+            .await
+            .err_tip(|| "Failed to write EOF in memory store get_part")?;
         Ok(())
     }
 

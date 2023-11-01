@@ -64,6 +64,8 @@ members = [
   "gencargo/property_modifier_scheduler",
   "gencargo/property_modifier_scheduler_test",
   "gencargo/proto",
+  "gencargo/redis_store",
+  "gencargo/redis_store_test",
   "gencargo/ref_store",
   "gencargo/ref_store_test",
   "gencargo/resource_info",
@@ -132,6 +134,8 @@ prost-build = "0.11.9"
 prost-types = "0.11.9"
 rand = "0.8.5"
 rcgen = "0.11.3"
+redis = { version = "0.23.3", features = ["tokio-comp", "tokio-rustls-comp"] }
+redis-test = { version = "0.2.3", features = ["aio"] }
 relative-path = "1.8.0"
 rusoto_core = "0.48.0"
 rusoto_mock = "=0.48.0"
@@ -209,6 +213,8 @@ platform_property_manager = { path = "gencargo/platform_property_manager" }
 property_modifier_scheduler = { path = "gencargo/property_modifier_scheduler" }
 property_modifier_scheduler_test = { path = "gencargo/property_modifier_scheduler_test" }
 proto = { path = "gencargo/proto" }
+redis_store = { path = "gencargo/redis_store" }
+redis_store_test = { path = "gencargo/redis_store_test" }
 ref_store = { path = "gencargo/ref_store" }
 ref_store_test = { path = "gencargo/ref_store_test" }
 resource_info = { path = "gencargo/resource_info" }

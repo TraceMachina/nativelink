@@ -114,6 +114,12 @@ impl From<proto::google::rpc::Status> for Error {
     }
 }
 
+impl From<redis::RedisError> for Error {
+    fn from(err: redis::RedisError) -> Self {
+        Error::new(Code::Internal, format!("Redis error: {}", err))
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // A manual impl to reduce the noise of frequently empty fields.

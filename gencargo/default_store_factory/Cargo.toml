@@ -20,6 +20,8 @@ doctest = false
 
 [dependencies]
 futures = { workspace = true }
+redis = { workspace = true }
+tokio = { workspace = true }
 
 # Local libraries.
 compression_store = { workspace = true }
@@ -28,6 +30,7 @@ fast_slow_store = { workspace = true }
 filesystem_store = { workspace = true }
 grpc_store = { workspace = true }
 memory_store = { workspace = true }
+redis_store = { workspace = true }
 ref_store = { workspace = true }
 s3_store = { workspace = true }
 shard_store = { workspace = true }
