@@ -130,6 +130,11 @@ PACKAGES = {
     },
     "hyper": {
         "version": "0.14.27",
+        "features": ["tcp", "client"],
+    },
+    "hyper-rustls": {
+        "version": "0.24.2",
+        "features": ["webpki-tokio"],
     },
     "axum": {
         "version": "0.6.18",
@@ -178,5 +183,28 @@ PACKAGES = {
     },
     "once_cell": {
         "version": "1.18.0",
+    },
+    "aws-config": {
+        "version": "0.57.1",
+    },
+    "aws-sdk-config": {
+        "version": "0.35.0",
+    },
+    "aws-sdk-s3": {
+        "version": "0.35.0",
+        "features": ["rt-tokio"],
+    },
+    "aws-smithy-http": {
+        "version": "0.57.1",
+    },
+    "aws-smithy-runtime": {
+        "version": "0.57.1",
+        "features": ["client", "connector-hyper-0-14-x"],
+    },
+    "aws-smithy-runtime-api": {
+        "version": "0.57.1",
+    },
+    "connect": {
+        "version": "0.2.4",
     },
 }

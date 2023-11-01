@@ -27,6 +27,7 @@
               pkgs.cargo
               openssl_static # Required explicitly for cargo test support.
               bazel
+              pkgs.awscli2
             ];
             shellHook = ''
               # The Bazel and Cargo builds in nix require a Clang toolchain.
