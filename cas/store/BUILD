@@ -320,8 +320,9 @@ rust_library(
         "//util:common",
         "//util:error",
         "@crate_index//:tokio",
+        "@crate_index//:sha2",
+        "@crate_index//:bytes",
         "@crate_index//:redis",
-        "@crate_index//:async-trait",
         "@crate_index//:pretty_assertions",
     ]
 )
@@ -341,16 +342,23 @@ rust_test(
     ],
 )
 
-rust_library(
+rust_test(
     name = "redis_store_test",
     srcs = ["tests/redis_store_test.rs"],
     deps = [
+        ":traits",
         ":redis_store",
+        ":s3_store",
         "//config",
+        "//util:buf_channel",
+        "//util:async_fixed_buffer",
+        "//util:common",
+        "//util:error",
         "@crate_index//:redis",
+        "@crate_index//:tokio",
         "@crate_index//:redis-test",
         "@crate_index//:pretty_assertions",
-    ]
+    ],
 )
 
 rust_test(
