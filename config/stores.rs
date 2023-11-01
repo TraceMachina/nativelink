@@ -134,6 +134,12 @@ pub enum StoreConfig {
     /// this store directly without being a child of any store there are no
     /// side effects and is the most efficient way to use it.
     grpc(GrpcStore),
+
+    /// This store will take in smaller data in a Redis store.
+    ///
+    /// Pairs well with the SizePartitioning store to accept only
+    /// small data that is optimally sized to fit in the Redis store.
+    redis_store(RedisStore),
 }
 
 /// Configuration for an individual shard of the store.
@@ -436,6 +442,22 @@ pub struct GrpcStore {
     /// Retry configuration to use when a network request fails.
     #[serde(default)]
     pub retry: Retry,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RedisStore {
+    /// The hostname or IP address of the Redis server can include username, passowrd, tls, and database number.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub url: String,
+
+    /// If store is being used in unit tests set this to true
+    pub use_mock: Option<bool>,
+
+    /// If store is being used in unit tests set this to true
+    pub mock_commands: Option<Vec<String>>,
+
+    /// If store is being used in unit tests set this to true
+    pub mock_data: Option<Vec<String>>,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
