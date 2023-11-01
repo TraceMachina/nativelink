@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bytes::Bytes;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::join;
+use sha2::{Digest, Sha256};
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use common::DigestInfo;
@@ -29,8 +30,8 @@ pub struct RedisStore {
 }
 
 impl RedisStore {
-    pub async fn new(host: &str, port: u16) -> Result<Self, redis::RedisError> {
-        let client = redis::Client::open(format!("redis://{}:{}", host, port))?;
+    pub async fn new(config: &config::stores::RedisStore) -> Result<Self, Error> {
+        let client = redis::Client::open(format!("redis://{}:{}", config.host, config.port))?;
         Ok(RedisStore { client })
     }
 }
@@ -42,9 +43,12 @@ impl StoreTrait for RedisStore {
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
+        let mut hasher = Sha256::new();
         let mut conn = self.client.get_async_connection().await?;
         for (digest, result) in digests.iter().zip(results.iter_mut()) {
-            *result = conn.exists(digest.hash()).await?;
+            hasher.update(digest.packed_hash);
+            let hash = format!("{:x}", hasher.finalize_reset());
+            *result = conn.exists(&hash).await?;
         }
         Ok(())
     }
@@ -55,8 +59,23 @@ impl StoreTrait for RedisStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let mut hasher = Sha256::new();
+        hasher.update(digest.packed_hash);
+        let hash: String = format!("{:x}", hasher.finalize());
         let mut conn = self.client.get_async_connection().await?;
-        let _: () = conn.set(digest.hash(), reader).await?;
+
+        let size = match size_info {
+            UploadSizeInfo::ExactSize(size) => size,
+            // handle other variants as needed
+            UploadSizeInfo::MaxSize(size) => size,
+        };
+
+        let buffer = reader
+            .collect_all_with_size_hint(size)
+            .await
+            .err_tip(|| "Failed to collect all bytes from reader in redis_store::update")?;
+
+        let _: () = conn.set(hash, buffer.to_vec()).await?;
         Ok(())
     }
 
@@ -67,11 +86,13 @@ impl StoreTrait for RedisStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        let mut hasher = Sha256::new();
+        hasher.update(digest.packed_hash);
+        let hash = format!("{:x}", hasher.finalize());
         let mut conn = self.client.get_async_connection().await?;
-        let value: Vec<u8> = conn.get(digest.hash()).await?;
-        writer
-            .write_all(&value[offset..length.unwrap_or_else(|| value.len())])
-            .await?;
+        let value: Vec<u8> = conn.get::<_, Vec<u8>>(hash).await?;
+        let data = &value[offset..length.unwrap_or(value.len())];
+        writer.send(Bytes::copy_from_slice(data)).await?;
         Ok(())
     }
 
