@@ -34,6 +34,7 @@
               pkgs.pre-commit
               openssl_static # Required explicitly for cargo test support.
               bazel
+              pkgs.awscli2
             ];
             shellHook = ''
               # Generate the .pre-commit-config.yaml symlink when entering the

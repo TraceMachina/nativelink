@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use serde::{Deserialize, Serialize};
-
 use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
 
 /// Name of the store. This type will be used when referencing a store
@@ -413,19 +412,26 @@ pub struct S3Store {
     #[serde(default)]
     pub retry: Retry,
 
-    /// Additional number of active requests this store will add to the total
-    /// amount of permitted concurrent requests to s3. Instead of limiting the
-    /// number of requests to s3 per store, we instead have a central counter
-    /// that is global to all s3 stores. This means that if one store has this
-    /// value set to 5 and another set to 0, both stores can use a maximum of 5.
-    /// It is done this way because it is rare that a user would want to limit
-    /// a certain store to a certain number of concurrent requests, but instead
-    /// would want to globally limit it, but because s3_store has no global
-    /// settings we do it on the individual store level to apply globally.
+    /// Maximum number of concurrent UploadPart requests per MultipartUpload.
     ///
-    /// Default: 20.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
-    pub additional_max_concurrent_requests: usize,
+    /// Default: 10.
+    pub multipart_max_concurrent_uploads: Option<usize>,
+
+    /// Maximum number of retries in case the connection to S3 drops.
+    ///
+    /// Default: 10.
+    pub connector_max_retries: Option<usize>,
+
+    /// Delay between connector retries in seconds.
+    ///
+    /// default: 1
+    pub connector_retry_delay_secs: Option<u64>,
+
+    /// Allow unencrypted HTTP connections. Only use this for local testing.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub insecure_allow_http: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
