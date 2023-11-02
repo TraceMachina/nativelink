@@ -518,7 +518,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
     {
         // We start workers after our TcpListener is setup so if our worker connects to one
         // of these services it will be able to connect.
-        let worker_cfgs = cfg.workers.unwrap_or(vec![]);
+        let worker_cfgs = cfg.workers.unwrap_or_default();
         let mut root_metrics_registry_guard = root_metrics_registry.lock().await;
         let root_worker_metrics = root_metrics_registry_guard.sub_registry_with_prefix("workers");
         let mut worker_names = HashSet::with_capacity(worker_cfgs.len());
