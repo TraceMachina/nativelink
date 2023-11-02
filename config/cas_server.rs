@@ -15,7 +15,9 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
+use serde_utils::{
+    convert_numeric_with_shellexpand, convert_optinoal_numeric_with_shellexpand, convert_string_with_shellexpand,
+};
 
 use crate::schedulers::SchedulerConfig;
 use crate::stores::{StoreConfig, StoreRefName};
@@ -200,6 +202,38 @@ pub struct TlsConfig {
     pub key_file: String,
 }
 
+/// Advanced Http configurations. These are generally should not be set.
+/// For documentation on what each of these do, see the hyper documentation:
+/// See: https://docs.rs/hyper/latest/hyper/server/conn/struct.Http.html
+///
+/// Note: All of these default to hyper's default values unless otherwise
+/// specified.
+#[derive(Deserialize, Debug, Default)]
+pub struct HttpServerConfig {
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_pending_accept_reset_streams: Option<u32>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_initial_stream_window_size: Option<u32>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_initial_connection_window_size: Option<u32>,
+    pub http2_adaptive_window: Option<bool>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_frame_size: Option<u32>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_concurrent_streams: Option<u32>,
+    /// Note: This is in seconds.
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_keep_alive_interval: Option<u32>,
+    /// Note: This is in seconds.
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_keep_alive_timeout: Option<u32>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_send_buf_size: Option<u32>,
+    pub http2_enable_connect_protocol: Option<bool>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_header_list_size: Option<u32>,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct ServerConfig {
     /// Name of the server. This is used to help identify the service
@@ -217,6 +251,10 @@ pub struct ServerConfig {
     /// Data transport compression configuration to use for this service.
     #[serde(default)]
     pub compression: CompressionConfig,
+
+    /// Advanced Http server configuration.
+    #[serde(default)]
+    pub advanced_http: HttpServerConfig,
 
     /// Services to attach to server.
     pub services: Option<ServicesConfig>,
