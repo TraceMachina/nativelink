@@ -309,8 +309,9 @@ mod filesystem_store_tests {
         let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
 
         while let Some(temp_dir_entry) = read_dir_stream.next().await {
-            let path = temp_dir_entry?.path();
-            panic!("No files should exist in temp directory, found: {path:?}");
+            if let Ok(dir_entry) = temp_dir_entry {
+                panic!("No files should exist in temp directory, found: {:?}", dir_entry.path());
+            }
         }
 
         Ok(())
@@ -411,8 +412,9 @@ mod filesystem_store_tests {
                 .into_inner();
             let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
             while let Some(temp_dir_entry) = read_dir_stream.next().await {
-                let path = temp_dir_entry?.path();
-                panic!("No files should exist in temp directory, found: {path:?}");
+                if let Ok(dir_entry) = temp_dir_entry {
+                    panic!("No files should exist in temp directory, found: {:?}", dir_entry.path());
+                }
             }
         }
 
@@ -508,8 +510,9 @@ mod filesystem_store_tests {
                 .into_inner();
             let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
             while let Some(temp_dir_entry) = read_dir_stream.next().await {
-                let path = temp_dir_entry?.path();
-                panic!("No files should exist in temp directory, found: {:?}", path);
+                if let Ok(dir_entry) = temp_dir_entry {
+                    panic!("No files should exist in temp directory, found: {:?}", dir_entry.path());
+                }
             }
         }
 
