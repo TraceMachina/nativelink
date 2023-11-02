@@ -32,8 +32,8 @@ load("//tools:cargo_shared.bzl", "PACKAGES", "RUST_EDITION")
 rust_register_toolchains(
     edition = RUST_EDITION,
     versions = [
-        "1.70.0",
-        "nightly/2023-07-15",
+        "1.73.0",
+        "nightly/2023-10-19",
     ],
 )
 
