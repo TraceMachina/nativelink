@@ -41,7 +41,7 @@ use traits::UploadSizeInfo;
 
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
 use common::{fs, DigestInfo};
-use error::{Code, Error, ResultExt};
+use error::{make_input_err, Code, Error, ResultExt};
 use filesystem_store::{digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore};
 use traits::StoreTrait;
 
@@ -308,9 +308,16 @@ mod filesystem_store_tests {
             .into_inner();
         let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
 
-        while let Some(temp_dir_entry) = read_dir_stream.next().await {
-            let path = temp_dir_entry?.path();
-            panic!("No files should exist in temp directory, found: {path:?}");
+        while let Some(entry) = read_dir_stream.next().await {
+            match entry {
+                Ok(temp_dir_entry) => {
+                    let path = temp_dir_entry.path();
+                    panic!("No files should exist in temp directory, found: {path:?}");
+                }
+                Err(e) => {
+                    return Err(make_input_err!("Couldn't read directory entry: {e:?}"));
+                }
+            }
         }
 
         Ok(())
@@ -410,9 +417,16 @@ mod filesystem_store_tests {
                 .err_tip(|| "Failed opening temp directory")?
                 .into_inner();
             let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
-            while let Some(temp_dir_entry) = read_dir_stream.next().await {
-                let path = temp_dir_entry?.path();
-                panic!("No files should exist in temp directory, found: {path:?}");
+            while let Some(entry) = read_dir_stream.next().await {
+                match entry {
+                    Ok(temp_dir_entry) => {
+                        let path = temp_dir_entry.path();
+                        panic!("No files should exist in temp directory, found: {path:?}");
+                    }
+                    Err(e) => {
+                        return Err(make_input_err!("Couldn't read directory entry: {e:?}"));
+                    }
+                }
             }
         }
 
@@ -507,9 +521,16 @@ mod filesystem_store_tests {
                 .err_tip(|| "Failed opening temp directory")?
                 .into_inner();
             let mut read_dir_stream = ReadDirStream::new(temp_dir_handle);
-            while let Some(temp_dir_entry) = read_dir_stream.next().await {
-                let path = temp_dir_entry?.path();
-                panic!("No files should exist in temp directory, found: {:?}", path);
+            while let Some(entry) = read_dir_stream.next().await {
+                match entry {
+                    Ok(temp_dir_entry) => {
+                        let path = temp_dir_entry.path();
+                        panic!("No files should exist in temp directory, found: {path:?}");
+                    }
+                    Err(e) => {
+                        return Err(make_input_err!("Couldn't read directory entry: {e:?}"));
+                    }
+                }
             }
         }
 
