@@ -99,11 +99,7 @@ impl Ord for DigestInfo {
 
 impl PartialOrd for DigestInfo {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let cmp = self.cmp(other);
-        if cmp == Ordering::Equal {
-            return None;
-        }
-        Some(cmp)
+        Some(self.cmp(other))
     }
 }
 
