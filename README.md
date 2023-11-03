@@ -51,9 +51,9 @@ This will cause bazel to run the commands through an all-in-one `CAS`, `schedule
 We currently have a few example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
 
 ### Terraform
-The [terraform deployment](https://github.com/allada/turbo-cache/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of AWS cloud resources to make everything much more robust.
+The [terraform deployment](https://github.com/allada/turbo-cache/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of cloud resources to make everything much more robust.
 
-The terraform deployment is very easy to setup and configure, all you need is a domain or subdomain that you can add some DNS records to and an AWS account. This deployment will show off remote execution capabilities and cache capabilities.
+The terraform deployment is very easy to setup and configure. This deployment will show off remote execution capabilities and cache capabilities.
 
 ## Status
 
