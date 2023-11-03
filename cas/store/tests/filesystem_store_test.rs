@@ -32,7 +32,7 @@ use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{poll, Future};
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use rand::{thread_rng, Rng};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Barrier;
@@ -703,9 +703,7 @@ mod filesystem_store_tests {
         let small_digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
-        lazy_static! {
-            static ref UNREFED_DIGESTS: Mutex<Vec<DigestInfo>> = Mutex::new(Vec::new());
-        }
+        static UNREFED_DIGESTS: Lazy<Mutex<Vec<DigestInfo>>> = Lazy::new(|| Mutex::new(Vec::new()));
         struct LocalHooks {}
         impl FileEntryHooks for LocalHooks {
             fn on_unref<Fe: FileEntry>(file_entry: &Fe) {
@@ -753,9 +751,7 @@ mod filesystem_store_tests {
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
 
-        lazy_static! {
-            static ref FILE_DELETED_BARRIER: Arc<Barrier> = Arc::new(Barrier::new(2));
-        }
+        static FILE_DELETED_BARRIER: Lazy<Arc<Barrier>> = Lazy::new(|| Arc::new(Barrier::new(2)));
 
         struct LocalHooks {}
         impl FileEntryHooks for LocalHooks {

@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{FutureExt, TryFutureExt};
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use prost::Message;
 use rand::{thread_rng, Rng};
 use tokio::sync::oneshot;
@@ -2047,12 +2047,10 @@ exit 1
         }
 
         type StaticOneshotTuple = Mutex<(Option<oneshot::Sender<()>>, Option<oneshot::Receiver<()>>)>;
-        lazy_static! {
-            static ref TIMEOUT_ONESHOT: StaticOneshotTuple = {
-                let (tx, rx) = oneshot::channel();
-                Mutex::new((Some(tx), Some(rx)))
-            };
-        }
+        static TIMEOUT_ONESHOT: Lazy<StaticOneshotTuple> = Lazy::new(|| {
+            let (tx, rx) = oneshot::channel();
+            Mutex::new((Some(tx), Some(rx)))
+        });
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
