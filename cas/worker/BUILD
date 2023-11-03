@@ -45,13 +45,16 @@ rust_library(
         "@crate_index//:formatx",
         "@crate_index//:futures",
         "@crate_index//:hex",
+        "@crate_index//:json5",
         "@crate_index//:parking_lot",
         "@crate_index//:prost",
         "@crate_index//:relative-path",
         "@crate_index//:scopeguard",
+        "@crate_index//:serde",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
         "@crate_index//:tonic",
+        "@crate_index//:uuid",
     ],
 )
 

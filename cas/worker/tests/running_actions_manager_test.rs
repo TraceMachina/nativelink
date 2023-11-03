@@ -49,7 +49,7 @@ use proto::build::bazel::remote::execution::v2::{
 use proto::com::github::allada::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use running_actions_manager::{
     download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
-    RunningActionsManagerImpl,
+    RunningActionsManagerArgs, RunningActionsManagerImpl,
 };
 use store::Store;
 
@@ -417,16 +417,19 @@ mod running_actions_manager_tests {
         fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-            root_work_directory,
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                ..Default::default()
+            RunningActionsManagerArgs {
+                root_work_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
             },
-            Duration::MAX,
             Callbacks {
                 now_fn: test_monotonic_clock,
                 sleep_fn: |_duration| Box::pin(futures::future::pending()),
@@ -506,16 +509,19 @@ mod running_actions_manager_tests {
         fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-            root_work_directory,
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                ..Default::default()
+            RunningActionsManagerArgs {
+                root_work_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
             },
-            Duration::MAX,
             Callbacks {
                 now_fn: test_monotonic_clock,
                 sleep_fn: |_duration| Box::pin(futures::future::pending()),
@@ -602,16 +608,19 @@ mod running_actions_manager_tests {
         fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-            root_work_directory,
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                ..Default::default()
+            RunningActionsManagerArgs {
+                root_work_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
             },
-            Duration::MAX,
             Callbacks {
                 now_fn: test_monotonic_clock,
                 sleep_fn: |_duration| Box::pin(futures::future::pending()),
@@ -751,16 +760,19 @@ mod running_actions_manager_tests {
         fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-            root_work_directory,
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                ..Default::default()
+            RunningActionsManagerArgs {
+                root_work_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
             },
-            Duration::MAX,
             Callbacks {
                 now_fn: test_monotonic_clock,
                 sleep_fn: |_duration| Box::pin(futures::future::pending()),
@@ -917,16 +929,19 @@ mod running_actions_manager_tests {
         fs::create_dir_all(&root_work_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-            root_work_directory.clone(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                ..Default::default()
+            RunningActionsManagerArgs {
+                root_work_directory: root_work_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
             },
-            Duration::MAX,
             Callbacks {
                 now_fn: test_monotonic_clock,
                 sleep_fn: |_duration| Box::pin(futures::future::pending()),
@@ -1023,18 +1038,19 @@ mod running_actions_manager_tests {
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            root_work_directory.clone(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: root_work_directory.clone(),
+            execution_configuration: ExecutionConfiguration::default(),
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
-            Duration::MAX,
-        )?);
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
 
         #[cfg(target_family = "unix")]
         let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
@@ -1148,21 +1164,22 @@ exit 0
             test_wrapper_script
         };
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            root_work_directory.clone(),
-            ExecutionConfiguration {
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: root_work_directory.clone(),
+            execution_configuration: ExecutionConfiguration {
                 entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: None,
             },
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
-            Duration::MAX,
-        )?);
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
         #[cfg(target_family = "windows")]
@@ -1215,7 +1232,7 @@ exit 0
 #!/bin/bash
 # Print some static text to stderr. This is what the test uses to
 # make sure the script did run.
->&2 printf \"Wrapper script did run with property $PROPERTY $VALUE\"
+>&2 printf \"Wrapper script did run with property $PROPERTY $VALUE $INNER_TIMEOUT\"
 
 # Now run the real command.
 exec \"$@\"
@@ -1225,7 +1242,7 @@ exec \"$@\"
 @echo off
 :: Print some static text to stderr. This is what the test uses to
 :: make sure the script did run.
-echo | set /p=\"Wrapper script did run with property %PROPERTY% %VALUE%\" 1>&2
+echo | set /p=\"Wrapper script did run with property %PROPERTY% %VALUE% %INNER_TIMEOUT%\" 1>&2
 
 :: Run command, but morph the echo to ensure it doesn't
 :: add a new line to the end of the output.
@@ -1262,9 +1279,9 @@ exit 0
             test_wrapper_script
         };
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            root_work_directory.clone(),
-            ExecutionConfiguration {
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: root_work_directory.clone(),
+            execution_configuration: ExecutionConfiguration {
                 entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: Some(HashMap::from([
                     (
@@ -1272,17 +1289,19 @@ exit 0
                         EnvironmentSource::Property("property_name".to_string()),
                     ),
                     ("VALUE".to_string(), EnvironmentSource::Value("raw_value".to_string())),
+                    ("INNER_TIMEOUT".to_string(), EnvironmentSource::TimeoutMillis),
                 ])),
             },
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
                 ..Default::default()
             },
-            Duration::MAX,
-        )?);
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
         #[cfg(target_family = "windows")]
@@ -1294,6 +1313,7 @@ exit 0
         };
         let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
         let input_root_digest = serialize_and_upload_message(&Directory::default(), cas_store.as_ref()).await?;
+        const TASK_TIMEOUT: Duration = Duration::from_secs(122);
         let action = Action {
             command_digest: Some(command_digest.into()),
             input_root_digest: Some(input_root_digest.into()),
@@ -1302,6 +1322,10 @@ exit 0
                     name: "property_name".into(),
                     value: "property_value".into(),
                 }],
+            }),
+            timeout: Some(prost_types::Duration {
+                seconds: TASK_TIMEOUT.as_secs() as i64,
+                nanos: 0,
             }),
             ..Default::default()
         };
@@ -1327,7 +1351,7 @@ exit 0
 
         let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT)).await?.0;
         // Note: This string should match what is in worker_for_test.sh
-        let expected_stderr = "Wrapper script did run with property property_value raw_value";
+        let expected_stderr = "Wrapper script did run with property property_value raw_value 122000";
         let expected_stderr_digest = compute_digest(Cursor::new(expected_stderr)).await?.0;
 
         let actual_stderr: prost::bytes::Bytes = cas_store
@@ -1343,21 +1367,123 @@ exit 0
     }
 
     #[tokio::test]
+    async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(target_family = "unix")]
+        const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
+#!/bin/bash
+echo '{\"failure\":\"timeout\"}' > \"$SIDE_CHANNEL_FILE\"
+exit 1
+";
+        #[cfg(target_family = "windows")]
+        const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
+@echo off
+echo | set /p={\"failure\":\"timeout\"} 1>&2 > %SIDE_CHANNEL_FILE%
+exit 1
+";
+        const WORKER_ID: &str = "foo_worker_id";
+        const SALT: u64 = 66;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let test_wrapper_script = {
+            let test_wrapper_dir = make_temp_path("wrapper_dir");
+            fs::create_dir_all(&test_wrapper_dir).await?;
+            #[cfg(target_family = "unix")]
+            let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
+            #[cfg(target_family = "windows")]
+            let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
+
+            // We use std::fs::File here because we sometimes get strange bugs here
+            // that result in: "Text file busy (os error 26)" if it is an executeable.
+            // It is likley because somewhere the file descriotor does not get closed
+            // in tokio's async context.
+            let mut test_wrapper_script_handle = std::fs::File::create(&test_wrapper_script)?;
+            test_wrapper_script_handle.write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())?;
+            #[cfg(target_family = "unix")]
+            test_wrapper_script_handle.set_permissions(Permissions::from_mode(0o777))?;
+            test_wrapper_script_handle.sync_all()?;
+            drop(test_wrapper_script_handle);
+
+            test_wrapper_script
+        };
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: root_work_directory.clone(),
+            execution_configuration: ExecutionConfiguration {
+                entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
+                additional_environment: Some(HashMap::from([(
+                    "SIDE_CHANNEL_FILE".to_string(),
+                    EnvironmentSource::SideChannelFile,
+                )])),
+            },
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                ..Default::default()
+            },
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
+        let arguments = vec!["true".to_string()];
+        let command = Command {
+            arguments,
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(&command, cas_store.as_ref()).await?;
+        let input_root_digest = serialize_and_upload_message(&Directory::default(), cas_store.as_ref()).await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
+
+        let running_action_impl = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: SALT,
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                },
+            )
+            .await?;
+
+        let result = run_action(running_action_impl).await?;
+        assert_eq!(result.exit_code, 1, "Exit code should be 1");
+        assert_eq!(
+            result.error.err_tip(|| "Error should exist")?.code,
+            Code::DeadlineExceeded
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            String::new(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: String::new(),
+            execution_configuration: ExecutionConfiguration::default(),
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 ..Default::default()
             },
-            Duration::MAX,
-        )?);
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
@@ -1404,18 +1530,19 @@ exit 0
     async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            String::new(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: String::new(),
+            execution_configuration: ExecutionConfiguration::default(),
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Everything,
                 ..Default::default()
             },
-            Duration::MAX,
-        )?);
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
@@ -1462,19 +1589,20 @@ exit 0
     async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            String::new(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: String::new(),
+            execution_configuration: ExecutionConfiguration::default(),
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(config::cas_server::UploadCacheResultsStrategy::SuccessOnly),
                 success_message_template: "{historical_results_hash}-{historical_results_size}".to_string(),
                 ..Default::default()
             },
-            Duration::MAX,
-        )?);
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
@@ -1541,19 +1669,20 @@ exit 0
     async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            String::new(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: String::new(),
+            execution_configuration: ExecutionConfiguration::default(),
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(config::cas_server::UploadCacheResultsStrategy::SuccessOnly),
                 success_message_template: "{historical_results_hash}-{historical_results_size}".to_string(),
                 ..Default::default()
             },
-            Duration::MAX,
-        )?);
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
@@ -1572,19 +1701,20 @@ exit 0
     async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            String::new(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: String::new(),
+            execution_configuration: ExecutionConfiguration::default(),
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(config::cas_server::UploadCacheResultsStrategy::FailuresOnly),
                 failure_message_template: "{historical_results_hash}-{historical_results_size}".to_string(),
                 ..Default::default()
             },
-            Duration::MAX,
-        )?);
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
@@ -1628,19 +1758,20 @@ exit 0
     async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-            String::new(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: String::new(),
+            execution_configuration: ExecutionConfiguration::default(),
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &config::cas_server::UploadActionResultConfig {
                 upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
                 success_message_template: "{action_digest_hash}-{action_digest_size}".to_string(),
                 ..Default::default()
             },
-            Duration::MAX,
-        )?);
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
@@ -1716,16 +1847,19 @@ exit 0
             let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-                root_work_directory.clone(),
-                ExecutionConfiguration::default(),
-                Pin::into_inner(cas_store.clone()),
-                Some(Pin::into_inner(ac_store.clone())),
-                Pin::into_inner(cas_store.clone()),
-                &config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                    ..Default::default()
+                RunningActionsManagerArgs {
+                    root_work_directory: root_work_directory.clone(),
+                    execution_configuration: ExecutionConfiguration::default(),
+                    cas_store: Pin::into_inner(cas_store.clone()),
+                    ac_store: Some(Pin::into_inner(ac_store.clone())),
+                    historical_store: Pin::into_inner(cas_store.clone()),
+                    upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                        ..Default::default()
+                    },
+                    max_action_timeout: MAX_TIMEOUT_DURATION,
+                    timeout_handled_externally: false,
                 },
-                MAX_TIMEOUT_DURATION,
                 Callbacks {
                     now_fn: test_monotonic_clock,
                     sleep_fn: |duration| {
@@ -1780,16 +1914,19 @@ exit 0
             let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-                root_work_directory.clone(),
-                ExecutionConfiguration::default(),
-                Pin::into_inner(cas_store.clone()),
-                Some(Pin::into_inner(ac_store.clone())),
-                Pin::into_inner(cas_store.clone()),
-                &config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                    ..Default::default()
+                RunningActionsManagerArgs {
+                    root_work_directory: root_work_directory.clone(),
+                    execution_configuration: ExecutionConfiguration::default(),
+                    cas_store: Pin::into_inner(cas_store.clone()),
+                    ac_store: Some(Pin::into_inner(ac_store.clone())),
+                    historical_store: Pin::into_inner(cas_store.clone()),
+                    upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                        ..Default::default()
+                    },
+                    max_action_timeout: MAX_TIMEOUT_DURATION,
+                    timeout_handled_externally: false,
                 },
-                MAX_TIMEOUT_DURATION,
                 Callbacks {
                     now_fn: test_monotonic_clock,
                     sleep_fn: |duration| {
@@ -1847,16 +1984,19 @@ exit 0
             let action_digest = serialize_and_upload_message(&action, cas_store.as_ref()).await?;
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-                root_work_directory.clone(),
-                ExecutionConfiguration::default(),
-                Pin::into_inner(cas_store.clone()),
-                Some(Pin::into_inner(ac_store.clone())),
-                Pin::into_inner(cas_store.clone()),
-                &config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                    ..Default::default()
+                RunningActionsManagerArgs {
+                    root_work_directory: root_work_directory.clone(),
+                    execution_configuration: ExecutionConfiguration::default(),
+                    cas_store: Pin::into_inner(cas_store.clone()),
+                    ac_store: Some(Pin::into_inner(ac_store.clone())),
+                    historical_store: Pin::into_inner(cas_store.clone()),
+                    upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                        ..Default::default()
+                    },
+                    max_action_timeout: MAX_TIMEOUT_DURATION,
+                    timeout_handled_externally: false,
                 },
-                MAX_TIMEOUT_DURATION,
                 Callbacks {
                     now_fn: test_monotonic_clock,
                     sleep_fn: |duration| {
@@ -1918,16 +2058,19 @@ exit 0
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-            root_work_directory.clone(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                ..Default::default()
+            RunningActionsManagerArgs {
+                root_work_directory: root_work_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
             },
-            Duration::MAX,
             Callbacks {
                 now_fn: test_monotonic_clock,
                 sleep_fn: |_duration| {
@@ -2016,16 +2159,19 @@ exit 0
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
-            root_work_directory.clone(),
-            ExecutionConfiguration::default(),
-            Pin::into_inner(cas_store.clone()),
-            Some(Pin::into_inner(ac_store.clone())),
-            Pin::into_inner(cas_store.clone()),
-            &config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
-                ..Default::default()
+            RunningActionsManagerArgs {
+                root_work_directory: root_work_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
             },
-            Duration::MAX,
             Callbacks {
                 now_fn: test_monotonic_clock,
                 sleep_fn: |_duration| Box::pin(futures::future::pending()),
