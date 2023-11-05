@@ -102,9 +102,6 @@ PACKAGES = {
     "byteorder": {
         "version": "1.4.3",
     },
-    "lazy_static": {
-        "version": "1.4.0",
-    },
     "filetime": {
         "version": "0.2.21",
     },
@@ -178,5 +175,8 @@ PACKAGES = {
     },
     "formatx": {
         "version": "0.2.1",
+    },
+    "once_cell": {
+        "version": "1.18.0",
     },
 }

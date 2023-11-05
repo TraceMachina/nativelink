@@ -1,5 +1,5 @@
 {
-  "checksum": "ffa058436431ad11db44bfbd1a61c7e419838e474661896794dc25b1d63f9993",
+  "checksum": "e639852098069997f943c9f51c62356a6faa0254614942e6d6d6fc71174e5a39",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -2635,10 +2635,6 @@
               "target": "json5"
             },
             {
-              "id": "lazy_static 1.4.0",
-              "target": "lazy_static"
-            },
-            {
               "id": "log 0.4.20",
               "target": "log"
             },
@@ -2665,6 +2661,10 @@
             {
               "id": "nix 0.26.4",
               "target": "nix"
+            },
+            {
+              "id": "once_cell 1.18.0",
+              "target": "once_cell"
             },
             {
               "id": "parking_lot 0.12.1",

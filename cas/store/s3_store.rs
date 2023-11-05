@@ -24,7 +24,7 @@ use futures::future::{try_join_all, FutureExt};
 use futures::stream::{unfold, FuturesUnordered};
 use futures::TryStreamExt;
 use http::status::StatusCode;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use rand::{rngs::OsRng, Rng};
 use rusoto_core::credential::DefaultCredentialsProvider;
 use rusoto_core::request::{DispatchSignedRequest, DispatchSignedRequestFuture};
@@ -92,9 +92,8 @@ impl DispatchSignedRequest for ThrottledDispatcher {
     }
 }
 
-lazy_static! {
-    static ref SHARED_CLIENT: Mutex<Arc<ThrottledDispatcher>> = Mutex::new(Arc::new(ThrottledDispatcher::new()));
-}
+static SHARED_CLIENT: Lazy<Mutex<Arc<ThrottledDispatcher>>> =
+    Lazy::new(|| Mutex::new(Arc::new(ThrottledDispatcher::new())));
 
 fn should_retry<T, E>(result: Result<T, RusotoError<E>>) -> RetryResult<T>
 where
