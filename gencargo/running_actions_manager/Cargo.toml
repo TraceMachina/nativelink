@@ -22,15 +22,19 @@ doctest = false
 async-trait = { workspace = true }
 bytes = { workspace = true }
 filetime = { workspace = true }
+formatx = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
+json5 = { workspace = true }
 parking_lot = { workspace = true }
 prost = { workspace = true }
 relative-path = { workspace = true }
 scopeguard = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
+uuid = { workspace = true }
 
 # Local libraries.
 action_messages = { workspace = true }

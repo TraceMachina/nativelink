@@ -36,7 +36,7 @@ use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent, Registry,
 };
-use platform_property_manager::PlatformPropertyManager;
+use platform_property_manager::{PlatformPropertyManager, PlatformPropertyValue};
 use scheduler::{ActionScheduler, WorkerScheduler};
 use worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
 
@@ -297,7 +297,7 @@ impl SimpleSchedulerImpl {
     }
 
     fn find_recently_completed_action(
-        &mut self,
+        &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
         self.recently_completed_actions
@@ -713,7 +713,7 @@ impl ActionScheduler for SimpleScheduler {
         &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        let mut inner = self.get_inner_lock();
+        let inner = self.get_inner_lock();
         let result = inner
             .find_existing_action(unique_qualifier)
             .or_else(|| inner.find_recently_completed_action(unique_qualifier));
@@ -814,10 +814,11 @@ impl WorkerScheduler for SimpleScheduler {
                 })
                 .collect();
             for worker_id in &worker_ids_to_remove {
-                let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool",);
+                let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool");
                 log::warn!("{:?}", err);
                 inner.immediate_evict_worker(worker_id, err);
             }
+
             Ok(())
         })
     }
@@ -875,12 +876,26 @@ impl MetricsComponent for SimpleScheduler {
                 &inner.max_job_retries,
                 "The amount of times a job is allowed to retry from an internal error before it is dropped.",
             );
+            let mut props = HashMap::<&String, u64>::new();
             for (_worker_id, worker) in inner.workers.workers.iter() {
                 c.publish_with_labels(
                     "workers",
                     worker,
                     "",
                     vec![("worker_id".into(), worker.id.to_string().into())],
+                );
+                for (property, prop_value) in &worker.platform_properties.properties {
+                    let current_value = props.get(&property).unwrap_or(&0);
+                    if let PlatformPropertyValue::Minimum(worker_value) = prop_value {
+                        props.insert(property, *current_value + *worker_value);
+                    }
+                }
+            }
+            for (property, prop_value) in props {
+                c.publish(
+                    &format!("{property}_available_properties"),
+                    &prop_value,
+                    format!("Total sum of available properties for {property}"),
                 );
             }
             for (_, active_action) in inner.active_actions.iter() {

@@ -167,7 +167,7 @@ impl ExecutionServer {
     fn to_execute_stream(receiver: watch::Receiver<Arc<ActionState>>) -> Response<ExecuteStream> {
         let receiver_stream = Box::pin(WatchStream::new(receiver).map(|action_update| {
             log::info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
-            Ok(action_update.as_ref().clone().into())
+            Ok(Into::<Operation>::into(action_update.as_ref().clone()))
         }));
         tonic::Response::new(receiver_stream)
     }

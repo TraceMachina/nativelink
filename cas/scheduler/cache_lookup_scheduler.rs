@@ -90,10 +90,9 @@ pub async fn sort_digests_old_to_new(
     digests: impl Iterator<Item = DigestInfo>,
     ac_store: &Arc<dyn Store>,
 ) -> Result<impl Iterator<Item = DigestInfo>, Error> {
-    let digests_vec: Vec<_> = digests.collect();
-    let mut digest_times = Vec::with_capacity(digests_vec.len());
-    for digest in &digests_vec {
-        let action_result = match get_action_from_store(ac_store, digest, "".to_string()).await {
+    let mut digest_times = Vec::new();
+    for digest in digests {
+        let action_result = match get_action_from_store(ac_store, &digest, "".to_string()).await {
             Some(result) => result,
             None => continue,
         };
@@ -113,28 +112,33 @@ pub async fn sort_digests_old_to_new(
             }
         };
 
-        digest_times.push((*digest, completion_time));
+        digest_times.push((digest, completion_time));
     }
 
     digest_times.sort_by(|a, b| a.1.cmp(&b.1));
 
-    let sorted_digests: Vec<DigestInfo> = digest_times.into_iter().map(|(digest, _)| digest).collect();
-
-    Ok(sorted_digests.into_iter())
+    Ok(digest_times.into_iter().map(|(digest, _)| digest))
 }
 
 pub async fn walk_ac_and_order_items(
-    digests: impl Iterator<Item = DigestInfo>,
+    digests: &[DigestInfo],
     ac_store: &Arc<dyn Store>,
-) -> Result<impl Iterator<Item = DigestInfo>, Error> {
-    //let sorted_digests = sort_digests_old_to_new(digests, ac_store).await?.collect::<Vec<_>>();
+) -> Result<Vec<DigestInfo>, Error> {
     let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
-    let digests_vec: Vec<_> = digests.collect();
-    let mut results = vec![None; digests_vec.len()]; // Create results array
 
-    pinned_store.has_with_results(&digests_vec, &mut results).await?;
+    let len = digests.len();
+    let mut results: Vec<Option<usize>> = vec![None; len];
 
-    Ok(digests_vec.into_iter())
+    pinned_store.has_with_results(digests, &mut results).await?;
+
+    let mut remove_digests = Vec::new();
+    for (i, result) in results.into_iter().enumerate() {
+        if result.is_none() {
+            remove_digests.push(digests[i].clone())
+        }
+    }
+
+    Ok(remove_digests)
 }
 
 async fn validate_outputs_exist(cas_store: &Arc<dyn Store>, action_result: &ProtoActionResult) -> bool {

@@ -23,7 +23,7 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_stream::StreamExt;
 
 use action_messages::{ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata};
-use cache_lookup_scheduler::{sort_digests_old_to_new, walk_ac_and_order_items, CacheLookupScheduler};
+use cache_lookup_scheduler::{walk_ac_and_order_items, CacheLookupScheduler};
 use common::DigestInfo;
 use error::{Error, ResultExt};
 use memory_store::MemoryStore;
@@ -182,7 +182,7 @@ mod cache_lookup_scheduler_tests {
 
         let timestamp1 = UNIX_EPOCH + Duration::from_secs(300);
         let timestamp2 = UNIX_EPOCH + Duration::from_secs(200);
-        let timestamp3 = UNIX_EPOCH + Duration::from_secs(100);
+        //let timestamp3 = UNIX_EPOCH + Duration::from_secs(100);
 
         let action_result1 = ActionResult {
             execution_metadata: ExecutionMetadata {
@@ -200,17 +200,17 @@ mod cache_lookup_scheduler_tests {
             ..Default::default()
         };
 
-        let action_result3 = ActionResult {
-            execution_metadata: ExecutionMetadata {
-                execution_completed_timestamp: timestamp3,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        // let action_result3 = ActionResult {
+        //     execution_metadata: ExecutionMetadata {
+        //         execution_completed_timestamp: timestamp3,
+        //         ..Default::default()
+        //     },
+        //     ..Default::default()
+        // };
 
         let proto_action_result1: ProtoActionResult = action_result1.into();
         let proto_action_result2: ProtoActionResult = action_result2.into();
-        let proto_action_result3: ProtoActionResult = action_result3.into();
+        //let proto_action_result3: ProtoActionResult = action_result3.into();
 
         let mut bytes = Vec::new();
 
@@ -220,23 +220,21 @@ mod cache_lookup_scheduler_tests {
 
         proto_action_result2.encode(&mut bytes)?;
         pinned_store.update_oneshot(file2_digest, bytes.clone().into()).await?;
-        bytes.clear();
+        //bytes.clear();
 
-        proto_action_result3.encode(&mut bytes)?;
-        pinned_store.update_oneshot(file3_digest, bytes.clone().into()).await?;
+        //proto_action_result3.encode(&mut bytes)?;
+        //pinned_store.update_oneshot(file3_digest, bytes.clone().into()).await?;
 
         let digests = vec![file1_digest, file2_digest, file3_digest];
 
         let store: Arc<dyn Store> = ac_store.clone();
-        let sorted_items =
-            walk_ac_and_order_items(sort_digests_old_to_new(digests.into_iter(), &store).await?, &store).await?;
+        let remove_digests = walk_ac_and_order_items(&digests, &store).await?;
 
-        println!("SORTED ITEMS");
+        println!("DIGESTS TO REMOVE");
 
-        let sorted_items_vec: Vec<DigestInfo> = sorted_items.collect();
-        println!("{:?}", sorted_items_vec);
+        println!("{:?}", remove_digests);
 
-        assert!(sorted_items_vec == vec![file3_digest, file2_digest, file1_digest]);
+        assert!(remove_digests == vec![file3_digest]);
 
         Ok(())
     }

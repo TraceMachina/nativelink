@@ -12,9 +12,9 @@ The goals of this project are:
 
 ## Overview
 
-Turbo Cache is a project that implements the [Bazel Remote Execution protocol](https://github.com/bazelbuild/remote-apis) (both CAS/Cache and remote execution portion).
+Turbo Cache is a project that implements the Bazel's [Remote Execution protocol](https://github.com/bazelbuild/remote-apis) (both CAS/Cache and remote execution portion).
 
-When properly configured this project will provide extremely fast and efficient build cache for any systems that communicate using the [BRE protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) and/or extremely fast, efficient and low foot-print remote execution capability.
+When properly configured this project will provide extremely fast and efficient build cache for any systems that communicate using the [RBE protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) and/or extremely fast, efficient and low foot-print remote execution capability.
 
 Unix based operating systems and Windows are fully supported.
 
@@ -37,7 +37,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # to compile, but will result in a much faster binary.
 cargo run --release --bin cas -- ./config/examples/basic_cas.json
 ```
-In a separate terminal session, run the following command to connect the running server launched above to Bazel or another BRE client:
+In a separate terminal session, run the following command to connect the running server launched above to Bazel or another RBE client:
 ```sh
 bazel test //... \
   --remote_instance_name=main \
@@ -51,9 +51,9 @@ This will cause bazel to run the commands through an all-in-one `CAS`, `schedule
 We currently have a few example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
 
 ### Terraform
-The [terraform deployment](https://github.com/allada/turbo-cache/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of AWS cloud resources to make everything much more robust.
+The [terraform deployment](https://github.com/allada/turbo-cache/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of cloud resources to make everything much more robust.
 
-The terraform deployment is very easy to setup and configure, all you need is a domain or subdomain that you can add some DNS records to and an AWS account. This deployment will show off remote execution capabilities and cache capabilities.
+The terraform deployment is very easy to setup and configure. This deployment will show off remote execution capabilities and cache capabilities.
 
 ## Status
 
