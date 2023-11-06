@@ -87,6 +87,18 @@ DID_FAIL=0
 export TURBO_CACHE_DIR="$CACHE_DIR/turbo-cache"
 mkdir -p "$TURBO_CACHE_DIR"
 
+function wait_for_ready() {
+  for i in $(seq 1 10); do
+    if sudo docker-compose logs | grep -q "Ready, listening on"; then
+      echo "Server ready and listening"
+      return
+    fi
+    sleep 1
+  done
+  echo "Timed out"
+  exit 1
+}
+
 for pattern in "${TEST_PATTERNS[@]}"; do
   find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
     # Cleanup.
@@ -102,12 +114,9 @@ for pattern in "${TEST_PATTERNS[@]}"; do
     FILENAME=$(basename $fullpath)
     echo "Running test $FILENAME"
     sudo docker-compose up -d
-    if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker-compose logs | grep -q "Ready, listening on"; do sleep 1; done'    
-    then
-      echo "String 'Ready, listening on' found in the logs."
-    else
-      echo "String 'Ready, listening on' not found in the logs within the given time."
-    fi
+    
+    wait_for_ready
+    
     set +e
     bash -euo pipefail "$fullpath"
     EXIT_CODE="$?"
