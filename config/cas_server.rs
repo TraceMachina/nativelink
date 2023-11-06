@@ -15,7 +15,9 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
+use serde_utils::{
+    convert_numeric_with_shellexpand, convert_optinoal_numeric_with_shellexpand, convert_string_with_shellexpand,
+};
 
 use crate::schedulers::SchedulerConfig;
 use crate::stores::{StoreConfig, StoreRefName};
@@ -190,11 +192,54 @@ pub struct ServicesConfig {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct TlsConfig {
+    /// Path to the certificate file.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub cert_file: String,
+
+    /// Path to the private key file.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub key_file: String,
+}
+
+/// Advanced Http configurations. These are generally should not be set.
+/// For documentation on what each of these do, see the hyper documentation:
+/// See: https://docs.rs/hyper/latest/hyper/server/conn/struct.Http.html
+///
+/// Note: All of these default to hyper's default values unless otherwise
+/// specified.
+#[derive(Deserialize, Debug, Default)]
+pub struct HttpServerConfig {
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_pending_accept_reset_streams: Option<u32>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_initial_stream_window_size: Option<u32>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_initial_connection_window_size: Option<u32>,
+    pub http2_adaptive_window: Option<bool>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_frame_size: Option<u32>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_concurrent_streams: Option<u32>,
+    /// Note: This is in seconds.
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_keep_alive_interval: Option<u32>,
+    /// Note: This is in seconds.
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_keep_alive_timeout: Option<u32>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_send_buf_size: Option<u32>,
+    pub http2_enable_connect_protocol: Option<bool>,
+    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub http2_max_header_list_size: Option<u32>,
+}
+
+#[derive(Deserialize, Debug)]
 pub struct ServerConfig {
     /// Name of the server. This is used to help identify the service
     /// for telemetry and logs.
     ///
-    /// Default: (index of server in config)
+    /// Default: <index of server in config>
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub name: String,
 
@@ -207,8 +252,19 @@ pub struct ServerConfig {
     #[serde(default)]
     pub compression: CompressionConfig,
 
+    /// Advanced Http server configuration.
+    #[serde(default)]
+    pub advanced_http: HttpServerConfig,
+
     /// Services to attach to server.
     pub services: Option<ServicesConfig>,
+
+    /// Tls Configuration for this server.
+    /// If not set, the server will not use TLS.
+    ///
+    /// Default: None
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
 }
 
 #[allow(non_camel_case_types)]
@@ -241,18 +297,104 @@ pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
     #[default]
     SuccessOnly,
+
     /// Don't upload any action results.
     Never,
+
     /// Upload all action results that complete.
     Everything,
+
+    /// Only upload action results that fail.
+    FailuresOnly,
 }
 
 #[derive(Clone, Deserialize, Debug)]
 pub enum EnvironmentSource {
     /// The name of the property in the action to get the value from.
     Property(String),
+
     /// The raw value to set.
     Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
+
+    /// The max amount of time in milliseconds the command is allowed to run
+    /// (requested by the client).
+    TimeoutMillis,
+
+    /// A special file path will be provided that can be used to comminicate
+    /// with the parent process about out-of-band information. This file
+    /// will be read after the command has finished executing. Based on the
+    /// contents of the file, the behavior of the result may be modified.
+    ///
+    /// The format of the file contents should be json with the following
+    /// schema:
+    /// {
+    ///   // If set the command will be considered a failure.
+    ///   // May be one of the following static strings:
+    ///   // "timeout": Will Consider this task to be a timeout.
+    ///   "failure": "timeout",
+    /// }
+    ///
+    /// All fields are optional, file does not need to be created and may be
+    /// empty.
+    SideChannelFile,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct UploadActionResultConfig {
+    /// Underlying AC store that the worker will use to publish execution results
+    /// into. Objects placed in this store should be reachable from the
+    /// scheduler/client-cas after they have finished updating.
+    /// Default: <No uploading is done>
+    pub ac_store: Option<StoreRefName>,
+
+    /// In which situations should the results be published to the ac_store, if
+    /// set to SuccessOnly then only results with an exit code of 0 will be
+    /// uploaded, if set to Everything all completed results will be uploaded.
+    ///
+    /// Default: UploadCacheResultsStrategy::SuccessOnly
+    #[serde(default)]
+    pub upload_ac_results_strategy: UploadCacheResultsStrategy,
+
+    /// Store to upload historical results to. This should be a CAS store if set.
+    ///
+    /// Default: <CAS store of parent>
+    pub historical_results_store: Option<StoreRefName>,
+
+    /// In which situations should the results be published to the historical CAS.
+    /// The historical CAS is where failures are published. These messages conform
+    /// to the CAS key-value lookup format and are always a `HistoricalExecuteResponse`
+    /// serialized message.
+    ///
+    /// Default: UploadCacheResultsStrategy::FailuresOnly
+    #[serde(default)]
+    pub upload_historical_results_strategy: Option<UploadCacheResultsStrategy>,
+
+    /// Template to use for the `ExecuteResponse.message` property. This message
+    /// is attached to the response before it is sent to the client. The following
+    /// special variables are supported:
+    /// - {digest_function} - Digest function used to calculate the action digest.
+    /// - {action_digest_hash} - Action digest hash.
+    /// - {action_digest_size} - Action digest size.
+    /// - {historical_results_hash} - HistoricalExecuteResponse digest hash.
+    /// - {historical_results_size} - HistoricalExecuteResponse digest size.
+    /// A common use case of this is to provide a link to the web page that contains more
+    /// useful information for the user.
+    ///
+    /// An example that is fully compatible with `bb_browser` is:
+    /// "https://example.com/my-instance-name-here/blobs/{digest_function}/action/{action_digest_hash}-{action_digest_size}/"
+    ///
+    /// Default: "" (no message)
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub success_message_template: String,
+
+    /// Same as `success_message_template` but for failure case.
+    ///
+    /// An example that is fully compatible with `bb_browser` is:
+    /// "https://example.com/{instance_name}/blobs/{digest_function}/historical_execute_response/{historical_results_hash}-{historical_results_size}/"
+    ///
+    /// Default: "" (no message)
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub failure_message_template: String,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -273,6 +415,26 @@ pub struct LocalWorkerConfig {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_action_timeout: usize,
 
+    /// If timeout is handled in `entrypoint_cmd` or another wrapper script.
+    /// If set to true TurboCache will not honor the timeout the action requested
+    /// and instead will always force kill the action after max_action_timeout
+    /// has been reached. If this is set to false, the smaller value of the action's
+    /// timeout and max_action_timeout will be used to which TurboCache will kill
+    /// the action.
+    ///
+    /// The real timeout can be received via an environment variable set in:
+    /// `EnvironmentSource::TimeoutMillis`.
+    ///
+    /// Example on where this is useful: `entrypoint_cmd` launches the action inside
+    /// a docker container, but the docker container may need to be downloaded. Thus
+    /// the timer should not start until the docker container has started executing
+    /// the action. In this case, action will likely be wrapped in another program,
+    /// like `timeout` and propagate timeouts via `EnvironmentSource::SideChannelFile`.
+    ///
+    /// Default: false (TurboCache fully handles timeouts)
+    #[serde(default)]
+    pub timeout_handled_externally: bool,
+
     /// The command to execute on every execution request. This will be parsed as
     /// a command + arguments (not shell).
     /// Example: "run.sh" and a job with command: "sleep 5" will result in a
@@ -289,17 +451,9 @@ pub struct LocalWorkerConfig {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cas_fast_slow_store: StoreRefName,
 
-    /// Underlying AC store that the worker will use to publish execution results
-    /// into. Objects placed in this store should be reachable from the
-    /// scheduler/client-cas after they have finished updating.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
-    pub ac_store: StoreRefName,
-
-    /// In which situations should the results be published to the ac_store, if
-    /// set to SuccessOnly then only results with an exit code of 0 will be
-    /// uploaded, if set to Everything all completed results will be uploaded.
+    /// Configuration for uploading action results.
     #[serde(default)]
-    pub ac_store_strategy: UploadCacheResultsStrategy,
+    pub upload_action_result: UploadActionResultConfig,
 
     /// The directory work jobs will be executed from. This directory will be fully
     /// managed by the worker service and will be purged on startup.

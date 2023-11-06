@@ -42,7 +42,9 @@
         "uri": "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
       },
       "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
-      "ac_store": "GRPC_LOCAL_AC_STORE",
+      "upload_action_result": {
+        "ac_store": "GRPC_LOCAL_AC_STORE",
+      },
       "work_directory": "/root/.cache/turbo-cache/work",
       "platform_properties": {
         "cpu_count": {

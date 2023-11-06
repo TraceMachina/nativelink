@@ -30,6 +30,7 @@ use std::time::{Duration, SystemTime};
 
 use bytes::{Bytes, BytesMut};
 use filetime::{set_file_mtime, FileTime};
+use formatx::Template;
 use futures::future::{try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use metrics_utils::{AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent};
@@ -37,6 +38,7 @@ use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
 use scopeguard::{guard, ScopeGuard};
+use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::{oneshot, watch};
@@ -44,25 +46,28 @@ use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
+use uuid::Uuid;
 
 use ac_utils::{
     compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_file_to_store, upload_to_store,
     ESTIMATED_DIGEST_SIZE,
 };
-use action_messages::{ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo};
+use action_messages::{
+    to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
+};
 use async_trait::async_trait;
 use common::{fs, log, DigestInfo, JoinHandleDropGuard};
-use config::cas_server::{EnvironmentSource, UploadCacheResultsStrategy};
+use config::cas_server::{EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy};
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
 use grpc_store::GrpcStore;
 use proto::build::bazel::remote::execution::v2::{
-    digest_function, Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode, FileNode,
-    SymlinkNode, Tree as ProtoTree,
+    digest_function, Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode,
+    ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree,
 };
 use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, UpdateActionResultRequest};
-use proto::com::github::allada::turbo_cache::remote_execution::StartExecute;
+use proto::com::github::allada::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use store::Store;
 
 pub type ActionId = [u8; 32];
@@ -70,6 +75,30 @@ pub type ActionId = [u8; 32];
 /// For simplicity we use a fixed exit code for cases when our program is terminated
 /// due to a signal.
 const EXIT_CODE_FOR_SIGNAL: i32 = 9;
+
+/// Default strategy for uploading historical results.
+/// Note: If this value changes the config documentation
+/// should reflect it.
+const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy = UploadCacheResultsStrategy::FailuresOnly;
+
+/// Valid string reasons for a failure.
+/// Note: If these change, the documentation should be updated.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Deserialize)]
+enum SideChannelFailureReason {
+    /// Task should be considered timedout.
+    timeout,
+}
+
+/// This represents the json data that can be passed from the running process
+/// to the parent via the SideChannelFile. See:
+/// `config::EnvironmentSource::SideChannelFile` for more details.
+/// Note: Any fields added here must be added to the documentation.
+#[derive(Debug, Deserialize, Default)]
+struct SideChannelInfo {
+    /// If the task should be considered a failure and why.
+    failure: Option<SideChannelFailureReason>,
+}
 
 /// Aggressively download the digests of files and make a local folder from it. This function
 /// will spawn unbounded number of futures to try and get these downloaded. The store itself
@@ -398,6 +427,49 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     })
 }
 
+async fn process_side_channel_file(
+    side_channel_file: Cow<'_, OsStr>,
+    args: &[&OsStr],
+    timeout: Duration,
+) -> Result<Option<Error>, Error> {
+    let mut json_contents = String::new();
+    {
+        // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
+        let mut file_slot = match fs::open_file(side_channel_file, u64::MAX).await {
+            Ok(file_slot) => file_slot,
+            Err(e) => {
+                if e.code != Code::NotFound {
+                    return Err(e).err_tip(|| "Error opening side channel file");
+                }
+                // Note: If file does not exist, it's ok. Users are not required to create this file.
+                return Ok(None);
+            }
+        };
+        let reader = file_slot
+            .as_reader()
+            .await
+            .err_tip(|| "Error getting reader from side channel file (maybe permissions?)")?;
+        reader
+            .read_to_string(&mut json_contents)
+            .await
+            .err_tip(|| "Error reading side channel file")?;
+    }
+
+    let side_channel_info: SideChannelInfo = json5::from_str(&json_contents).map_err(|e| {
+        make_input_err!("Could not convert contents of side channel file (json) to SideChannelInfo : {e:?}")
+    })?;
+    Ok(side_channel_info.failure.map(|failure| match failure {
+        SideChannelFailureReason::timeout => Error::new(
+            Code::DeadlineExceeded,
+            format!(
+                "Command '{}' timed out after {} seconds",
+                args.join(OsStr::new(" ")).to_string_lossy(),
+                timeout.as_secs_f32()
+            ),
+        ),
+    }))
+}
+
 #[async_trait]
 pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     /// Anything that needs to execute before the actions is actually executed should happen here.
@@ -596,6 +668,7 @@ impl RunningActionImpl {
             .current_dir(format!("{}/{}", self.work_directory, command_proto.working_directory))
             .env_clear();
 
+        let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
         if let Some(additional_environment) = &self
             .running_actions_manager
             .execution_configuration
@@ -610,6 +683,17 @@ impl RunningActionImpl {
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| v.as_str()),
                     EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::TimeoutMillis => Cow::Owned(self.timeout.as_millis().to_string()),
+                    EnvironmentSource::SideChannelFile => {
+                        let file_cow = format!(
+                            "{}/{}/{}",
+                            self.work_directory,
+                            command_proto.working_directory,
+                            Uuid::new_v4().simple(),
+                        );
+                        maybe_side_channel_file = Some(Cow::Owned(file_cow.clone().into()));
+                        Cow::Owned(file_cow)
+                    }
                 };
                 command_builder.env(name, value.as_ref());
             }
@@ -742,8 +826,17 @@ impl RunningActionImpl {
                     } else {
                         EXIT_CODE_FOR_SIGNAL
                     };
+
+                    let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
+                        process_side_channel_file(side_channel_file.clone(), &args, self.timeout).await
+                        .err_tip(|| format!("Error processing side channel file: {side_channel_file:?}"))?
+                    } else {
+                        None
+                    };
                     {
                         let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), maybe_error_override);
+
                         state.command_proto = Some(command_proto);
                         state.execution_result = Some(RunningActionImplExecutionResult{
                             stdout,
@@ -861,14 +954,15 @@ impl RunningActionImpl {
                                 .map(|mut file_info| {
                                     file_info.name_or_path = NameOrPath::Path(entry);
                                     file_info
-                                })?,
+                                })
+                                .err_tip(|| format!("Uploading file {full_path:?}"))?,
                         ));
                     }
                     metadata
                 };
                 if metadata.is_dir() {
                     Ok(OutputType::Directory(
-                        upload_directory(cas_store, full_path, work_directory)
+                        upload_directory(cas_store, &full_path, work_directory)
                             .and_then(|(root_dir, children)| async move {
                                 let tree = ProtoTree {
                                     root: Some(root_dir),
@@ -882,7 +976,8 @@ impl RunningActionImpl {
                                     tree_digest,
                                 })
                             })
-                            .await?,
+                            .await
+                            .err_tip(|| format!("Uploading directory {full_path:?}"))?,
                     ))
                 } else if metadata.is_symlink() {
                     let output_symlink = upload_symlink(&full_path, work_directory)
@@ -890,7 +985,8 @@ impl RunningActionImpl {
                         .map(|mut symlink_info| {
                             symlink_info.name_or_path = NameOrPath::Path(entry);
                             symlink_info
-                        })?;
+                        })
+                        .err_tip(|| format!("Uploading symlink {full_path:?}"))?;
                     match fs::metadata(&full_path).await {
                         Ok(metadata) => {
                             if metadata.is_dir() {
@@ -933,16 +1029,20 @@ impl RunningActionImpl {
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
             let cursor = Cursor::new(execution_result.stdout);
-            let (digest, mut cursor) = compute_digest(cursor).await?;
-            cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor).await?;
+            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stdout digest")?;
+            cursor.rewind().await.err_tip(|| "Could not rewind stdout cursor")?;
+            upload_to_store(cas_store, digest, &mut cursor)
+                .await
+                .err_tip(|| "Uploading stdout")?;
             Result::<DigestInfo, Error>::Ok(digest)
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
             let cursor = Cursor::new(execution_result.stderr);
-            let (digest, mut cursor) = compute_digest(cursor).await?;
-            cursor.rewind().await.err_tip(|| "Could not rewind cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor).await?;
+            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stderr digest")?;
+            cursor.rewind().await.err_tip(|| "Could not stderr rewind cursor")?;
+            upload_to_store(cas_store, digest, &mut cursor)
+                .await
+                .err_tip(|| "Uploading stderr")?;
             Result::<DigestInfo, Error>::Ok(digest)
         });
 
@@ -983,6 +1083,7 @@ impl RunningActionImpl {
                 execution_metadata,
                 server_logs: HashMap::default(), // TODO(allada) Not implemented.
                 error: state.error.clone(),
+                message: String::new(), // Will be filled in on cache_action_result if needed.
             });
         }
         Ok(self)
@@ -1076,7 +1177,11 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         start_execute: StartExecute,
     ) -> Result<Arc<Self::RunningAction>, Error>;
 
-    async fn cache_action_result(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error>;
+    async fn cache_action_result(
+        &self,
+        action_digest: DigestInfo,
+        action_result: &mut ActionResult,
+    ) -> Result<(), Error>;
 
     async fn kill_all(&self);
 
@@ -1114,6 +1219,221 @@ pub struct ExecutionConfiguration {
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
 }
 
+struct UploadActionResults {
+    upload_ac_results_strategy: UploadCacheResultsStrategy,
+    upload_historical_results_strategy: UploadCacheResultsStrategy,
+    ac_store: Option<Arc<dyn Store>>,
+    historical_store: Arc<dyn Store>,
+    success_message_template: Template,
+    failure_message_template: Template,
+}
+
+impl UploadActionResults {
+    fn new(
+        config: &UploadActionResultConfig,
+        ac_store: Option<Arc<dyn Store>>,
+        historical_store: Arc<dyn Store>,
+    ) -> Result<Self, Error> {
+        let upload_historical_results_strategy = config
+            .upload_historical_results_strategy
+            .unwrap_or(DEFAULT_HISTORICAL_RESULTS_STRATEGY);
+        if !matches!(config.upload_ac_results_strategy, UploadCacheResultsStrategy::Never) && ac_store.is_none() {
+            return Err(make_input_err!(
+                "upload_ac_results_strategy is set, but no ac_store is configured"
+            ));
+        }
+        Ok(Self {
+            upload_ac_results_strategy: config.upload_ac_results_strategy,
+            upload_historical_results_strategy,
+            ac_store,
+            historical_store,
+            success_message_template: Template::new(&config.success_message_template).map_err(|e| {
+                make_input_err!(
+                    "Could not convert success_message_template to rust template: {} : {e:?}",
+                    config.success_message_template
+                )
+            })?,
+            failure_message_template: Template::new(&config.failure_message_template).map_err(|e| {
+                make_input_err!(
+                    "Could not convert failure_message_template to rust template: {} : {e:?}",
+                    config.success_message_template
+                )
+            })?,
+        })
+    }
+
+    fn should_cache_result(
+        strategy: UploadCacheResultsStrategy,
+        action_result: &ActionResult,
+        treat_infra_error_as_failure: bool,
+    ) -> bool {
+        let mut did_fail = action_result.exit_code != 0;
+        if treat_infra_error_as_failure && action_result.error.is_some() {
+            did_fail = true;
+        }
+        match strategy {
+            UploadCacheResultsStrategy::SuccessOnly => !did_fail,
+            UploadCacheResultsStrategy::Never => false,
+            // Never cache internal errors or timeouts.
+            UploadCacheResultsStrategy::Everything => treat_infra_error_as_failure || action_result.error.is_none(),
+            UploadCacheResultsStrategy::FailuresOnly => did_fail,
+        }
+    }
+
+    /// Formats the message field in ExecuteResponse from the success_message_template or
+    /// failure_message_template config templates.
+    fn format_execute_response_message(
+        mut template_str: Template,
+        action_digest_info: DigestInfo,
+        maybe_historical_digest_info: Option<DigestInfo>,
+    ) -> Result<String, Error> {
+        // TODO(allada) Currently only sha256 is supported, but soon will be dynamic.
+        template_str.replace("digest_function", digest_function::Value::Sha256.as_str_name());
+        template_str.replace("action_digest_hash", action_digest_info.hash_str());
+        template_str.replace("action_digest_size", action_digest_info.size_bytes);
+        if let Some(historical_digest_info) = maybe_historical_digest_info {
+            template_str.replace("historical_results_hash", historical_digest_info.hash_str());
+            template_str.replace("historical_results_size", historical_digest_info.size_bytes);
+        } else {
+            template_str.replace("historical_results_hash", "");
+            template_str.replace("historical_results_size", "");
+        }
+        template_str
+            .text()
+            .map_err(|e| make_input_err!("Could not convert template to text: {e:?}"))
+    }
+
+    async fn upload_ac_results(
+        &self,
+        action_digest: DigestInfo,
+        action_result: ProtoActionResult,
+    ) -> Result<(), Error> {
+        let Some(ac_store) = &self.ac_store else { return Ok(()) };
+        // If we are a GrpcStore we shortcut here, as this is a special store.
+        let any_store = ac_store.clone().as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
+            let update_action_request = UpdateActionResultRequest {
+                // This is populated by `update_action_result`.
+                instance_name: String::new(),
+                action_digest: Some(action_digest.into()),
+                action_result: Some(action_result),
+                results_cache_policy: None,
+                digest_function: digest_function::Value::Sha256.into(),
+            };
+            return grpc_store
+                .update_action_result(Request::new(update_action_request))
+                .await
+                .map(|_| ())
+                .err_tip(|| "Caching ActionResult");
+        }
+
+        let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
+        action_result
+            .encode(&mut store_data)
+            .err_tip(|| "Encoding ActionResult for caching")?;
+
+        Pin::new(ac_store.as_ref())
+            .update_oneshot(action_digest, store_data.split().freeze())
+            .await
+            .err_tip(|| "Caching ActionResult")
+    }
+
+    async fn upload_historical_results_with_message(
+        &self,
+        action_digest: DigestInfo,
+        execute_response: ExecuteResponse,
+        message_template: Template,
+    ) -> Result<String, Error> {
+        let historical_digest_info = serialize_and_upload_message(
+            &HistoricalExecuteResponse {
+                action_digest: Some(action_digest.into()),
+                execute_response: Some(execute_response.clone()),
+            },
+            Pin::new(self.historical_store.as_ref()),
+        )
+        .await
+        .err_tip(|| format!("Caching HistoricalExecuteResponse for digest: {action_digest:?}"))?;
+
+        Self::format_execute_response_message(message_template, action_digest, Some(historical_digest_info))
+            .err_tip(|| "Could not format message in upload_historical_results_with_message")
+    }
+
+    async fn cache_action_result(
+        &self,
+        action_info: DigestInfo,
+        action_result: &mut ActionResult,
+    ) -> Result<(), Error> {
+        let should_upload_historical_results =
+            Self::should_cache_result(self.upload_historical_results_strategy, action_result, true);
+        let should_upload_ac_results = Self::should_cache_result(self.upload_ac_results_strategy, action_result, false);
+        // Shortcut so we don't need to convert to proto if not needed.
+        if !should_upload_ac_results && !should_upload_historical_results {
+            return Ok(());
+        }
+
+        let mut execute_response = to_execute_response(action_result.clone());
+
+        // In theory exit code should always be != 0 if there's an error, but for safety we
+        // catch both.
+        let message_template = if action_result.exit_code == 0 && action_result.error.is_none() {
+            self.success_message_template.clone()
+        } else {
+            self.failure_message_template.clone()
+        };
+
+        let upload_historical_results_with_message_result = if should_upload_historical_results {
+            let maybe_message = self
+                .upload_historical_results_with_message(action_info, execute_response.clone(), message_template)
+                .await;
+            match maybe_message {
+                Ok(message) => {
+                    action_result.message = message.clone();
+                    execute_response.message = message;
+                    Ok(())
+                }
+                Err(e) => Result::<(), Error>::Err(e),
+            }
+        } else {
+            match Self::format_execute_response_message(message_template, action_info, None) {
+                Ok(message) => {
+                    action_result.message = message.clone();
+                    execute_response.message = message;
+                    Ok(())
+                }
+                Err(e) => Err(e).err_tip(|| "Could not format message in cache_action_result"),
+            }
+        };
+
+        // Note: Done in this order because we assume most results will succed and most configs will
+        // either always upload upload historical results or only upload on filure. In which case
+        // we can avoid an extra clone of the protos by doing this last with the above assumption.
+        let ac_upload_results = if should_upload_ac_results {
+            self.upload_ac_results(
+                action_info,
+                execute_response
+                    .result
+                    .err_tip(|| "No result set in cache_action_result")?,
+            )
+            .await
+        } else {
+            Ok(())
+        };
+        upload_historical_results_with_message_result.merge(ac_upload_results)
+    }
+}
+
+pub struct RunningActionsManagerArgs<'a> {
+    pub root_work_directory: String,
+    pub execution_configuration: ExecutionConfiguration,
+    pub cas_store: Arc<FastSlowStore>,
+    pub ac_store: Option<Arc<dyn Store>>,
+    pub historical_store: Arc<dyn Store>,
+    pub upload_action_result_config: &'a UploadActionResultConfig,
+    pub max_action_timeout: Duration,
+    pub timeout_handled_externally: bool,
+}
+
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
 pub struct RunningActionsManagerImpl {
@@ -1121,9 +1441,9 @@ pub struct RunningActionsManagerImpl {
     execution_configuration: ExecutionConfiguration,
     cas_store: Arc<FastSlowStore>,
     filesystem_store: Arc<FilesystemStore>,
-    ac_store: Arc<dyn Store>,
-    upload_strategy: UploadCacheResultsStrategy,
+    upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
+    timeout_handled_externally: bool,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
@@ -1133,17 +1453,10 @@ pub struct RunningActionsManagerImpl {
 }
 
 impl RunningActionsManagerImpl {
-    pub fn new_with_callbacks(
-        root_work_directory: String,
-        execution_configuration: ExecutionConfiguration,
-        cas_store: Arc<FastSlowStore>,
-        ac_store: Arc<dyn Store>,
-        upload_strategy: UploadCacheResultsStrategy,
-        max_action_timeout: Duration,
-        callbacks: Callbacks,
-    ) -> Result<Self, Error> {
+    pub fn new_with_callbacks(args: RunningActionsManagerArgs<'_>, callbacks: Callbacks) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
-        let filesystem_store = cas_store
+        let filesystem_store = args
+            .cas_store
             .fast_store()
             .clone()
             .as_any()
@@ -1152,13 +1465,18 @@ impl RunningActionsManagerImpl {
             .clone();
         let (action_done_tx, _) = watch::channel(());
         Ok(Self {
-            root_work_directory,
-            execution_configuration,
-            cas_store,
+            root_work_directory: args.root_work_directory,
+            execution_configuration: args.execution_configuration,
+            cas_store: args.cas_store,
             filesystem_store,
-            ac_store,
-            upload_strategy,
-            max_action_timeout,
+            upload_action_results: UploadActionResults::new(
+                args.upload_action_result_config,
+                args.ac_store,
+                args.historical_store,
+            )
+            .err_tip(|| "During RunningActionsManagerImpl construction")?,
+            max_action_timeout: args.max_action_timeout,
+            timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
             callbacks,
@@ -1166,21 +1484,9 @@ impl RunningActionsManagerImpl {
         })
     }
 
-    pub fn new(
-        root_work_directory: String,
-        execution_configuration: ExecutionConfiguration,
-        cas_store: Arc<FastSlowStore>,
-        ac_store: Arc<dyn Store>,
-        upload_strategy: UploadCacheResultsStrategy,
-        max_action_timeout: Duration,
-    ) -> Result<Self, Error> {
+    pub fn new(args: RunningActionsManagerArgs<'_>) -> Result<Self, Error> {
         Self::new_with_callbacks(
-            root_work_directory,
-            execution_configuration,
-            cas_store,
-            ac_store,
-            upload_strategy,
-            max_action_timeout,
+            args,
             Callbacks {
                 now_fn: SystemTime::now,
                 sleep_fn: |duration| Box::pin(tokio::time::sleep(duration)),
@@ -1286,7 +1592,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
                     output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
                 };
-                let timeout = if action_info.timeout == Duration::ZERO {
+                let timeout = if action_info.timeout == Duration::ZERO || self.timeout_handled_externally {
                     self.max_action_timeout
                 } else {
                     action_info.timeout
@@ -1316,55 +1622,17 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .await
     }
 
-    async fn cache_action_result(&self, action_digest: DigestInfo, action_result: ActionResult) -> Result<(), Error> {
+    async fn cache_action_result(
+        &self,
+        action_info: DigestInfo,
+        action_result: &mut ActionResult,
+    ) -> Result<(), Error> {
         self.metrics
             .cache_action_result
-            .wrap(async move {
-                match self.upload_strategy {
-                    UploadCacheResultsStrategy::SuccessOnly => {
-                        if action_result.exit_code != 0 || action_result.error.is_some() {
-                            return Ok(());
-                        }
-                    }
-                    UploadCacheResultsStrategy::Never => return Ok(()),
-                    UploadCacheResultsStrategy::Everything => {
-                        if action_result.error.is_some() {
-                            // Never cache internal errors or timeouts.
-                            return Ok(());
-                        }
-                    }
-                }
-
-                let proto_action_result: ProtoActionResult = action_result.into();
-                // If we are a GrpcStore we shortcut here, as this is a special store.
-                let any_store = self.ac_store.clone().as_any();
-                let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
-                if let Some(grpc_store) = maybe_grpc_store {
-                    let update_action_request = UpdateActionResultRequest {
-                        // This is populated by `update_action_result`.
-                        instance_name: String::new(),
-                        action_digest: Some(action_digest.into()),
-                        action_result: Some(proto_action_result),
-                        results_cache_policy: None,
-                        digest_function: digest_function::Value::Sha256.into(),
-                    };
-                    grpc_store
-                        .update_action_result(Request::new(update_action_request))
-                        .await
-                        .map(|_| ())
-                        .err_tip(|| "Caching ActionResult")?;
-                } else {
-                    let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
-                    proto_action_result
-                        .encode(&mut store_data)
-                        .err_tip(|| "Encoding ActionResult for caching")?;
-                    Pin::new(self.ac_store.as_ref())
-                        .update_oneshot(action_digest, store_data.freeze())
-                        .await
-                        .err_tip(|| "Caching ActionResult")?;
-                };
-                Ok(())
-            })
+            .wrap(
+                self.upload_action_results
+                    .cache_action_result(action_info, action_result),
+            )
             .await
     }
 

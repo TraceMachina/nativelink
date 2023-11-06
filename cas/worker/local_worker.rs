@@ -38,7 +38,7 @@ use proto::com::github::allada::turbo_cache::remote_execution::{
 };
 use running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction, RunningActionsManager,
-    RunningActionsManagerImpl,
+    RunningActionsManagerArgs, RunningActionsManagerImpl,
 };
 use store::Store;
 use worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
@@ -242,21 +242,21 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 let instance_name = maybe_instance_name
                                     .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
                                 match res {
-                                    Ok(action_result) => {
+                                    Ok(mut action_result) => {
                                         // Save in the action cache before notifying the scheduler that we've completed.
                                         if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
-                                            if let Err(err) = running_actions_manager.cache_action_result(digest_info, action_result.clone()).await {
+                                            if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result).await {
                                                 log::error!("\x1b[0;31mError saving action in store\x1b[0m: {} - {:?}", err, action_digest);
                                             }
                                         }
-                                        let action_stage = ActionStage::Completed(action_result).into();
+                                        let action_stage = ActionStage::Completed(action_result);
                                         grpc_client.execution_response(
                                             ExecuteResult{
                                                 worker_id,
                                                 instance_name,
                                                 action_digest,
                                                 salt,
-                                                result: Some(execute_result::Result::ExecuteResponse(action_stage)),
+                                                result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
                                             }
                                         )
                                         .await
@@ -318,7 +318,8 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
 pub async fn new_local_worker(
     config: Arc<LocalWorkerConfig>,
     cas_store: Arc<dyn Store>,
-    ac_store: Arc<dyn Store>,
+    ac_store: Option<Arc<dyn Store>>,
+    historical_store: Arc<dyn Store>,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
     let fast_slow_store = cas_store
         .as_any()
@@ -345,17 +346,19 @@ pub async fn new_local_worker(
     } else {
         Duration::from_secs(config.max_action_timeout as u64)
     };
-    let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(
-        config.work_directory.clone(),
-        ExecutionConfiguration {
+    let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+        root_work_directory: config.work_directory.clone(),
+        execution_configuration: ExecutionConfiguration {
             entrypoint_cmd,
             additional_environment: config.additional_environment.clone(),
         },
-        fast_slow_store,
+        cas_store: fast_slow_store,
         ac_store,
-        config.ac_store_strategy,
+        historical_store,
+        upload_action_result_config: &config.upload_action_result,
         max_action_timeout,
-    )?);
+        timeout_handled_externally: config.timeout_handled_externally,
+    })?);
     Ok(LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
         running_actions_manager,
