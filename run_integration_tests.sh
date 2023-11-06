@@ -114,9 +114,9 @@ for pattern in "${TEST_PATTERNS[@]}"; do
     FILENAME=$(basename $fullpath)
     echo "Running test $FILENAME"
     sudo docker-compose up -d
-
+    
     wait_for_ready
-
+    
     set +e
     bash -euo pipefail "$fullpath"
     EXIT_CODE="$?"

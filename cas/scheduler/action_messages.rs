@@ -253,15 +253,7 @@ impl Ord for ActionInfo {
 
 impl PartialOrd for ActionInfo {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let cmp = self
-            .priority
-            .cmp(&other.priority)
-            .then_with(|| other.insert_timestamp.cmp(&self.insert_timestamp))
-            .then_with(|| self.salt().cmp(other.salt()));
-        if cmp == Ordering::Equal {
-            return None;
-        }
-        Some(cmp)
+        Some(self.cmp(other))
     }
 }
 

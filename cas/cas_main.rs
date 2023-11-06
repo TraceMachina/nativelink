@@ -426,7 +426,46 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
 
         let socket_addr = server_cfg.listen_address.parse::<SocketAddr>()?;
         let tcp_listener = TcpListener::bind(&socket_addr).await?;
-        let http = Http::new();
+        let mut http = Http::new();
+        let http_config = &server_cfg.advanced_http;
+        if let Some(value) = http_config.http2_max_pending_accept_reset_streams {
+            http.http2_max_pending_accept_reset_streams(
+                usize::try_from(value).err_tip(|| "Could not convert http2_max_pending_accept_reset_streams")?,
+            );
+        }
+        if let Some(value) = http_config.http2_initial_stream_window_size {
+            http.http2_initial_stream_window_size(value);
+        }
+        if let Some(value) = http_config.http2_initial_connection_window_size {
+            http.http2_initial_connection_window_size(value);
+        }
+        if let Some(value) = http_config.http2_adaptive_window {
+            http.http2_adaptive_window(value);
+        }
+        if let Some(value) = http_config.http2_max_frame_size {
+            http.http2_max_frame_size(value);
+        }
+        if let Some(value) = http_config.http2_max_concurrent_streams {
+            http.http2_max_concurrent_streams(value);
+        }
+        if let Some(value) = http_config.http2_keep_alive_interval {
+            http.http2_keep_alive_interval(Duration::from_secs(u64::from(value)));
+        }
+        if let Some(value) = http_config.http2_keep_alive_timeout {
+            http.http2_keep_alive_timeout(Duration::from_secs(u64::from(value)));
+        }
+        if let Some(value) = http_config.http2_max_send_buf_size {
+            http.http2_max_send_buf_size(
+                usize::try_from(value).err_tip(|| "Could not convert http2_max_send_buf_size")?,
+            );
+        }
+        if let Some(true) = http_config.http2_enable_connect_protocol {
+            http.http2_enable_connect_protocol();
+        }
+        if let Some(value) = http_config.http2_max_header_list_size {
+            http.http2_max_header_list_size(value);
+        }
+
         log::warn!("Ready, listening on {}", socket_addr);
         root_futures.push(Box::pin(async move {
             loop {
@@ -479,7 +518,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
     {
         // We start workers after our TcpListener is setup so if our worker connects to one
         // of these services it will be able to connect.
-        let worker_cfgs = cfg.workers.unwrap_or(vec![]);
+        let worker_cfgs = cfg.workers.unwrap_or_default();
         let mut root_metrics_registry_guard = root_metrics_registry.lock().await;
         let root_worker_metrics = root_metrics_registry_guard.sub_registry_with_prefix("workers");
         let mut worker_names = HashSet::with_capacity(worker_cfgs.len());

@@ -23,7 +23,7 @@ async-lock = { workspace = true }
 async-trait = { workspace = true }
 filetime = { workspace = true }
 futures = { workspace = true }
-lazy_static = { workspace = true }
+once_cell = { workspace = true }
 pretty_assertions = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }

@@ -38,6 +38,7 @@ use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
 use scopeguard::{guard, ScopeGuard};
+use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::{oneshot, watch};
@@ -45,6 +46,7 @@ use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
+use uuid::Uuid;
 
 use ac_utils::{
     compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_file_to_store, upload_to_store,
@@ -78,6 +80,25 @@ const EXIT_CODE_FOR_SIGNAL: i32 = 9;
 /// Note: If this value changes the config documentation
 /// should reflect it.
 const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy = UploadCacheResultsStrategy::FailuresOnly;
+
+/// Valid string reasons for a failure.
+/// Note: If these change, the documentation should be updated.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Deserialize)]
+enum SideChannelFailureReason {
+    /// Task should be considered timedout.
+    timeout,
+}
+
+/// This represents the json data that can be passed from the running process
+/// to the parent via the SideChannelFile. See:
+/// `config::EnvironmentSource::SideChannelFile` for more details.
+/// Note: Any fields added here must be added to the documentation.
+#[derive(Debug, Deserialize, Default)]
+struct SideChannelInfo {
+    /// If the task should be considered a failure and why.
+    failure: Option<SideChannelFailureReason>,
+}
 
 /// Aggressively download the digests of files and make a local folder from it. This function
 /// will spawn unbounded number of futures to try and get these downloaded. The store itself
@@ -406,6 +427,49 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     })
 }
 
+async fn process_side_channel_file(
+    side_channel_file: Cow<'_, OsStr>,
+    args: &[&OsStr],
+    timeout: Duration,
+) -> Result<Option<Error>, Error> {
+    let mut json_contents = String::new();
+    {
+        // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
+        let mut file_slot = match fs::open_file(side_channel_file, u64::MAX).await {
+            Ok(file_slot) => file_slot,
+            Err(e) => {
+                if e.code != Code::NotFound {
+                    return Err(e).err_tip(|| "Error opening side channel file");
+                }
+                // Note: If file does not exist, it's ok. Users are not required to create this file.
+                return Ok(None);
+            }
+        };
+        let reader = file_slot
+            .as_reader()
+            .await
+            .err_tip(|| "Error getting reader from side channel file (maybe permissions?)")?;
+        reader
+            .read_to_string(&mut json_contents)
+            .await
+            .err_tip(|| "Error reading side channel file")?;
+    }
+
+    let side_channel_info: SideChannelInfo = json5::from_str(&json_contents).map_err(|e| {
+        make_input_err!("Could not convert contents of side channel file (json) to SideChannelInfo : {e:?}")
+    })?;
+    Ok(side_channel_info.failure.map(|failure| match failure {
+        SideChannelFailureReason::timeout => Error::new(
+            Code::DeadlineExceeded,
+            format!(
+                "Command '{}' timed out after {} seconds",
+                args.join(OsStr::new(" ")).to_string_lossy(),
+                timeout.as_secs_f32()
+            ),
+        ),
+    }))
+}
+
 #[async_trait]
 pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     /// Anything that needs to execute before the actions is actually executed should happen here.
@@ -604,6 +668,7 @@ impl RunningActionImpl {
             .current_dir(format!("{}/{}", self.work_directory, command_proto.working_directory))
             .env_clear();
 
+        let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
         if let Some(additional_environment) = &self
             .running_actions_manager
             .execution_configuration
@@ -618,6 +683,17 @@ impl RunningActionImpl {
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| v.as_str()),
                     EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::TimeoutMillis => Cow::Owned(self.timeout.as_millis().to_string()),
+                    EnvironmentSource::SideChannelFile => {
+                        let file_cow = format!(
+                            "{}/{}/{}",
+                            self.work_directory,
+                            command_proto.working_directory,
+                            Uuid::new_v4().simple(),
+                        );
+                        maybe_side_channel_file = Some(Cow::Owned(file_cow.clone().into()));
+                        Cow::Owned(file_cow)
+                    }
                 };
                 command_builder.env(name, value.as_ref());
             }
@@ -750,8 +826,17 @@ impl RunningActionImpl {
                     } else {
                         EXIT_CODE_FOR_SIGNAL
                     };
+
+                    let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
+                        process_side_channel_file(side_channel_file.clone(), &args, self.timeout).await
+                        .err_tip(|| format!("Error processing side channel file: {side_channel_file:?}"))?
+                    } else {
+                        None
+                    };
                     {
                         let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), maybe_error_override);
+
                         state.command_proto = Some(command_proto);
                         state.execution_result = Some(RunningActionImplExecutionResult{
                             stdout,
@@ -1338,6 +1423,17 @@ impl UploadActionResults {
     }
 }
 
+pub struct RunningActionsManagerArgs<'a> {
+    pub root_work_directory: String,
+    pub execution_configuration: ExecutionConfiguration,
+    pub cas_store: Arc<FastSlowStore>,
+    pub ac_store: Option<Arc<dyn Store>>,
+    pub historical_store: Arc<dyn Store>,
+    pub upload_action_result_config: &'a UploadActionResultConfig,
+    pub max_action_timeout: Duration,
+    pub timeout_handled_externally: bool,
+}
+
 /// Holds state info about what is being executed and the interface for interacting
 /// with actions while they are running.
 pub struct RunningActionsManagerImpl {
@@ -1347,6 +1443,7 @@ pub struct RunningActionsManagerImpl {
     filesystem_store: Arc<FilesystemStore>,
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
+    timeout_handled_externally: bool,
     running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
@@ -1356,20 +1453,10 @@ pub struct RunningActionsManagerImpl {
 }
 
 impl RunningActionsManagerImpl {
-    // Note: This is a test-only function anyway.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_callbacks(
-        root_work_directory: String,
-        execution_configuration: ExecutionConfiguration,
-        cas_store: Arc<FastSlowStore>,
-        ac_store: Option<Arc<dyn Store>>,
-        historical_store: Arc<dyn Store>,
-        upload_action_result_config: &UploadActionResultConfig,
-        max_action_timeout: Duration,
-        callbacks: Callbacks,
-    ) -> Result<Self, Error> {
+    pub fn new_with_callbacks(args: RunningActionsManagerArgs<'_>, callbacks: Callbacks) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
-        let filesystem_store = cas_store
+        let filesystem_store = args
+            .cas_store
             .fast_store()
             .clone()
             .as_any()
@@ -1378,13 +1465,18 @@ impl RunningActionsManagerImpl {
             .clone();
         let (action_done_tx, _) = watch::channel(());
         Ok(Self {
-            root_work_directory,
-            execution_configuration,
-            cas_store,
+            root_work_directory: args.root_work_directory,
+            execution_configuration: args.execution_configuration,
+            cas_store: args.cas_store,
             filesystem_store,
-            upload_action_results: UploadActionResults::new(upload_action_result_config, ac_store, historical_store)
-                .err_tip(|| "During RunningActionsManagerImpl construction")?,
-            max_action_timeout,
+            upload_action_results: UploadActionResults::new(
+                args.upload_action_result_config,
+                args.ac_store,
+                args.historical_store,
+            )
+            .err_tip(|| "During RunningActionsManagerImpl construction")?,
+            max_action_timeout: args.max_action_timeout,
+            timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
             callbacks,
@@ -1392,23 +1484,9 @@ impl RunningActionsManagerImpl {
         })
     }
 
-    pub fn new(
-        root_work_directory: String,
-        execution_configuration: ExecutionConfiguration,
-        cas_store: Arc<FastSlowStore>,
-        ac_store: Option<Arc<dyn Store>>,
-        historical_store: Arc<dyn Store>,
-        upload_action_result_config: &UploadActionResultConfig,
-        max_action_timeout: Duration,
-    ) -> Result<Self, Error> {
+    pub fn new(args: RunningActionsManagerArgs<'_>) -> Result<Self, Error> {
         Self::new_with_callbacks(
-            root_work_directory,
-            execution_configuration,
-            cas_store,
-            ac_store,
-            historical_store,
-            upload_action_result_config,
-            max_action_timeout,
+            args,
             Callbacks {
                 now_fn: SystemTime::now,
                 sleep_fn: |duration| Box::pin(tokio::time::sleep(duration)),
@@ -1514,7 +1592,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
                     output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
                 };
-                let timeout = if action_info.timeout == Duration::ZERO {
+                let timeout = if action_info.timeout == Duration::ZERO || self.timeout_handled_externally {
                     self.max_action_timeout
                 } else {
                     action_info.timeout
