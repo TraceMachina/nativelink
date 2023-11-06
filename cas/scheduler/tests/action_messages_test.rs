@@ -88,6 +88,7 @@ mod action_messages_tests {
             },
             server_logs: HashMap::default(),
             error: None,
+            message: String::new(),
         })
         .into();
 

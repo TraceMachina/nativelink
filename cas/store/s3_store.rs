@@ -24,7 +24,7 @@ use futures::future::{try_join_all, FutureExt};
 use futures::stream::{unfold, FuturesUnordered};
 use futures::TryStreamExt;
 use http::status::StatusCode;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use rand::{rngs::OsRng, Rng};
 use rusoto_core::credential::DefaultCredentialsProvider;
 use rusoto_core::request::{DispatchSignedRequest, DispatchSignedRequestFuture};
@@ -92,9 +92,8 @@ impl DispatchSignedRequest for ThrottledDispatcher {
     }
 }
 
-lazy_static! {
-    static ref SHARED_CLIENT: Mutex<Arc<ThrottledDispatcher>> = Mutex::new(Arc::new(ThrottledDispatcher::new()));
-}
+static SHARED_CLIENT: Lazy<Mutex<Arc<ThrottledDispatcher>>> =
+    Lazy::new(|| Mutex::new(Arc::new(ThrottledDispatcher::new())));
 
 fn should_retry<T, E>(result: Result<T, RusotoError<E>>) -> RetryResult<T>
 where
@@ -110,10 +109,7 @@ where
         // HTTP-level errors. Sometimes can retry.
         Err(RusotoError::Unknown(e)) => match e.status {
             StatusCode::NOT_FOUND => RetryResult::Err(make_err!(Code::NotFound, "{}", e.status.to_string())),
-            StatusCode::INTERNAL_SERVER_ERROR => {
-                RetryResult::Retry(make_err!(Code::Unavailable, "{}", e.status.to_string()))
-            }
-            StatusCode::SERVICE_UNAVAILABLE => {
+            StatusCode::INTERNAL_SERVER_ERROR | StatusCode::SERVICE_UNAVAILABLE => {
                 RetryResult::Retry(make_err!(Code::Unavailable, "{}", e.status.to_string()))
             }
             StatusCode::CONFLICT => RetryResult::Retry(make_err!(Code::Unavailable, "{}", e.status.to_string())),
@@ -153,7 +149,7 @@ impl S3Store {
             S3Client::new_with(dispatcher, credentials_provider, region)
         };
         let jitter_amt = config.retry.jitter;
-        S3Store::new_with_client_and_jitter(
+        Self::new_with_client_and_jitter(
             config,
             s3_client,
             Box::new(move |delay: Duration| {
@@ -172,12 +168,12 @@ impl S3Store {
         s3_client: S3Client,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
-        Ok(S3Store {
+        Ok(Self {
             s3_client: Arc::new(s3_client),
             bucket: config.bucket.to_string(),
-            key_prefix: config.key_prefix.as_ref().unwrap_or(&"".to_string()).to_owned(),
+            key_prefix: config.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
             jitter_fn,
-            retry: config.retry.to_owned(),
+            retry: config.retry.clone(),
             retrier: Retrier::new(Box::new(|duration| Box::pin(sleep(duration)))),
         })
     }
@@ -196,8 +192,8 @@ impl S3Store {
                 retry_config,
                 unfold((), move |state| async move {
                     let head_req = HeadObjectRequest {
-                        bucket: self.bucket.to_owned(),
-                        key: s3_path.to_owned(),
+                        bucket: self.bucket.clone(),
+                        key: s3_path.clone(),
                         ..Default::default()
                     };
 
@@ -267,8 +263,7 @@ impl StoreTrait for S3Store {
         let s3_path = &self.make_s3_path(&digest);
 
         let max_size = match upload_size {
-            UploadSizeInfo::ExactSize(sz) => sz,
-            UploadSizeInfo::MaxSize(sz) => sz,
+            UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
         // NOTE(blaise.bruer) It might be more optimal to use a different heuristic here, but for
         // simplicity we use a hard codded value. Anything going down this if-statement will have
@@ -296,8 +291,8 @@ impl StoreTrait for S3Store {
             };
 
             let put_object_request = PutObjectRequest {
-                bucket: self.bucket.to_owned(),
-                key: s3_path.to_owned(),
+                bucket: self.bucket.clone(),
+                key: s3_path.clone(),
                 content_length,
                 body,
                 ..Default::default()
@@ -317,8 +312,8 @@ impl StoreTrait for S3Store {
         let response = self
             .s3_client
             .create_multipart_upload(CreateMultipartUploadRequest {
-                bucket: self.bucket.to_owned(),
-                key: s3_path.to_owned(),
+                bucket: self.bucket.clone(),
+                key: s3_path.clone(),
                 ..Default::default()
             })
             .await
@@ -349,8 +344,8 @@ impl StoreTrait for S3Store {
                 let body = Some(ByteStream::new(ReaderStream::new(Cursor::new(write_buf))));
 
                 let request = UploadPartRequest {
-                    bucket: self.bucket.to_owned(),
-                    key: s3_path.to_owned(),
+                    bucket: self.bucket.clone(),
+                    key: s3_path.clone(),
                     content_length: Some(write_buf_len),
                     body,
                     part_number,
@@ -383,8 +378,8 @@ impl StoreTrait for S3Store {
             let completed_parts = try_join_all(completed_part_futs).await?;
             self.s3_client
                 .complete_multipart_upload(CompleteMultipartUploadRequest {
-                    bucket: self.bucket.to_owned(),
-                    key: s3_path.to_owned(),
+                    bucket: self.bucket.clone(),
+                    key: s3_path.clone(),
                     upload_id: upload_id.clone(),
                     multipart_upload: Some(CompletedMultipartUpload {
                         parts: Some(completed_parts),
@@ -400,8 +395,8 @@ impl StoreTrait for S3Store {
             let abort_result = self
                 .s3_client
                 .abort_multipart_upload(AbortMultipartUploadRequest {
-                    bucket: self.bucket.to_owned(),
-                    key: s3_path.to_owned(),
+                    bucket: self.bucket.clone(),
+                    key: s3_path.clone(),
                     upload_id: upload_id.clone(),
                     ..Default::default()
                 })
@@ -429,6 +424,11 @@ impl StoreTrait for S3Store {
             .map(|d| (self.jitter_fn)(d))
             .take(self.retry.max_retries); // Remember this is number of retries, so will run max_retries + 1.
 
+        // S3 drops connections when a stream is done. This means that we can't
+        // run the EOF error check. It's safe to disable it since S3 can be
+        // trusted to handle incomplete data properly.
+        writer.set_ignore_eof();
+
         self.retrier
             .retry(
                 retry_config,
@@ -436,12 +436,12 @@ impl StoreTrait for S3Store {
                     let result = self
                         .s3_client
                         .get_object(GetObjectRequest {
-                            bucket: self.bucket.to_owned(),
-                            key: s3_path.to_owned(),
+                            bucket: self.bucket.clone(),
+                            key: s3_path.clone(),
                             range: Some(format!(
                                 "bytes={}-{}",
                                 offset + writer.get_bytes_written() as usize,
-                                end_read_byte.map_or_else(|| "".to_string(), |v| v.to_string())
+                                end_read_byte.map_or_else(String::new, |v| v.to_string())
                             )),
                             ..Default::default()
                         })

@@ -35,6 +35,19 @@ PACKAGES = {
         "version": "0.9.2",
         "features": ["gzip"],
     },
+    "tls-listener": {
+        "version": "0.7.0",
+        "features": ["hyper-h2", "rustls"],
+    },
+    "tokio-rustls": {
+        "version": "0.24.1",
+    },
+    "rustls-pemfile": {
+        "version": "1.0.3",
+    },
+    "rcgen": {
+        "version": "0.11.3",
+    },
     "log": {
         "version": "0.4.19",
     },
@@ -88,9 +101,6 @@ PACKAGES = {
     },
     "byteorder": {
         "version": "1.4.3",
-    },
-    "lazy_static": {
-        "version": "1.4.0",
     },
     "filetime": {
         "version": "0.2.21",
@@ -162,5 +172,11 @@ PACKAGES = {
     },
     "memory-stats": {
         "version": "1.1.0",
+    },
+    "formatx": {
+        "version": "0.2.1",
+    },
+    "once_cell": {
+        "version": "1.18.0",
     },
 }

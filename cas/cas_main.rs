@@ -22,12 +22,16 @@ use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
 use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
+use futures::FutureExt;
 use hyper::server::conn::Http;
 use hyper::{Body, Response};
 use parking_lot::Mutex;
+use rustls_pemfile::{certs, pkcs8_private_keys};
 use scopeguard::guard;
 use tokio::net::TcpListener;
 use tokio::task::spawn_blocking;
+use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig as TlsServerConfig};
+use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
@@ -82,7 +86,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 &name,
                 store_factory(&store_cfg, &store_manager, Some(store_metrics))
                     .await
-                    .err_tip(|| format!("Failed to create store '{}'", name))?,
+                    .err_tip(|| format!("Failed to create store '{name}'"))?,
             );
         }
     }
@@ -95,8 +99,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             let scheduler_metrics = root_scheduler_metrics.sub_registry_with_prefix(&name);
             let (maybe_action_scheduler, maybe_worker_scheduler) =
                 scheduler_factory(&scheduler_cfg, &store_manager, scheduler_metrics)
-                    .await
-                    .err_tip(|| format!("Failed to create scheduler '{}'", name))?;
+                    .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
             if let Some(action_scheduler) = maybe_action_scheduler {
                 action_schedulers.insert(name.clone(), action_scheduler);
             }
@@ -134,7 +137,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     "connected_clients",
                     &1,
                     "The endpoint of the connected clients",
-                    vec![("endpoint".into(), format!("{}", client).into())],
+                    vec![("endpoint".into(), format!("{client}").into())],
                 );
             }
 
@@ -155,7 +158,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
         .enumerate()
         .map(|(i, server_cfg)| {
             let name = if server_cfg.name.is_empty() {
-                format!("{}", i)
+                format!("{i}")
             } else {
                 server_cfg.name.clone()
             };
@@ -164,7 +167,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 counter: Counter::default(),
                 server_start_ts: server_start_timestamp,
             });
-            let server_metrics = root_metrics_registry.sub_registry_with_prefix(format!("server_{}", name));
+            let server_metrics = root_metrics_registry.sub_registry_with_prefix(format!("server_{name}"));
             server_metrics.register_collector(Box::new(Collector::new(&connected_clients_mux)));
 
             (server_cfg, connected_clients_mux)
@@ -343,7 +346,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             fn error_to_response<E: std::error::Error>(e: E) -> hyper::Response<Body> {
                 hyper::Response::builder()
                     .status(500)
-                    .body(format!("Error: {:?}", e).into())
+                    .body(format!("Error: {e:?}").into())
                     .unwrap()
             }
             let path = if prometheus_cfg.path.is_empty() {
@@ -386,13 +389,97 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             )
         }
 
+        // Configure our TLS acceptor if we have TLS configured.
+        let maybe_tls_acceptor = server_cfg.tls.map_or(Ok(None), |tls_config| {
+            let mut cert_reader = std::io::BufReader::new(
+                std::fs::File::open(&tls_config.cert_file)
+                    .err_tip(|| format!("Could not open cert file {}", tls_config.cert_file))?,
+            );
+            let certs = certs(&mut cert_reader)
+                .err_tip(|| format!("Could not extract certs from file {}", tls_config.cert_file))?
+                .into_iter()
+                .map(Certificate)
+                .collect();
+            let mut key_reader = std::io::BufReader::new(
+                std::fs::File::open(&tls_config.key_file)
+                    .err_tip(|| format!("Could not open key file {}", tls_config.key_file))?,
+            );
+            let keys = pkcs8_private_keys(&mut key_reader)
+                .err_tip(|| format!("Could not extract key(s) from file {}", tls_config.key_file))?;
+            if keys.len() != 1 {
+                return Err(Box::new(make_err!(
+                    Code::InvalidArgument,
+                    "Expected 1 key in file {}, found {} keys",
+                    tls_config.key_file,
+                    keys.len()
+                )));
+            }
+            let mut config = TlsServerConfig::builder()
+                .with_safe_defaults()
+                .with_no_client_auth()
+                .with_single_cert(certs, PrivateKey(keys.into_iter().next().unwrap()))
+                .map_err(|e| make_err!(Code::Internal, "Could not create TlsServerConfig : {:?}", e))?;
+
+            config.alpn_protocols.push("h2".into());
+            Ok(Some(TlsAcceptor::from(Arc::new(config))))
+        })?;
+
         let socket_addr = server_cfg.listen_address.parse::<SocketAddr>()?;
         let tcp_listener = TcpListener::bind(&socket_addr).await?;
+        let mut http = Http::new();
+        let http_config = &server_cfg.advanced_http;
+        if let Some(value) = http_config.http2_max_pending_accept_reset_streams {
+            http.http2_max_pending_accept_reset_streams(
+                usize::try_from(value).err_tip(|| "Could not convert http2_max_pending_accept_reset_streams")?,
+            );
+        }
+        if let Some(value) = http_config.http2_initial_stream_window_size {
+            http.http2_initial_stream_window_size(value);
+        }
+        if let Some(value) = http_config.http2_initial_connection_window_size {
+            http.http2_initial_connection_window_size(value);
+        }
+        if let Some(value) = http_config.http2_adaptive_window {
+            http.http2_adaptive_window(value);
+        }
+        if let Some(value) = http_config.http2_max_frame_size {
+            http.http2_max_frame_size(value);
+        }
+        if let Some(value) = http_config.http2_max_concurrent_streams {
+            http.http2_max_concurrent_streams(value);
+        }
+        if let Some(value) = http_config.http2_keep_alive_interval {
+            http.http2_keep_alive_interval(Duration::from_secs(u64::from(value)));
+        }
+        if let Some(value) = http_config.http2_keep_alive_timeout {
+            http.http2_keep_alive_timeout(Duration::from_secs(u64::from(value)));
+        }
+        if let Some(value) = http_config.http2_max_send_buf_size {
+            http.http2_max_send_buf_size(
+                usize::try_from(value).err_tip(|| "Could not convert http2_max_send_buf_size")?,
+            );
+        }
+        if let Some(true) = http_config.http2_enable_connect_protocol {
+            http.http2_enable_connect_protocol();
+        }
+        if let Some(value) = http_config.http2_max_header_list_size {
+            http.http2_max_header_list_size(value);
+        }
+
         log::warn!("Ready, listening on {}", socket_addr);
         root_futures.push(Box::pin(async move {
             loop {
                 // Wait for client to connect.
-                let (tcp_stream, remote_addr) = tcp_listener.accept().await?;
+                let (tcp_stream, remote_addr) = match tcp_listener.accept().await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        log::error!(
+                            "{:?}",
+                            Result::<(), _>::Err(e).err_tip(|| "Failed to accept tcp connection")
+                        );
+                        continue;
+                    }
+                };
                 connected_clients_mux.inner.lock().insert(remote_addr);
                 connected_clients_mux.counter.inc();
 
@@ -401,7 +488,22 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 let scope_guard = guard(connected_clients_mux.clone(), move |connected_clients_mux| {
                     connected_clients_mux.inner.lock().remove(&remote_addr);
                 });
-                let fut = Http::new().serve_connection(tcp_stream, svc.clone());
+                let (http, svc) = (http.clone(), svc.clone());
+                let fut = if let Some(tls_acceptor) = &maybe_tls_acceptor {
+                    let tls_stream = match tls_acceptor.accept(tcp_stream).await {
+                        Ok(result) => result,
+                        Err(e) => {
+                            log::error!(
+                                "{:?}",
+                                Result::<(), _>::Err(e).err_tip(|| "Failed to accept tls stream")
+                            );
+                            continue;
+                        }
+                    };
+                    http.serve_connection(tls_stream, svc).left_future()
+                } else {
+                    http.serve_connection(tcp_stream, svc).right_future()
+                };
                 tokio::spawn(async move {
                     // Move it into our spawn, so if our spawn dies the cleanup happens.
                     let _guard = scope_guard;
@@ -416,7 +518,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
     {
         // We start workers after our TcpListener is setup so if our worker connects to one
         // of these services it will be able to connect.
-        let worker_cfgs = cfg.workers.unwrap_or(vec![]);
+        let worker_cfgs = cfg.workers.unwrap_or_default();
         let mut root_metrics_registry_guard = root_metrics_registry.lock().await;
         let root_worker_metrics = root_metrics_registry_guard.sub_registry_with_prefix("workers");
         let mut worker_names = HashSet::with_capacity(worker_cfgs.len());
@@ -432,18 +534,36 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                                     local_worker_cfg.cas_fast_slow_store
                                 )
                             })?;
-                    let ac_store = store_manager.get_store(&local_worker_cfg.ac_store).err_tip(|| {
-                        format!(
-                            "Failed to find store for ac_store_ref in worker config : {}",
-                            local_worker_cfg.ac_store
-                        )
-                    })?;
-                    let local_worker =
-                        new_local_worker(Arc::new(local_worker_cfg), fast_slow_store.clone(), ac_store.clone())
-                            .await
-                            .err_tip(|| "Could not make LocalWorker")?;
+
+                    let maybe_ac_store = if let Some(ac_store_ref) = &local_worker_cfg.upload_action_result.ac_store {
+                        Some(store_manager.get_store(ac_store_ref).err_tip(|| {
+                            format!("Failed to find store for ac_store in worker config : {ac_store_ref}")
+                        })?)
+                    } else {
+                        None
+                    };
+                    // Note: Defaults to fast_slow_store if not specified. If this ever changes it must
+                    // be updated in config documentation for the `historical_results_store` the field.
+                    let historical_store =
+                        if let Some(cas_store_ref) = &local_worker_cfg.upload_action_result.historical_results_store {
+                            store_manager.get_store(cas_store_ref).err_tip(|| {
+                                format!(
+                                "Failed to find store for historical_results_store in worker config : {cas_store_ref}"
+                            )
+                            })?
+                        } else {
+                            fast_slow_store.clone()
+                        };
+                    let local_worker = new_local_worker(
+                        Arc::new(local_worker_cfg),
+                        fast_slow_store,
+                        maybe_ac_store,
+                        historical_store,
+                    )
+                    .await
+                    .err_tip(|| "Could not make LocalWorker")?;
                     let name = if local_worker.name().is_empty() {
-                        format!("worker_{}", i)
+                        format!("worker_{i}")
                     } else {
                         local_worker.name().clone()
                     };
@@ -465,7 +585,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
     }
 
     if let Err(e) = select_all(root_futures).await.0 {
-        panic!("{:?}", e);
+        panic!("{e:?}");
     }
     unreachable!("None of the futures should resolve in main()");
 }

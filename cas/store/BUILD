@@ -195,9 +195,9 @@ rust_library(
         "//util:error",
         "//util:fastcdc",
         "@crate_index//:bincode",
+        "@crate_index//:blake3",
         "@crate_index//:futures",
         "@crate_index//:serde",
-        "@crate_index//:blake3",
         "@crate_index//:tokio",
         "@crate_index//:tokio-util",
     ],
@@ -239,7 +239,7 @@ rust_library(
         "@crate_index//:bytes",
         "@crate_index//:futures",
         "@crate_index//:http",
-        "@crate_index//:lazy_static",
+        "@crate_index//:once_cell",
         "@crate_index//:rand",
         "@crate_index//:rusoto_core",
         "@crate_index//:rusoto_s3",
@@ -357,8 +357,8 @@ rust_test(
     name = "shard_store_test",
     srcs = ["tests/shard_store_test.rs"],
     deps = [
-        ":shard_store",
         ":memory_store",
+        ":shard_store",
         ":traits",
         "//config",
         "//util:common",
@@ -373,7 +373,7 @@ rust_test(
     name = "memory_store_test",
     srcs = ["tests/memory_store_test.rs"],
     env = {
-        "RUST_TEST_THREADS": "1", # This test can't run in parallel.
+        "RUST_TEST_THREADS": "1",  # This test can't run in parallel.
     },
     deps = [
         ":memory_store",
@@ -464,6 +464,7 @@ rust_test(
 rust_test(
     name = "filesystem_store_test",
     srcs = ["tests/filesystem_store_test.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":filesystem_store",
         ":traits",
@@ -475,13 +476,12 @@ rust_test(
         "@crate_index//:async-lock",
         "@crate_index//:filetime",
         "@crate_index//:futures",
-        "@crate_index//:lazy_static",
+        "@crate_index//:once_cell",
         "@crate_index//:pretty_assertions",
         "@crate_index//:rand",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
 )
 
 rust_test(

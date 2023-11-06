@@ -20,7 +20,7 @@ doctest = false
 
 [dependencies]
 futures = { workspace = true }
-lazy_static = { workspace = true }
+once_cell = { workspace = true }
 pretty_assertions = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
