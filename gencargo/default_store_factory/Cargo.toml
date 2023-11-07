@@ -22,6 +22,7 @@ doctest = false
 futures = { workspace = true }
 
 # Local libraries.
+completeness_checking_store = { workspace = true }
 compression_store = { workspace = true }
 dedup_store = { workspace = true }
 fast_slow_store = { workspace = true }
