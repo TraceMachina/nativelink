@@ -44,6 +44,8 @@ pub enum StoreConfig {
     /// hash and size and the AC validate nothing.
     verify(Box<VerifyStore>),
 
+    completeness_checking(Box<CompletenessCheckingStore>),
+
     /// A compression store that will compress the data inbound and
     /// outbound. There will be a non-trivial cost to compress and
     /// decompress the data, but in many cases if the final store is
@@ -280,6 +282,9 @@ pub struct DedupStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CompletenesscheckingStore {}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct VerifyStore {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -301,6 +306,16 @@ pub struct VerifyStore {
     /// This should be set to false for AC, but true for CAS stores.
     #[serde(default)]
     pub verify_hash: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CompletenessCheckingStore {
+    /// The underlying store wrap around. All content will first flow
+    /// through self before forwarding to backend. In the event there
+    /// is an error detected in self, the connection to the backend
+    /// will be terminated, and early termination should always cause
+    /// updates to fail on the backend.
+    pub backend: StoreConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]
