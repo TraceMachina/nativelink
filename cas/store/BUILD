@@ -132,6 +132,8 @@ rust_library(
     visibility = ["//cas:__pkg__"],
     deps = [
         ":traits",
+        ":ac_utils",
+        "//proto",
         "//config",
         "//util:buf_channel",
         "//util:common",

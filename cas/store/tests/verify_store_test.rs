@@ -219,4 +219,50 @@ mod verify_store_tests {
         );
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_existence_cache() -> Result<(), Error> {
+        let inner_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
+        let store_owned = VerifyStore::new(
+            &config::stores::VerifyStore {
+                backend: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                verify_size: false,
+                verify_hash: false,
+            },
+            inner_store.clone(),
+        );
+        let store = Pin::new(&store_owned);
+
+        let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
+
+        let _result = store.has(digest).await;
+        assert!(
+            store.has_in_cache(&digest).await,
+            "Expected digest to exist in cache after has call"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_walk_and_record_existence_cache() -> Result<(), Error> {
+        let inner_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
+        let store_owned = VerifyStore::new(
+            &config::stores::VerifyStore {
+                backend: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+                verify_size: false,
+                verify_hash: false,
+            },
+            inner_store.clone(),
+        );
+        let store = Arc::new(store_owned);
+
+        let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
+
+        let _result = Arc::clone(&store).record_existence_directory_walk(digest).await;
+        assert!(
+            store.has_in_cache(&digest).await,
+            "Expected digest to exist in cache after walking tree"
+        );
+        Ok(())
+    }
 }
