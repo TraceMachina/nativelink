@@ -12,21 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::convert::TryFrom;
+use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use ac_utils::get_and_decode_digest;
 use async_trait::async_trait;
+use proto::build::bazel::remote::execution::v2::Directory;
 use sha2::{Digest, Sha256};
 
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
-use common::DigestInfo;
-use error::{make_input_err, Error, ResultExt};
+use common::{log, DigestInfo};
+use error::{make_input_err, Code, Error, ResultExt};
 use metrics_utils::{Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
 use traits::{StoreTrait, UploadSizeInfo};
 
 pub struct VerifyStore {
     inner_store: Arc<dyn StoreTrait>,
+    existence_cache: Mutex<HashSet<DigestInfo>>,
     verify_size: bool,
     verify_hash: bool,
 
@@ -39,10 +44,68 @@ impl VerifyStore {
     pub fn new(config: &config::stores::VerifyStore, inner_store: Arc<dyn StoreTrait>) -> Self {
         VerifyStore {
             inner_store,
+            existence_cache: Mutex::new(HashSet::new()),
             verify_size: config.verify_size,
             verify_hash: config.verify_hash,
             size_verification_failures: CounterWithTime::default(),
             hash_verification_failures: CounterWithTime::default(),
+        }
+    }
+
+    pub async fn record_existence_directory_walk(
+        self: Arc<Self>,
+        digest: DigestInfo,
+    ) -> Box<dyn Future<Output = Result<(), Error>>> {
+        Box::new(async move {
+            // Fetch the Directory object from the CAS using get_and_decode_digest
+            let directory = get_and_decode_digest::<Directory>(self.pin_inner(), &digest).await?;
+
+            // Iterate over the files and directories in this Directory
+            for file in &directory.files {
+                // For each file, check its existence in the CAS
+                let file_digest = DigestInfo::try_new(
+                    &file.digest.as_ref().map_or("", |d| &d.hash),
+                    file.digest.as_ref().map_or(0, |d| d.size_bytes),
+                )?;
+                let cache_lock = self.existence_cache.lock();
+                match cache_lock {
+                    Ok(mut cache) => {
+                        if cache.contains(&file_digest) {
+                            continue;
+                        }
+                        let exists = self
+                            .pin_inner()
+                            .has(file_digest)
+                            .await
+                            .err_tip(|| "Failed to check file existence in CAS")?;
+                        if let Some(_) = exists {
+                            cache.insert(file_digest);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to acquire lock on existence_cache: {}", e);
+                    }
+                }
+            }
+
+            for child_directory in &directory.directories {
+                // For each child directory, recursively walk it
+                let child_digest = child_directory.digest.as_ref().map_or_else(
+                    || Err(Error::new(Code::Internal, "Digest is None".to_string())),
+                    |digest| DigestInfo::try_new(&digest.hash.clone(), digest.size_bytes as usize).map_err(Error::from),
+                )?;
+
+                let _child_result = self.clone().record_existence_directory_walk(child_digest).await;
+            }
+
+            Ok(())
+        })
+    }
+
+    pub async fn has_in_cache(&self, digest: &DigestInfo) -> bool {
+        match self.existence_cache.lock() {
+            Ok(cache) => cache.contains(digest),
+            Err(_) => false,
         }
     }
 
@@ -114,7 +177,20 @@ impl StoreTrait for VerifyStore {
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.pin_inner().has_with_results(digests, results).await
+        for (i, digest) in digests.iter().enumerate() {
+            let digest = digest.clone();
+            if self.existence_cache.lock().unwrap().contains(&digest) {
+                results[i] = Some(1);
+            } else {
+                let result = self
+                    .pin_inner()
+                    .has_with_results(&[digest], &mut results[i..i + 1])
+                    .await;
+                self.existence_cache.lock().unwrap().insert(digest);
+                result?
+            }
+        }
+        Ok(())
     }
 
     async fn update(
