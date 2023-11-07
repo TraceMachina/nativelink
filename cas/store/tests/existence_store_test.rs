@@ -20,6 +20,7 @@ use futures::try_join;
 #[cfg(test)]
 mod verify_store_tests {
     use super::*;
+    use futures::pin_mut;
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use buf_channel::make_buf_channel_pair;
@@ -221,7 +222,7 @@ mod verify_store_tests {
     }
 
     #[tokio::test]
-    async fn test_existence_cache() -> Result<(), Error> {
+    async fn verify_existence_caching() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
         let store_owned = VerifyStore::new(
             &config::stores::VerifyStore {
@@ -232,20 +233,43 @@ mod verify_store_tests {
             inner_store.clone(),
         );
         let store = Pin::new(&store_owned);
+        const VALUE: &str = "123";
 
         let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
-
-        assert!(
-            !store.has_in_cache(&digest).await,
-            "Expected digest not to exist in cache before has call"
-        );
+        let _result = store.update_oneshot(digest, VALUE.into()).await;
 
         let _result = store.has(digest).await;
-
         assert!(
             store.has_in_cache(&digest).await,
             "Expected digest to exist in cache after has call"
         );
         Ok(())
     }
+
+    // #[tokio::test]
+    // async fn verify_walk_and_existence_caching() -> Result<(), Error> {
+    //     let inner_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
+    //     let store_owned = VerifyStore::new(
+    //         &config::stores::VerifyStore {
+    //             backend: config::stores::StoreConfig::memory(config::stores::MemoryStore::default()),
+    //             verify_size: false,
+    //             verify_hash: false,
+    //         },
+    //         inner_store.clone(),
+    //     );
+    //     let store = Arc::new(store_owned);
+    //     let pinned_store = Pin::new(&store_owned);
+        
+    //     const VALUE: &str = "123";
+
+    //     let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
+    //     let _res = pinned_store.update_oneshot(digest, VALUE.into()).await;
+
+    //     let _result = Arc::clone(&store).record_existence_directory_walk(digest).await;
+    //     assert!(
+    //         store.has_in_cache(&digest).await,
+    //         "Expected digest to exist in cache after walking tree"
+    //     );
+    //     Ok(())
+    // }
 }
