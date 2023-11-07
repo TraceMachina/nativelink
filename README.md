@@ -63,7 +63,7 @@ This project can be considered ~stable~ and is currently used in production syst
 We support building with Bazel or Cargo. Cargo **might** produce faster binaries because LTO (Link Time Optimization) is enabled for release versions, where Bazel currently does not support LTO for rust.
 
 ### Bazel requirements
-* Bazel 6.3.0+
+* Bazel 6.4.0+
 * gcc
 * g++
 * lld
