@@ -22,6 +22,7 @@ use compression_store::CompressionStore;
 use config::{self, stores::StoreConfig};
 use dedup_store::DedupStore;
 use error::Error;
+use existence_store::ExistenceStore;
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
 use grpc_store::GrpcStore;
@@ -57,6 +58,9 @@ pub fn store_factory<'a>(
                 config,
                 store_factory(&config.index_store, store_manager, None).await?,
                 store_factory(&config.content_store, store_manager, None).await?,
+            )),
+            StoreConfig::existence_store(config) => Arc::new(ExistenceStore::new(
+                store_factory(&config.inner, store_manager, None).await?,
             )),
             StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
                 config,
