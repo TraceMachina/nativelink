@@ -32,6 +32,7 @@ rust_library(
         ":s3_store",
         ":shard_store",
         ":size_partitioning_store",
+        "existence_store",
         ":store",
         ":traits",
         ":verify_store",
@@ -126,12 +127,35 @@ rust_library(
 )
 
 rust_library(
+    name = "existence_store",
+    srcs = ["existence_store.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    visibility = ["//cas:__pkg__"],
+    deps = [
+        ":traits",
+        ":ac_utils",
+        "//proto",
+        "//config",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "//util:metrics_utils",
+        "@crate_index//:hashbrown",
+        "@crate_index//:hex",
+        "@crate_index//:sha2",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_library(
     name = "verify_store",
     srcs = ["verify_store.rs"],
     proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = ["//cas:__pkg__"],
     deps = [
         ":traits",
+        ":ac_utils",
+        "//proto",
         "//config",
         "//util:buf_channel",
         "//util:common",
@@ -387,6 +411,25 @@ rust_test(
         "@crate_index//:tokio",
     ],
 )
+
+rust_test(
+    name = "existence_store_test",
+    srcs = ["tests/existence_store_test.rs"],
+    deps = [
+        ":memory_store",
+        ":traits",
+        ":existence_store",
+        "//config",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:futures",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:tokio",
+    ],
+)
+
+
 
 rust_test(
     name = "verify_store_test",
