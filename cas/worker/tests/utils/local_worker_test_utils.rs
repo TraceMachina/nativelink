@@ -31,7 +31,7 @@ use error::Error;
 use local_worker::LocalWorker;
 use mock_running_actions_manager::MockRunningActionsManager;
 use mock_worker_api_client::MockWorkerApiClient;
-use proto::com::github::allada::turbo_cache::remote_execution::UpdateForWorker;
+use proto::com::github::trace_machina::turbo_cache::remote_execution::UpdateForWorker;
 
 pub fn setup_grpc_stream() -> (HyperSender, Response<Streaming<UpdateForWorker>>) {
     let (tx, body) = Body::channel();

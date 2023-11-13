@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tonic::{Response, Status, Streaming};
 
-use proto::com::github::allada::turbo_cache::remote_execution::{
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
     ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
 use worker_api_client_wrapper::WorkerApiClientTrait;

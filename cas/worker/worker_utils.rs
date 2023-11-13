@@ -25,7 +25,7 @@ use common::log;
 use config::cas_server::WrokerProperty;
 use error::{make_err, make_input_err, Error, ResultExt};
 use proto::build::bazel::remote::execution::v2::platform::Property;
-use proto::com::github::allada::turbo_cache::remote_execution::SupportedProperties;
+use proto::com::github::trace_machina::turbo_cache::remote_execution::SupportedProperties;
 
 pub async fn make_supported_properties<S: BuildHasher>(
     worker_properties: &HashMap<String, WrokerProperty, S>,

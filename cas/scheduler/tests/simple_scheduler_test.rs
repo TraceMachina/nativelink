@@ -27,7 +27,7 @@ use common::DigestInfo;
 use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
 use proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
-use proto::com::github::allada::turbo_cache::remote_execution::{
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use scheduler::{ActionScheduler, WorkerScheduler};
