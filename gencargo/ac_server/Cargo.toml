@@ -22,6 +22,7 @@ doctest = false
 bytes = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
+tracing = { workspace = true }
 
 # Local libraries.
 ac_utils = { workspace = true }

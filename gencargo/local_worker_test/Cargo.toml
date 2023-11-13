@@ -20,7 +20,6 @@ doctest = false
 
 [dependencies]
 ctor = { workspace = true }
-env_logger = { workspace = true }
 pretty_assertions = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }

@@ -21,6 +21,7 @@ rust_library(
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -54,6 +55,7 @@ rust_library(
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
         "@crate_index//:uuid",
     ],
 )
@@ -70,6 +72,7 @@ rust_library(
         "@crate_index//:shlex",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -173,7 +176,6 @@ rust_test(
         "//proto",
         "//util:common",
         "//util:error",
-        "@crate_index//:env_logger",
         "@crate_index//:pretty_assertions",
         "@crate_index//:prost",
         "@crate_index//:rand",

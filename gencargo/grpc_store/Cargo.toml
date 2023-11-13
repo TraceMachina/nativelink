@@ -28,6 +28,7 @@ rand = { workspace = true }
 shellexpand = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tracing = { workspace = true }
 uuid = { workspace = true }
 
 # Local libraries.

@@ -19,8 +19,8 @@ path = "../../util/fs.rs"
 doctest = false
 
 [dependencies]
-log = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 # Local libraries.
 error = { workspace = true }

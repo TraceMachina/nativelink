@@ -38,9 +38,10 @@ use rusoto_signature::signature::SignedRequest;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tokio_util::io::ReaderStream;
+use tracing::error;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use common::{log, DigestInfo, JoinHandleDropGuard};
+use common::{DigestInfo, JoinHandleDropGuard};
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use retry::{ExponentialBackoff, Retrier, RetryResult};
 use traits::{StoreTrait, UploadSizeInfo};
@@ -402,7 +403,7 @@ impl StoreTrait for S3Store {
                 })
                 .await;
             if let Err(err) = abort_result {
-                log::info!("\x1b[0;31ms3_store\x1b[0m: Failed to abort_multipart_upload: {:?}", err);
+                error!("\x1b[0;31ms3_store\x1b[0m: Failed to abort_multipart_upload: {:?}", err);
             }
         }
         complete_result

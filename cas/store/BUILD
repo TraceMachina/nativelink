@@ -200,6 +200,7 @@ rust_library(
         "@crate_index//:serde",
         "@crate_index//:tokio",
         "@crate_index//:tokio-util",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -246,6 +247,7 @@ rust_library(
         "@crate_index//:rusoto_signature",
         "@crate_index//:tokio",
         "@crate_index//:tokio-util",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -274,6 +276,7 @@ rust_library(
         "@crate_index//:rand",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -303,6 +306,7 @@ rust_library(
         "@crate_index//:shellexpand",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
         "@crate_index//:uuid",
     ],
 )

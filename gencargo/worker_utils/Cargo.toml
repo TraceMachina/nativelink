@@ -23,6 +23,7 @@ futures = { workspace = true }
 shlex = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tracing = { workspace = true }
 
 # Local libraries.
 config = { workspace = true }

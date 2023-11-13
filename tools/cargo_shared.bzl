@@ -48,11 +48,12 @@ PACKAGES = {
     "rcgen": {
         "version": "0.11.3",
     },
-    "log": {
-        "version": "0.4.19",
+    "tracing": {
+        "version": "0.1.40",
     },
-    "env_logger": {
-        "version": "0.10.0",
+    "tracing-subscriber": {
+        "version": "0.3.17",
+        "features": ["env-filter"],
     },
     "serde": {
         "version": "1.0.167",

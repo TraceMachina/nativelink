@@ -26,6 +26,7 @@ use std::time::Duration;
 use error::{make_err, Code, Error, ResultExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, ReadBuf, SeekFrom, Take};
 use tokio::sync::{Semaphore, SemaphorePermit};
+use tracing::error;
 
 /// We wrap all tokio::fs items in our own wrapper so we can limit the number of outstanding
 /// open files at any given time. This will greatly reduce the chance we'll hit open file limit
@@ -197,7 +198,7 @@ pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FI
 pub fn set_open_file_limit(limit: usize) {
     let current_total = TOTAL_FILE_SEMAPHORES.load(Ordering::Acquire);
     if limit < current_total {
-        log::error!("set_open_file_limit({}) must be greater than {}", limit, current_total);
+        error!("set_open_file_limit({}) must be greater than {}", limit, current_total);
         return;
     }
     TOTAL_FILE_SEMAPHORES.fetch_add(limit - current_total, Ordering::Release);

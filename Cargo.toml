@@ -106,7 +106,6 @@ byteorder = "1.4.3"
 bytes = "1.4.0"
 clap = { version = "4.3.11", features = ["derive"] }
 ctor = "0.2.3"
-env_logger = "0.10.0"
 filetime = "0.2.21"
 fixed-buffer = "0.2.3"
 formatx = "0.2.1"
@@ -116,7 +115,6 @@ hex = "0.4.3"
 http = "^0.2"
 hyper = "0.14.27"
 json5 = "0.4.1"
-log = "0.4.19"
 lru = "0.10.1"
 lz4_flex = "0.11.1"
 maplit = "1.0.2"
@@ -153,6 +151,8 @@ tokio-util = { version = "0.7.8", features = ["io", "io-util", "codec"] }
 tonic = { version = "0.9.2", features = ["gzip"] }
 tonic-build = "0.9.2"
 tower = "0.4.13"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 uuid = { version = "1.4.0", features = ["v4"] }
 
 # Local libraries.

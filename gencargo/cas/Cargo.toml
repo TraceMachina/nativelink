@@ -22,7 +22,6 @@ doctest = false
 async-lock = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }
-env_logger = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true }
 json5 = { workspace = true }
@@ -36,6 +35,8 @@ tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 tonic = { workspace = true }
 tower = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Local libraries.
 ac_server = { workspace = true }

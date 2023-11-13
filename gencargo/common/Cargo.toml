@@ -21,7 +21,6 @@ doctest = false
 [dependencies]
 bytes = { workspace = true }
 hex = { workspace = true }
-log = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }

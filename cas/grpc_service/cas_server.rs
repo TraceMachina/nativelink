@@ -22,8 +22,9 @@ use bytes::Bytes;
 use futures::{stream::FuturesUnordered, stream::Stream, TryStreamExt};
 use proto::google::rpc::Status as GrpcStatus;
 use tonic::{Request, Response, Status};
+use tracing::{error, info};
 
-use common::{log, DigestInfo};
+use common::DigestInfo;
 use config::cas_server::{CasStoreConfig, InstanceName};
 use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use grpc_store::GrpcStore;
@@ -230,7 +231,7 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        log::info!("\x1b[0;31mfind_missing_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mfind_missing_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self
             .inner_find_missing_blobs(grpc_request)
@@ -239,9 +240,9 @@ impl ContentAddressableStorage for CasServer {
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() {
-            log::error!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
+            error!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
         } else {
-            log::info!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
+            info!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
         }
         resp
     }
@@ -250,7 +251,7 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        log::info!("\x1b[0;31mbatch_update_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mbatch_update_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self
             .inner_batch_update_blobs(grpc_request)
@@ -259,9 +260,9 @@ impl ContentAddressableStorage for CasServer {
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() {
-            log::error!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
+            error!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
         } else {
-            log::info!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
+            info!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
         }
         resp
     }
@@ -270,7 +271,7 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        log::info!("\x1b[0;31mbatch_read_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mbatch_read_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self
             .inner_batch_read_blobs(grpc_request)
@@ -279,16 +280,16 @@ impl ContentAddressableStorage for CasServer {
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() {
-            log::error!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
+            error!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
         } else {
-            log::info!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
+            info!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
         }
         resp
     }
 
     type GetTreeStream = GetTreeStream;
     async fn get_tree(&self, grpc_request: Request<GetTreeRequest>) -> Result<Response<Self::GetTreeStream>, Status> {
-        log::info!("\x1b[0;31mget_tree Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mget_tree Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp: Result<Response<Self::GetTreeStream>, Status> = self
             .inner_get_tree(grpc_request)
@@ -297,8 +298,8 @@ impl ContentAddressableStorage for CasServer {
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         match &resp {
-            Err(err) => log::error!("\x1b[0;31mget_tree Resp\x1b[0m: {} : {:?}", d, err),
-            Ok(_) => log::info!("\x1b[0;31mget_tree Resp\x1b[0m: {}", d),
+            Err(err) => error!("\x1b[0;31mget_tree Resp\x1b[0m: {} : {:?}", d, err),
+            Ok(_) => info!("\x1b[0;31mget_tree Resp\x1b[0m: {}", d),
         }
         resp
     }

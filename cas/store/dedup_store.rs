@@ -25,9 +25,10 @@ use bincode::{
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
+use tracing::warn;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
-use common::{log, DigestInfo};
+use common::DigestInfo;
 use error::{make_err, Code, Error, ResultExt};
 use fastcdc::FastCDC;
 use traits::{StoreTrait, UploadSizeInfo};
@@ -116,7 +117,7 @@ impl DedupStore {
 
             match self.bincode_options.deserialize::<DedupIndex>(&data) {
                 Err(e) => {
-                    log::warn!(
+                    warn!(
                         "Failed to deserialize index in dedup store : {} - {:?}",
                         digest.hash_str(),
                         e

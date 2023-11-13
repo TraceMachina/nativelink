@@ -27,11 +27,12 @@ use rand::{rngs::OsRng, Rng};
 use tokio::time::sleep;
 use tonic::transport::Channel;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
+use tracing::error;
 use uuid::Uuid;
 
 use ac_utils::ESTIMATED_DIGEST_SIZE;
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use common::{log, DigestInfo};
+use common::DigestInfo;
 use error::{error_if, make_input_err, Error, ResultExt};
 use parking_lot::Mutex;
 use proto::build::bazel::remote::execution::v2::{
@@ -305,7 +306,7 @@ impl GrpcStore {
                                 let first_slash_pos = match message.resource_name.find('/') {
                                     Some(pos) => pos,
                                     None => {
-                                        log::error!("{}", "Resource name should follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}");
+                                        error!("{}", "Resource name should follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}");
                                         return None;
                                     }
                                 };
@@ -572,7 +573,7 @@ impl StoreTrait for GrpcStore {
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
             if local_state.did_error {
-                log::error!("GrpcStore::update() polled stream after error was returned.");
+                error!("GrpcStore::update() polled stream after error was returned.");
                 return None;
             }
             let data = match local_state.reader.recv().await.err_tip(|| "In GrpcStore::update()") {

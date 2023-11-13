@@ -24,7 +24,6 @@ rust_library(
         "//proto",
         "@crate_index//:bytes",
         "@crate_index//:hex",
-        "@crate_index//:log",
         "@crate_index//:prost",
         "@crate_index//:serde",
         "@crate_index//:tokio",
@@ -47,8 +46,8 @@ rust_library(
     srcs = ["fs.rs"],
     deps = [
         ":error",
-        "@crate_index//:log",
         "@crate_index//:tokio",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -95,6 +94,7 @@ rust_library(
         "@crate_index//:futures",
         "@crate_index//:lru",
         "@crate_index//:serde",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -240,8 +240,8 @@ rust_test(
     deps = [
         ":common",
         ":error",
-        "@crate_index//:rand",
         "@crate_index//:pretty_assertions",
+        "@crate_index//:rand",
         "@crate_index//:tokio",
     ],
 )

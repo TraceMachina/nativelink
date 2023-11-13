@@ -22,10 +22,11 @@ use rand::{thread_rng, Rng};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
+use tracing::{error, info};
 
 use ac_utils::get_and_decode_digest;
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
-use common::{log, DigestInfo};
+use common::DigestInfo;
 use config::cas_server::{ExecutionConfig, InstanceName};
 use error::{make_input_err, Error, ResultExt};
 use platform_property_manager::PlatformProperties;
@@ -166,7 +167,7 @@ impl ExecutionServer {
 
     fn to_execute_stream(receiver: watch::Receiver<Arc<ActionState>>) -> Response<ExecuteStream> {
         let receiver_stream = Box::pin(WatchStream::new(receiver).map(|action_update| {
-            log::info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
+            info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
             Ok(Into::<Operation>::into(action_update.as_ref().clone()))
         }));
         tonic::Response::new(receiver_stream)
@@ -231,7 +232,7 @@ impl Execution for ExecutionServer {
 
     async fn execute(&self, grpc_request: Request<ExecuteRequest>) -> Result<Response<ExecuteStream>, Status> {
         // TODO(blaise.bruer) This is a work in progress, remote execution likely won't work yet.
-        log::info!("\x1b[0;31mexecute Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mexecute Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self
             .inner_execute(grpc_request)
@@ -240,9 +241,9 @@ impl Execution for ExecutionServer {
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = &resp {
-            log::error!("\x1b[0;31mexecute Resp\x1b[0m: {} {:?}", d, err);
+            error!("\x1b[0;31mexecute Resp\x1b[0m: {} {:?}", d, err);
         } else {
-            log::info!("\x1b[0;31mexecute Resp\x1b[0m: {}", d);
+            info!("\x1b[0;31mexecute Resp\x1b[0m: {}", d);
         }
         resp
     }

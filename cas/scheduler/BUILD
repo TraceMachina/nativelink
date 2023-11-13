@@ -17,11 +17,11 @@ rust_library(
 rust_library(
     name = "scheduler",
     srcs = ["scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -36,11 +36,11 @@ rust_library(
     name = "mock_scheduler",
     testonly = True,
     srcs = ["tests/utils/mock_scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -54,11 +54,11 @@ rust_library(
     name = "scheduler_utils",
     testonly = True,
     srcs = ["tests/utils/scheduler_utils.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -69,11 +69,11 @@ rust_library(
 rust_library(
     name = "simple_scheduler",
     srcs = ["simple_scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -83,22 +83,23 @@ rust_library(
         "//util:common",
         "//util:error",
         "//util:metrics_utils",
-        "@crate_index//:parking_lot",
         "@crate_index//:futures",
         "@crate_index//:hashbrown",
         "@crate_index//:lru",
+        "@crate_index//:parking_lot",
         "@crate_index//:tokio",
+        "@crate_index//:tracing",
     ],
 )
 
 rust_library(
     name = "cache_lookup_scheduler",
     srcs = ["cache_lookup_scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -111,12 +112,12 @@ rust_library(
         "//proto",
         "//util:common",
         "//util:error",
-        "@crate_index//:scopeguard",
         "@crate_index//:futures",
         "@crate_index//:parking_lot",
-        "@crate_index//:tonic",
+        "@crate_index//:scopeguard",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
+        "@crate_index//:tonic",
     ],
 )
 
@@ -146,11 +147,11 @@ rust_test(
 rust_library(
     name = "property_modifier_scheduler",
     srcs = ["property_modifier_scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
@@ -167,9 +168,9 @@ rust_test(
     srcs = ["tests/property_modifier_scheduler_test.rs"],
     deps = [
         ":action_messages",
-        ":property_modifier_scheduler",
         ":mock_scheduler",
         ":platform_property_manager",
+        ":property_modifier_scheduler",
         ":scheduler",
         ":scheduler_utils",
         "//config",
@@ -183,25 +184,26 @@ rust_test(
 rust_library(
     name = "grpc_scheduler",
     srcs = ["grpc_scheduler.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
     visibility = [
         "//cas:__pkg__",
         "//cas:__subpackages__",
     ],
-    proc_macro_deps = ["@crate_index//:async-trait"],
     deps = [
         ":action_messages",
         ":platform_property_manager",
         ":scheduler",
-        "//util:retry",
         "//config",
         "//proto",
         "//util:common",
         "//util:error",
+        "//util:retry",
         "@crate_index//:futures",
         "@crate_index//:parking_lot",
         "@crate_index//:rand",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
     ],
 )
 

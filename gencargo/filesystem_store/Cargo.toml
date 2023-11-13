@@ -29,6 +29,7 @@ prometheus-client = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tracing = { workspace = true }
 
 # Local libraries.
 traits = { workspace = true }

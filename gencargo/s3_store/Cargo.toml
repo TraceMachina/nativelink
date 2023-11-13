@@ -30,6 +30,7 @@ rusoto_s3 = { workspace = true }
 rusoto_signature = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+tracing = { workspace = true }
 
 # Local libraries.
 traits = { workspace = true }

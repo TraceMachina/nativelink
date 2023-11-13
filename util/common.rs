@@ -24,7 +24,6 @@ use std::task::{Context, Poll};
 use bytes::{BufMut, Bytes, BytesMut};
 pub use fs;
 use hex::FromHex;
-pub use log;
 use prost::Message;
 use proto::build::bazel::remote::execution::v2::Digest;
 use serde::{Deserialize, Serialize};

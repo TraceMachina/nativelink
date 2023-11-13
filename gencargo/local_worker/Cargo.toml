@@ -24,6 +24,7 @@ futures = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
+tracing = { workspace = true }
 
 # Local libraries.
 action_messages = { workspace = true }

@@ -29,9 +29,10 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
+use tracing::{error, info, warn};
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use common::{fs, log, DigestInfo};
+use common::{fs, DigestInfo};
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use evicting_map::{EvictingMap, LenEntry};
 use metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
@@ -97,12 +98,12 @@ impl Drop for EncodedFilePath {
         let shared_context = self.shared_context.clone();
         shared_context.active_drop_spawns.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
-            log::info!("\x1b[0;31mFilesystem Store\x1b[0m: Deleting: {:?}", file_path);
+            info!("\x1b[0;31mFilesystem Store\x1b[0m: Deleting: {:?}", file_path);
             let result = fs::remove_file(&file_path)
                 .await
                 .err_tip(|| format!("Failed to remove file {:?}", file_path));
             if let Err(err) = result {
-                log::info!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
+                error!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
             }
             shared_context.active_drop_spawns.fetch_sub(1, Ordering::Relaxed);
         });
@@ -182,7 +183,7 @@ impl FileEntry for FileEntryImpl {
                 if let Err(remove_err) = remove_result {
                     err = err.merge(remove_err);
                 }
-                log::warn!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
+                warn!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
                 Err(err).err_tip(|| format!("Failed to create {:?} in filesystem store", temp_full_path))
             })
             .await?;
@@ -282,7 +283,7 @@ impl LenEntry for FileEntryImpl {
             })
             .await;
         if let Err(e) = result {
-            log::error!("{}", e);
+            error!("{}", e);
         }
     }
 
@@ -305,18 +306,16 @@ impl LenEntry for FileEntryImpl {
 
             let to_path = to_full_path_from_digest(&encoded_file_path.shared_context.temp_path, &new_digest);
 
-            log::info!(
+            info!(
                 "\x1b[0;31mFilesystem Store\x1b[0m: Unref {}, moving file {:?} to {:?}",
                 encoded_file_path.digest.hash_str(),
                 from_path,
                 to_path
             );
             if let Err(err) = fs::rename(&from_path, &to_path).await {
-                log::warn!(
+                warn!(
                     "Failed to rename file from {:?} to {:?} : {:?}",
-                    from_path,
-                    to_path,
-                    err
+                    from_path, to_path, err
                 );
             } else {
                 encoded_file_path.path_type = PathType::Temp;
@@ -408,10 +407,9 @@ async fn add_files_to_cache<Fe: FileEntry>(
     for (file_name, atime, file_size) in file_infos {
         let result = process_entry(evicting_map, &file_name, atime, file_size, anchor_time, shared_context).await;
         if let Err(err) = result {
-            log::warn!(
+            warn!(
                 "Could not add file to eviction cache, so deleting: {} - {:?}",
-                file_name,
-                err
+                file_name, err
             );
             // Ignore result.
             let _ = fs::remove_file(format!("{}/{}", &shared_context.content_path, &file_name)).await;
@@ -430,7 +428,7 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     while let Some(dir_entry) = read_dir_stream.next().await {
         let path = dir_entry?.path();
         if let Err(err) = fs::remove_file(&path).await {
-            log::warn!("Failed to delete file in filesystem store {:?} : {:?}", &path, err);
+            warn!("Failed to delete file in filesystem store {:?} : {:?}", &path, err);
         }
     }
     Ok(())
@@ -572,7 +570,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             // Remember: At this point it is possible for another thread to have a reference to
             // `entry`, so we can't delete the file, only drop() should ever delete files.
             if let Err(err) = result {
-                log::warn!("{}", err);
+                warn!("{}", err);
                 // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
                 // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
                 drop(encoded_file_path);

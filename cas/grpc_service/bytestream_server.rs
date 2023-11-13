@@ -31,9 +31,10 @@ use proto::google::bytestream::{
 use tokio::task::AbortHandle;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
+use tracing::{enabled, error, info, Level};
 
 use buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
-use common::{log, DigestInfo};
+use common::DigestInfo;
 use config::cas_server::ByteStreamConfig;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use grpc_store::GrpcStore;
@@ -87,7 +88,7 @@ impl<'a> Drop for ActiveStreamGuard<'a> {
         let mut active_uploads = self.bytestream_server.active_uploads.lock();
         let uuid = stream_state.uuid.clone();
         let Some(active_uploads_slot) = active_uploads.get_mut(&uuid) else {
-            log::error!(
+            error!(
                 "Failed to find active upload for UUID: {}. This should never happen.",
                 uuid
             );
@@ -100,7 +101,7 @@ impl<'a> Drop for ActiveStreamGuard<'a> {
                 (*sleep_fn)().await;
                 if let Some(active_uploads) = weak_active_uploads.upgrade() {
                     let mut active_uploads = active_uploads.lock();
-                    log::debug!("Removing idle stream {uuid}");
+                    info!("Removing idle stream {uuid}");
                     active_uploads.remove(&uuid);
                 }
             })
@@ -191,7 +192,7 @@ impl ByteStreamServer {
         let mut active_uploads = self.active_uploads.lock();
         if let Some(maybe_idle_stream) = active_uploads.get_mut(&uuid) {
             if let Some(idle_stream) = maybe_idle_stream.1.take() {
-                log::info!("Joining existing stream {uuid}");
+                info!("Joining existing stream {uuid}");
                 return Ok(idle_stream.into_active_stream(maybe_idle_stream.0.clone(), self));
             }
             return Err(make_input_err!("Cannot upload same UUID simultaneously"));
@@ -286,7 +287,7 @@ impl ByteStreamServer {
                                     return Some((Err(err.into()), None));
                                 }
                                 let response = ReadResponse { data: bytes };
-                                log::debug!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: {:?}", response);
+                                info!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: {:?}", response);
                                 return Some((Ok(response), Some(state)))
                             }
                             Err(mut e) => {
@@ -310,7 +311,7 @@ impl ByteStreamServer {
                                     // message as it will be the most relevant.
                                     e.messages.resize_with(1, || "".to_string());
                                 }
-                                log::debug!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: Error {:?}", e);
+                                info!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: Error {:?}", e);
                                 return Some((Err(e.into()), None))
                             }
                         }
@@ -485,7 +486,7 @@ impl ByteStreamServer {
 impl ByteStream for ByteStreamServer {
     type ReadStream = ReadStream;
     async fn read(&self, grpc_request: Request<ReadRequest>) -> Result<Response<Self::ReadStream>, Status> {
-        log::info!("\x1b[0;31mRead Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mRead Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self
             .inner_read(grpc_request)
@@ -494,9 +495,9 @@ impl ByteStream for ByteStreamServer {
             .map_err(|e| e.into());
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = resp.as_ref() {
-            log::error!("\x1b[0;31mRead Resp\x1b[0m: {} {:?}", d, err);
+            error!("\x1b[0;31mRead Resp\x1b[0m: {} {:?}", d, err);
         } else {
-            log::info!("\x1b[0;31mRead Resp\x1b[0m: {}", d);
+            info!("\x1b[0;31mRead Resp\x1b[0m: {}", d);
         }
         resp
     }
@@ -507,13 +508,13 @@ impl ByteStream for ByteStreamServer {
             .await
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(Into::<Status>::into)?;
-        let hash = if log::log_enabled!(log::Level::Info) {
+        let hash = if enabled!(Level::DEBUG) {
             Some(stream.hash.clone())
         } else {
             None
         };
 
-        log::info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", hash);
+        info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", hash);
 
         let resp = self
             .inner_write(stream)
@@ -523,9 +524,9 @@ impl ByteStream for ByteStreamServer {
 
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = resp.as_ref() {
-            log::error!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?} {:?}", d, hash, err);
+            error!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?} {:?}", d, hash, err);
         } else {
-            log::info!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?}", d, hash);
+            info!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?}", d, hash);
         }
         resp
     }
@@ -545,11 +546,11 @@ impl ByteStream for ByteStreamServer {
 
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() {
-            log::error!("\x1b[0;31mQuery Req\x1b[0m: {:?}", query_request);
-            log::error!("\x1b[0;31mQuery Resp\x1b[0m: {} {:?}", d, resp);
+            error!("\x1b[0;31mQuery Req\x1b[0m: {:?}", query_request);
+            error!("\x1b[0;31mQuery Resp\x1b[0m: {} {:?}", d, resp);
         } else {
-            log::info!("\x1b[0;31mQuery Req\x1b[0m: {:?}", query_request);
-            log::info!("\x1b[0;31mQuery Resp\x1b[0m: {} {:?}", d, resp);
+            info!("\x1b[0;31mQuery Req\x1b[0m: {:?}", query_request);
+            info!("\x1b[0;31mQuery Resp\x1b[0m: {} {:?}", d, resp);
         }
         resp
     }

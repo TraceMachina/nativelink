@@ -16,6 +16,7 @@ rust_library(
         "@crate_index//:stdext",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -34,6 +35,7 @@ rust_library(
         "@crate_index//:bytes",
         "@crate_index//:prost",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -69,6 +71,7 @@ rust_library(
         "@crate_index//:parking_lot",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -92,6 +95,7 @@ rust_library(
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
     ],
 )
 
@@ -111,6 +115,7 @@ rust_library(
         "@crate_index//:futures",
         "@crate_index//:tokio",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
         "@crate_index//:uuid",
     ],
 )
@@ -193,8 +198,8 @@ rust_test(
         "@crate_index//:maplit",
         "@crate_index//:pretty_assertions",
         "@crate_index//:prometheus-client",
-        "@crate_index//:tokio-stream",
         "@crate_index//:tokio",
+        "@crate_index//:tokio-stream",
         "@crate_index//:tonic",
     ],
 )

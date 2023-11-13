@@ -25,6 +25,7 @@ parking_lot = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tracing = { workspace = true }
 
 # Local libraries.
 action_messages = { workspace = true }

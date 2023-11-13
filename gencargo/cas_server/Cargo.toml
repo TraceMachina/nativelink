@@ -24,6 +24,7 @@ futures = { workspace = true }
 stdext = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tracing = { workspace = true }
 
 # Local libraries.
 grpc_store = { workspace = true }
