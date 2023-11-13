@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -192,7 +192,7 @@ fn recursive_parse<'a>(
             State::Hash => {
                 output.hash = part;
                 *bytes_processed += part.len() + SLASH_SIZE;
-                // TODO(allada) Set the digest_function if it is not set based on the hash size.
+                // TODO(trace_machina) Set the digest_function if it is not set based on the hash size.
                 return Ok(State::Size);
             }
             State::Size => {

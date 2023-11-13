@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -608,7 +608,7 @@ impl Default for ActionResult {
     }
 }
 
-// TODO(allada) Remove the need for clippy argument by making the ActionResult and ProtoActionResult
+// TODO(trace_machina) Remove the need for clippy argument by making the ActionResult and ProtoActionResult
 // a Box.
 /// The execution status/stage. This should match `ExecutionStage::Value` in `remote_execution.proto`.
 #[derive(PartialEq, Debug, Clone)]
@@ -620,7 +620,7 @@ pub enum ActionStage {
     CacheCheck,
     /// Action has been accepted and waiting for worker to take it.
     Queued,
-    // TODO(allada) We need a way to know if the job was sent to a worker, but hasn't begun
+    // TODO(trace_machina) We need a way to know if the job was sent to a worker, but hasn't begun
     // execution yet.
     /// Worker is executing the action.
     Executing,

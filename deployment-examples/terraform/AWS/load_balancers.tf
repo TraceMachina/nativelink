@@ -1,7 +1,7 @@
 # --- Begin CAS Load Balancer ---
 
 resource "aws_lb" "cas_load_balancer" {
-  name                   = "turbo-cache-cas-lb"
+  name                   = "native-link-cas-lb"
   internal               = false
   load_balancer_type     = "application"
   security_groups        = [aws_security_group.cas_load_balancer_sg.id]
@@ -19,7 +19,7 @@ resource "aws_lb" "cas_load_balancer" {
 }
 
 resource "aws_lb_target_group" "cas_target_group" {
-  name                          = "turbo-cache-cas-target-group"
+  name                          = "native-link-cas-target-group"
   target_type                   = "instance"
   protocol                      = "HTTP"
   protocol_version              = "GRPC"
@@ -51,9 +51,9 @@ resource "aws_lb_listener" "cas_load_balancer_listener" {
 # --- Begin Scheduler Public Load Balancer ---
 
 resource "aws_lb" "scheduler_load_balancer" {
-  name                   = "turbo-cache-scheduler-lb"
+  name                   = "native-link-scheduler-lb"
   internal               = false
-  # TODO(allada) This really should be a TCP based load balancer, but due to it being
+  # TODO(trace_machina) This really should be a TCP based load balancer, but due to it being
   # GRPC and not supporting HTTP1.x causes the health checker to always fail.
   load_balancer_type     = "application"
   security_groups        = [aws_security_group.schedulers_load_balancer_sg.id]
@@ -71,7 +71,7 @@ resource "aws_lb" "scheduler_load_balancer" {
 }
 
 resource "aws_lb_target_group" "scheduler_target_group" {
-  name                          = "turbo-cache-scheduler-group"
+  name                          = "native-link-scheduler-group"
   target_type                   = "instance"
   protocol                      = "HTTP"
   protocol_version              = "GRPC"

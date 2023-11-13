@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "grpc_scheduler"
 path = "../../cas/scheduler/grpc_scheduler.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

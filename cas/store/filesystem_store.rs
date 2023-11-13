@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 #[derive(Debug)]
 pub struct SharedContext {
     // Used in testing to know how many active drop() spawns are running.
-    // TODO(allada) It is probably a good idea to use a spin lock during
+    // TODO(trace_machina) It is probably a good idea to use a spin lock during
     // destruction of the store to ensure that all files are actually
     // deleted (similar to how it is done in tests).
     pub active_drop_spawns: AtomicU64,

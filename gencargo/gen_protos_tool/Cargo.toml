@@ -15,7 +15,7 @@ autobenches = false
 [[bin]]
 name = "gen_protos_tool"
 path = "../../proto/gen_protos_tool.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

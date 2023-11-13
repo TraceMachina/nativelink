@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "default_store_factory"
 path = "../../cas/store/default_store_factory.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]
@@ -24,6 +24,7 @@ futures = { workspace = true }
 # Local libraries.
 compression_store = { workspace = true }
 dedup_store = { workspace = true }
+existence_store = { workspace = true }
 fast_slow_store = { workspace = true }
 filesystem_store = { workspace = true }
 grpc_store = { workspace = true }

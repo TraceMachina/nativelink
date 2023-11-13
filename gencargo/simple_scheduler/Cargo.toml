@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "simple_scheduler"
 path = "../../cas/scheduler/simple_scheduler.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

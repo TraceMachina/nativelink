@@ -15,10 +15,12 @@ autobenches = false
 [lib]
 name = "fs"
 path = "../../util/fs.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]
+bytes = { workspace = true }
+futures = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true }
 

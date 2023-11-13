@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "buf_channel"
 path = "../../util/buf_channel.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

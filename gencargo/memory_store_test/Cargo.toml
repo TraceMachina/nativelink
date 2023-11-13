@@ -15,7 +15,7 @@ autobenches = false
 [[test]]
 name = "memory_store_test"
 path = "../../cas/store/tests/memory_store_test.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

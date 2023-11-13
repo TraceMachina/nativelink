@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "fast_slow_store"
 path = "../../cas/store/fast_slow_store.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

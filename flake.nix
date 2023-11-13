@@ -1,5 +1,5 @@
 {
-  description = "turbo-cache";
+  description = "native-link";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -25,6 +25,7 @@
             nativeBuildInputs = [
               # Development tooling goes here.
               pkgs.cargo
+              pkgs.rustc
               openssl_static # Required explicitly for cargo test support.
               bazel
             ];

@@ -15,7 +15,7 @@ autobenches = false
 [[test]]
 name = "simple_scheduler_test"
 path = "../../cas/scheduler/tests/simple_scheduler_test.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

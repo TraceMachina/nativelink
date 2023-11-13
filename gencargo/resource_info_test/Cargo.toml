@@ -15,7 +15,7 @@ autobenches = false
 [[test]]
 name = "resource_info_test"
 path = "../../util/tests/resource_info_test.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

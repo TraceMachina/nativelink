@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -72,7 +72,7 @@ impl From<ProtoPlatform> for PlatformProperties {
 /// Priority - Means the worker is given this information, but does not restrict
 ///            what workers can take this value. However, the worker must have the
 ///            associated key present to be matched.
-///            TODO(allada) In the future this will be used by the scheduler and
+///            TODO(trace_machina) In the future this will be used by the scheduler and
 ///            worker to cause the scheduler to prefer certain workers over others,
 ///            but not restrict them based on these values.
 #[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug)]

@@ -2,13 +2,13 @@
 
 This service uses a JSON file as the configuration format. The JSON format is compatible with how protobuf's JSON format is structed.
 
-To view the available fields please refer to [stores.rs](https://github.com/allada/turbo-cache/blob/master/config/stores.rs) and [cas_server](https://github.com/allada/turbo-cache/blob/master/config/cas_server.rs).
+To view the available fields please refer to [stores.rs](https://github.com/trace_machina/native-link/blob/master/config/stores.rs) and [cas_server](https://github.com/trace_machina/native-link/blob/master/config/cas_server.rs).
 
 These two files should have enough documentation in them on what each field does and where each field goes.
 
 ## Examples
 
-The [examples directory](https://github.com/allada/turbo-cache/tree/master/config/examples) contains a few examples of configuration files.
+The [examples directory](https://github.com/trace_machina/native-link/tree/master/config/examples) contains a few examples of configuration files.
 
 A very basic configuration that is a pure in-memory store is:
 ```js

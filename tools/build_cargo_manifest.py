@@ -1,4 +1,4 @@
-# Copyright 2023 The Turbo Cache Authors. All rights reserved.
+# Copyright 2023 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -53,7 +53,7 @@ autobenches = false
 {type}
 name = "{name}"
 path = "{path}"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

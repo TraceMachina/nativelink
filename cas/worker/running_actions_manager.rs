@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ use std::ffi::OsString;
 use std::fmt::Debug;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
-use std::io::Cursor;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -49,8 +48,8 @@ use tonic::Request;
 use uuid::Uuid;
 
 use ac_utils::{
-    compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_file_to_store, upload_to_store,
-    ESTIMATED_DIGEST_SIZE,
+    compute_buf_digest, compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_buf_to_store,
+    upload_file_to_store, ESTIMATED_DIGEST_SIZE,
 };
 use action_messages::{
     to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
@@ -67,7 +66,7 @@ use proto::build::bazel::remote::execution::v2::{
     ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree,
 };
 use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, UpdateActionResultRequest};
-use proto::com::github::allada::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
+use proto::com::github::trace_machina::native_link::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use store::Store;
 
 pub type ActionId = [u8; 32];
@@ -501,7 +500,7 @@ struct RunningActionImplExecutionResult {
 
 struct RunningActionImplState {
     command_proto: Option<ProtoCommand>,
-    // TODO(allada) Kill is not implemented yet, but is instrumented.
+    // TODO(trace_machina) Kill is not implemented yet, but is instrumented.
     // However, it is used if the worker disconnects to destroy current jobs.
     kill_channel_tx: Option<oneshot::Sender<()>>,
     kill_channel_rx: Option<oneshot::Receiver<()>>,
@@ -801,10 +800,10 @@ impl RunningActionImpl {
                     // Defuse our guard so it does not try to cleanup and make nessless logs.
                     drop(ScopeGuard::<_, _>::into_inner(child_process_guard));
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
-                    // TODO(allada) We should implement stderr/stdout streaming to client here.
+                    // TODO(trace_machina) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
-                    // TODO(allada) There is a significant bug here. If we kill the action and the action creates
-                    // child processes, it can create zombies. See: https://github.com/allada/turbo-cache/issues/225
+                    // TODO(trace_machina) There is a significant bug here. If we kill the action and the action creates
+                    // child processes, it can create zombies. See: https://github.com/trace_machina/native-link/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
                         (Bytes::new(), Bytes::new())
@@ -1028,19 +1027,17 @@ impl RunningActionImpl {
         }
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
-            let cursor = Cursor::new(execution_result.stdout);
-            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stdout digest")?;
-            cursor.rewind().await.err_tip(|| "Could not rewind stdout cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor)
+            let data = execution_result.stdout;
+            let digest = compute_buf_digest(&data).await.err_tip(|| "Computing stdout digest")?;
+            upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stdout")?;
             Result::<DigestInfo, Error>::Ok(digest)
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
-            let cursor = Cursor::new(execution_result.stderr);
-            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stderr digest")?;
-            cursor.rewind().await.err_tip(|| "Could not stderr rewind cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor)
+            let data = execution_result.stderr;
+            let digest = compute_buf_digest(&data).await.err_tip(|| "Computing stderr digest")?;
+            upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stderr")?;
             Result::<DigestInfo, Error>::Ok(digest)
@@ -1081,7 +1078,7 @@ impl RunningActionImpl {
                 stdout_digest,
                 stderr_digest,
                 execution_metadata,
-                server_logs: HashMap::default(), // TODO(allada) Not implemented.
+                server_logs: HashMap::default(), // TODO(trace_machina) Not implemented.
                 error: state.error.clone(),
                 message: String::new(), // Will be filled in on cache_action_result if needed.
             });
@@ -1287,7 +1284,7 @@ impl UploadActionResults {
         action_digest_info: DigestInfo,
         maybe_historical_digest_info: Option<DigestInfo>,
     ) -> Result<String, Error> {
-        // TODO(allada) Currently only sha256 is supported, but soon will be dynamic.
+        // TODO(trace_machina) Currently only sha256 is supported, but soon will be dynamic.
         template_str.replace("digest_function", digest_function::Value::Sha256.as_str_name());
         template_str.replace("action_digest_hash", action_digest_info.hash_str());
         template_str.replace("action_digest_size", action_digest_info.size_bytes);

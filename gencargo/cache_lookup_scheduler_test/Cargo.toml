@@ -15,7 +15,7 @@ autobenches = false
 [[test]]
 name = "cache_lookup_scheduler_test"
 path = "../../cas/scheduler/tests/cache_lookup_scheduler_test.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

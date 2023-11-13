@@ -1,4 +1,4 @@
-# Copyright 2022-2023 The Turbo Cache Authors. All rights reserved.
+# Copyright 2022-2023 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,17 +40,17 @@ RUN apt update && \
 
 # Build the binary.
 FROM dependencies AS builder
-WORKDIR /root/turbo-cache
+WORKDIR /root/native-link
 ADD . .
 ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
 RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} //cas && \
-    cp ./bazel-bin/cas/cas /root/turbo-cache-bin
+    cp ./bazel-bin/cas/cas /root/native-link-bin
 
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
 FROM ubuntu:${OS_VERSION} as final
-COPY --from=builder /root/turbo-cache-bin /usr/local/bin/turbo-cache
+COPY --from=builder /root/native-link-bin /usr/local/bin/native-link
 # Install runtime packages.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
@@ -59,6 +59,6 @@ RUN apt-get update && \
 ARG ADDITIONAL_SETUP_WORKER_CMD
 RUN bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}"
 
-RUN mkdir -p /root/.cache/turbo-cache
+RUN mkdir -p /root/.cache/native-link
 EXPOSE 50051/tcp 50052/tcp
-CMD ["turbo-cache"]
+CMD ["native-link"]

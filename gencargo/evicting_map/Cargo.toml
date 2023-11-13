@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "evicting_map"
 path = "../../util/evicting_map.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

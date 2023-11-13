@@ -1,4 +1,4 @@
-// Copyright 2023 The Turbo Cache Authors. All rights reserved.
+// Copyright 2023 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ pub enum PropertyType {
 
     /// Does not restrict on this value and instead will be passed to the worker
     /// as an informational piece.
-    /// TODO(allada) In the future this will be used by the scheduler and worker
+    /// TODO(trace_machina) In the future this will be used by the scheduler and worker
     /// to cause the scheduler to prefer certain workers over others, but not
     /// restrict them based on these values.
     Priority,

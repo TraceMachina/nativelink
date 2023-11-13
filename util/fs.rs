@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,9 +23,12 @@ use std::sync::OnceLock;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use bytes::BytesMut;
 use error::{make_err, Code, Error, ResultExt};
+use futures::Future;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, ReadBuf, SeekFrom, Take};
 use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::time::timeout;
 
 /// We wrap all tokio::fs items in our own wrapper so we can limit the number of outstanding
 /// open files at any given time. This will greatly reduce the chance we'll hit open file limit
@@ -122,6 +125,50 @@ impl<'a> ResumeableFileSlot<'a> {
     #[inline]
     pub async fn as_writer(&mut self) -> Result<&mut FileSlot, Error> {
         Ok(self.as_reader().await?.get_mut())
+    }
+
+    /// Utility function to read data from a handler and handles file descriptor
+    /// timeouts. Chunk size is based on the `buf`'s capacity.
+    /// Note: If the `handler` changes `buf`s capcity, it is responsible for reserving
+    /// more before returning.
+    pub async fn read_buf_cb<'b, T, F, Fut>(
+        &'b mut self,
+        (mut buf, mut state): (BytesMut, T),
+        mut handler: F,
+    ) -> Result<(BytesMut, T), Error>
+    where
+        F: (FnMut((BytesMut, T)) -> Fut) + 'b,
+        Fut: Future<Output = Result<(BytesMut, T), Error>> + 'b,
+    {
+        loop {
+            buf.clear();
+            self.as_reader()
+                .await
+                .err_tip(|| "Could not get reader from file slot in read_buf_cb")?
+                .read_buf(&mut buf)
+                .await
+                .err_tip(|| "Could not read chunk during read_buf_cb")?;
+            if buf.is_empty() {
+                return Ok((buf, state));
+            }
+            let handler_fut = handler((buf, state));
+            tokio::pin!(handler_fut);
+            loop {
+                match timeout(idle_file_descriptor_timeout(), &mut handler_fut).await {
+                    Ok(Ok(output)) => {
+                        (buf, state) = output;
+                        break;
+                    }
+                    Ok(Err(err)) => return Err(err).err_tip(|| "read_buf_cb's handler returned an error"),
+                    Err(_) => {
+                        self.close_file()
+                            .await
+                            .err_tip(|| "Could not close file due to timeout in read_buf_cb")?;
+                        continue;
+                    }
+                }
+            }
+        }
     }
 }
 

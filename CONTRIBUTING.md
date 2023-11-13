@@ -1,11 +1,11 @@
-# Contributing to Turbo Cache
+# Contributing to Native Link
 
-Turbo Cache welcomes contribution from everyone. Here are the guidelines if you
+Native Link welcomes contribution from everyone. Here are the guidelines if you
 are thinking of helping us:
 
 ## Contributions
 
-Contributions to Turbo Cache or its dependencies should be made in the form of
+Contributions to Native Link or its dependencies should be made in the form of
 GitHub pull requests. Each pull request will be reviewed by a core contributor
 (someone with permission to land patches) and either landed in the main tree or
 given feedback for changes that would be required. All contributions should
@@ -58,5 +58,5 @@ various Cloud CLIs for you:
 
 ## Conduct
 
-Turbo Cache Code of Conduct is available in the
+Native Link Code of Conduct is available in the
 [CODE_OF_CONDUCT](CODE_OF_CONDUCT.md) file.

@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "grpc_store"
 path = "../../cas/store/grpc_store.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

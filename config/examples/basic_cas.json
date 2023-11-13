@@ -22,8 +22,8 @@
         // hardlinks on disk to a directory where the jobs are running.
         "fast": {
           "filesystem": {
-            "content_path": "/tmp/turbo_cache/data-worker-test/content_path-cas",
-            "temp_path": "/tmp/turbo_cache/data-worker-test/tmp_path-cas",
+            "content_path": "/tmp/native_link/data-worker-test/content_path-cas",
+            "temp_path": "/tmp/native_link/data-worker-test/tmp_path-cas",
             "eviction_policy": {
               // 10gb.
               "max_bytes": 10000000000,
@@ -70,7 +70,7 @@
       "upload_action_result": {
         "ac_store": "AC_MAIN_STORE",
       },
-      "work_directory": "/tmp/turbo_cache/work",
+      "work_directory": "/tmp/native_link/work",
       "platform_properties": {
         "cpu_count": {
           "values": ["16"],

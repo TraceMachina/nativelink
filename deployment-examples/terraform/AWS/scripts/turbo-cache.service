@@ -1,5 +1,5 @@
 [Unit]
-Description=Turbo Cache remote execution system
+Description=Native Link remote execution system
 After=network.target
 
 [Service]
@@ -7,7 +7,7 @@ Type=simple
 Restart=always
 RestartSec=1
 User=root
-ExecStart=/root/start_turbo_cache.sh
+ExecStart=/root/start_native_link.sh
 
 [Install]
 WantedBy=multi-user.target

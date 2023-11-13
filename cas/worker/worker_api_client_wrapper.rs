@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,11 @@
 // limitations under the License.
 
 use async_trait::async_trait;
-use proto::com::github::allada::turbo_cache::remote_execution::{
+<<<<<<< HEAD
+use proto::com::github::trace_machina::native_link::remote_execution::{
+=======
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
+>>>>>>> upstream/main
     worker_api_client::WorkerApiClient, ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties,
     UpdateForWorker,
 };

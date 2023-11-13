@@ -1,4 +1,4 @@
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2022 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 # --- Begin CAS ---
 
 resource "aws_launch_template" "cas_launch_template" {
-  name = "turbo_cache_cas_launch_template"
+  name = "native_link_cas_launch_template"
   update_default_version = true
 
   iam_instance_profile {
@@ -24,7 +24,7 @@ resource "aws_launch_template" "cas_launch_template" {
 
   image_id                             = aws_ami_from_instance.base_ami["arm"].id
   instance_initiated_shutdown_behavior = "terminate"
-  key_name                             = aws_key_pair.turbo_cache_key.key_name
+  key_name                             = aws_key_pair.native_link_key.key_name
   vpc_security_group_ids = [
     aws_security_group.allow_ssh_sg.id,
     aws_security_group.allow_aws_ec2_and_s3_endpoints.id,
@@ -34,14 +34,14 @@ resource "aws_launch_template" "cas_launch_template" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      "turbo_cache:instance_type" = "cas",
-      "turbo_cache:s3_cas_bucket" = aws_s3_bucket.cas_bucket.id,
+      "native_link:instance_type" = "cas",
+      "native_link:s3_cas_bucket" = aws_s3_bucket.cas_bucket.id,
     }
   }
 }
 
 resource "aws_autoscaling_group" "cas_autoscaling_group" {
-  name                      = "turbo_cache_cas_autoscaling_group"
+  name                      = "native_link_cas_autoscaling_group"
   max_size                  = 25
   min_size                  = 1
   health_check_grace_period = 300
@@ -131,7 +131,7 @@ resource "aws_autoscaling_group" "cas_autoscaling_group" {
 # --- Begin Scheduler ---
 
 resource "aws_launch_template" "scheduler_launch_template" {
-  name = "turbo_cache_scheduler_launch_template"
+  name = "native_link_scheduler_launch_template"
   update_default_version = true
 
   iam_instance_profile {
@@ -140,7 +140,7 @@ resource "aws_launch_template" "scheduler_launch_template" {
 
   image_id                             = aws_ami_from_instance.base_ami["arm"].id
   instance_initiated_shutdown_behavior = "terminate"
-  key_name                             = aws_key_pair.turbo_cache_key.key_name
+  key_name                             = aws_key_pair.native_link_key.key_name
   vpc_security_group_ids = [
     aws_security_group.allow_ssh_sg.id,
     aws_security_group.allow_aws_ec2_and_s3_endpoints.id,
@@ -150,15 +150,15 @@ resource "aws_launch_template" "scheduler_launch_template" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      "turbo_cache:instance_type" = "scheduler",
-      "turbo_cache:s3_cas_bucket" = aws_s3_bucket.cas_bucket.id,
+      "native_link:instance_type" = "scheduler",
+      "native_link:s3_cas_bucket" = aws_s3_bucket.cas_bucket.id,
     }
   }
 }
 
 resource "aws_autoscaling_group" "scheduler_autoscaling_group" {
-  name                      = "turbo_cache_scheduler_autoscaling_group"
-  # TODO(allada) We currently only support 1 scheduler at a time. Trying to support
+  name                      = "native_link_scheduler_autoscaling_group"
+  # TODO(trace_machina) We currently only support 1 scheduler at a time. Trying to support
   # more than 1 scheduler at a time is undefined behavior and might end up with
   # very strange routing.
   max_size                  = 1
@@ -234,7 +234,7 @@ resource "aws_launch_template" "worker_launch_template" {
     x86 = "x86"
   }
 
-  name = "turbo_cache_worker_launch_template_${each.key}"
+  name = "native_link_worker_launch_template_${each.key}"
   update_default_version = true
 
   iam_instance_profile {
@@ -243,7 +243,7 @@ resource "aws_launch_template" "worker_launch_template" {
 
   image_id                             = aws_ami_from_instance.base_ami[each.key].id
   instance_initiated_shutdown_behavior = "terminate"
-  key_name                             = aws_key_pair.turbo_cache_key.key_name
+  key_name                             = aws_key_pair.native_link_key.key_name
   vpc_security_group_ids = [
     aws_security_group.allow_ssh_sg.id,
     aws_security_group.allow_aws_ec2_and_s3_endpoints.id,
@@ -253,16 +253,16 @@ resource "aws_launch_template" "worker_launch_template" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      "turbo_cache:instance_type" = "worker",
-      "turbo_cache:s3_cas_bucket" = aws_s3_bucket.cas_bucket.id,
-      "turbo_cache:scheduler_endpoint" = "${var.scheduler_domain_prefix}.internal.${var.base_domain}",
+      "native_link:instance_type" = "worker",
+      "native_link:s3_cas_bucket" = aws_s3_bucket.cas_bucket.id,
+      "native_link:scheduler_endpoint" = "${var.scheduler_domain_prefix}.internal.${var.base_domain}",
     }
   }
 }
 
 # ARM 1CPU Worker.
 resource "aws_autoscaling_group" "worker_autoscaling_group_arm_1cpu" {
-  name                      = "turbo_cache_worker_autoscaling_group_arm_1cpu"
+  name                      = "native_link_worker_autoscaling_group_arm_1cpu"
   max_size                  = 200
   min_size                  = 1
   health_check_grace_period = 300
@@ -317,7 +317,7 @@ resource "aws_autoscaling_group" "worker_autoscaling_group_arm_1cpu" {
 
 # x86 1CPU Worker.
 resource "aws_autoscaling_group" "worker_autoscaling_group_x86_2cpu" {
-  name                      = "turbo_cache_worker_autoscaling_group_x86_2cpu"
+  name                      = "native_link_worker_autoscaling_group_x86_2cpu"
   max_size                  = 200
   min_size                  = 1
   health_check_grace_period = 300

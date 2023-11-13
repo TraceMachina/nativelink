@@ -1,4 +1,4 @@
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2022 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@ resource "tls_private_key" "ssh_key" {
   algorithm = "ED25519"
 }
 
-resource "aws_key_pair" "turbo_cache_key" {
-  key_name   = "turbo-cache-key"
-  public_key = data.tls_public_key.turbo_cache_pem.public_key_openssh
+resource "aws_key_pair" "native_link_key" {
+  key_name   = "native-link-key"
+  public_key = data.tls_public_key.native_link_pem.public_key_openssh
 }
 
-data "tls_public_key" "turbo_cache_pem" {
+data "tls_public_key" "native_link_pem" {
   private_key_openssh = tls_private_key.ssh_key.private_key_openssh
   # This is left here for convenience. Comment out the line above and uncomment and modify this
   # line to use a custom SSH key.

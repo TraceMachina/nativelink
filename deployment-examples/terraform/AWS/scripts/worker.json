@@ -6,13 +6,13 @@
           "LZ4": {}
         },
         "backend": {
-          // TODO(allada) This needs to be some kind of sharding store, because s3 has
+          // TODO(trace_machina) This needs to be some kind of sharding store, because s3 has
           // a 5k requests/s per path limit. To get around this we just need to create
           // enough shards and point them to the same bucket/path but with some key
           // to distinguish each shard based on the key.
           "s3_store": {
-            "region": "${TURBO_CACHE_AWS_REGION:-us-east-1}",
-            "bucket": "${TURBO_CACHE_AWS_S3_CAS_BUCKET:-not_set}",
+            "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
+            "bucket": "${NATIVE_LINK_AWS_S3_CAS_BUCKET:-not_set}",
             "key_prefix": "ac/",
             "retry": {
               "max_retries": 6,
@@ -38,13 +38,13 @@
         "slow": {
           "dedup": {
             "index_store": {
-              // TODO(allada) This needs to be some kind of sharding store, because s3 has
+              // TODO(trace_machina) This needs to be some kind of sharding store, because s3 has
               // a 5k requests/s per path limit. To get around this we just need to create
               // enough shards and point them to the same bucket/path but with some key
               // to distinguish each shard based on the key.
               "s3_store": {
-                "region": "${TURBO_CACHE_AWS_REGION:-us-east-1}",
-                "bucket": "${TURBO_CACHE_AWS_S3_CAS_BUCKET:-not_set}",
+                "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
+                "bucket": "${NATIVE_LINK_AWS_S3_CAS_BUCKET:-not_set}",
                 "key_prefix": "cas-index/",
                 "retry": {
                   "max_retries": 6,
@@ -60,13 +60,13 @@
                   "LZ4": {}
                 },
                 "backend": {
-                  // TODO(allada) This needs to be some kind of sharding store, because s3 has
+                  // TODO(trace_machina) This needs to be some kind of sharding store, because s3 has
                   // a 5k requests/s per path limit. To get around this we just need to create
                   // enough shards and point them to the same bucket/path but with some key
                   // to distinguish each shard based on the key.
                   "s3_store": {
-                    "region": "${TURBO_CACHE_AWS_REGION:-us-east-1}",
-                    "bucket": "${TURBO_CACHE_AWS_S3_CAS_BUCKET:-not_set}",
+                    "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
+                    "bucket": "${NATIVE_LINK_AWS_S3_CAS_BUCKET:-not_set}",
                     "key_prefix": "cas/",
                     "retry": {
                       "max_retries": 6,

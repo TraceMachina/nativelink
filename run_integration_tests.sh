@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2023 The Turbo Cache Authors. All rights reserved.
+# Copyright 2023 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -61,20 +61,20 @@ cd "$SELF_DIR/deployment-examples/docker-compose"
 export UNDER_TEST_RUNNER=1
 
 # Ensure our cache locations are empty.
-sudo rm -rf ~/.cache/turbo-cache
-mkdir -p ~/.cache/turbo-cache
+sudo rm -rf ~/.cache/native-link
+mkdir -p ~/.cache/native-link
 
 # Ensure our docker compose is not running.
 sudo docker-compose rm --stop -f
 
-export TMPDIR=$HOME/.cache/turbo-cache/
+export TMPDIR=$HOME/.cache/native-link/
 mkdir -p "$TMPDIR"
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
-  export CACHE_DIR=$(mktemp -d "${TMPDIR}turbo-cache-integration-test")
+  export CACHE_DIR=$(mktemp -d "${TMPDIR}native-link-integration-test")
 else
   echo "Assumes Linux/WSL"
-  export CACHE_DIR=$(mktemp -d --tmpdir="$TMPDIR" --suffix="-turbo-cache-integration-test")
+  export CACHE_DIR=$(mktemp -d --tmpdir="$TMPDIR" --suffix="-native-link-integration-test")
 fi
 
 export BAZEL_CACHE_DIR="$CACHE_DIR/bazel"
@@ -84,18 +84,18 @@ echo "" # New line.
 
 DID_FAIL=0
 
-export TURBO_CACHE_DIR="$CACHE_DIR/turbo-cache"
-mkdir -p "$TURBO_CACHE_DIR"
+export NATIVE_LINK_DIR="$CACHE_DIR/native-link"
+mkdir -p "$NATIVE_LINK_DIR"
 
 for pattern in "${TEST_PATTERNS[@]}"; do
   find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
     # Cleanup.
-    echo "Cleaning up cache directories TURBOC_CACHE_DIR: $TURBO_CACHE_DIR"
-    echo "Checking for existince of the TURBO_CACHE_DIR"
-    if [ -d "$TURBO_CACHE_DIR" ]; then
-      sudo find "$TURBO_CACHE_DIR" -delete
+    echo "Cleaning up cache directories TURBOC_CACHE_DIR: $NATIVE_LINK_DIR"
+    echo "Checking for existince of the NATIVE_LINK_DIR"
+    if [ -d "$NATIVE_LINK_DIR" ]; then
+      sudo find "$NATIVE_LINK_DIR" -delete
     else
-      echo "Directory $TURBO_CACHE_DIR does not exist."
+      echo "Directory $NATIVE_LINK_DIR does not exist."
     fi
 
     bazel --output_base="$BAZEL_CACHE_DIR" clean

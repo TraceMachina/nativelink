@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "mock_running_actions_manager"
 path = "../../cas/worker/tests/utils/mock_running_actions_manager.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2023 The Turbo Cache Authors. All rights reserved.
+# Copyright 2023 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,15 +32,15 @@ echo "$all_contents"
 
 # Check static metrics in some of the stores. These settings are set
 # in the config file of integration tests for the CAS.
-echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000'
-grep -q 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents"
-echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_read_buff_size_bytes 32768'
-grep -q 'turbo_cache_stores_AC_MAIN_STORE_read_buff_size_bytes 32768' <<< "$all_contents"
-echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000'
-grep -q 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents"
+echo 'Checking: native_link_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000'
+grep -q 'native_link_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents"
+echo 'Checking: native_link_stores_AC_MAIN_STORE_read_buff_size_bytes 32768'
+grep -q 'native_link_stores_AC_MAIN_STORE_read_buff_size_bytes 32768' <<< "$all_contents"
+echo 'Checking: native_link_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000'
+grep -q 'native_link_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents"
 
 # Ensure our store metrics are only published once.
-count=$(grep 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents" | wc -l)
+count=$(grep 'native_link_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents" | wc -l)
 if [[ $count -ne 1 ]]; then
   echo "Expected to find 1 instance of CAS_MAIN_STORE, but found $count"
   exit 1
@@ -48,7 +48,7 @@ fi
 
 # Check dynamic metrics in some of the stores.
 # These are the most stable settings to test that are dymaic.
-echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_evicting_map_item_size_bytes{quantile="0.99"}'
-grep -q 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_item_size_bytes{quantile="0.99"}' <<< "$all_contents"
-echo 'Checking: turbo_cache_stores_AC_MAIN_STORE_evicting_map_items_in_store_total 3'
-grep -q 'turbo_cache_stores_AC_MAIN_STORE_evicting_map_items_in_store_total 3' <<< "$all_contents"
+echo 'Checking: native_link_stores_AC_MAIN_STORE_evicting_map_item_size_bytes{quantile="0.99"}'
+grep -q 'native_link_stores_AC_MAIN_STORE_evicting_map_item_size_bytes{quantile="0.99"}' <<< "$all_contents"
+echo 'Checking: native_link_stores_AC_MAIN_STORE_evicting_map_items_in_store_total 3'
+grep -q 'native_link_stores_AC_MAIN_STORE_evicting_map_items_in_store_total 3' <<< "$all_contents"

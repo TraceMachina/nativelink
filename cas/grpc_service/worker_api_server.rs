@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +29,11 @@ use common::DigestInfo;
 use config::cas_server::WorkerApiConfig;
 use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformProperties;
-use proto::com::github::allada::turbo_cache::remote_execution::{
+<<<<<<< HEAD
+use proto::com::github::allada::native_link::remote_execution::{
+=======
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
+>>>>>>> upstream/main
     execute_result, worker_api_server::WorkerApi, worker_api_server::WorkerApiServer as Server, ExecuteResult,
     GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };

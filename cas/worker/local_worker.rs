@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,7 +32,11 @@ use config::cas_server::LocalWorkerConfig;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use metrics_utils::{AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
-use proto::com::github::allada::turbo_cache::remote_execution::{
+<<<<<<< HEAD
+use proto::com::github::trace_machina::native_link::remote_execution::{
+=======
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
+>>>>>>> upstream/main
     execute_result, update_for_worker::Update, worker_api_client::WorkerApiClient, ExecuteResult, KeepAliveRequest,
     UpdateForWorker,
 };
@@ -192,7 +196,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 "Got ConnectionResult in LocalWorker::run which should never happen"
                             ));
                         }
-                        // TODO(allada) We should possibly do something with this notification.
+                        // TODO(trace_machina) We should possibly do something with this notification.
                         Update::Disconnect(()) => {
                             self.metrics.disconnects_received.inc();
                         }

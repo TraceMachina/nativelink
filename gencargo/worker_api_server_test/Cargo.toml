@@ -15,7 +15,7 @@ autobenches = false
 [[test]]
 name = "worker_api_server_test"
 path = "../../cas/grpc_service/tests/worker_api_server_test.rs"
-# TODO(allada) We should support doctests.
+# TODO(trace_machina) We should support doctests.
 doctest = false
 
 [dependencies]
