@@ -29,7 +29,7 @@ use common::DigestInfo;
 use config::cas_server::WorkerApiConfig;
 use error::{make_err, Code, Error, ResultExt};
 use platform_property_manager::PlatformProperties;
-use proto::com::github::allada::turbo_cache::remote_execution::{
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
     execute_result, worker_api_server::WorkerApi, worker_api_server::WorkerApiServer as Server, ExecuteResult,
     GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
