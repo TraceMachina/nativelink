@@ -22,7 +22,6 @@ use error::{make_err, Code, Error, ResultExt};
 use futures::stream::unfold;
 use futures::TryFutureExt;
 use native_link_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
-use native_link_util::common::log;
 use native_link_util::retry::{ExponentialBackoff, Retrier, RetryResult};
 use parking_lot::Mutex;
 use proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
@@ -37,6 +36,7 @@ use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{transport, Request, Streaming};
+use tracing::{error, info, warn};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -122,7 +122,7 @@ impl GrpcScheduler {
                 loop {
                     select!(
                         _ = tx.closed() => {
-                            log::info!("Client disconnected in GrpcScheduler");
+                            info!("Client disconnected in GrpcScheduler");
                             return;
                         }
                         response = result_stream.message() => {
@@ -134,11 +134,11 @@ impl GrpcScheduler {
                             match response.try_into() {
                                 Ok(response) => {
                                     if let Err(err) = tx.send(Arc::new(response)) {
-                                        log::info!("Client disconnected in GrpcScheduler: {}", err);
+                                        info!("Client disconnected in GrpcScheduler: {}", err);
                                         return;
                                     }
                                 }
-                                Err(err) => log::error!("Error converting response to ActionState in GrpcScheduler: {}", err),
+                                Err(err) => error!("Error converting response to ActionState in GrpcScheduler: {}", err),
                             }
                         }
                     )
@@ -235,7 +235,7 @@ impl ActionScheduler for GrpcScheduler {
         match result_stream {
             Ok(result_stream) => Some(result_stream),
             Err(err) => {
-                log::warn!("Error response looking up action with upstream scheduler: {}", err);
+                warn!("Error response looking up action with upstream scheduler: {}", err);
                 None
             }
         }

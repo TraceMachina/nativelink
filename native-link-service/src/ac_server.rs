@@ -19,17 +19,18 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::BytesMut;
-use error::{make_input_err, Code, Error, ResultExt};
+use error::{make_input_err, Error, ResultExt};
 use native_link_config::cas_server::{AcStoreConfig, InstanceName};
 use native_link_store::ac_utils::{get_and_decode_digest, ESTIMATED_DIGEST_SIZE};
 use native_link_store::grpc_store::GrpcStore;
 use native_link_store::store_manager::StoreManager;
-use native_link_util::common::{log, DigestInfo};
+use native_link_util::common::DigestInfo;
 use native_link_util::store_trait::Store;
 use prost::Message;
 use proto::build::bazel::remote::execution::v2::action_cache_server::{ActionCache, ActionCacheServer as Server};
 use proto::build::bazel::remote::execution::v2::{ActionResult, GetActionResultRequest, UpdateActionResultRequest};
 use tonic::{Request, Response, Status};
+use tracing::{error, info, instrument};
 
 pub struct AcServer {
     stores: HashMap<String, Arc<dyn Store>>,
@@ -128,43 +129,45 @@ impl AcServer {
 
 #[tonic::async_trait]
 impl ActionCache for AcServer {
+    #[instrument(skip(self), fields(response_time, hash, resp))]
     async fn get_action_result(
         &self,
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let now = Instant::now();
-        log::info!("\x1b[0;31mget_action_result Req\x1b[0m: {:?}", grpc_request.get_ref());
         let hash = grpc_request
             .get_ref()
             .action_digest
             .as_ref()
             .map(|v| v.hash.to_string());
         let resp = self.inner_get_action_result(grpc_request).await;
-        let d = now.elapsed().as_secs_f32();
-        if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
-            log::error!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
-        } else {
-            log::info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
+        let response_time = now.elapsed().as_secs_f32();
+
+        tracing::Span::current().record("hash", &hash);
+        tracing::Span::current().record("response_time", response_time);
+
+        match resp {
+            Err(ref e) => match e.code {
+                error::Code::NotFound => info!("Object not found"),
+                _ => error!("Unhandleable error"),
+            },
+            Ok(_) => info!("Received"),
         }
-        return resp.map_err(|e| e.into());
+
+        Ok(resp?)
     }
 
+    #[instrument(skip(self), fields(response_time), ret, err)]
     async fn update_action_result(
         &self,
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let now = Instant::now();
-        log::info!(
-            "\x1b[0;31mupdate_action_result Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
         let resp = self.inner_update_action_result(grpc_request).await;
-        let d = now.elapsed().as_secs_f32();
-        if resp.is_err() {
-            log::error!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}", d, resp);
-        } else {
-            log::info!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}", d, resp);
-        }
-        return resp.map_err(|e| e.into());
+        let response_time = now.elapsed().as_secs_f32();
+
+        tracing::Span::current().record("response_time", response_time);
+
+        Ok(resp?)
     }
 }

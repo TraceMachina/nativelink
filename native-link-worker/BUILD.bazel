@@ -41,6 +41,7 @@ rust_library(
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
         "@crate_index//:uuid",
     ],
 )
@@ -57,7 +58,6 @@ rust_test_suite(
     ],
     proc_macro_deps = [
         "@crate_index//:async-trait",
-        "@crate_index//:ctor",
     ],
     deps = [
         ":native-link-worker",
@@ -68,7 +68,6 @@ rust_test_suite(
         "//native-link-util",
         "//proto",
         "@crate_index//:async-lock",
-        "@crate_index//:env_logger",
         "@crate_index//:futures",
         "@crate_index//:hyper",
         "@crate_index//:once_cell",

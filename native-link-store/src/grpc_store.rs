@@ -23,7 +23,7 @@ use error::{error_if, make_input_err, Error, ResultExt};
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{future, Future, Stream, TryStreamExt};
 use native_link_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use native_link_util::common::{log, DigestInfo};
+use native_link_util::common::DigestInfo;
 use native_link_util::retry::{ExponentialBackoff, Retrier, RetryResult};
 use native_link_util::store_trait::{Store, UploadSizeInfo};
 use native_link_util::write_request_stream_wrapper::WriteRequestStreamWrapper;
@@ -45,6 +45,7 @@ use rand::Rng;
 use tokio::time::sleep;
 use tonic::transport::Channel;
 use tonic::{transport, IntoRequest, Request, Response, Streaming};
+use tracing::error;
 use uuid::Uuid;
 
 use crate::ac_utils::ESTIMATED_DIGEST_SIZE;
@@ -306,7 +307,7 @@ impl GrpcStore {
                                 let first_slash_pos = match message.resource_name.find('/') {
                                     Some(pos) => pos,
                                     None => {
-                                        log::error!("{}", "Resource name should follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}");
+                                        error!("{}", "Resource name should follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}");
                                         return None;
                                     }
                                 };
@@ -573,7 +574,7 @@ impl Store for GrpcStore {
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
             if local_state.did_error {
-                log::error!("GrpcStore::update() polled stream after error was returned.");
+                error!("GrpcStore::update() polled stream after error was returned.");
                 return None;
             }
             let data = match local_state.reader.recv().await.err_tip(|| "In GrpcStore::update()") {

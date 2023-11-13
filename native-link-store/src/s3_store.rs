@@ -38,7 +38,7 @@ use hyper::service::Service;
 use hyper::Uri;
 use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
 use native_link_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use native_link_util::common::{log, DigestInfo};
+use native_link_util::common::DigestInfo;
 use native_link_util::retry::{ExponentialBackoff, Retrier, RetryResult};
 use native_link_util::store_trait::{Store, UploadSizeInfo};
 use rand::rngs::OsRng;
@@ -47,6 +47,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::info;
 
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
@@ -418,7 +419,7 @@ impl Store for S3Store {
                 .send()
                 .await;
             if let Err(err) = abort_result {
-                log::info!("\x1b[0;31ms3_store\x1b[0m: Failed to abort_multipart_upload: {:?}", err);
+                info!("\x1b[0;31ms3_store\x1b[0m: Failed to abort_multipart_upload: {:?}", err);
             }
         }
         complete_result
