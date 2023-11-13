@@ -33,6 +33,7 @@ pub use tokio::fs::DirEntry;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, ReadBuf, SeekFrom, Take};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::time::timeout;
+use tracing::error;
 
 type StreamPosition = u64;
 type BytesRemaining = u64;
@@ -243,7 +244,7 @@ pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FI
 pub fn set_open_file_limit(limit: usize) {
     let current_total = TOTAL_FILE_SEMAPHORES.load(Ordering::Acquire);
     if limit < current_total {
-        log::error!("set_open_file_limit({}) must be greater than {}", limit, current_total);
+        error!("set_open_file_limit({}) must be greater than {}", limit, current_total);
         return;
     }
     TOTAL_FILE_SEMAPHORES.fetch_add(limit - current_total, Ordering::Release);

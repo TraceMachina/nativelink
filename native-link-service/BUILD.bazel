@@ -34,6 +34,7 @@ rust_library(
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
         "@crate_index//:tonic",
+        "@crate_index//:tracing",
         "@crate_index//:uuid",
     ],
 )

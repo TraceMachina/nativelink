@@ -26,7 +26,7 @@ use futures::{select, Future, FutureExt, StreamExt, TryFutureExt};
 use native_link_config::cas_server::LocalWorkerConfig;
 use native_link_store::fast_slow_store::FastSlowStore;
 use native_link_util::action_messages::{ActionResult, ActionStage};
-use native_link_util::common::{fs, log};
+use native_link_util::common::fs;
 use native_link_util::digest_hasher::DigestHasherFunc;
 use native_link_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
@@ -43,6 +43,7 @@ use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::transport::Channel as TonicChannel;
 use tonic::Streaming;
+use tracing::{error, warn};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction, RunningActionsManager,
@@ -257,7 +258,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         // Save in the action cache before notifying the scheduler that we've completed.
                                         if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
                                             if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, try_hasher?).await {
-                                                log::error!("\x1b[0;31mError saving action in store\x1b[0m: {} - {:?}", err, action_digest);
+                                                error!("\x1b[0;31mError saving action in store\x1b[0m: {} - {:?}", err, action_digest);
                                             }
                                         }
                                         let action_stage = ActionStage::Completed(action_result);
@@ -291,7 +292,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 tokio::spawn(start_action_fut).map(move |res| {
                                     let res = res.err_tip(|| "Failed to launch spawn")?;
                                     if let Err(err) = &res {
-                                        log::info!("\x1b[0;31mError executing action\x1b[0m: {}", err);
+                                        error!("\x1b[0;31mError executing action\x1b[0m: {}", err);
                                     }
                                     add_future_channel
                                         .send(make_publish_future(res).boxed())
@@ -459,7 +460,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             .err_tip(|| "Could not unwrap sleep_fn in LocalWorker::run")?;
         let sleep_fn_pin = Pin::new(&sleep_fn);
         let error_handler = Box::pin(move |e: Error| async move {
-            log::error!("{:?}", e);
+            error!("{:?}", e);
             (sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
         });
 
@@ -490,7 +491,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                     update_for_worker_stream,
                 ),
             };
-            log::warn!("Worker {} connected to scheduler", inner.worker_id);
+            warn!("Worker {} connected to scheduler", inner.worker_id);
 
             // Now listen for connections and run all other services.
             if let Err(e) = inner.run(update_for_worker_stream).await {
@@ -509,7 +510,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                         Code::Internal,
                         "Actions in transit did not reach zero before we disconnected from the scheduler."
                     );
-                    log::error!("{e:?}");
+                    error!("{e:?}");
                     return Err(e);
                 }
                 // Kill off any existing actions because if we re-connect, we'll

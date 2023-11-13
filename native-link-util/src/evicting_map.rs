@@ -24,8 +24,9 @@ use futures::{future, StreamExt};
 use lru::LruCache;
 use native_link_config::stores::EvictionPolicy;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
-use crate::common::{log, DigestInfo};
+use crate::common::DigestInfo;
 use crate::metrics_utils::{CollectorState, Counter, CounterWithTime, MetricsComponent};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
@@ -230,7 +231,7 @@ where
             state.evicted_bytes.add(eviction_item.data.len() as u64);
             // Note: See comment in `unref()` requring global lock of insert/remove.
             eviction_item.data.unref().await;
-            log::info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.hash_str());
+            info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.hash_str());
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
