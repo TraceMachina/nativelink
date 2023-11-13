@@ -41,7 +41,7 @@ use memory_store::MemoryStore;
 use mock_running_actions_manager::MockRunningAction;
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::platform::Property;
-use proto::com::github::allada::turbo_cache::remote_execution::{
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
     execute_result, update_for_worker::Update, ConnectionResult, ExecuteResult, StartExecute, SupportedProperties,
     UpdateForWorker,
 };

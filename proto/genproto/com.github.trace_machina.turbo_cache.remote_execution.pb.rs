@@ -42,7 +42,7 @@ pub struct SupportedProperties {
     /// / the unsupported properties.
     /// /
     /// / The details on how to use this property can be found here:
-    /// / <https://github.com/allada/turbo-cache/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs>
+    /// / <https://github.com/trace_machina/turbo-cache/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs>
     #[prost(message, repeated, tag = "1")]
     pub properties: ::prost::alloc::vec::Vec<
         super::super::super::super::super::build::bazel::remote::execution::v2::platform::Property,
@@ -281,13 +281,13 @@ pub mod worker_api_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ConnectWorker",
+                "/com.github.trace_machina.turbo_cache.remote_execution.WorkerApi/ConnectWorker",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
-                        "com.github.allada.turbo_cache.remote_execution.WorkerApi",
+                        "com.github.trace_machina.turbo_cache.remote_execution.WorkerApi",
                         "ConnectWorker",
                     ),
                 );
@@ -313,13 +313,13 @@ pub mod worker_api_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/KeepAlive",
+                "/com.github.trace_machina.turbo_cache.remote_execution.WorkerApi/KeepAlive",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
-                        "com.github.allada.turbo_cache.remote_execution.WorkerApi",
+                        "com.github.trace_machina.turbo_cache.remote_execution.WorkerApi",
                         "KeepAlive",
                     ),
                 );
@@ -351,13 +351,13 @@ pub mod worker_api_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/GoingAway",
+                "/com.github.trace_machina.turbo_cache.remote_execution.WorkerApi/GoingAway",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
-                        "com.github.allada.turbo_cache.remote_execution.WorkerApi",
+                        "com.github.trace_machina.turbo_cache.remote_execution.WorkerApi",
                         "GoingAway",
                     ),
                 );
@@ -379,13 +379,13 @@ pub mod worker_api_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ExecutionResponse",
+                "/com.github.trace_machina.turbo_cache.remote_execution.WorkerApi/ExecutionResponse",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
-                        "com.github.allada.turbo_cache.remote_execution.WorkerApi",
+                        "com.github.trace_machina.turbo_cache.remote_execution.WorkerApi",
                         "ExecutionResponse",
                     ),
                 );
@@ -533,7 +533,7 @@ pub mod worker_api_server {
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             let inner = self.inner.clone();
             match req.uri().path() {
-                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ConnectWorker" => {
+                "/com.github.trace_machina.turbo_cache.remote_execution.WorkerApi/ConnectWorker" => {
                     #[allow(non_camel_case_types)]
                     struct ConnectWorkerSvc<T: WorkerApi>(pub Arc<T>);
                     impl<
@@ -580,7 +580,7 @@ pub mod worker_api_server {
                     };
                     Box::pin(fut)
                 }
-                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/KeepAlive" => {
+                "/com.github.trace_machina.turbo_cache.remote_execution.WorkerApi/KeepAlive" => {
                     #[allow(non_camel_case_types)]
                     struct KeepAliveSvc<T: WorkerApi>(pub Arc<T>);
                     impl<
@@ -624,7 +624,7 @@ pub mod worker_api_server {
                     };
                     Box::pin(fut)
                 }
-                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/GoingAway" => {
+                "/com.github.trace_machina.turbo_cache.remote_execution.WorkerApi/GoingAway" => {
                     #[allow(non_camel_case_types)]
                     struct GoingAwaySvc<T: WorkerApi>(pub Arc<T>);
                     impl<
@@ -668,7 +668,7 @@ pub mod worker_api_server {
                     };
                     Box::pin(fut)
                 }
-                "/com.github.allada.turbo_cache.remote_execution.WorkerApi/ExecutionResponse" => {
+                "/com.github.trace_machina.turbo_cache.remote_execution.WorkerApi/ExecutionResponse" => {
                     #[allow(non_camel_case_types)]
                     struct ExecutionResponseSvc<T: WorkerApi>(pub Arc<T>);
                     impl<T: WorkerApi> tonic::server::UnaryService<super::ExecuteResult>
@@ -750,6 +750,6 @@ pub mod worker_api_server {
         }
     }
     impl<T: WorkerApi> tonic::server::NamedService for WorkerApiServer<T> {
-        const NAME: &'static str = "com.github.allada.turbo_cache.remote_execution.WorkerApi";
+        const NAME: &'static str = "com.github.trace_machina.turbo_cache.remote_execution.WorkerApi";
     }
 }

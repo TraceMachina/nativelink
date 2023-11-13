@@ -23,7 +23,7 @@ use action_messages::ActionInfo;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use metrics_utils::{CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent};
 use platform_property_manager::{PlatformProperties, PlatformPropertyValue};
-use proto::com::github::allada::turbo_cache::remote_execution::{
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use tokio::sync::mpsc::UnboundedSender;

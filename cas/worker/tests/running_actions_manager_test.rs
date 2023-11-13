@@ -46,7 +46,7 @@ use proto::build::bazel::remote::execution::v2::{
     platform::Property, Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
     ExecuteResponse, FileNode, NodeProperties, Platform, SymlinkNode, Tree,
 };
-use proto::com::github::allada::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use running_actions_manager::{
     download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
     RunningActionsManagerArgs, RunningActionsManagerImpl,
