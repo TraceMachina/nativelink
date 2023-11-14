@@ -1,0 +1,123 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_binary",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+    "rust_test_suite",
+)
+
+exports_files(
+    glob(["src/**", "tests/**"]) + [
+        ".rustfmt.toml",
+        "Cargo.toml",
+        "Cargo.lock",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "native_link",
+    srcs = glob(
+        include = ["src/**/*.rs"],
+        exclude = ["src/bin/nlink.rs"],
+    ),
+    proc_macro_deps = [
+        "@crate_index//:async-trait",
+    ],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//proto",
+        "@crate_index//:async-lock",
+        "@crate_index//:aws-config",
+        "@crate_index//:aws-sdk-s3",
+        "@crate_index//:aws-smithy-runtime",
+        "@crate_index//:bincode",
+        "@crate_index//:blake3",
+        "@crate_index//:byteorder",
+        "@crate_index//:bytes",
+        "@crate_index//:filetime",
+        "@crate_index//:fixed-buffer",
+        "@crate_index//:formatx",
+        "@crate_index//:futures",
+        "@crate_index//:hashbrown",
+        "@crate_index//:hex",
+        "@crate_index//:http",
+        "@crate_index//:hyper",
+        "@crate_index//:hyper-rustls",
+        "@crate_index//:json5",
+        "@crate_index//:log",
+        "@crate_index//:lru",
+        "@crate_index//:lz4_flex",
+        "@crate_index//:once_cell",
+        "@crate_index//:parking_lot",
+        "@crate_index//:pin-project-lite",
+        "@crate_index//:prometheus-client",
+        "@crate_index//:prost",
+        "@crate_index//:prost-types",
+        "@crate_index//:rand",
+        "@crate_index//:relative-path",
+        "@crate_index//:scopeguard",
+        "@crate_index//:serde",
+        "@crate_index//:sha2",
+        "@crate_index//:shellexpand",
+        "@crate_index//:shlex",
+        "@crate_index//:tokio",
+        "@crate_index//:tokio-stream",
+        "@crate_index//:tokio-util",
+        "@crate_index//:tonic",
+        "@crate_index//:uuid",
+    ],
+)
+
+rust_binary(
+    name = "nlink",
+    srcs = ["src/bin/nlink.rs"],
+    deps = [
+        ":native_link",
+        "@crate_index//:async-lock",
+        "@crate_index//:axum",
+        "@crate_index//:clap",
+        "@crate_index//:env_logger",
+        "@crate_index//:futures",
+        "@crate_index//:hyper",
+        "@crate_index//:json5",
+        "@crate_index//:parking_lot",
+        "@crate_index//:prometheus-client",
+        "@crate_index//:rcgen",
+        "@crate_index//:rustls-pemfile",
+        "@crate_index//:scopeguard",
+        "@crate_index//:tls-listener",
+        "@crate_index//:tokio",
+        "@crate_index//:tokio-rustls",
+        "@crate_index//:tonic",
+        "@crate_index//:tower",
+    ],
+)
+
+rust_test_suite(
+    name = "native_link_tests",
+    srcs = glob(["tests/*.rs"]),
+    crate = ":native_link",
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":native_link",
+)
+
+rust_doc_test(
+    name = "native_link_doc_test",
+    crate = ":native_link",
+)
+
+genrule(
+    name = "dummy_test_sh",
+    outs = ["dummy_test.sh"],
+    cmd = "echo \"sleep .1;   echo $$(printf '=%.0s' {1..100})\" > \"$@\"",
+)
+
+sh_test(
+    name = "dummy_test",
+    srcs = [":dummy_test_sh"],
+)
