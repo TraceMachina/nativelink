@@ -913,71 +913,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "direct-cargo-bazel-deps"
-version = "0.0.1"
-dependencies = [
- "async-lock",
- "async-trait",
- "aws-config",
- "aws-sdk-config",
- "aws-sdk-s3",
- "aws-smithy-runtime",
- "aws-smithy-types",
- "axum",
- "bincode",
- "blake3",
- "byteorder",
- "bytes",
- "clap",
- "ctor",
- "env_logger",
- "filetime",
- "fixed-buffer",
- "formatx",
- "futures",
- "hashbrown 0.14.2",
- "hex",
- "http",
- "hyper",
- "hyper-rustls",
- "json5",
- "log",
- "lru",
- "lz4_flex",
- "maplit",
- "memory-stats",
- "mock_instant",
- "nix",
- "once_cell",
- "parking_lot",
- "pin-project-lite",
- "pretty_assertions",
- "prometheus-client",
- "prost",
- "prost-build",
- "prost-types",
- "rand",
- "rcgen",
- "relative-path",
- "rustls-pemfile",
- "scopeguard",
- "serde",
- "sha2",
- "shellexpand",
- "shlex",
- "stdext",
- "tls-listener",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "tokio-util",
- "tonic",
- "tonic-build",
- "tower",
- "uuid",
-]
-
-[[package]]
 name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1685,6 +1620,72 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 
 [[package]]
+name = "native-link"
+version = "0.0.0"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-config",
+ "aws-sdk-s3",
+ "aws-smithy-runtime",
+ "aws-smithy-types",
+ "axum",
+ "bincode",
+ "blake3",
+ "byteorder",
+ "bytes",
+ "clap",
+ "ctor",
+ "env_logger",
+ "filetime",
+ "fixed-buffer",
+ "formatx",
+ "futures",
+ "hashbrown 0.14.2",
+ "hex",
+ "http",
+ "hyper",
+ "hyper-rustls",
+ "json5",
+ "log",
+ "lru",
+ "lz4_flex",
+ "maplit",
+ "memory-stats",
+ "mock_instant",
+ "nix",
+ "once_cell",
+ "parking_lot",
+ "pin-project-lite",
+ "pretty_assertions",
+ "prometheus-client",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "proto",
+ "rand",
+ "rcgen",
+ "relative-path",
+ "rustls-pemfile",
+ "scopeguard",
+ "serde",
+ "sha2",
+ "shellexpand",
+ "shlex",
+ "stdext",
+ "tls-listener",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tonic-build",
+ "tower",
+ "uuid",
+]
+
+[[package]]
 name = "nix"
 version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2073,6 +2074,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "213622a1460818959ac1181aaeb2dc9c7f63df720db7d788b3e24eacd1983e13"
 dependencies = [
  "prost",
+]
+
+[[package]]
+name = "proto"
+version = "0.0.0"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
 ]
 
 [[package]]
@@ -3033,9 +3043,9 @@ checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
 
 [[package]]
 name = "uuid"
-version = "1.5.0"
+version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88ad59a7560b41a70d191093a945f0b87bc1deeda46fb237479708a1d6b6cdfc"
+checksum = "5e395fcf16a7a3d8127ec99782007af141946b4795001f876d54fb0d55978560"
 dependencies = [
  "getrandom",
 ]
