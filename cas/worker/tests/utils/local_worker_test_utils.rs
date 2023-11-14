@@ -26,7 +26,7 @@ use tonic::{
 };
 
 use common::JoinHandleDropGuard;
-use config::cas_server::{EndpointConfig, LocalWorkerConfig, WrokerProperty};
+use config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use error::Error;
 use local_worker::LocalWorker;
 use mock_running_actions_manager::MockRunningActionsManager;
@@ -68,7 +68,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
     }
 }
 
-pub async fn setup_local_worker(platform_properties: HashMap<String, WrokerProperty>) -> TestContext {
+pub async fn setup_local_worker(platform_properties: HashMap<String, WorkerProperty>) -> TestContext {
     const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
     let local_worker_config = LocalWorkerConfig {
         platform_properties,

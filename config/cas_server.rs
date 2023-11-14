@@ -269,7 +269,7 @@ pub struct ServerConfig {
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
-pub enum WrokerProperty {
+pub enum WorkerProperty {
     /// List of static values.
     /// Note: Generally there should only ever be 1 value, but if the platform
     /// property key is PropertyType::Priority it may have more than one value.
@@ -467,7 +467,7 @@ pub struct LocalWorkerConfig {
     /// Properties of this worker. This configuration will be sent to the scheduler
     /// and used to tell the scheduler to restrict what should be executed on this
     /// worker.
-    pub platform_properties: HashMap<String, WrokerProperty>,
+    pub platform_properties: HashMap<String, WorkerProperty>,
 
     /// An optional script to run before every action is processed on the worker.
     /// The value should be the full path to the script to execute and will pause
