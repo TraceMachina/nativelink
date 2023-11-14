@@ -1,0 +1,17 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "error",
+    srcs = [
+        "src/lib.rs",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//proto",
+        "@crate_index//:hex",
+        "@crate_index//:prost",
+        "@crate_index//:prost-types",
+        "@crate_index//:tokio",
+        "@crate_index//:tonic",
+    ],
+)

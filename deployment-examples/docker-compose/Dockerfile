@@ -44,9 +44,8 @@ WORKDIR /root/native-link
 ADD . .
 ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
-RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} //cas && \
-    cp ./bazel-bin/cas/cas /root/native-link-bin
-
+RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} cas && \
+    cp ./bazel-bin/cas /root/native-link-bin
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
 FROM ubuntu:${OS_VERSION} as final
