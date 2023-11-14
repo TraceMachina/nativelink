@@ -274,6 +274,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         .err_tip(|| "Error while calling execution_response")?;
                                     },
                                     Err(e) => {
+                                        let error = e.clone();
                                         grpc_client.execution_response(ExecuteResult{
                                             worker_id,
                                             instance_name,
@@ -281,6 +282,11 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             salt,
                                             result: Some(execute_result::Result::InternalError(e.into())),
                                         }).await.err_tip(|| "Error calling execution_response with error")?;
+                                        return Err(make_err!(
+                                            Code::Internal,
+                                            "Internal Error: {:?}",
+                                            error
+                                        ));
                                     },
                                 }
                                 Ok(())

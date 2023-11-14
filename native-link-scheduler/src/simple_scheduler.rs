@@ -473,10 +473,6 @@ impl SimpleSchedulerImpl {
             // Don't set the error on an action that's running somewhere else.
             log::warn!("Internal error for worker {}: {}", worker_id, err);
             running_action.action.last_error = Some(err.clone());
-            if !running_action.action.current_state.stage.has_action_result() {
-                self.metrics.update_action_missing_action_result.inc();
-                self.immediate_evict_worker(worker_id, err.clone());
-            }
         } else {
             self.metrics.update_action_with_internal_error_from_wrong_worker.inc();
             log::error!(
