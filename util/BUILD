@@ -32,6 +32,17 @@ rust_library(
 )
 
 rust_library(
+    name = "digest_hasher",
+    srcs = ["digest_hasher.rs"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":common",
+        "@crate_index//:blake3",
+        "@crate_index//:sha2",
+    ],
+)
+
+rust_library(
     name = "metrics_utils",
     srcs = ["metrics_utils.rs"],
     visibility = ["//visibility:public"],

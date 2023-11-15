@@ -36,6 +36,7 @@ members = [
   "gencargo/dedup_store_test",
   "gencargo/default_scheduler_factory",
   "gencargo/default_store_factory",
+  "gencargo/digest_hasher",
   "gencargo/error",
   "gencargo/evicting_map",
   "gencargo/evicting_map_test",
@@ -184,6 +185,7 @@ dedup_store = { path = "gencargo/dedup_store" }
 dedup_store_test = { path = "gencargo/dedup_store_test" }
 default_scheduler_factory = { path = "gencargo/default_scheduler_factory" }
 default_store_factory = { path = "gencargo/default_store_factory" }
+digest_hasher = { path = "gencargo/digest_hasher" }
 error = { path = "gencargo/error" }
 evicting_map = { path = "gencargo/evicting_map" }
 evicting_map_test = { path = "gencargo/evicting_map_test" }
