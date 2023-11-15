@@ -18,11 +18,11 @@ use std::pin::Pin;
 use bytes::{Bytes, BytesMut};
 use futures::{future::join, Future, FutureExt};
 use prost::Message;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use buf_channel::{make_buf_channel_pair, DropCloserWriteHalf};
 use common::{fs, DigestInfo};
+use digest_hasher::DigestHasher;
 use error::{Code, Error, ResultExt};
 use store::{Store, UploadSizeInfo};
 
@@ -59,37 +59,48 @@ pub async fn get_and_decode_digest<T: Message + Default>(
     T::decode(store_data).err_tip_with_code(|e| (Code::NotFound, format!("Stored value appears to be corrupt: {}", e)))
 }
 
-pub fn message_to_digest(message: &impl Message, buf: &mut BytesMut) -> Result<DigestInfo, Error> {
-    let mut hasher = Sha256::new();
-    message.encode(buf).err_tip(|| "Could not encode directory proto")?;
-    hasher.update(&buf[..]);
-    Ok(DigestInfo::new(hasher.finalize().into(), i64::try_from(buf.len())?))
+/// Computes the digest of a message.
+pub fn message_to_digest<'a>(
+    message: &impl Message,
+    mut buf: &mut BytesMut,
+    hasher: impl Into<&'a mut DigestHasher>,
+) -> Result<DigestInfo, Error> {
+    let hasher = hasher.into();
+    message
+        .encode(&mut buf)
+        .err_tip(|| "Could not encode directory proto")?;
+    hasher.update(buf);
+    Ok(hasher.finalize_digest(i64::try_from(buf.len())?))
 }
 
 /// Takes a proto message and will serialize it and upload it to the provided store.
 pub async fn serialize_and_upload_message<'a, T: Message>(
     message: &'a T,
     cas_store: Pin<&'a dyn Store>,
+    hasher: impl Into<&mut DigestHasher>,
 ) -> Result<DigestInfo, Error> {
     let mut buffer = BytesMut::with_capacity(message.encoded_len());
-    let digest = message_to_digest(message, &mut buffer).err_tip(|| "In serialize_and_upload_message")?;
+    let digest = message_to_digest(message, &mut buffer, hasher).err_tip(|| "In serialize_and_upload_message")?;
     upload_buf_to_store(cas_store, digest, buffer.freeze())
         .await
         .err_tip(|| "In serialize_and_upload_message")?;
     Ok(digest)
 }
 
-pub async fn compute_buf_digest(buf: &[u8]) -> Result<DigestInfo, Error> {
-    let mut hasher = Sha256::new();
+/// Computes a digest of a given buffer.
+pub async fn compute_buf_digest(buf: &[u8], hasher: impl Into<&mut DigestHasher>) -> Result<DigestInfo, Error> {
+    let hasher = hasher.into();
     hasher.update(buf);
-    Ok(DigestInfo::new(hasher.finalize().into(), i64::try_from(buf.len())?))
+    Ok(hasher.finalize_digest(i64::try_from(buf.len())?))
 }
 
 /// Given a bytestream computes the digest for the data.
-/// Note: This will happen in a new spawn since computing digests can be thread intensive.
-pub async fn compute_digest<R: AsyncRead + Unpin + Send>(mut reader: R) -> Result<(DigestInfo, R), Error> {
+pub async fn compute_digest<R: AsyncRead + Unpin + Send>(
+    mut reader: R,
+    hasher: impl Into<&mut DigestHasher>,
+) -> Result<(DigestInfo, R), Error> {
     let mut chunk = BytesMut::with_capacity(DEFAULT_READ_BUFF_SIZE);
-    let mut hasher = Sha256::new();
+    let hasher = hasher.into();
     let mut digest_size = 0;
     loop {
         reader
@@ -104,10 +115,7 @@ pub async fn compute_digest<R: AsyncRead + Unpin + Send>(mut reader: R) -> Resul
         chunk.clear();
     }
 
-    Ok((
-        DigestInfo::new(hasher.finalize().into(), i64::try_from(digest_size)?),
-        reader,
-    ))
+    Ok((hasher.finalize_digest(i64::try_from(digest_size)?), reader))
 }
 
 fn inner_upload_file_to_store<'a, Fut: Future<Output = Result<(), Error>> + 'a>(

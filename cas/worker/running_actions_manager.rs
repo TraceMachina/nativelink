@@ -57,6 +57,7 @@ use action_messages::{
 use async_trait::async_trait;
 use common::{fs, log, DigestInfo, JoinHandleDropGuard};
 use config::cas_server::{EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy};
+use digest_hasher::DigestHasherFunc;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
@@ -239,7 +240,9 @@ async fn upload_file(
                 .as_reader()
                 .await
                 .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?;
-            let digest = compute_digest(file_handle).await?.0;
+            let digest = compute_digest(file_handle, &mut DigestHasherFunc::Sha256.into())
+                .await?
+                .0;
             Ok::<_, Error>((digest, resumeable_file))
         }))
         .await
@@ -362,9 +365,10 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                                     })?
                                     .to_string();
 
-                                let digest = serialize_and_upload_message(&dir, cas_store)
-                                    .await
-                                    .err_tip(|| format!("for {full_path:?}"))?;
+                                let digest =
+                                    serialize_and_upload_message(&dir, cas_store, &mut DigestHasherFunc::Sha256.into())
+                                        .await
+                                        .err_tip(|| format!("for {full_path:?}"))?;
 
                                 Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
                                     DirectoryNode {
@@ -967,9 +971,13 @@ impl RunningActionImpl {
                                     root: Some(root_dir),
                                     children: children.into(),
                                 };
-                                let tree_digest = serialize_and_upload_message(&tree, cas_store)
-                                    .await
-                                    .err_tip(|| format!("While processing {entry}"))?;
+                                let tree_digest = serialize_and_upload_message(
+                                    &tree,
+                                    cas_store,
+                                    &mut DigestHasherFunc::Sha256.into(),
+                                )
+                                .await
+                                .err_tip(|| format!("While processing {entry}"))?;
                                 Ok(DirectoryInfo {
                                     path: entry,
                                     tree_digest,
@@ -1028,7 +1036,9 @@ impl RunningActionImpl {
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
             let data = execution_result.stdout;
-            let digest = compute_buf_digest(&data).await.err_tip(|| "Computing stdout digest")?;
+            let digest = compute_buf_digest(&data, &mut DigestHasherFunc::Sha256.into())
+                .await
+                .err_tip(|| "Computing stdout digest")?;
             upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stdout")?;
@@ -1036,7 +1046,9 @@ impl RunningActionImpl {
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
             let data = execution_result.stderr;
-            let digest = compute_buf_digest(&data).await.err_tip(|| "Computing stderr digest")?;
+            let digest = compute_buf_digest(&data, &mut DigestHasherFunc::Sha256.into())
+                .await
+                .err_tip(|| "Computing stderr digest")?;
             upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stderr")?;
@@ -1348,6 +1360,7 @@ impl UploadActionResults {
                 execute_response: Some(execute_response.clone()),
             },
             Pin::new(self.historical_store.as_ref()),
+            &mut DigestHasherFunc::Sha256.into(),
         )
         .await
         .err_tip(|| format!("Caching HistoricalExecuteResponse for digest: {action_digest:?}"))?;
