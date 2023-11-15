@@ -19,7 +19,6 @@ use std::ffi::OsString;
 use std::fmt::Debug;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
-use std::io::Cursor;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -49,8 +48,8 @@ use tonic::Request;
 use uuid::Uuid;
 
 use ac_utils::{
-    compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_file_to_store, upload_to_store,
-    ESTIMATED_DIGEST_SIZE,
+    compute_buf_digest, compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_buf_to_store,
+    upload_file_to_store, ESTIMATED_DIGEST_SIZE,
 };
 use action_messages::{
     to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
@@ -1028,19 +1027,17 @@ impl RunningActionImpl {
         }
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
-            let cursor = Cursor::new(execution_result.stdout);
-            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stdout digest")?;
-            cursor.rewind().await.err_tip(|| "Could not rewind stdout cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor)
+            let data = execution_result.stdout;
+            let digest = compute_buf_digest(&data).await.err_tip(|| "Computing stdout digest")?;
+            upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stdout")?;
             Result::<DigestInfo, Error>::Ok(digest)
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
-            let cursor = Cursor::new(execution_result.stderr);
-            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stderr digest")?;
-            cursor.rewind().await.err_tip(|| "Could not stderr rewind cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor)
+            let data = execution_result.stderr;
+            let digest = compute_buf_digest(&data).await.err_tip(|| "Computing stderr digest")?;
+            upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stderr")?;
             Result::<DigestInfo, Error>::Ok(digest)

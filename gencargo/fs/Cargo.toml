@@ -19,6 +19,8 @@ path = "../../util/fs.rs"
 doctest = false
 
 [dependencies]
+bytes = { workspace = true }
+futures = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true }
 
