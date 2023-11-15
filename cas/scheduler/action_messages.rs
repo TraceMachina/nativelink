@@ -20,9 +20,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use blake3::Hasher as Blake3Hasher;
 use prost::Message;
 use prost_types::Any;
-use sha2::{digest::Update as _, Digest as _, Sha256};
 
 use common::{DigestInfo, HashMapExt, VecExt};
 use error::{error_if, make_input_err, Error, ResultExt};
@@ -60,11 +60,11 @@ pub struct ActionInfoHashKey {
 impl ActionInfoHashKey {
     /// Utility function used to make a unique hash of the digest including the salt.
     pub fn get_hash(&self) -> [u8; 32] {
-        Sha256::new()
-            .chain(&self.instance_name)
-            .chain(self.digest.packed_hash)
-            .chain(self.digest.size_bytes.to_le_bytes())
-            .chain(self.salt.to_le_bytes())
+        Blake3Hasher::new()
+            .update(self.instance_name.as_bytes())
+            .update(&self.digest.packed_hash[..])
+            .update(&self.digest.size_bytes.to_le_bytes())
+            .update(&self.salt.to_le_bytes())
             .finalize()
             .into()
     }
