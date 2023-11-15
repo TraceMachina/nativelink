@@ -46,5 +46,6 @@ store = { workspace = true }
 config = { workspace = true }
 proto = { workspace = true }
 common = { workspace = true }
+digest_hasher = { workspace = true }
 error = { workspace = true }
 metrics_utils = { workspace = true }

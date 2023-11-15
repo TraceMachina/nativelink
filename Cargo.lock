@@ -45,10 +45,10 @@ dependencies = [
  "buf_channel",
  "bytes",
  "common",
+ "digest_hasher",
  "error",
  "futures",
  "prost",
- "sha2 0.10.8",
  "store",
  "tokio",
 ]
@@ -918,6 +918,15 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer 0.10.4",
  "crypto-common",
+]
+
+[[package]]
+name = "digest_hasher"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "common",
+ "sha2 0.10.8",
 ]
 
 [[package]]
@@ -2619,6 +2628,7 @@ dependencies = [
  "bytes",
  "common",
  "config",
+ "digest_hasher",
  "error",
  "fast_slow_store",
  "filesystem_store",
@@ -2650,6 +2660,7 @@ dependencies = [
  "action_messages",
  "common",
  "config",
+ "digest_hasher",
  "error",
  "fast_slow_store",
  "filesystem_store",

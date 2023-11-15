@@ -66,12 +66,12 @@ rust_library(
     deps = [
         ":store",
         "//util:buf_channel",
+        "//util:digest_hasher",
         "//util:common",
         "//util:error",
         "@crate_index//:bytes",
         "@crate_index//:futures",
         "@crate_index//:prost",
-        "@crate_index//:sha2",
         "@crate_index//:tokio",
     ],
 )
