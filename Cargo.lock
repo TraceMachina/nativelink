@@ -72,6 +72,7 @@ dependencies = [
 name = "action_messages"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "common",
  "error",
  "metrics_utils",
@@ -79,7 +80,6 @@ dependencies = [
  "prost",
  "prost-types",
  "proto",
- "sha2 0.10.8",
  "tonic",
 ]
 
@@ -1258,9 +1258,7 @@ checksum = "201b6da898350ca377d39368db6776154c63e4ad0c5480dadae52f51938ca528"
 name = "fs"
 version = "0.0.0"
 dependencies = [
- "bytes",
  "error",
- "futures",
  "log",
  "tokio",
 ]

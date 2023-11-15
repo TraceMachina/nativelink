@@ -258,9 +258,9 @@ rust_library(
         "//util:common",
         "//util:error",
         "//util:metrics_utils",
-        "@crate_index//:prost",
+        "@crate_index//:blake3",
         "@crate_index//:prost-types",
-        "@crate_index//:sha2",
+        "@crate_index//:prost",
         "@crate_index//:tonic",
     ],
 )
