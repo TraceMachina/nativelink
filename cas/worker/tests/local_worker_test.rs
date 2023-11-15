@@ -31,7 +31,7 @@ use tonic::Response;
 
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata};
 use common::{encode_stream_proto, fs, DigestInfo};
-use config::cas_server::{LocalWorkerConfig, WrokerProperty};
+use config::cas_server::{LocalWorkerConfig, WorkerProperty};
 use error::{make_err, make_input_err, Code, Error};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
@@ -76,15 +76,15 @@ mod local_worker_tests {
         let mut platform_properties = HashMap::new();
         platform_properties.insert(
             "foo".to_string(),
-            WrokerProperty::values(vec!["bar1".to_string(), "bar2".to_string()]),
+            WorkerProperty::values(vec!["bar1".to_string(), "bar2".to_string()]),
         );
         platform_properties.insert(
             "baz".to_string(),
             // Note: new lines will result in two entries for same key.
             #[cfg(target_family = "unix")]
-            WrokerProperty::query_cmd("echo -e 'hello\ngoodbye'".to_string()),
+            WorkerProperty::query_cmd("echo -e 'hello\ngoodbye'".to_string()),
             #[cfg(target_family = "windows")]
-            WrokerProperty::query_cmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
+            WorkerProperty::query_cmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
         );
         let mut test_context = setup_local_worker(platform_properties).await;
         let streaming_response = test_context.maybe_streaming_response.take().unwrap();
