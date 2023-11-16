@@ -748,6 +748,53 @@ impl From<ActionResult> for ProtoActionResult {
     }
 }
 
+impl From<ProtoActionResult> for ActionResult {
+    fn from(val: ProtoActionResult) -> Self {
+        let output_file_symlinks = val
+            .output_file_symlinks
+            .into_iter()
+            .map(|output_symlink| SymlinkInfo::try_from(output_symlink).unwrap())
+            .collect::<Vec<_>>();
+
+        let output_directory_symlinks = val
+            .output_directory_symlinks
+            .into_iter()
+            .map(|output_symlink| SymlinkInfo::try_from(output_symlink).unwrap())
+            .collect::<Vec<_>>();
+
+        Self {
+            output_files: val
+                .output_files
+                .into_iter()
+                .map(|output_file| output_file.try_into().unwrap())
+                .collect(),
+            output_folders: val
+                .output_directories
+                .into_iter()
+                .map(|output_directory| output_directory.try_into().unwrap())
+                .collect(),
+            output_file_symlinks,
+            output_directory_symlinks,
+            exit_code: val.exit_code,
+            stdout_digest: val
+                .stdout_digest
+                .map(|digest| digest.try_into().unwrap_or(DigestInfo::empty_digest()))
+                .unwrap_or(DigestInfo::empty_digest()),
+            stderr_digest: val
+                .stderr_digest
+                .map(|digest| digest.try_into().unwrap_or(DigestInfo::empty_digest()))
+                .unwrap_or_else(DigestInfo::empty_digest),
+            execution_metadata: val
+                .execution_metadata
+                .map(|metadata| metadata.try_into().unwrap_or(ExecutionMetadata::default()))
+                .unwrap_or_default(),
+            server_logs: Default::default(),
+            error: None,
+            message: String::new(),
+        }
+    }
+}
+
 impl TryFrom<ExecuteResponse> for ActionStage {
     type Error = Error;
 
