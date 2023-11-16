@@ -29,6 +29,8 @@ members = [
   "gencargo/cas_server",
   "gencargo/cas_server_test",
   "gencargo/common",
+  "gencargo/completeness_checking_store",
+  "gencargo/completeness_checking_store_test",
   "gencargo/compression_store",
   "gencargo/compression_store_test",
   "gencargo/config",
@@ -40,6 +42,8 @@ members = [
   "gencargo/evicting_map",
   "gencargo/evicting_map_test",
   "gencargo/execution_server",
+  "gencargo/existence_store",
+  "gencargo/existence_store_test",
   "gencargo/fast_slow_store",
   "gencargo/fast_slow_store_test",
   "gencargo/fastcdc",
@@ -175,6 +179,8 @@ cas = { path = "gencargo/cas" }
 cas_server = { path = "gencargo/cas_server" }
 cas_server_test = { path = "gencargo/cas_server_test" }
 common = { path = "gencargo/common" }
+completeness_checking_store = { path = "gencargo/completeness_checking_store" }
+completeness_checking_store_test = { path = "gencargo/completeness_checking_store_test" }
 compression_store = { path = "gencargo/compression_store" }
 compression_store_test = { path = "gencargo/compression_store_test" }
 config = { path = "gencargo/config" }
@@ -186,6 +192,8 @@ error = { path = "gencargo/error" }
 evicting_map = { path = "gencargo/evicting_map" }
 evicting_map_test = { path = "gencargo/evicting_map_test" }
 execution_server = { path = "gencargo/execution_server" }
+existence_store = { path = "gencargo/existence_store" }
+existence_store_test = { path = "gencargo/existence_store_test" }
 fast_slow_store = { path = "gencargo/fast_slow_store" }
 fast_slow_store_test = { path = "gencargo/fast_slow_store_test" }
 fastcdc = { path = "gencargo/fastcdc" }

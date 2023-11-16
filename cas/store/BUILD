@@ -31,10 +31,12 @@ rust_library(
         ":ref_store",
         ":s3_store",
         ":shard_store",
+        ":completeness_checking_store",
         ":size_partitioning_store",
         ":store",
         ":traits",
         ":verify_store",
+        ":existence_store",
         "//config",
         "//util:error",
         "//util:metrics_utils",
@@ -126,6 +128,29 @@ rust_library(
 )
 
 rust_library(
+    name = "completeness_checking_store",
+    srcs = ["completeness_checking_store.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    visibility = ["//cas:__pkg__"],
+    deps = [
+        ":traits",
+        ":ac_utils",
+        "//proto",
+        "//config",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "//util:metrics_utils",   
+        "//cas/scheduler:action_messages",
+        "@crate_index//:futures",
+        "@crate_index//:hashbrown",
+        "@crate_index//:hex",
+        "@crate_index//:sha2",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_library(
     name = "verify_store",
     srcs = ["verify_store.rs"],
     proc_macro_deps = ["@crate_index//:async-trait"],
@@ -137,6 +162,27 @@ rust_library(
         "//util:common",
         "//util:error",
         "//util:metrics_utils",
+        "@crate_index//:hex",
+        "@crate_index//:sha2",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_library(
+    name = "existence_store",
+    srcs = ["existence_store.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    visibility = ["//cas:__pkg__"],
+    deps = [
+        ":traits",
+        ":ac_utils",
+        "//proto",
+        "//config",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "//util:metrics_utils",
+        "@crate_index//:hashbrown",
         "@crate_index//:hex",
         "@crate_index//:sha2",
         "@crate_index//:tokio",
@@ -406,6 +452,23 @@ rust_test(
 )
 
 rust_test(
+    name = "existence_store_test",
+    srcs = ["tests/existence_store_test.rs"],
+    deps = [
+        ":memory_store",
+        ":traits",
+        ":existence_store",
+        "//config",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:futures",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_test(
     name = "s3_store_test",
     srcs = ["tests/s3_store_test.rs"],
     deps = [
@@ -457,6 +520,27 @@ rust_test(
         "//util:error",
         "@crate_index//:pretty_assertions",
         "@crate_index//:rand",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_test(
+    name = "completeness_checking_store_test",
+    srcs = ["tests/completeness_checking_store_test.rs"],
+    deps = [
+        ":memory_store",
+        ":traits",
+        ":completeness_checking_store",
+        ":store",
+        "//proto",
+        "//config",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "//cas/scheduler:action_messages",
+        "@crate_index//:prost",
+        "@crate_index//:futures",
+        "@crate_index//:pretty_assertions",
         "@crate_index//:tokio",
     ],
 )
