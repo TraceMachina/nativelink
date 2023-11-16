@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use async_trait::async_trait;
-use proto::com::github::allada::turbo_cache::remote_execution::{
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
     worker_api_client::WorkerApiClient, ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties,
     UpdateForWorker,
 };

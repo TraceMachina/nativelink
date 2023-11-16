@@ -33,10 +33,10 @@ pub mod build {
 }
 pub mod com {
   pub mod github {
-    pub mod allada {
+    pub mod trace_machina {
       pub mod turbo_cache {
         pub mod remote_execution {
-          include!("com.github.allada.turbo_cache.remote_execution.pb.rs");
+          include!("com.github.trace_machina.turbo_cache.remote_execution.pb.rs");
         }
       }
     }
