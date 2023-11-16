@@ -13,20 +13,17 @@
 // limitations under the License.
 
 use std::default::Default;
-use std::io::Cursor;
 use std::pin::Pin;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::{future::join, Future, FutureExt};
 use prost::Message;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::time::timeout;
 
 use buf_channel::{make_buf_channel_pair, DropCloserWriteHalf};
 use common::{fs, DigestInfo};
 use error::{Code, Error, ResultExt};
-use fs::idle_file_descriptor_timeout;
 use store::{Store, UploadSizeInfo};
 
 // NOTE(blaise.bruer) From some local testing it looks like action cache items are rarely greater than
@@ -62,22 +59,30 @@ pub async fn get_and_decode_digest<T: Message + Default>(
     T::decode(store_data).err_tip_with_code(|e| (Code::NotFound, format!("Stored value appears to be corrupt: {}", e)))
 }
 
+pub fn message_to_digest(message: &impl Message, buf: &mut BytesMut) -> Result<DigestInfo, Error> {
+    let mut hasher = Sha256::new();
+    message.encode(buf).err_tip(|| "Could not encode directory proto")?;
+    hasher.update(&buf[..]);
+    Ok(DigestInfo::new(hasher.finalize().into(), i64::try_from(buf.len())?))
+}
+
 /// Takes a proto message and will serialize it and upload it to the provided store.
 pub async fn serialize_and_upload_message<'a, T: Message>(
     message: &'a T,
     cas_store: Pin<&'a dyn Store>,
 ) -> Result<DigestInfo, Error> {
-    let mut buffer = BytesMut::new();
-    let digest = {
-        message
-            .encode(&mut buffer)
-            .err_tip(|| "Could not encode directory proto")?;
-        let mut hasher = Sha256::new();
-        hasher.update(&buffer);
-        DigestInfo::new(hasher.finalize().into(), buffer.len() as i64)
-    };
-    upload_to_store(cas_store, digest, &mut Cursor::new(buffer)).await?;
+    let mut buffer = BytesMut::with_capacity(message.encoded_len());
+    let digest = message_to_digest(message, &mut buffer).err_tip(|| "In serialize_and_upload_message")?;
+    upload_buf_to_store(cas_store, digest, buffer.freeze())
+        .await
+        .err_tip(|| "In serialize_and_upload_message")?;
     Ok(digest)
+}
+
+pub async fn compute_buf_digest(buf: &[u8]) -> Result<DigestInfo, Error> {
+    let mut hasher = Sha256::new();
+    hasher.update(buf);
+    Ok(DigestInfo::new(hasher.finalize().into(), i64::try_from(buf.len())?))
 }
 
 /// Given a bytestream computes the digest for the data.
@@ -99,7 +104,10 @@ pub async fn compute_digest<R: AsyncRead + Unpin + Send>(mut reader: R) -> Resul
         chunk.clear();
     }
 
-    Ok((DigestInfo::new(hasher.finalize().into(), digest_size as i64), reader))
+    Ok((
+        DigestInfo::new(hasher.finalize().into(), i64::try_from(digest_size)?),
+        reader,
+    ))
 }
 
 fn inner_upload_file_to_store<'a, Fut: Future<Output = Result<(), Error>> + 'a>(
@@ -119,75 +127,43 @@ fn inner_upload_file_to_store<'a, Fut: Future<Output = Result<(), Error>> + 'a>(
 }
 
 /// Uploads data to our store for given digest.
-/// Sadly we cannot upload our data while computing our hash, this means that we often
-/// will need to read the file two times, one to hash the file and the other to upload
-/// it. In the future we could possibly upload to store while computing the hash and
-/// then "finish" the upload by giving the digest, but not all stores will support this
-/// for now we will just always read twice.
-pub fn upload_to_store<'a, R: AsyncRead + Unpin>(
-    cas_store: Pin<&'a dyn Store>,
+pub fn upload_buf_to_store(
+    cas_store: Pin<&dyn Store>,
     digest: DigestInfo,
-    reader: &'a mut R,
-) -> impl Future<Output = Result<(), Error>> + 'a {
+    buf: Bytes,
+) -> impl Future<Output = Result<(), Error>> + '_ {
     inner_upload_file_to_store(cas_store, digest, move |mut tx| async move {
-        loop {
-            let mut chunk = BytesMut::with_capacity(DEFAULT_READ_BUFF_SIZE);
-            reader
-                .read_buf(&mut chunk)
+        if !buf.is_empty() {
+            tx.send(buf)
                 .await
-                .err_tip(|| "Could not read chunk during upload_to_store")?;
-            if chunk.is_empty() {
-                break; // EOF.
-            }
-            tx.send(chunk.freeze())
-                .await
-                .err_tip(|| "Could not send buffer data to store in upload_to_store")?;
+                .err_tip(|| "Could not send buffer data to store in upload_buf_to_store")?;
         }
         tx.send_eof()
             .await
-            .err_tip(|| "Could not send EOF to store in upload_to_store")?;
-        Ok(())
+            .err_tip(|| "Could not send EOF to store in upload_buf_to_store")
     })
 }
 
-/// Same as `upload_to_store`, however it specializes in dealing with a `ResumeableFileSlot`.
+/// Same as `upload_buf_to_store`, however it specializes in dealing with a `ResumeableFileSlot`.
 /// This will close the reading file to close if writing the data takes a while.
 pub fn upload_file_to_store<'a>(
     cas_store: Pin<&'a dyn Store>,
     digest: DigestInfo,
     mut file_reader: fs::ResumeableFileSlot<'a>,
 ) -> impl Future<Output = Result<(), Error>> + 'a {
-    inner_upload_file_to_store(cas_store, digest, move |mut tx| async move {
-        loop {
-            let mut chunk = BytesMut::with_capacity(DEFAULT_READ_BUFF_SIZE);
-            file_reader
-                .as_reader()
-                .await
-                .err_tip(|| "Could not get reader from file slot in upload_file_to_store")?
-                .read_buf(&mut chunk)
-                .await
-                .err_tip(|| "Could not read chunk during upload_file_to_store")?;
-            if chunk.is_empty() {
-                break; // EOF.
-            }
-            let send_fut = tx.send(chunk.freeze());
-            tokio::pin!(send_fut);
-            loop {
-                match timeout(idle_file_descriptor_timeout(), &mut send_fut).await {
-                    Ok(Ok(())) => break,
-                    Ok(Err(err)) => {
-                        return Err(err).err_tip(|| "Could not send buffer data to store in upload_file_to_store")
-                    }
-                    Err(_) => {
-                        file_reader
-                            .close_file()
-                            .await
-                            .err_tip(|| "Could not close file due to timeout in upload_file_to_store")?;
-                        continue;
-                    }
-                }
-            }
-        }
+    inner_upload_file_to_store(cas_store, digest, move |tx| async move {
+        let (_, mut tx) = file_reader
+            .read_buf_cb(
+                (BytesMut::with_capacity(DEFAULT_READ_BUFF_SIZE), tx),
+                move |(chunk, mut tx)| async move {
+                    tx.send(chunk.freeze())
+                        .await
+                        .err_tip(|| "Failed to send in upload_file_to_store")?;
+                    Ok((BytesMut::with_capacity(DEFAULT_READ_BUFF_SIZE), tx))
+                },
+            )
+            .await
+            .err_tip(|| "Error in upload_file_to_store::read_buf_cb section")?;
         tx.send_eof()
             .await
             .err_tip(|| "Could not send EOF to store in upload_file_to_store")?;
