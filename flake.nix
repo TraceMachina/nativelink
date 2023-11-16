@@ -25,6 +25,7 @@
             nativeBuildInputs = [
               # Development tooling goes here.
               pkgs.cargo
+              pkgs.rustc
               openssl_static # Required explicitly for cargo test support.
               bazel
             ];
