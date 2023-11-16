@@ -91,6 +91,12 @@ pub enum StoreConfig {
     /// if the individual chunks exist in the `content_store`.
     dedup(Box<DedupStore>),
 
+    /// Existence store will wrap around another store and cache calls
+    /// to has so that subsequent has_with_results calls will be
+    /// faster. This is useful for cases when you have a store that
+    /// is slow to respond to has calls.
+    existence_store(Box<ExistenceStore>),
+
     /// FastSlow store will first try to fetch the data from the `fast`
     /// store and then if it does not exist try the `slow` store.
     /// When the object does exist in the `slow` store, it will copy
@@ -292,8 +298,14 @@ pub struct DedupStore {
     pub max_concurrent_fetch_per_get: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CompletenesscheckingStore {}
+pub struct ExistenceStore {
+    /// The underlying store wrap around. All content will first flow
+    /// through self before forwarding to backend. In the event there
+    /// is an error detected in self, the connection to the backend
+    /// will be terminated, and early termination should always cause
+    /// updates to fail on the backend.
+    pub inner: StoreConfig,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct VerifyStore {

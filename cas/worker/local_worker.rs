@@ -32,7 +32,7 @@ use config::cas_server::LocalWorkerConfig;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use metrics_utils::{AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
-use proto::com::github::allada::turbo_cache::remote_execution::{
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{
     execute_result, update_for_worker::Update, worker_api_client::WorkerApiClient, ExecuteResult, KeepAliveRequest,
     UpdateForWorker,
 };

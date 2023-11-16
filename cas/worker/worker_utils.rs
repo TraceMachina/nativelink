@@ -22,19 +22,19 @@ use futures::future::try_join_all;
 use tokio::process;
 
 use common::log;
-use config::cas_server::WrokerProperty;
+use config::cas_server::WorkerProperty;
 use error::{make_err, make_input_err, Error, ResultExt};
 use proto::build::bazel::remote::execution::v2::platform::Property;
-use proto::com::github::allada::turbo_cache::remote_execution::SupportedProperties;
+use proto::com::github::trace_machina::turbo_cache::remote_execution::SupportedProperties;
 
 pub async fn make_supported_properties<S: BuildHasher>(
-    worker_properties: &HashMap<String, WrokerProperty, S>,
+    worker_properties: &HashMap<String, WorkerProperty, S>,
 ) -> Result<SupportedProperties, Error> {
     let mut futures = vec![];
     for (property_name, worker_property) in worker_properties {
         futures.push(async move {
             match worker_property {
-                WrokerProperty::values(values) => {
+                WorkerProperty::values(values) => {
                     let mut props = Vec::with_capacity(values.len());
                     for value in values {
                         props.push(Property {
@@ -44,7 +44,7 @@ pub async fn make_supported_properties<S: BuildHasher>(
                     }
                     Ok(props)
                 }
-                WrokerProperty::query_cmd(cmd) => {
+                WorkerProperty::query_cmd(cmd) => {
                     let maybe_split_cmd = shlex::split(cmd);
                     let (command, args) = match &maybe_split_cmd {
                         Some(split_cmd) => (&split_cmd[0], &split_cmd[1..]),

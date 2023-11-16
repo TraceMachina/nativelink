@@ -67,7 +67,7 @@ use proto::build::bazel::remote::execution::v2::{
     ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree,
 };
 use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, UpdateActionResultRequest};
-use proto::com::github::allada::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
+use proto::com::github::trace_machina::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use store::Store;
 
 pub type ActionId = [u8; 32];
