@@ -18,6 +18,7 @@ use std::sync::Arc;
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
 
+use completeness_checking_store::CompletenessCheckingStore;
 use compression_store::CompressionStore;
 use config::{self, stores::StoreConfig};
 use dedup_store::DedupStore;
@@ -62,6 +63,10 @@ pub fn store_factory<'a>(
             )),
             StoreConfig::existence_store(config) => Arc::new(ExistenceStore::new(
                 store_factory(&config.inner, store_manager, None).await?,
+            )),
+            StoreConfig::completeness_checking_store(config) => Arc::new(CompletenessCheckingStore::new(
+                store_factory(&config.ac_store, store_manager, None).await?,
+                store_factory(&config.cas_store, store_manager, None).await?,
             )),
             StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
                 config,
