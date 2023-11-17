@@ -231,7 +231,7 @@ mod scheduler_tests {
 
         let unique_qualifier = ActionInfoHashKey {
             instance_name: "".to_string(),
-            digest: DigestInfo::empty_digest(),
+            digest: DigestInfo::zero_digest(),
             salt: 0,
         };
 
@@ -421,7 +421,7 @@ mod scheduler_tests {
         let mut expected_action_state = ActionState {
             unique_qualifier: ActionInfoHashKey {
                 instance_name: "".to_string(),
-                digest: DigestInfo::empty_digest(),
+                digest: DigestInfo::zero_digest(),
                 salt: 0,
             }, // Will be filled later.
             stage: ActionStage::Queued,
@@ -565,7 +565,7 @@ mod scheduler_tests {
             // Name is a random string, so we ignore it and just make it the same.
             unique_qualifier: ActionInfoHashKey {
                 instance_name: "".to_string(),
-                digest: DigestInfo::empty_digest(),
+                digest: DigestInfo::zero_digest(),
                 salt: 0,
             },
             stage: ActionStage::Executing,
@@ -931,7 +931,7 @@ mod scheduler_tests {
         let mut expected_action_state = ActionState {
             unique_qualifier: ActionInfoHashKey {
                 instance_name: "".to_string(),
-                digest: DigestInfo::empty_digest(),
+                digest: DigestInfo::zero_digest(),
                 salt: 0,
             }, // Will be filled later.
             stage: ActionStage::Executing,
@@ -1313,8 +1313,8 @@ mod scheduler_tests {
                     output_file_symlinks: Vec::default(),
                     output_directory_symlinks: Vec::default(),
                     exit_code: INTERNAL_ERROR_EXIT_CODE,
-                    stdout_digest: DigestInfo::empty_digest(),
-                    stderr_digest: DigestInfo::empty_digest(),
+                    stdout_digest: DigestInfo::zero_digest(),
+                    stderr_digest: DigestInfo::zero_digest(),
                     execution_metadata: ExecutionMetadata {
                         worker: WORKER_ID.to_string(),
                         queued_timestamp: SystemTime::UNIX_EPOCH,

@@ -37,6 +37,9 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         ":common",
+        "//config",
+        "//proto",
+        "//util:error",
         "@crate_index//:blake3",
         "@crate_index//:sha2",
     ],

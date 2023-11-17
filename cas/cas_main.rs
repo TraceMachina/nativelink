@@ -42,9 +42,12 @@ use capabilities_server::CapabilitiesServer;
 use cas_server::CasServer;
 use common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
 use common::log;
-use config::cas_server::{CasConfig, CompressionAlgorithm, GlobalConfig, ServerConfig, WorkerConfig};
+use config::cas_server::{
+    CasConfig, CompressionAlgorithm, ConfigDigestHashFunction, GlobalConfig, ServerConfig, WorkerConfig,
+};
 use default_scheduler_factory::scheduler_factory;
 use default_store_factory::store_factory;
+use digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
 use error::{make_err, Code, Error, ResultExt};
 use execution_server::ExecutionServer;
 use local_worker::new_local_worker;
@@ -632,10 +635,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     service.prometheus.is_none()
                 }),
+                default_digest_hash_function: None,
             }
         };
         set_open_file_limit(global_cfg.max_open_files);
         set_idle_file_descriptor_timeout(Duration::from_millis(global_cfg.idle_file_descriptor_timeout_millis))?;
+        set_default_digest_hasher_func(DigestHasherFunc::from(
+            global_cfg
+                .default_digest_hash_function
+                .unwrap_or(ConfigDigestHashFunction::sha256),
+        ))?;
         !global_cfg.disable_metrics
     };
     // Override metrics enabled if the environment variable is set.

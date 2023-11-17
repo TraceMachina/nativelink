@@ -16,6 +16,7 @@ rust_binary(
         "//cas/worker:local_worker",
         "//config",
         "//util:common",
+        "//util:digest_hasher",
         "//util:error",
         "//util:metrics_utils",
         "@crate_index//:async-lock",

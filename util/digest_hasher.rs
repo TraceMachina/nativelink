@@ -12,15 +12,82 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::OnceLock;
+
 use blake3::Hasher as Blake3Hasher;
 use sha2::{Digest, Sha256};
 
 use common::DigestInfo;
+use config::cas_server::ConfigDigestHashFunction;
+use error::{make_err, make_input_err, Code, Error};
+use proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
+
+static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
+
+/// Get the default hasher.
+pub fn default_digest_hasher_func() -> DigestHasherFunc {
+    *DEFAULT_DIGEST_HASHER_FUNC.get_or_init(|| DigestHasherFunc::Sha256)
+}
+
+/// Sets the default hasher to use if no hasher was requested by the client.
+pub fn set_default_digest_hasher_func(hasher: DigestHasherFunc) -> Result<(), Error> {
+    DEFAULT_DIGEST_HASHER_FUNC
+        .set(hasher)
+        .map_err(|_| make_err!(Code::Internal, "default_digest_hasher_func already set"))
+}
 
 /// Supported digest hash functions.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum DigestHasherFunc {
     Sha256,
     Blake3,
+}
+
+impl DigestHasherFunc {
+    pub fn proto_digest_func(&self) -> ProtoDigestFunction {
+        match self {
+            DigestHasherFunc::Sha256 => ProtoDigestFunction::Sha256,
+            DigestHasherFunc::Blake3 => ProtoDigestFunction::Blake3,
+        }
+    }
+}
+
+impl From<ConfigDigestHashFunction> for DigestHasherFunc {
+    fn from(value: ConfigDigestHashFunction) -> Self {
+        match value {
+            ConfigDigestHashFunction::sha256 => DigestHasherFunc::Sha256,
+            ConfigDigestHashFunction::blake3 => DigestHasherFunc::Blake3,
+        }
+    }
+}
+
+impl TryFrom<ProtoDigestFunction> for DigestHasherFunc {
+    type Error = Error;
+
+    fn try_from(value: ProtoDigestFunction) -> Result<Self, Self::Error> {
+        match value {
+            ProtoDigestFunction::Sha256 => Ok(DigestHasherFunc::Sha256),
+            ProtoDigestFunction::Blake3 => Ok(DigestHasherFunc::Blake3),
+            v => Err(make_input_err!("Unknown or unsupported digest function {v:?}")),
+        }
+    }
+}
+
+impl TryFrom<i32> for DigestHasherFunc {
+    type Error = Error;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match ProtoDigestFunction::from_i32(value) {
+            // Note: Unknown represents 0, which means non-set, so use default.
+            Some(ProtoDigestFunction::Unknown) => Ok(default_digest_hasher_func()),
+            Some(ProtoDigestFunction::Sha256) => Ok(DigestHasherFunc::Sha256),
+            Some(ProtoDigestFunction::Blake3) => Ok(DigestHasherFunc::Blake3),
+            value => Err(make_input_err!(
+                "Unknown or unsupported digest function: {:?}",
+                value.map(|v| v.as_str_name())
+            )),
+        }
+    }
 }
 
 impl From<DigestHasherFunc> for DigestHasher {

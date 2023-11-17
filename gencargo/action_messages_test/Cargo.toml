@@ -27,4 +27,5 @@ action_messages = { workspace = true }
 platform_property_manager = { workspace = true }
 proto = { workspace = true }
 common = { workspace = true }
+digest_hasher = { workspace = true }
 error = { workspace = true }
