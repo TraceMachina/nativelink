@@ -754,6 +754,69 @@ impl From<ActionResult> for ProtoActionResult {
     }
 }
 
+impl TryFrom<ProtoActionResult> for ActionResult {
+    type Error = Error;
+
+    fn try_from(val: ProtoActionResult) -> Result<Self, Error> {
+        let output_file_symlinks = val
+            .output_file_symlinks
+            .into_iter()
+            .map(|output_symlink| {
+                SymlinkInfo::try_from(output_symlink)
+                    .err_tip(|| "Output File Symlinks could not be converted to SymlinkInfo")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let output_directory_symlinks = val
+            .output_directory_symlinks
+            .into_iter()
+            .map(|output_symlink| {
+                SymlinkInfo::try_from(output_symlink)
+                    .err_tip(|| "Output File Symlinks could not be converted to SymlinkInfo")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let output_files = val
+            .output_files
+            .into_iter()
+            .map(|output_file| output_file.try_into().err_tip(|| "Output File could not be converted"))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let output_folders = val
+            .output_directories
+            .into_iter()
+            .map(|output_directory| {
+                output_directory
+                    .try_into()
+                    .err_tip(|| "Output File could not be converted")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self {
+            output_files,
+            output_folders,
+            output_file_symlinks,
+            output_directory_symlinks,
+            exit_code: val.exit_code,
+            stdout_digest: val
+                .stdout_digest
+                .err_tip(|| "Expected stdout_digest to be set on ExecuteResponse msg")?
+                .try_into()?,
+            stderr_digest: val
+                .stderr_digest
+                .err_tip(|| "Expected stderr_digest to be set on ExecuteResponse msg")?
+                .try_into()?,
+            execution_metadata: val
+                .execution_metadata
+                .err_tip(|| "Expected execution_metadata to be set on ExecuteResponse msg")?
+                .try_into()?,
+            server_logs: Default::default(),
+            error: None,
+            message: String::new(),
+        })
+    }
+}
+
 impl TryFrom<ExecuteResponse> for ActionStage {
     type Error = Error;
 

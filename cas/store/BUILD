@@ -32,6 +32,7 @@ rust_library(
         ":ref_store",
         ":s3_store",
         ":shard_store",
+        ":completeness_checking_store",
         ":size_partitioning_store",
         ":store",
         ":traits",
@@ -178,6 +179,25 @@ rust_library(
         "@crate_index//:hashbrown",
         "@crate_index//:hex",
         "@crate_index//:sha2",
+        "@crate_index//:tokio",
+    ],
+)
+
+
+rust_library(
+    name = "completeness_checking_store",
+    srcs = ["completeness_checking_store.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    visibility = ["//cas:__pkg__"],
+    deps = [
+        ":traits",
+        ":ac_utils",
+        "//proto",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
+        "//cas/scheduler:action_messages",
+        "@crate_index//:futures",
         "@crate_index//:tokio",
     ],
 )
@@ -509,6 +529,25 @@ rust_test(
         "//util:error",
         "@crate_index//:pretty_assertions",
         "@crate_index//:rand",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_test(
+    name = "completeness_checking_store_test",
+    srcs = ["tests/completeness_checking_store_test.rs"],
+    deps = [
+        ":memory_store",
+        ":traits",
+        ":completeness_checking_store",
+        ":store",
+        "//proto",
+        "//config",
+        "//util:common",
+        "//util:error",
+        "@crate_index//:sha2",
+        "@crate_index//:prost",
+        "@crate_index//:pretty_assertions",
         "@crate_index//:tokio",
     ],
 )
