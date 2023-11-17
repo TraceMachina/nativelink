@@ -803,7 +803,7 @@ impl RunningActionImpl {
                     // TODO(trace_machina) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
                     // TODO(trace_machina) There is a significant bug here. If we kill the action and the action creates
-                    // child processes, it can create zombies. See: https://github.com/trace_machina/native-link/issues/225
+                    // child processes, it can create zombies. See: https://github.com/tracemachina/native-link/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
                         (Bytes::new(), Bytes::new())

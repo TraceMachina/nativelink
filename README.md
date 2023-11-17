@@ -1,6 +1,6 @@
 # Native Link
 
-[![CI](https://github.com/trace_machina/native-link/workflows/CI/badge.svg)](https://github.com/trace_machina/native-link/actions/workflows/main.yml)
+[![CI](https://github.com/tracemachina/native-link/workflows/CI/badge.svg)](https://github.com/tracemachina/native-link/actions/workflows/main.yml)
 
 An extremely fast and efficient bazel cache service (CAS) written in rust.
 
@@ -45,13 +45,13 @@ bazel test //... \
   --remote_executor=grpc://127.0.0.1:50051 \
   --remote_default_exec_properties=cpu_count=1
 ```
-This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/trace_machina/native-link/tree/master/config) for configuration documentation and [here](https://github.com/trace_machina/native-link/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
+This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/tracemachina/native-link/tree/master/config) for configuration documentation and [here](https://github.com/tracemachina/native-link/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
 
 ## Example Deployments
-We currently have a few example deployments in [deployment-examples directory](https://github.com/trace_machina/native-link/tree/master/deployment-examples).
+We currently have a few example deployments in [deployment-examples directory](https://github.com/tracemachina/native-link/tree/master/deployment-examples).
 
 ### Terraform
-The [terraform deployment](https://github.com/trace_machina/native-link/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of cloud resources to make everything much more robust.
+The [terraform deployment](https://github.com/tracemachina/native-link/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of cloud resources to make everything much more robust.
 
 The terraform deployment is very easy to setup and configure. This deployment will show off remote execution capabilities and cache capabilities.
 
@@ -111,7 +111,7 @@ cargo build --release
 
 ### Configure
 
-Configuration is done via a JSON file that is passed in as the first parameter to the `cas` program. See [here](https://github.com/trace_machina/native-link/tree/master/config) for more details and examples.
+Configuration is done via a JSON file that is passed in as the first parameter to the `cas` program. See [here](https://github.com/tracemachina/native-link/tree/master/config) for more details and examples.
 
 ## How to update internal or external rust deps
 
