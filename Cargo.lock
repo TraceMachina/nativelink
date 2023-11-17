@@ -74,6 +74,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "common",
+ "digest_hasher",
  "error",
  "metrics_utils",
  "platform_property_manager",
@@ -89,6 +90,7 @@ version = "0.0.0"
 dependencies = [
  "action_messages",
  "common",
+ "digest_hasher",
  "error",
  "platform_property_manager",
  "pretty_assertions",
@@ -527,6 +529,7 @@ name = "capabilities_server"
 version = "0.0.0"
 dependencies = [
  "config",
+ "digest_hasher",
  "error",
  "proto",
  "scheduler",
@@ -549,6 +552,7 @@ dependencies = [
  "config",
  "default_scheduler_factory",
  "default_store_factory",
+ "digest_hasher",
  "env_logger",
  "error",
  "execution_server",
@@ -871,6 +875,7 @@ dependencies = [
  "config",
  "dedup_store",
  "error",
+ "existence_store",
  "fast_slow_store",
  "filesystem_store",
  "futures",
@@ -926,6 +931,9 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "common",
+ "config",
+ "error",
+ "proto",
  "sha2 0.10.8",
 ]
 
@@ -1067,6 +1075,7 @@ dependencies = [
  "action_messages",
  "common",
  "config",
+ "digest_hasher",
  "error",
  "futures",
  "platform_property_manager",
@@ -1078,6 +1087,41 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+]
+
+[[package]]
+name = "existence_store"
+version = "0.0.0"
+dependencies = [
+ "ac_utils",
+ "async-trait",
+ "buf_channel",
+ "common",
+ "config",
+ "error",
+ "hashbrown 0.14.2",
+ "hex",
+ "metrics_utils",
+ "proto",
+ "sha2 0.10.8",
+ "tokio",
+ "traits",
+]
+
+[[package]]
+name = "existence_store_test"
+version = "0.0.0"
+dependencies = [
+ "buf_channel",
+ "common",
+ "config",
+ "error",
+ "existence_store",
+ "futures",
+ "memory_store",
+ "pretty_assertions",
+ "tokio",
+ "traits",
 ]
 
 [[package]]
@@ -1258,7 +1302,9 @@ checksum = "201b6da898350ca377d39368db6776154c63e4ad0c5480dadae52f51938ca528"
 name = "fs"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "error",
+ "futures",
  "log",
  "tokio",
 ]
@@ -1729,6 +1775,7 @@ dependencies = [
  "async-lock",
  "common",
  "config",
+ "digest_hasher",
  "error",
  "fast_slow_store",
  "futures",
@@ -1751,6 +1798,7 @@ dependencies = [
  "common",
  "config",
  "ctor",
+ "digest_hasher",
  "env_logger",
  "error",
  "fast_slow_store",
@@ -1944,6 +1992,7 @@ dependencies = [
  "async-lock",
  "async-trait",
  "common",
+ "digest_hasher",
  "error",
  "proto",
  "running_actions_manager",
@@ -2915,6 +2964,7 @@ dependencies = [
  "action_messages",
  "async-trait",
  "common",
+ "digest_hasher",
  "platform_property_manager",
 ]
 
@@ -3885,6 +3935,7 @@ dependencies = [
  "action_messages",
  "common",
  "config",
+ "digest_hasher",
  "error",
  "futures",
  "platform_property_manager",
@@ -3903,6 +3954,7 @@ dependencies = [
  "action_messages",
  "common",
  "config",
+ "digest_hasher",
  "error",
  "platform_property_manager",
  "pretty_assertions",

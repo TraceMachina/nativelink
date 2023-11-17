@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime};
 
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata};
 use common::DigestInfo;
+use digest_hasher::DigestHasherFunc;
 use error::Error;
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::ExecuteResponse;
@@ -118,6 +119,7 @@ mod action_messages_tests {
                 salt: 0,
             },
             skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Sha256,
         });
         let lowest_priority_action = Arc::new(ActionInfo {
             command_digest: DigestInfo::new([0u8; 32], 0),
@@ -135,6 +137,7 @@ mod action_messages_tests {
                 salt: 0,
             },
             skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Sha256,
         });
         let mut action_set = BTreeSet::<Arc<ActionInfo>>::new();
         action_set.insert(lowest_priority_action.clone());
@@ -168,6 +171,7 @@ mod action_messages_tests {
                 salt: 0,
             },
             skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Sha256,
         });
         let current_action = Arc::new(ActionInfo {
             command_digest: DigestInfo::new([0u8; 32], 0),
@@ -185,6 +189,7 @@ mod action_messages_tests {
                 salt: 0,
             },
             skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Sha256,
         });
         let mut action_set = BTreeSet::<Arc<ActionInfo>>::new();
         action_set.insert(current_action.clone());

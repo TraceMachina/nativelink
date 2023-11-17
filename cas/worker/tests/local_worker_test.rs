@@ -32,6 +32,7 @@ use tonic::Response;
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata};
 use common::{encode_stream_proto, fs, DigestInfo};
 use config::cas_server::{LocalWorkerConfig, WorkerProperty};
+use digest_hasher::DigestHasherFunc;
 use error::{make_err, make_input_err, Code, Error};
 use fast_slow_store::FastSlowStore;
 use filesystem_store::FilesystemStore;
@@ -178,6 +179,87 @@ mod local_worker_tests {
     }
 
     #[tokio::test]
+    async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::error::Error>> {
+        const SALT: u64 = 1000;
+
+        let mut test_context = setup_local_worker(HashMap::new()).await;
+        let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+        {
+            // Ensure our worker connects and properties were sent.
+            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            assert_eq!(props, SupportedProperties::default());
+        }
+
+        let expected_worker_id = "foobar".to_string();
+
+        let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+        {
+            // First initialize our worker by sending the response to the connection request.
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+
+        let action_digest = DigestInfo::new([3u8; 32], 10);
+        let action_info = ActionInfo {
+            command_digest: DigestInfo::new([1u8; 32], 10),
+            input_root_digest: DigestInfo::new([2u8; 32], 10),
+            timeout: Duration::from_secs(1),
+            platform_properties: PlatformProperties::default(),
+            priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::UNIX_EPOCH,
+            unique_qualifier: ActionInfoHashKey {
+                instance_name: INSTANCE_NAME.to_string(),
+                digest: action_digest,
+                salt: SALT,
+            },
+            skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Blake3,
+        };
+
+        {
+            // Send execution request.
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some(action_info.into()),
+                        salt: SALT,
+                        queued_timestamp: None,
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+        let running_action = Arc::new(MockRunningAction::new());
+
+        // Send and wait for response from create_and_add_action to RunningActionsManager.
+        test_context
+            .actions_manager
+            .expect_create_and_add_action(Ok(running_action.clone()))
+            .await;
+
+        // Now the RunningAction needs to send a series of state updates. This shortcuts them
+        // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
+        running_action
+            .simple_expect_get_finished_result(Ok(ActionResult::default()))
+            .await?;
+
+        // Expect the action to be updated in the action cache.
+        let (_stored_digest, _stored_result, digest_hasher) =
+            test_context.actions_manager.expect_cache_action_result().await;
+        assert_eq!(digest_hasher, DigestHasherFunc::Blake3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Error>> {
         const SALT: u64 = 1000;
 
@@ -220,6 +302,7 @@ mod local_worker_tests {
                 salt: SALT,
             },
             skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Sha256,
         };
 
         {
@@ -274,9 +357,11 @@ mod local_worker_tests {
             .await?;
 
         // Expect the action to be updated in the action cache.
-        let (stored_digest, stored_result) = test_context.actions_manager.expect_cache_action_result().await;
+        let (stored_digest, stored_result, digest_hasher) =
+            test_context.actions_manager.expect_cache_action_result().await;
         assert_eq!(stored_digest, action_digest);
         assert_eq!(stored_result, action_result.clone());
+        assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
 
         // Now our client should be notified that our runner finished.
         let execution_response = test_context
@@ -458,6 +543,7 @@ mod local_worker_tests {
                 salt: SALT,
             },
             skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Sha256,
         };
 
         {

@@ -29,6 +29,7 @@ use tonic::{transport::Channel as TonicChannel, Streaming};
 use action_messages::{ActionResult, ActionStage};
 use common::{fs, log};
 use config::cas_server::LocalWorkerConfig;
+use digest_hasher::DigestHasherFunc;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use metrics_utils::{AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
@@ -207,6 +208,10 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let salt = start_execute.salt;
                             let worker_id = self.worker_id.clone();
                             let action_digest = start_execute.execute_request.as_ref().and_then(|v| v.action_digest.clone());
+                            let try_hasher = start_execute.execute_request.as_ref()
+                                .ok_or(make_input_err!("Expected execute_request to be set"))
+                                .and_then(|v| DigestHasherFunc::try_from(v.digest_function))
+                                .err_tip(|| "In LocalWorkerImpl::new()");
                             let running_actions_manager = self.running_actions_manager.clone();
                             let worker_id_clone = worker_id.clone();
                             let precondition_script_cfg = self.config.precondition_script.clone();
@@ -245,7 +250,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                     Ok(mut action_result) => {
                                         // Save in the action cache before notifying the scheduler that we've completed.
                                         if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
-                                            if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result).await {
+                                            if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, try_hasher?).await {
                                                 log::error!("\x1b[0;31mError saving action in store\x1b[0m: {} - {:?}", err, action_digest);
                                             }
                                         }

@@ -44,8 +44,9 @@ use filesystem_store::FilesystemStore;
 use memory_store::MemoryStore;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use proto::build::bazel::remote::execution::v2::{
-    platform::Property, Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
-    ExecuteResponse, FileNode, NodeProperties, Platform, SymlinkNode, Tree,
+    digest_function::Value as ProtoDigestFunction, platform::Property, Action, ActionResult as ProtoActionResult,
+    Command, Directory, DirectoryNode, ExecuteRequest, ExecuteResponse, FileNode, NodeProperties, Platform,
+    SymlinkNode, Tree,
 };
 use proto::com::github::trace_machina::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use running_actions_manager::{
@@ -608,6 +609,165 @@ mod running_actions_manager_tests {
 
             running_action.cleanup().await?;
         };
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_work_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config: &config::cas_server::UploadActionResultConfig {
+                    upload_ac_results_strategy: config::cas_server::UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            },
+        )?);
+        let action_result = {
+            const SALT: u64 = 55;
+            #[cfg(target_family = "unix")]
+            let arguments = vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo -n \"123 \" > ./test.txt; echo -n \"foo-stdout \"; >&2 echo -n \"bar-stderr  \"".to_string(),
+            ];
+            #[cfg(target_family = "windows")]
+            let arguments = vec![
+                "cmd".to_string(),
+                "/C".to_string(),
+                // Note: Windows adds two spaces after 'set /p=XXX'.
+                "echo | set /p=123> ./test.txt & echo | set /p=foo-stdout & echo | set /p=bar-stderr 1>&2 & exit 0"
+                    .to_string(),
+            ];
+            let working_directory = "some_cwd";
+            let command = Command {
+                arguments,
+                output_paths: vec!["test.txt".to_string()],
+                working_directory: working_directory.to_string(),
+                ..Default::default()
+            };
+            let command_digest =
+                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Blake3.into())
+                    .await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory {
+                    directories: vec![DirectoryNode {
+                        name: working_directory.to_string(),
+                        digest: Some(
+                            serialize_and_upload_message(
+                                &Directory::default(),
+                                cas_store.as_ref(),
+                                &mut DigestHasherFunc::Blake3.into(),
+                            )
+                            .await?
+                            .into(),
+                        ),
+                    }],
+                    ..Default::default()
+                },
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Blake3.into(),
+            )
+            .await?;
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            };
+            let action_digest =
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Blake3.into()).await?;
+
+            let running_action_impl = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Blake3.into(),
+                            ..Default::default()
+                        }),
+                        salt: SALT,
+                        queued_timestamp: None,
+                    },
+                )
+                .await?;
+
+            run_action(running_action_impl.clone()).await?
+        };
+        let file_content = slow_store
+            .as_ref()
+            .get_part_unchunked(action_result.output_files[0].digest, 0, None, None)
+            .await?;
+        assert_eq!(from_utf8(&file_content)?, "123 ");
+        let stdout_content = slow_store
+            .as_ref()
+            .get_part_unchunked(action_result.stdout_digest, 0, None, None)
+            .await?;
+        assert_eq!(from_utf8(&stdout_content)?, "foo-stdout ");
+        let stderr_content = slow_store
+            .as_ref()
+            .get_part_unchunked(action_result.stderr_digest, 0, None, None)
+            .await?;
+        assert_eq!(from_utf8(&stderr_content)?, "bar-stderr  ");
+        let mut clock_time = make_system_time(0);
+        assert_eq!(
+            action_result,
+            ActionResult {
+                output_files: vec![FileInfo {
+                    name_or_path: NameOrPath::Path("test.txt".to_string()),
+                    digest: DigestInfo::try_new("3f488ba478fc6716c756922c9f34ebd7e84b85c3e03e33e22e7a3736cafdc6d8", 4)?,
+                    is_executable: false,
+                }],
+                stdout_digest: DigestInfo::try_new(
+                    "af1720193ae81515067a3ef39f0dfda3ad54a1a9d216e55d32fe5c1e178c6a7d",
+                    11
+                )?,
+                stderr_digest: DigestInfo::try_new(
+                    "65e0abbae32a3aedaf040b654c6f02ace03c7690c17a8415a90fc2ec9c809a16",
+                    12
+                )?,
+                exit_code: 0,
+                output_folders: vec![],
+                output_file_symlinks: vec![],
+                output_directory_symlinks: vec![],
+                server_logs: HashMap::new(),
+                execution_metadata: ExecutionMetadata {
+                    worker: WORKER_ID.to_string(),
+                    queued_timestamp: SystemTime::UNIX_EPOCH,
+                    worker_start_timestamp: increment_clock(&mut clock_time),
+                    input_fetch_start_timestamp: increment_clock(&mut clock_time),
+                    input_fetch_completed_timestamp: increment_clock(&mut clock_time),
+                    execution_start_timestamp: increment_clock(&mut clock_time),
+                    execution_completed_timestamp: increment_clock(&mut clock_time),
+                    output_upload_start_timestamp: increment_clock(&mut clock_time),
+                    output_upload_completed_timestamp: increment_clock(&mut clock_time),
+                    worker_completed_timestamp: increment_clock(&mut clock_time),
+                },
+                error: None,
+                message: String::new(),
+            }
+        );
         Ok(())
     }
 
@@ -1595,7 +1755,7 @@ exit 1
             message: String::new(),
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result)
+            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
             .await?;
 
         let retrieved_result = get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
@@ -1654,7 +1814,7 @@ exit 1
             message: String::new(),
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result)
+            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
             .await?;
 
         let retrieved_result = get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
@@ -1714,7 +1874,7 @@ exit 1
             message: String::new(),
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result)
+            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
             .await?;
 
         assert!(!action_result.message.is_empty(), "Message should be set");
@@ -1770,7 +1930,7 @@ exit 1
             ..Default::default()
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result)
+            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
             .await?;
 
         assert!(action_result.message.is_empty(), "Message should not be set");
@@ -1803,7 +1963,7 @@ exit 1
             ..Default::default()
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result)
+            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
             .await?;
 
         assert!(!action_result.message.is_empty(), "Message should be set");
@@ -1859,7 +2019,7 @@ exit 1
             ..Default::default()
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result)
+            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
             .await?;
 
         assert!(!action_result.message.is_empty(), "Message should be set");
