@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use action_messages::{ActionInfo, ActionInfoHashKey};
 use common::DigestInfo;
+use digest_hasher::DigestHasherFunc;
 use platform_property_manager::PlatformProperties;
 
 pub const INSTANCE_NAME: &str = "foobar_instance_name";
@@ -38,5 +39,6 @@ pub fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
             salt: 0,
         },
         skip_cache_lookup: false,
+        digest_function: DigestHasherFunc::Sha256,
     }
 }

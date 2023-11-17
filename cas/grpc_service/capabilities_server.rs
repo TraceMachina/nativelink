@@ -18,6 +18,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use config::cas_server::{CapabilitiesConfig, InstanceName};
+use digest_hasher::default_digest_hasher_func;
 use error::{Error, ResultExt};
 use proto::build::bazel::remote::execution::v2::{
     capabilities_server::Capabilities, capabilities_server::CapabilitiesServer as Server,
@@ -85,7 +86,7 @@ impl Capabilities for CapabilitiesServer {
         let instance_name = request.into_inner().instance_name;
         let maybe_supported_node_properties = self.supported_node_properties_for_instance.get(&instance_name);
         let execution_capabilities = maybe_supported_node_properties.map(|props_for_instance| ExecutionCapabilities {
-            digest_function: DigestFunction::Sha256.into(),
+            digest_function: default_digest_hasher_func().proto_digest_func().into(),
             exec_enabled: true, // TODO(blaise.bruer) Make this configurable.
             execution_priority_capabilities: Some(PriorityCapabilities {
                 priorities: vec![PriorityRange {
@@ -94,12 +95,12 @@ impl Capabilities for CapabilitiesServer {
                 }],
             }),
             supported_node_properties: props_for_instance.clone(),
-            digest_functions: vec![DigestFunction::Sha256.into()],
+            digest_functions: vec![DigestFunction::Sha256.into(), DigestFunction::Blake3.into()],
         });
 
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {
-                digest_functions: vec![DigestFunction::Sha256.into()],
+                digest_functions: vec![DigestFunction::Sha256.into(), DigestFunction::Blake3.into()],
                 action_cache_update_capabilities: Some(ActionCacheUpdateCapabilities { update_enabled: true }),
                 cache_priority_capabilities: None,
                 max_batch_total_size_bytes: MAX_BATCH_TOTAL_SIZE,

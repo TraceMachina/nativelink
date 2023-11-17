@@ -494,6 +494,13 @@ pub enum WorkerConfig {
     local(LocalWorkerConfig),
 }
 
+#[allow(non_camel_case_types)]
+#[derive(Deserialize, Debug, Clone, Copy)]
+pub enum ConfigDigestHashFunction {
+    sha256,
+    blake3,
+}
+
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct GlobalConfig {
     /// Maximum number of open files that can be opened at one time.
@@ -536,6 +543,12 @@ pub struct GlobalConfig {
     /// Default: <true (disabled) if no prometheus service enabled, false otherwise>
     #[serde(default)]
     pub disable_metrics: bool,
+
+    /// Default hash function to use while uploading blobs to the CAS when not set
+    /// by client.
+    ///
+    /// Default: ConfigDigestHashFunction::Sha256
+    pub default_digest_hash_function: Option<ConfigDigestHashFunction>,
 }
 
 #[derive(Deserialize, Debug)]

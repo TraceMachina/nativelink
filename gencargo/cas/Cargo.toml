@@ -50,5 +50,6 @@ store = { workspace = true }
 local_worker = { workspace = true }
 config = { workspace = true }
 common = { workspace = true }
+digest_hasher = { workspace = true }
 error = { workspace = true }
 metrics_utils = { workspace = true }

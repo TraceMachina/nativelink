@@ -63,11 +63,10 @@ use fast_slow_store::FastSlowStore;
 use filesystem_store::{FileEntry, FilesystemStore};
 use grpc_store::GrpcStore;
 use proto::build::bazel::remote::execution::v2::{
-    digest_function, Action, Command as ProtoCommand, Directory as ProtoDirectory, Directory, DirectoryNode,
-    ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree,
+    Action, ActionResult as ProtoActionResult, Command as ProtoCommand, Directory as ProtoDirectory, Directory,
+    DirectoryNode, ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree, UpdateActionResultRequest,
 };
-use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, UpdateActionResultRequest};
-use proto::com::github::trace_machina::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
+use proto::com::github::allada::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use store::Store;
 
 pub type ActionId = [u8; 32];
@@ -233,6 +232,7 @@ async fn upload_file(
     mut resumeable_file: fs::ResumeableFileSlot<'static>,
     cas_store: Pin<&dyn Store>,
     full_path: impl AsRef<Path> + Debug,
+    hasher: DigestHasherFunc,
 ) -> Result<FileInfo, Error> {
     let (digest, is_executable, resumeable_file) = {
         let (digest, mut resumeable_file) = JoinHandleDropGuard::new(tokio::spawn(async move {
@@ -240,9 +240,7 @@ async fn upload_file(
                 .as_reader()
                 .await
                 .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?;
-            let digest = compute_digest(file_handle, &mut DigestHasherFunc::Sha256.into())
-                .await?
-                .0;
+            let digest = compute_digest(file_handle, &mut hasher.into()).await?.0;
             Ok::<_, Error>((digest, resumeable_file))
         }))
         .await
@@ -326,6 +324,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     cas_store: Pin<&'a dyn Store>,
     full_dir_path: P,
     full_work_directory: &'a str,
+    hasher: DigestHasherFunc,
 ) -> BoxFuture<'a, Result<(Directory, VecDeque<ProtoDirectory>), Error>> {
     Box::pin(async move {
         let file_futures = FuturesUnordered::new();
@@ -354,7 +353,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                 if file_type.is_dir() {
                     let full_dir_path = full_dir_path.clone();
                     dir_futures.push(
-                        upload_directory(cas_store, full_path.clone(), full_work_directory)
+                        upload_directory(cas_store, full_path.clone(), full_work_directory, hasher)
                             .and_then(|(dir, all_dirs)| async move {
                                 let directory_name = full_path
                                     .file_name()
@@ -365,10 +364,9 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                                     })?
                                     .to_string();
 
-                                let digest =
-                                    serialize_and_upload_message(&dir, cas_store, &mut DigestHasherFunc::Sha256.into())
-                                        .await
-                                        .err_tip(|| format!("for {full_path:?}"))?;
+                                let digest = serialize_and_upload_message(&dir, cas_store, &mut hasher.into())
+                                    .await
+                                    .err_tip(|| format!("for {full_path:?}"))?;
 
                                 Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
                                     DirectoryNode {
@@ -385,7 +383,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                         let file_handle = fs::open_file(full_path.as_os_str().to_os_string(), u64::MAX)
                             .await
                             .err_tip(|| format!("Could not open file {full_path:?}"))?;
-                        upload_file(file_handle, cas_store, &full_path)
+                        upload_file(file_handle, cas_store, &full_path, hasher)
                             .map_ok(|v| v.into())
                             .await
                     });
@@ -897,6 +895,7 @@ impl RunningActionImpl {
             )
         };
         let cas_store = Pin::new(self.running_actions_manager.cas_store.as_ref());
+        let hasher = self.action_info.digest_function;
         enum OutputType {
             None,
             File(FileInfo),
@@ -952,7 +951,7 @@ impl RunningActionImpl {
                     .err_tip(|| format!("While querying symlink metadata for {entry}"))?;
                     if metadata.is_file() {
                         return Ok(OutputType::File(
-                            upload_file(resumeable_file, cas_store, &full_path)
+                            upload_file(resumeable_file, cas_store, &full_path, hasher)
                                 .await
                                 .map(|mut file_info| {
                                     file_info.name_or_path = NameOrPath::Path(entry);
@@ -965,19 +964,15 @@ impl RunningActionImpl {
                 };
                 if metadata.is_dir() {
                     Ok(OutputType::Directory(
-                        upload_directory(cas_store, &full_path, work_directory)
+                        upload_directory(cas_store, &full_path, work_directory, hasher)
                             .and_then(|(root_dir, children)| async move {
                                 let tree = ProtoTree {
                                     root: Some(root_dir),
                                     children: children.into(),
                                 };
-                                let tree_digest = serialize_and_upload_message(
-                                    &tree,
-                                    cas_store,
-                                    &mut DigestHasherFunc::Sha256.into(),
-                                )
-                                .await
-                                .err_tip(|| format!("While processing {entry}"))?;
+                                let tree_digest = serialize_and_upload_message(&tree, cas_store, &mut hasher.into())
+                                    .await
+                                    .err_tip(|| format!("While processing {entry}"))?;
                                 Ok(DirectoryInfo {
                                     path: entry,
                                     tree_digest,
@@ -1036,7 +1031,7 @@ impl RunningActionImpl {
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
             let data = execution_result.stdout;
-            let digest = compute_buf_digest(&data, &mut DigestHasherFunc::Sha256.into())
+            let digest = compute_buf_digest(&data, &mut hasher.into())
                 .await
                 .err_tip(|| "Computing stdout digest")?;
             upload_buf_to_store(cas_store, digest, data)
@@ -1046,7 +1041,7 @@ impl RunningActionImpl {
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
             let data = execution_result.stderr;
-            let digest = compute_buf_digest(&data, &mut DigestHasherFunc::Sha256.into())
+            let digest = compute_buf_digest(&data, &mut hasher.into())
                 .await
                 .err_tip(|| "Computing stderr digest")?;
             upload_buf_to_store(cas_store, digest, data)
@@ -1190,6 +1185,7 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         &self,
         action_digest: DigestInfo,
         action_result: &mut ActionResult,
+        hasher: DigestHasherFunc,
     ) -> Result<(), Error>;
 
     async fn kill_all(&self);
@@ -1295,9 +1291,9 @@ impl UploadActionResults {
         mut template_str: Template,
         action_digest_info: DigestInfo,
         maybe_historical_digest_info: Option<DigestInfo>,
+        hasher: DigestHasherFunc,
     ) -> Result<String, Error> {
-        // TODO(allada) Currently only sha256 is supported, but soon will be dynamic.
-        template_str.replace("digest_function", digest_function::Value::Sha256.as_str_name());
+        template_str.replace("digest_function", hasher.proto_digest_func().as_str_name());
         template_str.replace("action_digest_hash", action_digest_info.hash_str());
         template_str.replace("action_digest_size", action_digest_info.size_bytes);
         if let Some(historical_digest_info) = maybe_historical_digest_info {
@@ -1316,6 +1312,7 @@ impl UploadActionResults {
         &self,
         action_digest: DigestInfo,
         action_result: ProtoActionResult,
+        hasher: DigestHasherFunc,
     ) -> Result<(), Error> {
         let Some(ac_store) = &self.ac_store else { return Ok(()) };
         // If we are a GrpcStore we shortcut here, as this is a special store.
@@ -1328,7 +1325,7 @@ impl UploadActionResults {
                 action_digest: Some(action_digest.into()),
                 action_result: Some(action_result),
                 results_cache_policy: None,
-                digest_function: digest_function::Value::Sha256.into(),
+                digest_function: hasher.proto_digest_func().into(),
             };
             return grpc_store
                 .update_action_result(Request::new(update_action_request))
@@ -1353,6 +1350,7 @@ impl UploadActionResults {
         action_digest: DigestInfo,
         execute_response: ExecuteResponse,
         message_template: Template,
+        hasher: DigestHasherFunc,
     ) -> Result<String, Error> {
         let historical_digest_info = serialize_and_upload_message(
             &HistoricalExecuteResponse {
@@ -1360,12 +1358,12 @@ impl UploadActionResults {
                 execute_response: Some(execute_response.clone()),
             },
             Pin::new(self.historical_store.as_ref()),
-            &mut DigestHasherFunc::Sha256.into(),
+            &mut hasher.into(),
         )
         .await
         .err_tip(|| format!("Caching HistoricalExecuteResponse for digest: {action_digest:?}"))?;
 
-        Self::format_execute_response_message(message_template, action_digest, Some(historical_digest_info))
+        Self::format_execute_response_message(message_template, action_digest, Some(historical_digest_info), hasher)
             .err_tip(|| "Could not format message in upload_historical_results_with_message")
     }
 
@@ -1373,6 +1371,7 @@ impl UploadActionResults {
         &self,
         action_info: DigestInfo,
         action_result: &mut ActionResult,
+        hasher: DigestHasherFunc,
     ) -> Result<(), Error> {
         let should_upload_historical_results =
             Self::should_cache_result(self.upload_historical_results_strategy, action_result, true);
@@ -1394,7 +1393,7 @@ impl UploadActionResults {
 
         let upload_historical_results_with_message_result = if should_upload_historical_results {
             let maybe_message = self
-                .upload_historical_results_with_message(action_info, execute_response.clone(), message_template)
+                .upload_historical_results_with_message(action_info, execute_response.clone(), message_template, hasher)
                 .await;
             match maybe_message {
                 Ok(message) => {
@@ -1405,7 +1404,7 @@ impl UploadActionResults {
                 Err(e) => Result::<(), Error>::Err(e),
             }
         } else {
-            match Self::format_execute_response_message(message_template, action_info, None) {
+            match Self::format_execute_response_message(message_template, action_info, None, hasher) {
                 Ok(message) => {
                     action_result.message = message.clone();
                     execute_response.message = message;
@@ -1424,6 +1423,7 @@ impl UploadActionResults {
                 execute_response
                     .result
                     .err_tip(|| "No result set in cache_action_result")?,
+                hasher,
             )
             .await
         } else {
@@ -1636,12 +1636,13 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         &self,
         action_info: DigestInfo,
         action_result: &mut ActionResult,
+        hasher: DigestHasherFunc,
     ) -> Result<(), Error> {
         self.metrics
             .cache_action_result
             .wrap(
                 self.upload_action_results
-                    .cache_action_result(action_info, action_result),
+                    .cache_action_result(action_info, action_result, hasher),
             )
             .await
     }
