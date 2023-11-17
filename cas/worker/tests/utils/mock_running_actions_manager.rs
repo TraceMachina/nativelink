@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 
 use action_messages::ActionResult;
 use common::DigestInfo;
+use digest_hasher::DigestHasherFunc;
 use error::{make_input_err, Error};
 use proto::com::github::trace_machina::native_link::remote_execution::StartExecute;
 use running_actions_manager::{Metrics, RunningAction, RunningActionsManager};
@@ -27,7 +28,7 @@ use running_actions_manager::{Metrics, RunningAction, RunningActionsManager};
 #[derive(Debug)]
 enum RunningActionManagerCalls {
     CreateAndAddAction((String, StartExecute)),
-    CacheActionResult(Box<(DigestInfo, ActionResult)>),
+    CacheActionResult(Box<(DigestInfo, ActionResult, DigestHasherFunc)>),
 }
 
 enum RunningActionManagerReturns {
@@ -87,7 +88,7 @@ impl MockRunningActionsManager {
         req
     }
 
-    pub async fn expect_cache_action_result(&self) -> (DigestInfo, ActionResult) {
+    pub async fn expect_cache_action_result(&self) -> (DigestInfo, ActionResult, DigestHasherFunc) {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock.recv().await.expect("Could not recieve msg in mpsc") {
             RunningActionManagerCalls::CacheActionResult(req) => *req,
@@ -126,11 +127,13 @@ impl RunningActionsManager for MockRunningActionsManager {
         &self,
         action_digest: DigestInfo,
         action_result: &mut ActionResult,
+        digest_function: DigestHasherFunc,
     ) -> Result<(), Error> {
         self.tx_call
             .send(RunningActionManagerCalls::CacheActionResult(Box::new((
                 action_digest,
                 action_result.clone(),
+                digest_function,
             ))))
             .expect("Could not send request to mpsc");
         Ok(())
