@@ -1,0 +1,27 @@
+---
+name: Check pre-commit hooks
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions: read-all
+
+jobs:
+  pre-commit-checks:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: >- # v3.5.3
+          actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+      - name: Install Nix
+        uses: >- #v7
+          DeterminateSystems/nix-installer-action@5620eb4af6b562c53e4d4628c0b6e4f9d9ae8612
+      - name: Cache Nix derivations
+        uses: >- # Custom commit, last pinned at 2023-11-17.
+          DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+      - name: Run pre-commit hooks
+        run: nix flake check
