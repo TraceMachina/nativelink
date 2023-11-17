@@ -748,6 +748,69 @@ impl From<ActionResult> for ProtoActionResult {
     }
 }
 
+impl TryFrom<ProtoActionResult> for ActionResult {
+    type Error = Error;
+
+    fn try_from(val: ProtoActionResult) -> Result<Self, Error> {
+        let output_file_symlinks: Result<Vec<_>, _> = val
+            .output_file_symlinks
+            .into_iter()
+            .map(|output_symlink| {
+                SymlinkInfo::try_from(output_symlink)
+                    .err_tip(|| "Output File Symlinks could not be converted to SymlinkInfo")
+            })
+            .collect();
+
+        let output_directory_symlinks: Result<Vec<_>, _> = val
+            .output_directory_symlinks
+            .into_iter()
+            .map(|output_symlink| {
+                SymlinkInfo::try_from(output_symlink)
+                    .err_tip(|| "Output File Symlinks could not be converted to SymlinkInfo")
+            })
+            .collect();
+
+        let output_files: Result<Vec<_>, _> = val
+            .output_files
+            .into_iter()
+            .map(|output_file| output_file.try_into().err_tip(|| "Output File could not be converted"))
+            .collect();
+
+        let output_folders: Result<Vec<_>, _> = val
+            .output_directories
+            .into_iter()
+            .map(|output_directory| {
+                output_directory
+                    .try_into()
+                    .err_tip(|| "Output File could not be converted")
+            })
+            .collect();
+
+        Ok(Self {
+            output_files: output_files?,
+            output_folders: output_folders?,
+            output_file_symlinks: output_file_symlinks?,
+            output_directory_symlinks: output_directory_symlinks?,
+            exit_code: val.exit_code,
+            stdout_digest: val
+                .stdout_digest
+                .map(|digest| digest.try_into().unwrap_or(DigestInfo::empty_digest()))
+                .unwrap_or(DigestInfo::empty_digest()),
+            stderr_digest: val
+                .stderr_digest
+                .map(|digest| digest.try_into().unwrap_or(DigestInfo::empty_digest()))
+                .unwrap_or_else(DigestInfo::empty_digest),
+            execution_metadata: val
+                .execution_metadata
+                .map(|metadata| metadata.try_into().unwrap_or(ExecutionMetadata::default()))
+                .unwrap_or_default(),
+            server_logs: Default::default(),
+            error: None,
+            message: String::new(),
+        })
+    }
+}
+
 impl TryFrom<ExecuteResponse> for ActionStage {
     type Error = Error;
 

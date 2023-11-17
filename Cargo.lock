@@ -698,6 +698,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "completeness_checking_store"
+version = "0.0.0"
+dependencies = [
+ "ac_utils",
+ "action_messages",
+ "async-trait",
+ "buf_channel",
+ "common",
+ "config",
+ "error",
+ "futures",
+ "hashbrown 0.14.2",
+ "hex",
+ "metrics_utils",
+ "proto",
+ "sha2 0.10.8",
+ "tokio",
+ "traits",
+]
+
+[[package]]
+name = "completeness_checking_store_test"
+version = "0.0.0"
+dependencies = [
+ "action_messages",
+ "buf_channel",
+ "common",
+ "completeness_checking_store",
+ "config",
+ "error",
+ "futures",
+ "memory_store",
+ "pretty_assertions",
+ "prost",
+ "proto",
+ "store",
+ "tokio",
+ "traits",
+]
+
+[[package]]
 name = "compression_store"
 version = "0.0.0"
 dependencies = [
@@ -867,10 +908,12 @@ dependencies = [
 name = "default_store_factory"
 version = "0.0.0"
 dependencies = [
+ "completeness_checking_store",
  "compression_store",
  "config",
  "dedup_store",
  "error",
+ "existence_store",
  "fast_slow_store",
  "filesystem_store",
  "futures",
@@ -1069,6 +1112,41 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+]
+
+[[package]]
+name = "existence_store"
+version = "0.0.0"
+dependencies = [
+ "ac_utils",
+ "async-trait",
+ "buf_channel",
+ "common",
+ "config",
+ "error",
+ "hashbrown 0.14.2",
+ "hex",
+ "metrics_utils",
+ "proto",
+ "sha2 0.10.8",
+ "tokio",
+ "traits",
+]
+
+[[package]]
+name = "existence_store_test"
+version = "0.0.0"
+dependencies = [
+ "buf_channel",
+ "common",
+ "config",
+ "error",
+ "existence_store",
+ "futures",
+ "memory_store",
+ "pretty_assertions",
+ "tokio",
+ "traits",
 ]
 
 [[package]]

@@ -29,6 +29,8 @@ members = [
   "gencargo/cas_server",
   "gencargo/cas_server_test",
   "gencargo/common",
+  "gencargo/completeness_checking_store",
+  "gencargo/completeness_checking_store_test",
   "gencargo/compression_store",
   "gencargo/compression_store_test",
   "gencargo/config",
@@ -177,6 +179,8 @@ cas = { path = "gencargo/cas" }
 cas_server = { path = "gencargo/cas_server" }
 cas_server_test = { path = "gencargo/cas_server_test" }
 common = { path = "gencargo/common" }
+completeness_checking_store = { path = "gencargo/completeness_checking_store" }
+completeness_checking_store_test = { path = "gencargo/completeness_checking_store_test" }
 compression_store = { path = "gencargo/compression_store" }
 compression_store_test = { path = "gencargo/compression_store_test" }
 config = { path = "gencargo/config" }

@@ -18,6 +18,7 @@ use std::sync::Arc;
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
 
+use completeness_checking_store::CompletenessCheckingStore;
 use compression_store::CompressionStore;
 use config::{self, stores::StoreConfig};
 use dedup_store::DedupStore;
@@ -46,6 +47,10 @@ pub fn store_factory<'a>(
         let store: Arc<dyn Store> = match backend {
             StoreConfig::memory(config) => Arc::new(MemoryStore::new(config)),
             StoreConfig::s3_store(config) => Arc::new(S3Store::new(config)?),
+            StoreConfig::completeness_checking_store(config) => Arc::new(CompletenessCheckingStore::new(
+                store_factory(&config.backend, store_manager, None).await?,
+                store_factory(&config.backend, store_manager, None).await?,
+            )),
             StoreConfig::verify(config) => Arc::new(VerifyStore::new(
                 config,
                 store_factory(&config.backend, store_manager, None).await?,
