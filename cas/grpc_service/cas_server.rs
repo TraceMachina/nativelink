@@ -169,7 +169,7 @@ impl CasServer {
                 let digest_copy = DigestInfo::try_from(digest.clone())?;
                 let size_bytes = usize::try_from(digest_copy.size_bytes)
                     .err_tip(|| "Digest size_bytes was not convertible to usize")?;
-                // TODO(trace_machina) There is a security risk here of someone taking all the memory on the instance.
+                // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
                 let result = store_pin
                     .get_part_unchunked(digest_copy, 0, None, Some(size_bytes))
                     .await

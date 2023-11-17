@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "action_messages"
 path = "../../cas/scheduler/action_messages.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

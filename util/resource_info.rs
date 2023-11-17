@@ -192,7 +192,7 @@ fn recursive_parse<'a>(
             State::Hash => {
                 output.hash = part;
                 *bytes_processed += part.len() + SLASH_SIZE;
-                // TODO(trace_machina) Set the digest_function if it is not set based on the hash size.
+                // TODO(allada) Set the digest_function if it is not set based on the hash size.
                 return Ok(State::Size);
             }
             State::Size => {

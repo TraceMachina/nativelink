@@ -15,7 +15,7 @@ autobenches = false
 [[test]]
 name = "local_worker_test"
 path = "../../cas/worker/tests/local_worker_test.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

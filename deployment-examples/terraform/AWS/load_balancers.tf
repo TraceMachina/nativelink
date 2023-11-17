@@ -53,7 +53,7 @@ resource "aws_lb_listener" "cas_load_balancer_listener" {
 resource "aws_lb" "scheduler_load_balancer" {
   name                   = "native-link-scheduler-lb"
   internal               = false
-  # TODO(trace_machina) This really should be a TCP based load balancer, but due to it being
+  # TODO(allada) This really should be a TCP based load balancer, but due to it being
   # GRPC and not supporting HTTP1.x causes the health checker to always fail.
   load_balancer_type     = "application"
   security_groups        = [aws_security_group.schedulers_load_balancer_sg.id]

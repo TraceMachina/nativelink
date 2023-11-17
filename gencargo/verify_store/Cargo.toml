@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "verify_store"
 path = "../../cas/store/verify_store.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

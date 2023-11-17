@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "cas_server"
 path = "../../cas/grpc_service/cas_server.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

@@ -15,7 +15,7 @@ autobenches = false
 [[test]]
 name = "async_fixed_buffer_test"
 path = "../../util/tests/async_fixed_buffer_test.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

@@ -15,7 +15,7 @@
               }
             },
             "slow": {
-              // TODO(trace_machina) This needs to be some kind of sharding store, because s3 has
+              // TODO(allada) This needs to be some kind of sharding store, because s3 has
               // a 5k requests/s per path limit. To get around this we just need to create
               // enough shards and point them to the same bucket/path but with some key
               // to distinguish each shard based on the key.
@@ -47,7 +47,7 @@
               }
             },
             "slow": {
-              // TODO(trace_machina) This needs to be some kind of sharding store, because s3 has
+              // TODO(allada) This needs to be some kind of sharding store, because s3 has
               // a 5k requests/s per path limit. To get around this we just need to create
               // enough shards and point them to the same bucket/path but with some key
               // to distinguish each shard based on the key.
@@ -83,7 +83,7 @@
                   }
                 },
                 "slow": {
-                  // TODO(trace_machina) This needs to be some kind of sharding store, because s3 has
+                  // TODO(allada) This needs to be some kind of sharding store, because s3 has
                   // a 5k requests/s per path limit. To get around this we just need to create
                   // enough shards and point them to the same bucket/path but with some key
                   // to distinguish each shard based on the key.

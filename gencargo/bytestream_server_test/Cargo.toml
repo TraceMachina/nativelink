@@ -15,7 +15,7 @@ autobenches = false
 [[test]]
 name = "bytestream_server_test"
 path = "../../cas/grpc_service/tests/bytestream_server_test.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

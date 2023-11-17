@@ -86,7 +86,7 @@ impl GrpcStore {
         error_if!(config.endpoints.is_empty(), "Expected at least 1 endpoint in GrpcStore");
         let mut endpoints = Vec::with_capacity(config.endpoints.len());
         for endpoint in &config.endpoints {
-            // TODO(trace_machina) This should be moved to be done in utils/serde_utils.rs like the others.
+            // TODO(allada) This should be moved to be done in utils/serde_utils.rs like the others.
             // We currently don't have a way to handle those helpers with vectors.
             let endpoint = shellexpand::env(&endpoint)
                 .map_err(|e| make_input_err!("{}", e))
@@ -318,7 +318,7 @@ impl GrpcStore {
                             }
                             return None;
                         }
-                        // TODO(trace_machina) I'm sure there's a way to do this without a mutex, but rust can be super
+                        // TODO(allada) I'm sure there's a way to do this without a mutex, but rust can be super
                         // picky with borrowing through a stream await.
                         *local_state.error.lock() = Some(maybe_message.unwrap_err());
                         None

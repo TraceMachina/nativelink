@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "write_request_stream_wrapper"
 path = "../../util/write_request_stream_wrapper.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "default_store_factory"
 path = "../../cas/store/default_store_factory.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

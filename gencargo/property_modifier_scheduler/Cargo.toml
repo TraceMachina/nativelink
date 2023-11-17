@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "property_modifier_scheduler"
 path = "../../cas/scheduler/property_modifier_scheduler.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

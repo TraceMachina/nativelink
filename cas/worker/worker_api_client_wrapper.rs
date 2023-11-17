@@ -13,11 +13,7 @@
 // limitations under the License.
 
 use async_trait::async_trait;
-<<<<<<< HEAD
 use proto::com::github::trace_machina::native_link::remote_execution::{
-=======
-use proto::com::github::trace_machina::turbo_cache::remote_execution::{
->>>>>>> upstream/main
     worker_api_client::WorkerApiClient, ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties,
     UpdateForWorker,
 };

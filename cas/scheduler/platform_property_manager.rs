@@ -72,7 +72,7 @@ impl From<ProtoPlatform> for PlatformProperties {
 /// Priority - Means the worker is given this information, but does not restrict
 ///            what workers can take this value. However, the worker must have the
 ///            associated key present to be matched.
-///            TODO(trace_machina) In the future this will be used by the scheduler and
+///            TODO(allada) In the future this will be used by the scheduler and
 ///            worker to cause the scheduler to prefer certain workers over others,
 ///            but not restrict them based on these values.
 #[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug)]

@@ -53,7 +53,7 @@ pub struct CompressionConfig {
     /// responses to clients. Enabling this will likely save a lot of
     /// data transfer, but will consume a lot of CPU and add a lot of
     /// latency.
-    /// see: https://github.com/trace_machina/native-link/issues/109
+    /// see: https://github.com/tracemachina/native-link/issues/109
     ///
     /// Default: CompressionAlgorithm::None
     pub send_compression_algorithm: Option<CompressionAlgorithm>,
@@ -63,7 +63,7 @@ pub struct CompressionConfig {
     /// clients and the client will choose which compression algorithm to
     /// use. Enabling this will likely save a lot of data transfer, but
     /// will consume a lot of CPU and add a lot of latency.
-    /// see: https://github.com/trace_machina/native-link/issues/109
+    /// see: https://github.com/tracemachina/native-link/issues/109
     ///
     /// Defaults: <no supported compression>
     pub accepted_compression_algorithms: Vec<CompressionAlgorithm>,

@@ -158,7 +158,7 @@ resource "aws_launch_template" "scheduler_launch_template" {
 
 resource "aws_autoscaling_group" "scheduler_autoscaling_group" {
   name                      = "native_link_scheduler_autoscaling_group"
-  # TODO(trace_machina) We currently only support 1 scheduler at a time. Trying to support
+  # TODO(allada) We currently only support 1 scheduler at a time. Trying to support
   # more than 1 scheduler at a time is undefined behavior and might end up with
   # very strange routing.
   max_size                  = 1

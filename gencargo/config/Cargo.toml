@@ -15,7 +15,7 @@ autobenches = false
 [lib]
 name = "config"
 path = "../../config/lib.rs"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

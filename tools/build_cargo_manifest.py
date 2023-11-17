@@ -53,7 +53,7 @@ autobenches = false
 {type}
 name = "{name}"
 path = "{path}"
-# TODO(trace_machina) We should support doctests.
+# TODO(allada) We should support doctests.
 doctest = false
 
 [dependencies]

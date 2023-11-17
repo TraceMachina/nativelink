@@ -32,11 +32,7 @@ use config::cas_server::LocalWorkerConfig;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use fast_slow_store::FastSlowStore;
 use metrics_utils::{AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
-<<<<<<< HEAD
 use proto::com::github::trace_machina::native_link::remote_execution::{
-=======
-use proto::com::github::trace_machina::turbo_cache::remote_execution::{
->>>>>>> upstream/main
     execute_result, update_for_worker::Update, worker_api_client::WorkerApiClient, ExecuteResult, KeepAliveRequest,
     UpdateForWorker,
 };
@@ -196,7 +192,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 "Got ConnectionResult in LocalWorker::run which should never happen"
                             ));
                         }
-                        // TODO(trace_machina) We should possibly do something with this notification.
+                        // TODO(allada) We should possibly do something with this notification.
                         Update::Disconnect(()) => {
                             self.metrics.disconnects_received.inc();
                         }

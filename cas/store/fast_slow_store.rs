@@ -86,7 +86,7 @@ impl FastSlowStore {
 
     /// Returns the range of bytes that should be sent given a slice bounds
     /// offset so the output range maps the received_range.start to 0.
-    // TODO(trace_machina) This should be put into utils, as this logic is used
+    // TODO(allada) This should be put into utils, as this logic is used
     // elsewhere in the code.
     pub fn calculate_range(received_range: &Range<usize>, send_range: &Range<usize>) -> Option<Range<usize>> {
         // Protect against subtraction overflow.
