@@ -29,6 +29,7 @@ fast_slow_store = { workspace = true }
 filesystem_store = { workspace = true }
 grpc_store = { workspace = true }
 memory_store = { workspace = true }
+noop_store = { workspace = true }
 ref_store = { workspace = true }
 s3_store = { workspace = true }
 shard_store = { workspace = true }
