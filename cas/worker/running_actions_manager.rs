@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ use std::ffi::OsString;
 use std::fmt::Debug;
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
-use std::io::Cursor;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -49,8 +48,8 @@ use tonic::Request;
 use uuid::Uuid;
 
 use ac_utils::{
-    compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_file_to_store, upload_to_store,
-    ESTIMATED_DIGEST_SIZE,
+    compute_buf_digest, compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_buf_to_store,
+    upload_file_to_store, ESTIMATED_DIGEST_SIZE,
 };
 use action_messages::{
     to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
@@ -67,7 +66,7 @@ use proto::build::bazel::remote::execution::v2::{
     ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree,
 };
 use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, UpdateActionResultRequest};
-use proto::com::github::allada::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
+use proto::com::github::trace_machina::native_link::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use store::Store;
 
 pub type ActionId = [u8; 32];
@@ -804,7 +803,7 @@ impl RunningActionImpl {
                     // TODO(allada) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
                     // TODO(allada) There is a significant bug here. If we kill the action and the action creates
-                    // child processes, it can create zombies. See: https://github.com/allada/turbo-cache/issues/225
+                    // child processes, it can create zombies. See: https://github.com/tracemachina/native-link/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
                         (Bytes::new(), Bytes::new())
@@ -1028,19 +1027,17 @@ impl RunningActionImpl {
         }
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
-            let cursor = Cursor::new(execution_result.stdout);
-            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stdout digest")?;
-            cursor.rewind().await.err_tip(|| "Could not rewind stdout cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor)
+            let data = execution_result.stdout;
+            let digest = compute_buf_digest(&data).await.err_tip(|| "Computing stdout digest")?;
+            upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stdout")?;
             Result::<DigestInfo, Error>::Ok(digest)
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
-            let cursor = Cursor::new(execution_result.stderr);
-            let (digest, mut cursor) = compute_digest(cursor).await.err_tip(|| "Computing stderr digest")?;
-            cursor.rewind().await.err_tip(|| "Could not stderr rewind cursor")?;
-            upload_to_store(cas_store, digest, &mut cursor)
+            let data = execution_result.stderr;
+            let digest = compute_buf_digest(&data).await.err_tip(|| "Computing stderr digest")?;
+            upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stderr")?;
             Result::<DigestInfo, Error>::Ok(digest)

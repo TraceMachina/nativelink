@@ -1,4 +1,4 @@
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2022 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 # --- Begin AMI Builder Instance ---
 
 resource "aws_security_group" "ami_builder_instance_sg" {
-  name = "turbo_cache_ami_builder_instance_sg"
+  name = "native_link_ami_builder_instance_sg"
 }
 
 # Note: AMI Builder is allowed to reach out to any location to download/install
@@ -38,7 +38,7 @@ resource "aws_security_group_rule" "ami_builder_allow_access_outside_world" {
 # --- Begin Scheduler Instances ---
 
 resource "aws_security_group" "schedulers_instance_sg" {
-  name = "turbo_cache_schedulers_instance_sg"
+  name = "native_link_schedulers_instance_sg"
 }
 
 resource "aws_security_group_rule" "inbound_from_workers_to_schedulers_grpc" {
@@ -62,7 +62,7 @@ resource "aws_security_group_rule" "inbound_lb_traffic_to_schedulers_instances" 
 }
 
 resource "aws_security_group" "schedulers_load_balancer_sg" {
-  name = "turbo_cache_schedulers_load_balancer_sg"
+  name = "native_link_schedulers_load_balancer_sg"
 }
 
 resource "aws_security_group_rule" "allow_outside_world_to_schedulers_load_balancer" {
@@ -89,7 +89,7 @@ resource "aws_security_group_rule" "allow_lb_outbound_to_schedulers_instances" {
 # --- Begin CAS Instances ---
 
 resource "aws_security_group" "cas_instance_sg" {
-  name = "turbo_cache_cas_instance_sg"
+  name = "native_link_cas_instance_sg"
   # CAS is not allowed to access the internet.
 }
 
@@ -104,7 +104,7 @@ resource "aws_security_group_rule" "inbound_lb_traffic_to_cas_instances" {
 }
 
 resource "aws_security_group" "cas_load_balancer_sg" {
-  name = "turbo_cache_cas_load_balancer_sg"
+  name = "native_link_cas_load_balancer_sg"
 }
 
 resource "aws_security_group_rule" "allow_outside_world_to_cas_load_balancer" {
@@ -131,7 +131,7 @@ resource "aws_security_group_rule" "allow_outbound_to_cas_instances" {
 # --- Begin Worker Instances ---
 
 resource "aws_security_group" "worker_instance_sg" {
-  name = "turbo_cache_worker_instance_sg"
+  name = "native_link_worker_instance_sg"
   # Workers are not allowed to access the internet.
 }
 
@@ -148,7 +148,7 @@ resource "aws_security_group_rule" "outbound_worker_to_schedulers_rule" {
 # --- Begin Other ---
 
 resource "aws_security_group" "aws_api_ec2_endpoint_sg" {
-  name = "turbo_cache_aws_api_ec2_endpoint_sg"
+  name = "native_link_aws_api_ec2_endpoint_sg"
 
   ingress {
     security_groups = [aws_security_group.allow_aws_ec2_and_s3_endpoints.id]
@@ -159,7 +159,7 @@ resource "aws_security_group" "aws_api_ec2_endpoint_sg" {
 }
 
 resource "aws_security_group" "allow_ssh_sg" {
-  name = "turbo_cache_allow_ssh_sg"
+  name = "native_link_allow_ssh_sg"
 
   ingress {
     from_port        = 22
@@ -171,7 +171,7 @@ resource "aws_security_group" "allow_ssh_sg" {
 }
 
 resource "aws_security_group" "allow_aws_ec2_and_s3_endpoints" {
-  name = "turbo_cache_allow_aws_ec2_and_s3_endpoints"
+  name = "native_link_allow_aws_ec2_and_s3_endpoints"
 }
 
 resource "aws_security_group_rule" "outbound_to_aws_s3_api_group_rule" {

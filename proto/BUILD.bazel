@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 PROTO_NAMES = [
     "build.bazel.remote.execution.v2",
     "build.bazel.semver",
-    "com.github.allada.turbo_cache.remote_execution",
+    "com.github.trace_machina.native_link.remote_execution",
     "google.api",
     "google.bytestream",
     "google.longrunning",
@@ -25,7 +25,7 @@ genrule(
     srcs = [
         "build/bazel/remote/execution/v2/remote_execution.proto",
         "build/bazel/semver/semver.proto",
-        "com/github/allada/turbo_cache/remote_execution/worker_api.proto",
+        "com/github/trace_machina/native_link/remote_execution/worker_api.proto",
         "google/api/annotations.proto",
         "google/api/client.proto",
         "google/api/http.proto",
@@ -72,13 +72,13 @@ genrule(
 rust_library(
     name = "proto",
     srcs = glob(["genproto/*.rs"]),
+    tags = ["no-rustfmt"],
     visibility = ["//visibility:public"],
     deps = [
         "@crate_index//:prost",
         "@crate_index//:prost-types",
         "@crate_index//:tonic",
     ],
-    tags = ["no-rustfmt"],
 )
 
 py_binary(
@@ -86,8 +86,8 @@ py_binary(
     srcs = ["update_protos.py"],
     args = ["--update"] + PROTO_NAMES,
     data = [
-        ":gen_rs_protos",
         ":gen_lib_rs",
+        ":gen_rs_protos",
     ],
 )
 
@@ -97,8 +97,8 @@ py_test(
     srcs = ["update_protos.py"],
     args = ["--check"] + PROTO_NAMES,
     data = glob(["genproto/*.rs"]) + [
-        ":gen_rs_protos",
         ":gen_lib_rs",
+        ":gen_rs_protos",
     ],
     main = "update_protos.py",
 )

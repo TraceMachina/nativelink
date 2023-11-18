@@ -1,4 +1,4 @@
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2022 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,22 +13,22 @@
 # limitations under the License.
 
 variable "build_base_ami_arm" {
-  description = "Base AMI for building Turbo Cache for ARM"
+  description = "Base AMI for building Native Link for ARM"
   default     = "ami-0c79a55dda52434da"
 }
 
 variable "build_base_ami_x86" {
-  description = "Base AMI for building Turbo Cache for x86"
+  description = "Base AMI for building Native Link for x86"
   default     = "ami-03f65b8614a860c29"
 }
 
 variable "build_arm_instance_type" {
-  description = "Type of EC2 instance to build Turbo Cache for ARM"
+  description = "Type of EC2 instance to build Native Link for ARM"
   default     = "c6gd.2xlarge"
 }
 
 variable "build_x86_instance_type" {
-  description = "Type of EC2 instance to build Turbo Cache for x86"
+  description = "Type of EC2 instance to build Native Link for x86"
   default     = "c6id.2xlarge"
 }
 
@@ -38,7 +38,7 @@ variable "terminate_ami_builder" {
 }
 
 variable "scheduler_instance_type" {
-  description = "Type of EC2 instance to use for Turbo Cache's scheduler"
+  description = "Type of EC2 instance to use for Native Link's scheduler"
   default     = "c6g.xlarge"
 }
 
@@ -49,7 +49,7 @@ variable "allow_ssh_from_cidrs" {
 
 variable "base_domain" {
   description = "Base domain name of existing Route53 hosted zone. Subdomains will be added to this zone."
-  default     = "turbo-cache.demo.allada.com"
+  default     = "native-link.demo.trace_machina.com"
 }
 
 variable "cas_domain_prefix" {

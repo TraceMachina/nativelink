@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,12 +26,12 @@ use tonic::{
 };
 
 use common::JoinHandleDropGuard;
-use config::cas_server::{EndpointConfig, LocalWorkerConfig, WrokerProperty};
+use config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use error::Error;
 use local_worker::LocalWorker;
 use mock_running_actions_manager::MockRunningActionsManager;
 use mock_worker_api_client::MockWorkerApiClient;
-use proto::com::github::allada::turbo_cache::remote_execution::UpdateForWorker;
+use proto::com::github::trace_machina::native_link::remote_execution::UpdateForWorker;
 
 pub fn setup_grpc_stream() -> (HyperSender, Response<Streaming<UpdateForWorker>>) {
     let (tx, body) = Body::channel();
@@ -68,7 +68,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
     }
 }
 
-pub async fn setup_local_worker(platform_properties: HashMap<String, WrokerProperty>) -> TestContext {
+pub async fn setup_local_worker(platform_properties: HashMap<String, WorkerProperty>) -> TestContext {
     const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
     let local_worker_config = LocalWorkerConfig {
         platform_properties,

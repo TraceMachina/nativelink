@@ -1,6 +1,6 @@
-# Turbo Cache
+# Native Link
 
-[![CI](https://github.com/allada/turbo-cache/workflows/CI/badge.svg)](https://github.com/allada/turbo-cache/actions/workflows/main.yml)
+[![CI](https://github.com/tracemachina/native-link/workflows/CI/badge.svg)](https://github.com/tracemachina/native-link/actions/workflows/main.yml)
 
 An extremely fast and efficient bazel cache service (CAS) written in rust.
 
@@ -12,7 +12,7 @@ The goals of this project are:
 
 ## Overview
 
-Turbo Cache is a project that implements the Bazel's [Remote Execution protocol](https://github.com/bazelbuild/remote-apis) (both CAS/Cache and remote execution portion).
+Native Link is a project that implements the Bazel's [Remote Execution protocol](https://github.com/bazelbuild/remote-apis) (both CAS/Cache and remote execution portion).
 
 When properly configured this project will provide extremely fast and efficient build cache for any systems that communicate using the [RBE protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) and/or extremely fast, efficient and low foot-print remote execution capability.
 
@@ -26,7 +26,7 @@ If you have not updated Rust or Cargo recently, run:
 
 To compile and run the server:
 ```sh
-# Install dependencies needed to compile Turbo Cache with bazel on
+# Install dependencies needed to compile Native Link with bazel on
 # worker machine (which is this machine).
 apt install -y gcc g++ lld libssl-dev pkg-config python3
 
@@ -45,13 +45,13 @@ bazel test //... \
   --remote_executor=grpc://127.0.0.1:50051 \
   --remote_default_exec_properties=cpu_count=1
 ```
-This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/allada/turbo-cache/tree/master/config) for configuration documentation and [here](https://github.com/allada/turbo-cache/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
+This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/tracemachina/native-link/tree/master/config) for configuration documentation and [here](https://github.com/tracemachina/native-link/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
 
 ## Example Deployments
-We currently have a few example deployments in [deployment-examples directory](https://github.com/allada/turbo-cache/tree/master/deployment-examples).
+We currently have a few example deployments in [deployment-examples directory](https://github.com/tracemachina/native-link/tree/master/deployment-examples).
 
 ### Terraform
-The [terraform deployment](https://github.com/allada/turbo-cache/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of cloud resources to make everything much more robust.
+The [terraform deployment](https://github.com/tracemachina/native-link/tree/master/deployment-examples/terraform) is the currently preferred method as it leverages a lot of cloud resources to make everything much more robust.
 
 The terraform deployment is very easy to setup and configure. This deployment will show off remote execution capabilities and cache capabilities.
 
@@ -111,7 +111,7 @@ cargo build --release
 
 ### Configure
 
-Configuration is done via a JSON file that is passed in as the first parameter to the `cas` program. See [here](https://github.com/allada/turbo-cache/tree/master/config) for more details and examples.
+Configuration is done via a JSON file that is passed in as the first parameter to the `cas` program. See [here](https://github.com/tracemachina/native-link/tree/master/config) for more details and examples.
 
 ## How to update internal or external rust deps
 

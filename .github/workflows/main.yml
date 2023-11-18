@@ -39,29 +39,29 @@ jobs:
         build-args: |
           OS_VERSION=${{ matrix.os_version }}
         load: true # This brings the build into `docker images` from buildx.
-        tags: allada/turbo-cache:dependencies
+        tags: trace_machina/native-link:dependencies
         target: dependencies
 
     - name: Create container for cargo
       run: |
-        docker run --name=turbo-cache-cargo allada/turbo-cache:dependencies bash -c ' \
+        docker run --name=native-link-cargo trace_machina/native-link:dependencies bash -c ' \
           DEBIAN_FRONTEND=noninteractive apt-get install -y curl libssl-dev gcc pkg-config python3 && \
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain=1.70.0 \
         ' && \
-        docker commit turbo-cache-cargo allada/turbo-cache:cargo
+        docker commit native-link-cargo trace_machina/native-link:cargo
     - name: Check Cargo.toml is up to date
       run: |
-        docker run --rm -w /root/turbo-cache -v $PWD:/root/turbo-cache allada/turbo-cache:cargo python3 ./tools/build_cargo_manifest.py && \
+        docker run --rm -w /root/native-link -v $PWD:/root/native-link trace_machina/native-link:cargo python3 ./tools/build_cargo_manifest.py && \
         git diff --exit-code || \
         (echo "Cargo.toml is out of date. Please run: python ./tools/build_cargo_manifest.py" && exit 1)
     - name: Compile & test with cargo
       run: |
-        docker run --rm -w /root/turbo-cache -v $PWD:/root/turbo-cache allada/turbo-cache:cargo bash -c ' \
+        docker run --rm -w /root/native-link -v $PWD:/root/native-link trace_machina/native-link:cargo bash -c ' \
           . /root/.cargo/env && \
           cargo build --all && \
           cargo test --all \
         '
-  docker-compose-compiles-turbo-cache:
+  docker-compose-compiles-native-link:
     # The type of runner that the job will run on.
     runs-on: ubuntu-22.04
     strategy:
@@ -83,7 +83,7 @@ jobs:
           OS_VERSION=${{ matrix.os_version }}
           ADDITIONAL_SETUP_WORKER_CMD=DEBIAN_FRONTEND=noninteractive apt-get install -y gcc g++ lld pkg-config python3
         load: true # This brings the build into `docker images` from buildx.
-        tags: allada/turbo-cache:latest
+        tags: trace_machina/native-link:latest
     - uses: docker/build-push-action@v4
       with:
         context: .
@@ -92,16 +92,16 @@ jobs:
           OPT_LEVEL=opt
           OS_VERSION=${{ matrix.os_version }}
         load: true # This brings the build into `docker images` from buildx.
-        tags: allada/turbo-cache:builder
+        tags: trace_machina/native-link:builder
         target: builder
 
-    - name: Compile turbo cache with turbo cache
+    - name: Compile Native Link with Native Link
       run: |
         mkdir -p ~/.cache && \
         cd deployment-examples/docker-compose && \
         docker-compose up -d && \
         cd ../../ && \
-        docker run --rm --net=host -w /root/turbo-cache -v $PWD:/root/turbo-cache allada/turbo-cache:builder sh -c ' \
+        docker run --rm --net=host -w /root/native-link -v $PWD:/root/native-link trace_machina/native-link:builder sh -c ' \
           bazel clean && \
           bazel test //... \
           --remote_instance_name=main \
@@ -109,7 +109,7 @@ jobs:
           --remote_executor=grpc://127.0.0.1:50052 \
           --remote_default_exec_properties=cpu_count=1 \
         ' && \
-        docker run --rm --net=host -w /root/turbo-cache -v $PWD:/root/turbo-cache allada/turbo-cache:builder sh -c ' \
+        docker run --rm --net=host -w /root/native-link -v $PWD:/root/native-link trace_machina/native-link:builder sh -c ' \
           bazel clean && \
           bazel test //... \
           --remote_instance_name=main \
@@ -138,7 +138,7 @@ jobs:
           OPT_LEVEL=fastbuild
           OS_VERSION=${{ matrix.os_version }}
         load: true # This brings the build into `docker images` from buildx.
-        tags: allada/turbo-cache:latest
+        tags: trace_machina/native-link:latest
 
     - name: Run tests
       run: ./run_integration_tests.sh

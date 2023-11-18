@@ -1,5 +1,5 @@
 // This configuration will place objects in various folders in
-// `~/.cache/turbo-cache`. It will store all data on disk and
+// `~/.cache/native-link`. It will store all data on disk and
 // allows for restarts of the underlying service. It is optimized
 // so objects are compressed, deduplicated and uses some in-memory
 // optimizations for certain hot paths.
@@ -14,8 +14,8 @@
             },
             "backend": {
               "filesystem": {
-                "content_path": "~/.cache/turbo-cache/content_path-cas",
-                "temp_path": "~/.cache/turbo-cache/tmp_path-cas",
+                "content_path": "~/.cache/native-link/content_path-cas",
+                "temp_path": "~/.cache/native-link/tmp_path-cas",
                 "eviction_policy": {
                   // 10gb.
                   "max_bytes": 10000000000,
@@ -30,8 +30,8 @@
     },
     "AC_MAIN_STORE": {
       "filesystem": {
-        "content_path": "~/.cache/turbo-cache/content_path-ac",
-        "temp_path": "~/.cache/turbo-cache/tmp_path-ac",
+        "content_path": "~/.cache/native-link/content_path-ac",
+        "temp_path": "~/.cache/native-link/tmp_path-ac",
         "eviction_policy": {
           // 500mb.
           "max_bytes": 500000000,

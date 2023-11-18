@@ -1,4 +1,4 @@
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2022 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 # --- Begin AMI Builder ---
 
 resource "aws_iam_role" "iam_builder_role" {
-  name = "turbo_cache_ami_builder_role"
+  name = "native_link_ami_builder_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -32,7 +32,7 @@ resource "aws_iam_role" "iam_builder_role" {
   })
 
   inline_policy {
-    name = "turbo_cache_terminate_instance_policy"
+    name = "native_link_terminate_instance_policy"
 
     policy = jsonencode({
       Version = "2012-10-17"
@@ -48,11 +48,11 @@ resource "aws_iam_role" "iam_builder_role" {
 }
 
 resource "aws_iam_instance_profile" "builder_profile" {
-  name = "turbo_cache_builder_profile"
+  name = "native_link_builder_profile"
   role = aws_iam_role.iam_builder_role.name
 }
 
-resource "aws_iam_role_policy_attachment" "turbo_cache_ami_builder_describe_ec2_tags_policy" {
+resource "aws_iam_role_policy_attachment" "native_link_ami_builder_describe_ec2_tags_policy" {
   role       = aws_iam_role.iam_builder_role.name
   policy_arn = aws_iam_policy.describe_ec2_tags_policy.arn
 }
@@ -61,7 +61,7 @@ resource "aws_iam_role_policy_attachment" "turbo_cache_ami_builder_describe_ec2_
 # --- Begin Scheduler ---
 
 resource "aws_iam_role" "iam_scheduler_role" {
-  name = "turbo_cache_scheduler_role"
+  name = "native_link_scheduler_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -79,16 +79,16 @@ resource "aws_iam_role" "iam_scheduler_role" {
 }
 
 resource "aws_iam_instance_profile" "scheduler_profile" {
-  name = "turbo_cache_scheduler_profile"
+  name = "native_link_scheduler_profile"
   role = aws_iam_role.iam_scheduler_role.name
 }
 
-resource "aws_iam_role_policy_attachment" "turbo_cache_scheduler_s3_read_policy_attachment" {
+resource "aws_iam_role_policy_attachment" "native_link_scheduler_s3_read_policy_attachment" {
   role       = aws_iam_role.iam_scheduler_role.name
   policy_arn = aws_iam_policy.readonly_s3_access_cas_bucket_policy.arn
 }
 
-resource "aws_iam_role_policy_attachment" "turbo_cache_scheduler_describe_ec2_tags_policy" {
+resource "aws_iam_role_policy_attachment" "native_link_scheduler_describe_ec2_tags_policy" {
   role       = aws_iam_role.iam_scheduler_role.name
   policy_arn = aws_iam_policy.describe_ec2_tags_policy.arn
 }
@@ -97,7 +97,7 @@ resource "aws_iam_role_policy_attachment" "turbo_cache_scheduler_describe_ec2_ta
 # --- Begin CAS ---
 
 resource "aws_iam_role" "cas_iam_role" {
-  name = "turbo_cache_cas_role"
+  name = "native_link_cas_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -115,21 +115,21 @@ resource "aws_iam_role" "cas_iam_role" {
 }
 
 resource "aws_iam_instance_profile" "cas_profile" {
-  name = "turbo_cache_cas_profile"
+  name = "native_link_cas_profile"
   role = aws_iam_role.cas_iam_role.name
 }
 
-resource "aws_iam_role_policy_attachment" "turbo_cache_cas_read_s3_policy_attachment" {
+resource "aws_iam_role_policy_attachment" "native_link_cas_read_s3_policy_attachment" {
   role       = aws_iam_role.cas_iam_role.name
   policy_arn = aws_iam_policy.readonly_s3_access_cas_bucket_policy.arn
 }
 
-resource "aws_iam_role_policy_attachment" "turbo_cache_cas_write_s3_policy_attachment" {
+resource "aws_iam_role_policy_attachment" "native_link_cas_write_s3_policy_attachment" {
   role       = aws_iam_role.cas_iam_role.name
   policy_arn = aws_iam_policy.write_s3_access_bucket_policy.arn
 }
 
-resource "aws_iam_role_policy_attachment" "turbo_cache_cas_describe_ec2_tags_policy" {
+resource "aws_iam_role_policy_attachment" "native_link_cas_describe_ec2_tags_policy" {
   role       = aws_iam_role.cas_iam_role.name
   policy_arn = aws_iam_policy.describe_ec2_tags_policy.arn
 }
@@ -137,7 +137,7 @@ resource "aws_iam_role_policy_attachment" "turbo_cache_cas_describe_ec2_tags_pol
 # --- End CAS ---
 # --- Begin Worker ---
 resource "aws_iam_role" "worker_iam_role" {
-  name = "turbo_cache_ami_worker_role"
+  name = "native_link_ami_worker_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -154,7 +154,7 @@ resource "aws_iam_role" "worker_iam_role" {
   })
 
   inline_policy {
-    name = "turbo_cache_terminate_instance_policy"
+    name = "native_link_terminate_instance_policy"
 
     policy = jsonencode({
       Version = "2012-10-17"
@@ -170,21 +170,21 @@ resource "aws_iam_role" "worker_iam_role" {
 }
 
 resource "aws_iam_instance_profile" "worker_profile" {
-  name = "turbo_cache_worker_profile"
+  name = "native_link_worker_profile"
   role = aws_iam_role.worker_iam_role.name
 }
 
-resource "aws_iam_role_policy_attachment" "turbo_cache_worker_read_s3_policy_attachment" {
+resource "aws_iam_role_policy_attachment" "native_link_worker_read_s3_policy_attachment" {
   role       = aws_iam_role.worker_iam_role.name
   policy_arn = aws_iam_policy.readonly_s3_access_cas_bucket_policy.arn
 }
 
-resource "aws_iam_role_policy_attachment" "turbo_cache_worker_write_s3_policy_attachment" {
+resource "aws_iam_role_policy_attachment" "native_link_worker_write_s3_policy_attachment" {
   role       = aws_iam_role.worker_iam_role.name
   policy_arn = aws_iam_policy.write_s3_access_bucket_policy.arn
 }
 
-resource "aws_iam_role_policy_attachment" "turbo_cache_worker_describe_ec2_tags_policy" {
+resource "aws_iam_role_policy_attachment" "native_link_worker_describe_ec2_tags_policy" {
   role       = aws_iam_role.worker_iam_role.name
   policy_arn = aws_iam_policy.describe_ec2_tags_policy.arn
 }
@@ -193,7 +193,7 @@ resource "aws_iam_role_policy_attachment" "turbo_cache_worker_describe_ec2_tags_
 # --- Begin Update Scheduler Lambda ---
 
 resource "aws_iam_role" "update_scheduler_ips_lambda_role" {
-  name   = "turbo_cache_update_scheduler_ips_lambda_role"
+  name   = "native_link_update_scheduler_ips_lambda_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -210,7 +210,7 @@ resource "aws_iam_role" "update_scheduler_ips_lambda_role" {
   })
 
   inline_policy {
-    name = "turbo_cache_update_scheduler_ips_lambda_policy"
+    name = "native_link_update_scheduler_ips_lambda_policy"
 
     policy = jsonencode({
         Version = "2012-10-17",
@@ -239,7 +239,7 @@ resource "aws_iam_role" "update_scheduler_ips_lambda_role" {
 # --- Begin Shared ---
 
 resource "aws_iam_policy" "readonly_s3_access_cas_bucket_policy" {
-  name        = "turbo_cache_readonly_s3_access_cas_bucket"
+  name        = "native_link_readonly_s3_access_cas_bucket"
   description = "Read only policy for cas bucket"
 
   policy = jsonencode({
@@ -263,7 +263,7 @@ resource "aws_iam_policy" "readonly_s3_access_cas_bucket_policy" {
 }
 
 resource "aws_iam_policy" "write_s3_access_bucket_policy" {
-  name        = "turbo_cache_write_s3_access_cas_bucket"
+  name        = "native_link_write_s3_access_cas_bucket"
   description = "Write only policy for cas bucket"
 
   policy = jsonencode({
@@ -288,7 +288,7 @@ resource "aws_iam_policy" "write_s3_access_bucket_policy" {
 }
 
 resource "aws_iam_policy" "describe_ec2_tags_policy" {
-  name        = "turbo_cache_describe_ec2_tags_policy"
+  name        = "native_link_describe_ec2_tags_policy"
   description = "Allows describe tags on ec2 instances"
 
   policy = jsonencode({

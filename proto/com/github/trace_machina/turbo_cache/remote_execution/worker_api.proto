@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 syntax = "proto3";
 
-package com.github.allada.turbo_cache.remote_execution;
+package com.github.trace_machina.native_link.remote_execution;
 
 import "build/bazel/remote/execution/v2/remote_execution.proto";
 import "google/protobuf/empty.proto";
@@ -85,7 +85,7 @@ message SupportedProperties {
     /// the unsupported properties.
     ///
     /// The details on how to use this property can be found here:
-    /// https://github.com/allada/turbo-cache/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs
+    /// https://github.com/tracemachina/native-link/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs
     repeated build.bazel.remote.execution.v2.Platform.Property properties = 1;
     reserved 2; // NextId.
 }

@@ -47,6 +47,8 @@ rust_library(
     srcs = ["fs.rs"],
     deps = [
         ":error",
+        "@crate_index//:bytes",
+        "@crate_index//:futures",
         "@crate_index//:log",
         "@crate_index//:tokio",
     ],
