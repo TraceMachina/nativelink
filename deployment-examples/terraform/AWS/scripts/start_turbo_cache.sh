@@ -32,7 +32,8 @@ TOTAL_AVAIL_MEMORY=$(( $(grep MemFree /proc/meminfo | awk '{print $2}') * 10000 
 
 # These environmental variables are used inside the json file resolution.
 export NATIVE_LINK_AWS_REGION="$AWS_REGION"
-export NATIVE_LINK_AWS_S3_CAS_BUCKET=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:s3_cas_bucket").Value')
+NATIVE_LINK_AWS_S3_CAS_BUCKET=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:s3_cas_bucket").Value')
+export NATIVE_LINK_AWS_S3_CAS_BUCKET
 
 TYPE=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:instance_type").Value')
 if [ "$TYPE" == "ami_builder" ]; then
@@ -65,7 +66,8 @@ elif [ "$TYPE" == "worker" ]; then
 
     # This is used inside the "worker.json" file.
     export MAX_WORKER_DISK_USAGE=$(( DISK_SIZE * 100 / 125  )) # Leave about 20% disk space for active tasks.
-    export SCHEDULER_ENDPOINT=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:scheduler_endpoint").Value')
+    SCHEDULER_ENDPOINT=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:scheduler_endpoint").Value')
+    export SCHEDULER_ENDPOINT
 
     mkdir -p /mnt/data
     mkdir -p /worker
