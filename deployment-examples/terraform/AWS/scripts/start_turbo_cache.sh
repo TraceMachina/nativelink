@@ -44,20 +44,20 @@ if [ "$TYPE" == "ami_builder" ]; then
     sleep 30 # This is so the service doesn't try to run this script again immediately.
 elif [ "$TYPE" == "cas" ]; then
     # 10% goes to action cache.
-    export NATIVE_LINK_AC_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 10 ))
+    export NATIVE_LINK_AC_CONTENT_LIMIT=$(( TOTAL_AVAIL_MEMORY / 10 ))
     # 5% goes to the index memory cache.
-    export NATIVE_LINK_CAS_INDEX_CACHE_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 20 ))
+    export NATIVE_LINK_CAS_INDEX_CACHE_LIMIT=$(( TOTAL_AVAIL_MEMORY / 20 ))
     # 85% goes to the content memory cache.
-    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - - $NATIVE_LINK_AC_CONTENT_LIMIT - $NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
+    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( TOTAL_AVAIL_MEMORY - - NATIVE_LINK_AC_CONTENT_LIMIT - NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
 
     /usr/local/bin/native-link /root/cas.json
 elif [ "$TYPE" == "scheduler" ]; then
     # 10% goes to action cache.
-    export NATIVE_LINK_AC_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 10 ))
+    export NATIVE_LINK_AC_CONTENT_LIMIT=$(( TOTAL_AVAIL_MEMORY / 10 ))
     # 5% goes to the index memory cache.
-    export NATIVE_LINK_CAS_INDEX_CACHE_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 20 ))
+    export NATIVE_LINK_CAS_INDEX_CACHE_LIMIT=$(( TOTAL_AVAIL_MEMORY / 20 ))
     # 85% goes to the content memory cache.
-    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - - $NATIVE_LINK_AC_CONTENT_LIMIT - $NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
+    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( TOTAL_AVAIL_MEMORY - - NATIVE_LINK_AC_CONTENT_LIMIT - NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
 
     /usr/local/bin/native-link /root/scheduler.json
 elif [ "$TYPE" == "worker" ]; then
