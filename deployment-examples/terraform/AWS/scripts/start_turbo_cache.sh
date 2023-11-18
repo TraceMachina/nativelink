@@ -61,7 +61,6 @@ elif [ "$TYPE" == "scheduler" ]; then
 
     /usr/local/bin/native-link /root/scheduler.json
 elif [ "$TYPE" == "worker" ]; then
-    SCHEDULER_URL=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:scheduler_url").Value')
     DISK_SIZE=$(df /mnt/data | tail -n 1 | awk '{ print $2 }')
 
     # This is used inside the "worker.json" file.
