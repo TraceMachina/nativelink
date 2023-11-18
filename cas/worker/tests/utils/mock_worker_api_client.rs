@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tonic::{Response, Status, Streaming};
 
-use proto::com::github::trace_machina::turbo_cache::remote_execution::{
+use proto::com::github::trace_machina::native_link::remote_execution::{
     ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
 use worker_api_client_wrapper::WorkerApiClientTrait;

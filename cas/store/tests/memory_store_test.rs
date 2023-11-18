@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -75,7 +75,7 @@ mod memory_store_tests {
         Ok(())
     }
 
-    // Regression test for: https://github.com/TraceMachina/turbo-cache/issues/289.
+    // Regression test for: https://github.com/TraceMachina/native-link/issues/289.
     #[tokio::test]
     async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
         // Arbitrary value, this may be increased if we find out that this is

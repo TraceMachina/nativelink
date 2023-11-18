@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 PROTO_NAMES = [
     "build.bazel.remote.execution.v2",
     "build.bazel.semver",
-    "com.github.trace_machina.turbo_cache.remote_execution",
+    "com.github.trace_machina.native_link.remote_execution",
     "google.api",
     "google.bytestream",
     "google.longrunning",
@@ -25,7 +25,7 @@ genrule(
     srcs = [
         "build/bazel/remote/execution/v2/remote_execution.proto",
         "build/bazel/semver/semver.proto",
-        "com/github/trace_machina/turbo_cache/remote_execution/worker_api.proto",
+        "com/github/trace_machina/native_link/remote_execution/worker_api.proto",
         "google/api/annotations.proto",
         "google/api/client.proto",
         "google/api/http.proto",

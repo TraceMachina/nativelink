@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ use proto::build::bazel::remote::execution::v2::{
     platform::Property, Action, ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
     ExecuteResponse, FileNode, NodeProperties, Platform, SymlinkNode, Tree,
 };
-use proto::com::github::trace_machina::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
+use proto::com::github::trace_machina::native_link::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use running_actions_manager::{
     download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
     RunningActionsManagerArgs, RunningActionsManagerImpl,

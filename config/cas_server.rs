@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,7 +53,7 @@ pub struct CompressionConfig {
     /// responses to clients. Enabling this will likely save a lot of
     /// data transfer, but will consume a lot of CPU and add a lot of
     /// latency.
-    /// see: https://github.com/allada/turbo-cache/issues/109
+    /// see: https://github.com/tracemachina/native-link/issues/109
     ///
     /// Default: CompressionAlgorithm::None
     pub send_compression_algorithm: Option<CompressionAlgorithm>,
@@ -63,7 +63,7 @@ pub struct CompressionConfig {
     /// clients and the client will choose which compression algorithm to
     /// use. Enabling this will likely save a lot of data transfer, but
     /// will consume a lot of CPU and add a lot of latency.
-    /// see: https://github.com/allada/turbo-cache/issues/109
+    /// see: https://github.com/tracemachina/native-link/issues/109
     ///
     /// Defaults: <no supported compression>
     pub accepted_compression_algorithms: Vec<CompressionAlgorithm>,
@@ -416,10 +416,10 @@ pub struct LocalWorkerConfig {
     pub max_action_timeout: usize,
 
     /// If timeout is handled in `entrypoint_cmd` or another wrapper script.
-    /// If set to true TurboCache will not honor the timeout the action requested
+    /// If set to true NativeLink will not honor the timeout the action requested
     /// and instead will always force kill the action after max_action_timeout
     /// has been reached. If this is set to false, the smaller value of the action's
-    /// timeout and max_action_timeout will be used to which TurboCache will kill
+    /// timeout and max_action_timeout will be used to which NativeLink will kill
     /// the action.
     ///
     /// The real timeout can be received via an environment variable set in:
@@ -431,7 +431,7 @@ pub struct LocalWorkerConfig {
     /// the action. In this case, action will likely be wrapped in another program,
     /// like `timeout` and propagate timeouts via `EnvironmentSource::SideChannelFile`.
     ///
-    /// Default: false (TurboCache fully handles timeouts)
+    /// Default: false (NativeLink fully handles timeouts)
     #[serde(default)]
     pub timeout_handled_externally: bool,
 
@@ -529,7 +529,7 @@ pub struct GlobalConfig {
     /// are collected at runtime (performance metrics) from being tallied. The
     /// overhead of collecting metrics is very low, so this flag should only be
     /// used if there is a very good reason to disable metrics.
-    /// This flag can be forcably set using the `TURBO_CACHE_DISABLE_METRICS` variable.
+    /// This flag can be forcably set using the `NATIVE_LINK_DISABLE_METRICS` variable.
     /// If the variable is set it will always disable metrics regardless of what
     /// this flag is set to.
     ///

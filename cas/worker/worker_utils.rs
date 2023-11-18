@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ use common::log;
 use config::cas_server::WorkerProperty;
 use error::{make_err, make_input_err, Error, ResultExt};
 use proto::build::bazel::remote::execution::v2::platform::Property;
-use proto::com::github::trace_machina::turbo_cache::remote_execution::SupportedProperties;
+use proto::com::github::trace_machina::native_link::remote_execution::SupportedProperties;
 
 pub async fn make_supported_properties<S: BuildHasher>(
     worker_properties: &HashMap<String, WorkerProperty, S>,

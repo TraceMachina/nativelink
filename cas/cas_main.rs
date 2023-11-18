@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -58,12 +58,12 @@ use worker_api_server::WorkerApiServer;
 const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
 
 /// Name of environment variable to disable metrics.
-const METRICS_DISABLE_ENV: &str = "TURBO_CACHE_DISABLE_METRICS";
+const METRICS_DISABLE_ENV: &str = "NATIVE_LINK_DISABLE_METRICS";
 
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
 #[clap(
-    author = "Trace Machina, Inc. <turbo-cache@tracemachina.com>",
+    author = "Trace Machina, Inc. <native-link@tracemachina.com>",
     version = "0.0.1",
     about,
     long_about = None
@@ -75,7 +75,7 @@ struct Args {
 }
 
 async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), Box<dyn std::error::Error>> {
-    let mut root_metrics_registry = <Registry>::with_prefix("turbo_cache");
+    let mut root_metrics_registry = <Registry>::with_prefix("native_link");
 
     let store_manager = Arc::new(StoreManager::new());
     {
@@ -367,8 +367,8 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
                             .map(|_| {
                                 // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
-                                buf = buf.replace("turbo_cache_turbo_cache_stores_", "");
-                                buf = buf.replace("turbo_cache_turbo_cache_workers_", "");
+                                buf = buf.replace("native_link_native_link_stores_", "");
+                                buf = buf.replace("native_link_native_link_workers_", "");
                                 let body = Body::from(buf);
                                 Response::builder()
                                     .header(

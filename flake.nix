@@ -1,5 +1,5 @@
 {
-  description = "turbo-cache";
+  description = "native-link";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

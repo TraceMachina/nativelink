@@ -871,6 +871,7 @@ dependencies = [
  "config",
  "dedup_store",
  "error",
+ "existence_store",
  "fast_slow_store",
  "filesystem_store",
  "futures",
@@ -1069,6 +1070,41 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+]
+
+[[package]]
+name = "existence_store"
+version = "0.0.0"
+dependencies = [
+ "ac_utils",
+ "async-trait",
+ "buf_channel",
+ "common",
+ "config",
+ "error",
+ "hashbrown 0.14.2",
+ "hex",
+ "metrics_utils",
+ "proto",
+ "sha2 0.10.8",
+ "tokio",
+ "traits",
+]
+
+[[package]]
+name = "existence_store_test"
+version = "0.0.0"
+dependencies = [
+ "buf_channel",
+ "common",
+ "config",
+ "error",
+ "existence_store",
+ "futures",
+ "memory_store",
+ "pretty_assertions",
+ "tokio",
+ "traits",
 ]
 
 [[package]]

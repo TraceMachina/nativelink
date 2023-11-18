@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ use memory_store::MemoryStore;
 use mock_running_actions_manager::MockRunningAction;
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::platform::Property;
-use proto::com::github::trace_machina::turbo_cache::remote_execution::{
+use proto::com::github::trace_machina::native_link::remote_execution::{
     execute_result, update_for_worker::Update, ConnectionResult, ExecuteResult, StartExecute, SupportedProperties,
     UpdateForWorker,
 };

@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -66,7 +66,7 @@ use proto::build::bazel::remote::execution::v2::{
     ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree,
 };
 use proto::build::bazel::remote::execution::v2::{ActionResult as ProtoActionResult, UpdateActionResultRequest};
-use proto::com::github::trace_machina::turbo_cache::remote_execution::{HistoricalExecuteResponse, StartExecute};
+use proto::com::github::trace_machina::native_link::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use store::Store;
 
 pub type ActionId = [u8; 32];
@@ -803,7 +803,7 @@ impl RunningActionImpl {
                     // TODO(allada) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
                     // TODO(allada) There is a significant bug here. If we kill the action and the action creates
-                    // child processes, it can create zombies. See: https://github.com/allada/turbo-cache/issues/225
+                    // child processes, it can create zombies. See: https://github.com/tracemachina/native-link/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
                         (Bytes::new(), Bytes::new())

@@ -5,7 +5,7 @@ bazel-out
 bazel-remote-bin
 bazel-remote-out
 bazel-remote-testlogs
-bazel-remote-turbo-cache
+bazel-remote-native-link
 bazel-root
 bazel-testlogs
-bazel-turbo-cache
+bazel-native-link

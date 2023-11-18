@@ -1,4 +1,4 @@
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ use error::Error;
 use local_worker::LocalWorker;
 use mock_running_actions_manager::MockRunningActionsManager;
 use mock_worker_api_client::MockWorkerApiClient;
-use proto::com::github::trace_machina::turbo_cache::remote_execution::UpdateForWorker;
+use proto::com::github::trace_machina::native_link::remote_execution::UpdateForWorker;
 
 pub fn setup_grpc_stream() -> (HyperSender, Response<Streaming<UpdateForWorker>>) {
     let (tx, body) = Body::channel();

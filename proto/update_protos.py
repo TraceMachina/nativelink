@@ -25,7 +25,7 @@ _BAZEL_DIR = os.path.join("proto")
 _REPO_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "genproto")
 
 _RUST_LICENSE = """\
-// Copyright 2022 The Turbo Cache Authors. All rights reserved.
+// Copyright 2022 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.

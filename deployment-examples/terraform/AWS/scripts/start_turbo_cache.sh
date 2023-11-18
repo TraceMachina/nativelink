@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2022 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Starts turbo-cache remote execution service.
+# Starts native-link remote execution service.
 #
 # This service will try and figure out what kind of service
 # it should morph into and then configure and launch it.
@@ -31,10 +31,10 @@ TAGS=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" --
 TOTAL_AVAIL_MEMORY=$(( $(grep MemFree /proc/meminfo | awk '{print $2}') * 10000 / 12 ))
 
 # These environmental variables are used inside the json file resolution.
-export TURBO_CACHE_AWS_REGION="$AWS_REGION"
-export TURBO_CACHE_AWS_S3_CAS_BUCKET=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "turbo_cache:s3_cas_bucket").Value')
+export NATIVE_LINK_AWS_REGION="$AWS_REGION"
+export NATIVE_LINK_AWS_S3_CAS_BUCKET=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:s3_cas_bucket").Value')
 
-TYPE=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "turbo_cache:instance_type").Value')
+TYPE=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:instance_type").Value')
 if [ "$TYPE" == "ami_builder" ]; then
     # This instance type is special. It is not used in production, but due to terraform being unable
     # to delete/stop instances, we wait for this instance to restart after the AMI is created then
@@ -43,32 +43,32 @@ if [ "$TYPE" == "ami_builder" ]; then
     sleep 30 # This is so the service doesn't try to run this script again immediately.
 elif [ "$TYPE" == "cas" ]; then
     # 10% goes to action cache.
-    export TURBO_CACHE_AC_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 10 ))
+    export NATIVE_LINK_AC_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 10 ))
     # 5% goes to the index memory cache.
-    export TURBO_CACHE_CAS_INDEX_CACHE_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 20 ))
+    export NATIVE_LINK_CAS_INDEX_CACHE_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 20 ))
     # 85% goes to the content memory cache.
-    export TURBO_CACHE_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - - $TURBO_CACHE_AC_CONTENT_LIMIT - $TURBO_CACHE_CAS_INDEX_CACHE_LIMIT ))
+    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - - $NATIVE_LINK_AC_CONTENT_LIMIT - $NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
 
-    /usr/local/bin/turbo-cache /root/cas.json
+    /usr/local/bin/native-link /root/cas.json
 elif [ "$TYPE" == "scheduler" ]; then
     # 10% goes to action cache.
-    export TURBO_CACHE_AC_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 10 ))
+    export NATIVE_LINK_AC_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 10 ))
     # 5% goes to the index memory cache.
-    export TURBO_CACHE_CAS_INDEX_CACHE_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 20 ))
+    export NATIVE_LINK_CAS_INDEX_CACHE_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 20 ))
     # 85% goes to the content memory cache.
-    export TURBO_CACHE_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - - $TURBO_CACHE_AC_CONTENT_LIMIT - $TURBO_CACHE_CAS_INDEX_CACHE_LIMIT ))
+    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - - $NATIVE_LINK_AC_CONTENT_LIMIT - $NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
 
-    /usr/local/bin/turbo-cache /root/scheduler.json
+    /usr/local/bin/native-link /root/scheduler.json
 elif [ "$TYPE" == "worker" ]; then
-    SCHEDULER_URL=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "turbo_cache:scheduler_url").Value')
+    SCHEDULER_URL=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:scheduler_url").Value')
     DISK_SIZE=$(df /mnt/data | tail -n 1 | awk '{ print $2 }')
 
     # This is used inside the "worker.json" file.
     export MAX_WORKER_DISK_USAGE=$(( DISK_SIZE * 100 / 125  )) # Leave about 20% disk space for active tasks.
-    export SCHEDULER_ENDPOINT=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "turbo_cache:scheduler_endpoint").Value')
+    export SCHEDULER_ENDPOINT=$(echo "$TAGS"| jq -r '.Tags[] | select(.Key == "native_link:scheduler_endpoint").Value')
 
     mkdir -p /mnt/data
     mkdir -p /worker
     mount --bind /mnt/data /worker
-    /usr/local/bin/turbo-cache /root/worker.json
+    /usr/local/bin/native-link /root/worker.json
 fi

@@ -1,4 +1,4 @@
-# Copyright 2022 The Turbo Cache Authors. All rights reserved.
+# Copyright 2022 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 # and add the private IPs of each instance to a Route53 DNS record that will
 # be used by workers to find the scheduler(s).
 resource "aws_lambda_function" "update_scheduler_ips_lambda" {
-  function_name = "turbo_cache_update_scheduler_ips"
+  function_name = "native_link_update_scheduler_ips"
 
   filename = data.archive_file.update_scheduler_ips.output_path
   role = aws_iam_role.update_scheduler_ips_lambda_role.arn
@@ -45,7 +45,7 @@ data "archive_file" "update_scheduler_ips" {
 }
 
 resource "aws_sns_topic" "update_scheduler_ips_sns_topic" {
-  name = "turbo_cache_scheduler_ips_sns_topic"
+  name = "native_link_scheduler_ips_sns_topic"
 }
 
 resource "aws_sns_topic_subscription" "update_scheduler_ips_sns_subscription" {
@@ -55,7 +55,7 @@ resource "aws_sns_topic_subscription" "update_scheduler_ips_sns_subscription" {
 }
 
 resource "aws_lambda_permission" "allow_scheduler_ip_sns_execute_lambda" {
-  statement_id  = "turbo_cache_allow_scheduler_ip_sns_execute_lambda"
+  statement_id  = "native_link_allow_scheduler_ip_sns_execute_lambda"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.update_scheduler_ips_lambda.arn
   principal     = "sns.amazonaws.com"
