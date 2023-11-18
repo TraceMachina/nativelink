@@ -140,6 +140,12 @@ pub enum StoreConfig {
     /// this store directly without being a child of any store there are no
     /// side effects and is the most efficient way to use it.
     grpc(GrpcStore),
+
+    /// Noop store is a store that sends streams into the void and all data
+    /// retrieval will return 404 (NotFound). This can be useful for cases
+    /// where you may need to partition your data and part of your data needs
+    /// to be discarded.
+    noop,
 }
 
 /// Configuration for an individual shard of the store.

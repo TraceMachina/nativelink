@@ -28,6 +28,7 @@ rust_library(
         ":filesystem_store",
         ":grpc_store",
         ":memory_store",
+        ":noop_store",
         ":ref_store",
         ":s3_store",
         ":shard_store",
@@ -123,6 +124,22 @@ rust_library(
         "//util:evicting_map",
         "//util:metrics_utils",
         "@crate_index//:bytes",
+    ],
+)
+
+rust_library(
+    name = "noop_store",
+    srcs = ["noop_store.rs"],
+    proc_macro_deps = ["@crate_index//:async-trait"],
+    visibility = [
+        "//cas:__pkg__",
+        "//cas:__subpackages__",
+    ],
+    deps = [
+        ":traits",
+        "//util:buf_channel",
+        "//util:common",
+        "//util:error",
     ],
 )
 
