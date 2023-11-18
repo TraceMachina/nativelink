@@ -62,6 +62,7 @@ members = [
   "gencargo/mock_running_actions_manager",
   "gencargo/mock_scheduler",
   "gencargo/mock_worker_api_client",
+  "gencargo/noop_store",
   "gencargo/platform_property_manager",
   "gencargo/property_modifier_scheduler",
   "gencargo/property_modifier_scheduler_test",
@@ -210,6 +211,7 @@ metrics_utils = { path = "gencargo/metrics_utils" }
 mock_running_actions_manager = { path = "gencargo/mock_running_actions_manager" }
 mock_scheduler = { path = "gencargo/mock_scheduler" }
 mock_worker_api_client = { path = "gencargo/mock_worker_api_client" }
+noop_store = { path = "gencargo/noop_store" }
 platform_property_manager = { path = "gencargo/platform_property_manager" }
 property_modifier_scheduler = { path = "gencargo/property_modifier_scheduler" }
 property_modifier_scheduler_test = { path = "gencargo/property_modifier_scheduler_test" }

@@ -878,6 +878,7 @@ dependencies = [
  "grpc_store",
  "memory_store",
  "metrics_utils",
+ "noop_store",
  "ref_store",
  "s3_store",
  "shard_store",
@@ -2038,6 +2039,17 @@ dependencies = [
  "libc",
  "memoffset",
  "pin-utils",
+]
+
+[[package]]
+name = "noop_store"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "buf_channel",
+ "common",
+ "error",
+ "traits",
 ]
 
 [[package]]
