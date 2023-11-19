@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
 use futures::future::Future;
 use futures::stream::StreamExt;
 use std::pin::Pin;
@@ -38,7 +40,7 @@ impl Iterator for ExponentialBackoff {
     }
 }
 
-type SleepFn = Box<dyn Fn(Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> + Sync + Send>;
+type SleepFn = Arc<dyn Fn(Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> + Sync + Send>;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum RetryResult<T> {
@@ -48,6 +50,7 @@ pub enum RetryResult<T> {
 }
 
 /// Class used to retry a job with a sleep function in between each retry.
+#[derive(Clone)]
 pub struct Retrier {
     sleep_fn: SleepFn,
 }
