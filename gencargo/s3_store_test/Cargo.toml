@@ -19,19 +19,16 @@ path = "../../cas/store/tests/s3_store_test.rs"
 doctest = false
 
 [dependencies]
-futures = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-smithy-runtime = { workspace = true }
+aws-smithy-types = { workspace = true }
 http = { workspace = true }
 pretty_assertions = { workspace = true }
-rusoto_core = { workspace = true }
-rusoto_mock = { workspace = true }
-rusoto_s3 = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 
 # Local libraries.
 s3_store = { workspace = true }
 traits = { workspace = true }
 config = { workspace = true }
-async_fixed_buffer = { workspace = true }
 common = { workspace = true }
 error = { workspace = true }
