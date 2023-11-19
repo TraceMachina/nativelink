@@ -38,7 +38,7 @@ resource "aws_lambda_function" "update_scheduler_ips_lambda" {
   }
 }
 
-data "archive_file" "update_scheduler_ips" { 
+data "archive_file" "update_scheduler_ips" {
   type = "zip"
   source_file = "scripts/lambdas/update_scheduler_ips.py"
   output_path = ".update_scheduler_ips.zip"
