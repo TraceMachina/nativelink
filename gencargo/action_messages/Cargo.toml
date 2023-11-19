@@ -19,9 +19,9 @@ path = "../../cas/scheduler/action_messages.rs"
 doctest = false
 
 [dependencies]
+blake3 = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
-sha2 = { workspace = true }
 tonic = { workspace = true }
 
 # Local libraries.
