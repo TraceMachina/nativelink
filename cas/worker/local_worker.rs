@@ -322,6 +322,7 @@ pub async fn new_local_worker(
     historical_store: Arc<dyn Store>,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
     let fast_slow_store = cas_store
+        .inner_store(None)
         .as_any()
         .downcast_ref::<Arc<FastSlowStore>>()
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?

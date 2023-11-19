@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use error::ResultExt;
 
 use buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use common::DigestInfo;
+use common::{log, DigestInfo};
 use error::{make_err, make_input_err, Code, Error};
 use store::StoreManager;
 use traits::{StoreTrait, UploadSizeInfo};
@@ -121,6 +121,16 @@ impl StoreTrait for RefStore {
         Pin::new(store.as_ref())
             .get_part_ref(digest, writer, offset, length)
             .await
+    }
+
+    fn inner_store(self: Arc<Self>, digest: Option<&DigestInfo>) -> Arc<dyn StoreTrait> {
+        match self.get_store() {
+            Ok(store) => store.clone().inner_store(digest),
+            Err(e) => {
+                log::error!("Failed to get store for digest: {e:?}");
+                self
+            }
+        }
     }
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {

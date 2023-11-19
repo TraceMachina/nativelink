@@ -61,7 +61,7 @@ async fn get_action_from_store(
     instance_name: String,
 ) -> Option<ProtoActionResult> {
     // If we are a GrpcStore we shortcut here, as this is a special store.
-    let any_store = ac_store.clone().as_any();
+    let any_store = ac_store.clone().inner_store(Some(action_digest)).as_any();
     let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
     if let Some(grpc_store) = maybe_grpc_store {
         let action_result_request = GetActionResultRequest {

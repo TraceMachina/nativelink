@@ -65,18 +65,19 @@ impl AcServer {
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?;
 
+        // TODO(blaise.bruer) We should write a test for these errors.
+        let digest: DigestInfo = get_action_request
+            .action_digest
+            .clone()
+            .err_tip(|| "Action digest was not set in message")?
+            .try_into()?;
+
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.clone().as_any();
+        let any_store = store.clone().inner_store(Some(&digest)).as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store.get_action_result(Request::new(get_action_request)).await;
         }
-
-        // TODO(blaise.bruer) We should write a test for these errors.
-        let digest: DigestInfo = get_action_request
-            .action_digest
-            .err_tip(|| "Action digest was not set in message")?
-            .try_into()?;
 
         Ok(Response::new(
             get_and_decode_digest::<ActionResult>(Pin::new(store.as_ref()), &digest).await?,
@@ -95,19 +96,20 @@ impl AcServer {
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?;
 
+        let digest: DigestInfo = update_action_request
+            .action_digest
+            .clone()
+            .err_tip(|| "Action digest was not set in message")?
+            .try_into()?;
+
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.clone().as_any();
+        let any_store = store.clone().inner_store(Some(&digest)).as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store
                 .update_action_result(Request::new(update_action_request))
                 .await;
         }
-
-        let digest: DigestInfo = update_action_request
-            .action_digest
-            .err_tip(|| "Action digest was not set in message")?
-            .try_into()?;
 
         let action_result = update_action_request
             .action_result

@@ -168,6 +168,13 @@ pub trait StoreTrait: Sync + Send + Unpin {
             .merge(data_res.err_tip(|| "Failed to read stream to completion in get_part_unchunked"))
     }
 
+    /// Gets the underlying store for the given digest. This can be used to find out
+    /// what any underlying store is for a given digest will be and hand it to the caller.
+    /// A caller might want to use this to obtain a reference to the "real" underlying store
+    /// (if applicable) and check if it implements some special traits that allow optimizations.
+    /// Note: If the store performs complex operations on the data, it should return itself.
+    fn inner_store(self: Arc<Self>, _digest: Option<&DigestInfo>) -> Arc<dyn StoreTrait>;
+
     /// Expect the returned Any to be `Arc<Self>`.
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send>;
 

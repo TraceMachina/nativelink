@@ -115,6 +115,16 @@ impl StoreTrait for SizePartitioningStore {
             .await
     }
 
+    fn inner_store(self: Arc<Self>, digest: Option<&DigestInfo>) -> Arc<dyn StoreTrait> {
+        let Some(digest) = digest else {
+            return self;
+        };
+        if digest.size_bytes < self.size {
+            return self.lower_store.clone().inner_store(Some(digest));
+        }
+        self.upper_store.clone().inner_store(Some(digest))
+    }
+
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
     }

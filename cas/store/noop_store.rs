@@ -68,6 +68,10 @@ impl StoreTrait for NoopStore {
         Err(make_err!(Code::NotFound, "Not found in noop store"))
     }
 
+    fn inner_store(self: Arc<Self>, _digest: Option<&DigestInfo>) -> Arc<dyn StoreTrait> {
+        self
+    }
+
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
     }
