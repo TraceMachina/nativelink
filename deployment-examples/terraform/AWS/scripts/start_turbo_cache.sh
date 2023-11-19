@@ -47,7 +47,7 @@ elif [ "$TYPE" == "cas" ]; then
     # 5% goes to the index memory cache.
     export NATIVE_LINK_CAS_INDEX_CACHE_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 20 ))
     # 85% goes to the content memory cache.
-    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - - $NATIVE_LINK_AC_CONTENT_LIMIT - $NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
+    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - $NATIVE_LINK_AC_CONTENT_LIMIT - $NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
 
     /usr/local/bin/native-link /root/cas.json
 elif [ "$TYPE" == "scheduler" ]; then
@@ -56,7 +56,7 @@ elif [ "$TYPE" == "scheduler" ]; then
     # 5% goes to the index memory cache.
     export NATIVE_LINK_CAS_INDEX_CACHE_LIMIT=$(( $TOTAL_AVAIL_MEMORY / 20 ))
     # 85% goes to the content memory cache.
-    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - - $NATIVE_LINK_AC_CONTENT_LIMIT - $NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
+    export NATIVE_LINK_CAS_CONTENT_LIMIT=$(( $TOTAL_AVAIL_MEMORY - $NATIVE_LINK_AC_CONTENT_LIMIT - $NATIVE_LINK_CAS_INDEX_CACHE_LIMIT ))
 
     /usr/local/bin/native-link /root/scheduler.json
 elif [ "$TYPE" == "worker" ]; then
