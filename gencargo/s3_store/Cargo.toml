@@ -20,16 +20,15 @@ doctest = false
 
 [dependencies]
 async-trait = { workspace = true }
-bytes = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-smithy-runtime = { workspace = true }
 futures = { workspace = true }
-http = { workspace = true }
-once_cell = { workspace = true }
+hyper = { workspace = true }
+hyper-rustls = { workspace = true }
 rand = { workspace = true }
-rusoto_core = { workspace = true }
-rusoto_s3 = { workspace = true }
-rusoto_signature = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
 
 # Local libraries.
 traits = { workspace = true }

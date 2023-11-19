@@ -108,7 +108,7 @@ impl GrpcStore {
             store_type: config.store_type,
             jitter_fn,
             retry: config.retry.to_owned(),
-            retrier: Retrier::new(Box::new(|duration| Box::pin(sleep(duration)))),
+            retrier: Retrier::new(Arc::new(|duration| Box::pin(sleep(duration)))),
         })
     }
 

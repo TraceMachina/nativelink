@@ -50,7 +50,7 @@ mod retry_tests {
 
     #[tokio::test]
     async fn retry_simple_success() -> Result<(), Error> {
-        let retrier = Retrier::new(Box::new(|_duration| Box::pin(ready(()))));
+        let retrier = Retrier::new(Arc::new(|_duration| Box::pin(ready(()))));
         let retry_config = MockDurationIterator::new(Duration::from_millis(1));
         let run_count = Arc::new(AtomicI32::new(0));
 
@@ -75,7 +75,7 @@ mod retry_tests {
 
     #[tokio::test]
     async fn retry_fails_after_3_runs() -> Result<(), Error> {
-        let retrier = Retrier::new(Box::new(|_duration| Box::pin(ready(()))));
+        let retrier = Retrier::new(Arc::new(|_duration| Box::pin(ready(()))));
         let retry_config = MockDurationIterator::new(Duration::from_millis(1)).take(2); // .take() will run X times + 1.
         let run_count = Arc::new(AtomicI32::new(0));
 
@@ -100,7 +100,7 @@ mod retry_tests {
 
     #[tokio::test]
     async fn retry_success_after_2_runs() -> Result<(), Error> {
-        let retrier = Retrier::new(Box::new(|_duration| Box::pin(ready(()))));
+        let retrier = Retrier::new(Arc::new(|_duration| Box::pin(ready(()))));
         let retry_config = MockDurationIterator::new(Duration::from_millis(1)).take(5); // .take() will run X times + 1.
         let run_count = Arc::new(AtomicI32::new(0));
 
@@ -127,7 +127,7 @@ mod retry_tests {
         const EXPECTED_MS: u64 = 71;
         let sleep_fn_run_count = Arc::new(AtomicI32::new(0));
         let sleep_fn_run_count_copy = sleep_fn_run_count.clone();
-        let retrier = Retrier::new(Box::new(move |duration| {
+        let retrier = Retrier::new(Arc::new(move |duration| {
             // Note: Need to make another copy to make the compiler happy.
             let sleep_fn_run_count_copy = sleep_fn_run_count_copy.clone();
             Box::pin(async move {
