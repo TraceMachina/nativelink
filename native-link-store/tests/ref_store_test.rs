@@ -124,4 +124,36 @@ mod ref_store_tests {
         }
         Ok(())
     }
+
+    #[tokio::test]
+    async fn inner_store_test() -> Result<(), Error> {
+        let store_manager = Arc::new(StoreManager::new());
+
+        let memory_store = Arc::new(MemoryStore::new(&native_link_config::stores::MemoryStore::default()));
+        store_manager.add_store("mem_store", memory_store.clone());
+
+        let ref_store_inner = Arc::new(RefStore::new(
+            &native_link_config::stores::RefStore {
+                name: "mem_store".to_string(),
+            },
+            Arc::downgrade(&store_manager),
+        ));
+        store_manager.add_store("ref_store_inner", ref_store_inner.clone());
+
+        let ref_store_outer = Arc::new(RefStore::new(
+            &native_link_config::stores::RefStore {
+                name: "ref_store_inner".to_string(),
+            },
+            Arc::downgrade(&store_manager),
+        ));
+        store_manager.add_store("ref_store_outer", ref_store_outer.clone());
+
+        // Ensure the result of inner_store() points to exact same memory store.
+        assert_eq!(
+            Arc::as_ptr(&ref_store_outer.inner_store(None)) as *const (),
+            Arc::as_ptr(&memory_store) as *const (),
+            "Expected inner store to be memory store"
+        );
+        Ok(())
+    }
 }

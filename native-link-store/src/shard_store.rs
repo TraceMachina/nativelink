@@ -169,6 +169,14 @@ impl Store for ShardStore {
         Box::new(self)
     }
 
+    fn inner_store(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
+        let Some(digest) = digest else {
+            return self;
+        };
+        let index = self.get_store_index(&digest);
+        self.weights_and_stores[index].1.clone().inner_store(Some(digest))
+    }
+
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         for (i, (_, store)) in self.weights_and_stores.iter().enumerate() {
             let store_registry = registry.sub_registry_with_prefix(format!("store_{i}"));

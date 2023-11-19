@@ -1319,7 +1319,7 @@ impl UploadActionResults {
     ) -> Result<(), Error> {
         let Some(ac_store) = &self.ac_store else { return Ok(()) };
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = ac_store.clone().as_any();
+        let any_store = ac_store.clone().inner_store(Some(action_digest)).as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             let update_action_request = UpdateActionResultRequest {
@@ -1472,6 +1472,7 @@ impl RunningActionsManagerImpl {
             .cas_store
             .fast_store()
             .clone()
+            .inner_store(None)
             .as_any()
             .downcast_ref::<Arc<FilesystemStore>>()
             .err_tip(|| "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl")?

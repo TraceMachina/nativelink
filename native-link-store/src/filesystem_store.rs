@@ -678,6 +678,10 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         Ok(())
     }
 
+    fn inner_store(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+        self
+    }
+
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
     }

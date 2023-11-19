@@ -237,15 +237,15 @@ impl ByteStreamServer {
             .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
             .clone();
 
+        let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
+
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.clone().as_any();
+        let any_store = store.clone().inner_store(Some(digest)).as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             let stream = grpc_store.read(Request::new(read_request)).await?.into_inner();
             return Ok(Response::new(Box::pin(stream)));
         }
-
-        let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
 
         let (tx, rx) = make_buf_channel_pair();
 
@@ -345,8 +345,11 @@ impl ByteStreamServer {
             .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
             .clone();
 
+        let digest = DigestInfo::try_new(&stream.hash, stream.expected_size)
+            .err_tip(|| "Invalid digest input in ByteStream::write")?;
+
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.clone().as_any();
+        let any_store = store.clone().inner_store(Some(digest)).as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store.write(stream).await;
@@ -356,8 +359,6 @@ impl ByteStreamServer {
             .uuid
             .take()
             .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?;
-        let digest = DigestInfo::try_new(&stream.hash, stream.expected_size)
-            .err_tip(|| "Invalid digest input in ByteStream::write")?;
         let mut active_stream_guard = self.create_or_join_upload_stream(uuid, store, digest)?;
         let expected_size = stream.expected_size as u64;
 
@@ -444,8 +445,10 @@ impl ByteStreamServer {
             .err_tip(|| format!("'instance_name' not configured for '{}'", &resource_info.instance_name))?
             .clone();
 
+        let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
+
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store_clone.clone().as_any();
+        let any_store = store_clone.clone().inner_store(Some(digest)).as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store.query_write_status(Request::new(query_request.clone())).await;
@@ -467,8 +470,6 @@ impl ByteStreamServer {
                 }));
             }
         }
-
-        let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
 
         let has_fut = Pin::new(store_clone.as_ref()).has(digest);
         let Some(item_size) = has_fut.await.err_tip(|| "Failed to call .has() on store")? else {
