@@ -78,7 +78,7 @@ impl GrpcScheduler {
             platform_property_managers: Mutex::new(HashMap::new()),
             jitter_fn,
             retry: config.retry.clone(),
-            retrier: Retrier::new(Box::new(|duration| Box::pin(sleep(duration)))),
+            retrier: Retrier::new(Arc::new(|duration| Box::pin(sleep(duration)))),
         })
     }
 

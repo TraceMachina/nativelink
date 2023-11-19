@@ -16,11 +16,11 @@ use std::pin::Pin;
 use std::task::Poll;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use futures::{task::Context, Future, Stream, StreamExt};
+use error::{error_if, make_err, Code, Error, ResultExt};
+use futures::task::Context;
+use futures::{Future, Stream};
 use tokio::sync::{mpsc, oneshot};
 pub use tokio_util::io::StreamReader;
-
-use error::{error_if, make_err, Code, Error, ResultExt};
 
 /// Create a channel pair that can be used to transport buffer objects around to
 /// different components. This wrapper is used because the streams give some
@@ -92,30 +92,6 @@ impl DropCloserWriteHalf {
         Pin::new(&mut self.close_rx)
             .await
             .map_err(|_| make_err!(Code::Internal, "Receiver went away before receiving EOF"))?
-    }
-
-    /// Forwards data from this writer to a reader. This is an efficient way to bind a writer
-    /// and reader together to just forward the data on.
-    pub async fn forward<S>(&mut self, mut reader: S, forward_eof: bool) -> Result<(), Error>
-    where
-        S: Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin,
-    {
-        loop {
-            if let Some(maybe_chunk) = reader.next().await {
-                let chunk = maybe_chunk.err_tip(|| "Failed to forward message")?;
-                if chunk.is_empty() {
-                    // Don't send EOF here. We instead rely on None result to be EOF.
-                    continue;
-                }
-                self.send(chunk).await?;
-            } else {
-                if forward_eof {
-                    self.send_eof().await?;
-                }
-                break;
-            }
-        }
-        Ok(())
     }
 
     /// Returns the number of bytes written so far. This does not mean the receiver received
