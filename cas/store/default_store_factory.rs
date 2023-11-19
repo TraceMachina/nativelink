@@ -28,6 +28,7 @@ use filesystem_store::FilesystemStore;
 use grpc_store::GrpcStore;
 use memory_store::MemoryStore;
 use metrics_utils::Registry;
+use noop_store::NoopStore;
 use ref_store::RefStore;
 use s3_store::S3Store;
 use shard_store::ShardStore;
@@ -75,6 +76,7 @@ pub fn store_factory<'a>(
                 store_factory(&config.upper_store, store_manager, None).await?,
             )),
             StoreConfig::grpc(config) => Arc::new(GrpcStore::new(config).await?),
+            StoreConfig::noop => Arc::new(NoopStore::new()),
             StoreConfig::shard(config) => {
                 let stores = config
                     .stores
