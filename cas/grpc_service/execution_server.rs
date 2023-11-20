@@ -27,6 +27,7 @@ use ac_utils::get_and_decode_digest;
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use common::{log, DigestInfo};
 use config::cas_server::{ExecutionConfig, InstanceName};
+use digest_hasher::DigestHasherFunc;
 use error::{make_input_err, Error, ResultExt};
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::{
@@ -54,6 +55,7 @@ impl InstanceInfo {
         action: &Action,
         priority: i32,
         skip_cache_lookup: bool,
+        digest_function: DigestHasherFunc,
     ) -> Result<ActionInfo, Error> {
         let command_digest = DigestInfo::try_from(
             action
@@ -124,6 +126,7 @@ impl InstanceInfo {
                 },
             },
             skip_cache_lookup,
+            digest_function,
         })
     }
 }
@@ -194,7 +197,17 @@ impl ExecutionServer {
 
         let action = get_and_decode_digest::<Action>(instance_info.cas_pin(), &digest).await?;
         let action_info = instance_info
-            .build_action_info(instance_name, digest, &action, priority, execute_req.skip_cache_lookup)
+            .build_action_info(
+                instance_name,
+                digest,
+                &action,
+                priority,
+                execute_req.skip_cache_lookup,
+                execute_req
+                    .digest_function
+                    .try_into()
+                    .err_tip(|| "Could not convert digest function in inner_execute()")?,
+            )
             .await?;
 
         let rx = instance_info
