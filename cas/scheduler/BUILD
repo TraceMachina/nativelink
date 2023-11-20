@@ -63,6 +63,7 @@ rust_library(
         ":action_messages",
         ":platform_property_manager",
         "//util:common",
+        "//util:digest_hasher",
     ],
 )
 
@@ -256,6 +257,7 @@ rust_library(
         ":platform_property_manager",
         "//proto",
         "//util:common",
+        "//util:digest_hasher",
         "//util:error",
         "//util:metrics_utils",
         "@crate_index//:blake3",
@@ -273,6 +275,7 @@ rust_test(
         ":platform_property_manager",
         "//proto",
         "//util:common",
+        "//util:digest_hasher",
         "//util:error",
         "@crate_index//:pretty_assertions",
         "@crate_index//:tokio",

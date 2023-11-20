@@ -25,3 +25,4 @@ async-trait = { workspace = true }
 action_messages = { workspace = true }
 platform_property_manager = { workspace = true }
 common = { workspace = true }
+digest_hasher = { workspace = true }

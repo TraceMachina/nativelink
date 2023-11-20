@@ -25,14 +25,15 @@ use prost::Message;
 use prost_types::Any;
 
 use common::{DigestInfo, HashMapExt, VecExt};
+use digest_hasher::DigestHasherFunc;
 use error::{error_if, make_input_err, Error, ResultExt};
 use metrics_utils::{CollectorState, MetricsComponent};
 use platform_property_manager::PlatformProperties;
 use prost::bytes::Bytes;
 use proto::build::bazel::remote::execution::v2::{
-    digest_function, execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata,
-    ExecuteRequest, ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile,
-    OutputSymlink, SymlinkNode,
+    execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
+    ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile, OutputSymlink,
+    SymlinkNode,
 };
 use proto::google::longrunning::{operation::Result as LongRunningResult, Operation};
 use proto::google::rpc::Status;
@@ -145,6 +146,9 @@ pub struct ActionInfo {
 
     /// Whether to try looking up this action in the cache.
     pub skip_cache_lookup: bool,
+
+    /// The digest function this action expects.
+    pub digest_function: DigestHasherFunc,
 }
 
 impl ActionInfo {
@@ -199,6 +203,8 @@ impl ActionInfo {
                 salt,
             },
             skip_cache_lookup: execute_request.skip_cache_lookup,
+            digest_function: DigestHasherFunc::try_from(execute_request.digest_function)
+                .err_tip(|| "Could not find digest_function in try_from_action_and_execute_request_with_salt")?,
         })
     }
 }
@@ -212,7 +218,7 @@ impl From<ActionInfo> for ExecuteRequest {
             skip_cache_lookup: true,    // The worker should never cache lookup.
             execution_policy: None,     // Not used in the worker.
             results_cache_policy: None, // Not used in the worker.
-            digest_function: digest_function::Value::Sha256.into(),
+            digest_function: val.digest_function.proto_digest_func().into(),
         }
     }
 }
@@ -587,8 +593,8 @@ impl Default for ActionResult {
             output_directory_symlinks: Default::default(),
             output_file_symlinks: Default::default(),
             exit_code: INTERNAL_ERROR_EXIT_CODE,
-            stdout_digest: DigestInfo::empty_digest(),
-            stderr_digest: DigestInfo::empty_digest(),
+            stdout_digest: DigestInfo::new([0u8; 32], 0),
+            stderr_digest: DigestInfo::new([0u8; 32], 0),
             execution_metadata: ExecutionMetadata {
                 worker: "".to_string(),
                 queued_timestamp: SystemTime::UNIX_EPOCH,

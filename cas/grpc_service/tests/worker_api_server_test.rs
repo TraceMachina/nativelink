@@ -22,6 +22,7 @@ use tonic::Request;
 use action_messages::{ActionInfo, ActionInfoHashKey, ActionStage};
 use common::DigestInfo;
 use config::cas_server::WorkerApiConfig;
+use digest_hasher::DigestHasherFunc;
 use error::{Error, ResultExt};
 use platform_property_manager::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::{
@@ -269,6 +270,7 @@ pub mod execution_response_tests {
                 salt: SALT,
             },
             skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Sha256,
         };
         let mut client_action_state_receiver = test_context.scheduler.add_action(action_info).await?;
 
