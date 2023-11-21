@@ -15,15 +15,15 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use prost::Message;
 use tokio::{self, join, sync::watch};
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::StreamExt;
 
-use action_messages::{ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo};
-use cache_lookup_scheduler::CacheLookupScheduler;
+use action_messages::{ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata};
+use cache_lookup_scheduler::{walk_ac_and_order_items, CacheLookupScheduler};
 use common::DigestInfo;
 use error::{Error, ResultExt};
 use memory_store::MemoryStore;
@@ -51,6 +51,14 @@ fn make_cache_scheduler() -> Result<TestContext, Error> {
         cache_scheduler,
     })
 }
+
+const FILE1_CONTENT: &str = "HELLOFILE1";
+const FILE2_CONTENT: &str = "HELLOFILE2";
+const FILE3_CONTENT: &str = "HELLOFILE3";
+
+const HASH1: &str = "0125456789abcdef000000000000000000000000000000000123456789abcdef";
+const HASH2: &str = "0123f56789abcdef000000000000000000000000000000000123456789abcdef";
+const HASH3: &str = "0126456789abcdef000000000000000000000000000000000123456789abcdef";
 
 #[cfg(test)]
 mod cache_lookup_scheduler_tests {
@@ -160,6 +168,56 @@ mod cache_lookup_scheduler_tests {
         );
         assert_eq!(true, actual_result.is_none());
         assert_eq!(action_name, actual_action_name);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_walk_ac_and_order_items() -> Result<(), Error> {
+        let ac_store = Arc::new(MemoryStore::new(&config::stores::MemoryStore::default()));
+        let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
+
+        let file1_digest = DigestInfo::try_new(HASH1, FILE1_CONTENT.len())?;
+        let file2_digest = DigestInfo::try_new(HASH2, FILE2_CONTENT.len())?;
+        let file3_digest = DigestInfo::try_new(HASH3, FILE3_CONTENT.len())?;
+
+        let timestamp1 = UNIX_EPOCH + Duration::from_secs(300);
+        let timestamp2 = UNIX_EPOCH + Duration::from_secs(200);
+
+        let action_result1 = ActionResult {
+            execution_metadata: ExecutionMetadata {
+                execution_completed_timestamp: timestamp1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let action_result2 = ActionResult {
+            execution_metadata: ExecutionMetadata {
+                execution_completed_timestamp: timestamp2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let proto_action_result1: ProtoActionResult = action_result1.into();
+        let proto_action_result2: ProtoActionResult = action_result2.into();
+
+        let mut bytes = Vec::new();
+
+        proto_action_result1.encode(&mut bytes)?;
+        pinned_store.update_oneshot(file1_digest, bytes.clone().into()).await?;
+        bytes.clear();
+
+        proto_action_result2.encode(&mut bytes)?;
+        pinned_store.update_oneshot(file2_digest, bytes.clone().into()).await?;
+
+        let digests = vec![file1_digest, file2_digest, file3_digest];
+
+        let store: Arc<dyn Store> = ac_store.clone();
+        let remove_digests = walk_ac_and_order_items(&digests, &store).await?;
+
+        assert!(remove_digests == vec![file3_digest]);
+
         Ok(())
     }
 }
