@@ -29,8 +29,6 @@ RUN apt update && \
     DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y \
         npm \
         git \
-        pkg-config \
-        $( [[ "$OS_VERSION" == "18.04" ]] && echo libssl1.0-dev || echo libssl-dev ) \
         gcc \
         g++ \
         python3 \
@@ -51,10 +49,6 @@ RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} //cas && \
 # Go back to a fresh ubuntu container and copy only the compiled binary.
 FROM ubuntu:${OS_VERSION} as final
 COPY --from=builder /root/native-link-bin /usr/local/bin/native-link
-# Install runtime packages.
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        libssl-dev ca-certificates
 # Install any specific dependencies needed by the user.
 ARG ADDITIONAL_SETUP_WORKER_CMD
 RUN bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}"
