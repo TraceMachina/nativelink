@@ -28,7 +28,7 @@ To compile and run the server:
 ```sh
 # Install dependencies needed to compile Native Link with bazel on
 # worker machine (which is this machine).
-apt install -y gcc g++ lld libssl-dev pkg-config python3
+apt install -y gcc g++ lld python3
 
 # Install cargo (if needed).
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -67,11 +67,8 @@ We support building with Bazel or Cargo. Cargo **might** produce faster binaries
 * gcc
 * g++
 * lld
-* pkg-config
 * python3
 
-Runtime dependencies:
-* `libssl-dev` or `libssl1.0-dev` (depending on your distro &amp; version)
 #### Bazel building for deployment
 ```sh
 # On Unix
@@ -94,8 +91,7 @@ bazel build --config=windows -c opt cas
 These will place an executable in `./bazel-bin/cas/cas` that will start the service.
 
 ### Cargo requirements
-* Cargo 1.70.0+
-* `libssl-dev` package installed (ie: `apt install libssl-dev` or `yum install libssl-dev`)
+* Cargo 1.73.0+
 #### Cargo building for deployment
 ```sh
 cargo build
