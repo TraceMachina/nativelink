@@ -71,6 +71,9 @@ pub enum WorkerUpdate {
 
     /// Request that the worker is no longer in the pool and may discard any jobs.
     Disconnect,
+
+    /// Request that the worker is drained and stops accepting new jobs.
+    Drain,
 }
 
 /// Represents a connection to a worker and used as the medium to
@@ -140,6 +143,7 @@ impl Worker {
                 run_action: FuncCounterWrapper::default(),
                 keep_alive: FuncCounterWrapper::default(),
                 notify_disconnect: CounterWithTime::default(),
+                notify_drain: CounterWithTime::default(),
             }),
         }
     }
@@ -163,7 +167,8 @@ impl Worker {
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
                 send_msg_to_worker(&mut self.tx, update_for_worker::Update::Disconnect(()))
-            }
+            },
+            WorkerUpdate::Drain => self.drain()
         }
     }
 
@@ -193,6 +198,23 @@ impl Worker {
                 }),
             )
         })
+    }
+
+    pub fn drain(&mut self) -> Result<(), Error> {
+        let worker_platform_properties = &mut self.platform_properties;
+        for action_info in self.running_action_infos.clone().iter() {
+            reduce_platform_properties(worker_platform_properties, &action_info.platform_properties);
+        }
+        self.running_action_infos.clear();
+        self.is_paused = true;
+        self.metrics.notify_drain.inc();
+        
+        let tx = &mut self.tx;
+        let id = self.id;
+        send_msg_to_worker(
+            tx,
+            update_for_worker::Update::Drain(())
+        ).err_tip(|| format!("Failed to send Drain to worker : {}", id))
     }
 
     pub fn complete_action(&mut self, action_info: &Arc<ActionInfo>) {
@@ -239,6 +261,7 @@ struct Metrics {
     run_action: FuncCounterWrapper,
     keep_alive: FuncCounterWrapper,
     notify_disconnect: CounterWithTime,
+    notify_drain: CounterWithTime,
 }
 
 impl MetricsComponent for Worker {
@@ -271,6 +294,12 @@ impl MetricsComponent for Worker {
             "notify_disconnect",
             &self.metrics.notify_disconnect,
             "The number of notify_disconnect sent to this worker.",
+            vec![("worker_id".into(), format!("{}", self.id).into())],
+        );
+        c.publish_with_labels(
+            "notify_drain",
+            &self.metrics.notify_drain,
+            "The number of notify_drain sent to this worker.",
             vec![("worker_id".into(), format!("{}", self.id).into())],
         );
 

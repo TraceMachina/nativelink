@@ -106,7 +106,7 @@ pub struct ConnectionResult {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateForWorker {
-    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5")]
     pub update: ::core::option::Option<update_for_worker::Update>,
 }
 /// Nested message and enum types in `UpdateForWorker`.
@@ -133,6 +133,10 @@ pub mod update_for_worker {
         /// / The worker may discard any outstanding work that is being executed.
         #[prost(message, tag = "4")]
         Disconnect(()),
+        /// / Informs the worker that it needs has been drained from the pool.
+        /// / The worker no longer accepts incoming new jobs.
+        #[prost(message, tag = "5")]
+        Drain(()),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]

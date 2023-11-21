@@ -197,6 +197,9 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         Update::Disconnect(()) => {
                             self.metrics.disconnects_received.inc();
                         }
+                        Update::Drain(()) => {
+                            self.metrics.drains_received.inc();
+                        }
                         Update::KeepAlive(()) => {
                             self.metrics.keep_alives_received.inc();
                         }
@@ -524,6 +527,7 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
 struct Metrics {
     start_actions_received: CounterWithTime,
     disconnects_received: CounterWithTime,
+    drains_received: CounterWithTime,
     keep_alives_received: CounterWithTime,
     preconditions: AsyncCounterWrapper,
     running_actions_manager_metrics: Weak<RunningActionManagerMetrics>,
@@ -534,6 +538,7 @@ impl Metrics {
         Self {
             start_actions_received: CounterWithTime::default(),
             disconnects_received: CounterWithTime::default(),
+            drains_received: CounterWithTime::default(),
             keep_alives_received: CounterWithTime::default(),
             preconditions: AsyncCounterWrapper::default(),
             running_actions_manager_metrics,
@@ -562,6 +567,11 @@ impl MetricsComponent for Metrics {
             "disconnects_received",
             &self.disconnects_received,
             "Total number of disconnects received from the scheduler.",
+        );
+        c.publish(
+            "drains_received",
+            &self.drains_received,
+            "Total number of drains received from the scheduler.",
         );
         c.publish(
             "keep_alives_received",

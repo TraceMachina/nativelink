@@ -152,8 +152,12 @@ message UpdateForWorker {
         /// Informs the worker that it has been disconnected from the pool.
         /// The worker may discard any outstanding work that is being executed.
         google.protobuf.Empty disconnect = 4;
+
+        /// Informs the worker that it has been drained from the pool.
+        /// The worker is drained and no longer accepts new jobs.
+        google.protobuf.Empty drain = 5;
     }
-    reserved 5; // NextId.
+    reserved 6; // NextId.
 }
 
 message StartExecute {
