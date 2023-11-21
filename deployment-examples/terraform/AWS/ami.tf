@@ -85,7 +85,7 @@ resource "aws_instance" "build_native_link_instance" {
         `# apt servers, so we sleep for a few seconds` &&
         sleep 5 &&
         sudo DEBIAN_FRONTEND=noninteractive apt-get update &&
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y jq libssl-dev &&
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y jq &&
         sudo mv ~/create_filesystem.sh /root/create_filesystem.sh &&
         sudo chmod +x /root/create_filesystem.sh &&
         sudo /root/create_filesystem.sh /mnt/data &&
