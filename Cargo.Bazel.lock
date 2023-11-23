@@ -1,5 +1,5 @@
 {
-  "checksum": "2f3e1cf6a29c0aed4782676f08d75e1756ec33038612223f348ad4ced9f8e9f8",
+  "checksum": "3c48f6a8f523f1a947c7efa5d041ee99d7187465e154ab7fcb2896f842d77e89",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -618,7 +618,7 @@
         "deps": {
           "common": [
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             },
             {
@@ -939,12 +939,6 @@
         "compile_data_glob": [
           "**"
         ],
-        "crate_features": {
-          "common": [
-            "test-util"
-          ],
-          "selects": {}
-        },
         "deps": {
           "common": [
             {
@@ -1121,7 +1115,7 @@
               "target": "http"
             },
             {
-              "id": "percent-encoding 2.3.0",
+              "id": "percent-encoding 2.3.1",
               "target": "percent_encoding"
             },
             {
@@ -1129,7 +1123,7 @@
               "target": "tracing"
             },
             {
-              "id": "uuid 1.5.0",
+              "id": "uuid 1.6.1",
               "target": "uuid"
             }
           ],
@@ -1137,105 +1131,6 @@
         },
         "edition": "2021",
         "version": "0.57.2"
-      },
-      "license": "Apache-2.0"
-    },
-    "aws-sdk-config 0.35.0": {
-      "name": "aws-sdk-config",
-      "version": "0.35.0",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/aws-sdk-config/0.35.0/download",
-          "sha256": "75fa529a69c86c40743988c7bd72401dae18b70fabd33e132c1daa81c03d9698"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "aws_sdk_config",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "aws_sdk_config",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "default",
-            "rt-tokio",
-            "rustls"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "aws-credential-types 0.57.2",
-              "target": "aws_credential_types"
-            },
-            {
-              "id": "aws-http 0.57.2",
-              "target": "aws_http"
-            },
-            {
-              "id": "aws-runtime 0.57.2",
-              "target": "aws_runtime"
-            },
-            {
-              "id": "aws-smithy-async 0.57.2",
-              "target": "aws_smithy_async"
-            },
-            {
-              "id": "aws-smithy-http 0.57.2",
-              "target": "aws_smithy_http"
-            },
-            {
-              "id": "aws-smithy-json 0.57.2",
-              "target": "aws_smithy_json"
-            },
-            {
-              "id": "aws-smithy-runtime 0.57.2",
-              "target": "aws_smithy_runtime"
-            },
-            {
-              "id": "aws-smithy-runtime-api 0.57.2",
-              "target": "aws_smithy_runtime_api"
-            },
-            {
-              "id": "aws-smithy-types 0.57.2",
-              "target": "aws_smithy_types"
-            },
-            {
-              "id": "aws-types 0.57.2",
-              "target": "aws_types"
-            },
-            {
-              "id": "bytes 1.5.0",
-              "target": "bytes"
-            },
-            {
-              "id": "http 0.2.11",
-              "target": "http"
-            },
-            {
-              "id": "regex 1.10.2",
-              "target": "regex"
-            },
-            {
-              "id": "tracing 0.1.40",
-              "target": "tracing"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2021",
-        "version": "0.35.0"
       },
       "license": "Apache-2.0"
     },
@@ -1269,8 +1164,7 @@
             "default",
             "rt-tokio",
             "rustls",
-            "sigv4a",
-            "test-util"
+            "sigv4a"
           ],
           "selects": {}
         },
@@ -1349,7 +1243,7 @@
               "target": "once_cell"
             },
             {
-              "id": "percent-encoding 2.3.0",
+              "id": "percent-encoding 2.3.1",
               "target": "percent_encoding"
             },
             {
@@ -1361,7 +1255,7 @@
               "target": "tracing"
             },
             {
-              "id": "url 2.4.1",
+              "id": "url 2.5.0",
               "target": "url"
             }
           ],
@@ -1707,7 +1601,7 @@
               "target": "bytes"
             },
             {
-              "id": "form_urlencoded 1.2.0",
+              "id": "form_urlencoded 1.2.1",
               "target": "form_urlencoded"
             },
             {
@@ -1735,7 +1629,7 @@
               "target": "p256"
             },
             {
-              "id": "percent-encoding 2.3.0",
+              "id": "percent-encoding 2.3.1",
               "target": "percent_encoding"
             },
             {
@@ -2028,7 +1922,7 @@
               "target": "once_cell"
             },
             {
-              "id": "percent-encoding 2.3.0",
+              "id": "percent-encoding 2.3.1",
               "target": "percent_encoding"
             },
             {
@@ -2300,7 +2194,7 @@
               "target": "rustls"
             },
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             },
             {
@@ -2500,7 +2394,7 @@
           "selects": {
             "cfg(aws_sdk_unstable)": [
               {
-                "id": "serde 1.0.192",
+                "id": "serde 1.0.193",
                 "target": "serde"
               }
             ]
@@ -2735,7 +2629,7 @@
               "target": "mime"
             },
             {
-              "id": "percent-encoding 2.3.0",
+              "id": "percent-encoding 2.3.1",
               "target": "percent_encoding"
             },
             {
@@ -2743,7 +2637,7 @@
               "target": "pin_project_lite"
             },
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             },
             {
@@ -3187,7 +3081,7 @@
         "deps": {
           "common": [
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             }
           ],
@@ -3391,36 +3285,6 @@
         },
         "edition": "2018",
         "version": "0.10.4"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
-    "bumpalo 3.14.0": {
-      "name": "bumpalo",
-      "version": "3.14.0",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/bumpalo/3.14.0/download",
-          "sha256": "7f30e7476521f6f8af1a1c4c0b8cc94f0bee37d91763d0ca2665f299b6cd8aec"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "bumpalo",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "bumpalo",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "edition": "2021",
-        "version": "3.14.0"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -4516,277 +4380,6 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "direct-cargo-bazel-deps 0.0.1": {
-      "name": "direct-cargo-bazel-deps",
-      "version": "0.0.1",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "direct_cargo_bazel_deps",
-            "crate_root": ".direct_cargo_bazel_deps.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "direct_cargo_bazel_deps",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "async-lock 2.8.0",
-              "target": "async_lock"
-            },
-            {
-              "id": "aws-config 0.57.2",
-              "target": "aws_config"
-            },
-            {
-              "id": "aws-sdk-config 0.35.0",
-              "target": "aws_sdk_config"
-            },
-            {
-              "id": "aws-sdk-s3 0.35.0",
-              "target": "aws_sdk_s3"
-            },
-            {
-              "id": "aws-smithy-runtime 0.57.2",
-              "target": "aws_smithy_runtime"
-            },
-            {
-              "id": "aws-smithy-types 0.57.2",
-              "target": "aws_smithy_types"
-            },
-            {
-              "id": "axum 0.6.20",
-              "target": "axum"
-            },
-            {
-              "id": "bincode 1.3.3",
-              "target": "bincode"
-            },
-            {
-              "id": "blake3 1.5.0",
-              "target": "blake3"
-            },
-            {
-              "id": "byteorder 1.5.0",
-              "target": "byteorder"
-            },
-            {
-              "id": "bytes 1.5.0",
-              "target": "bytes"
-            },
-            {
-              "id": "clap 4.4.8",
-              "target": "clap"
-            },
-            {
-              "id": "env_logger 0.10.1",
-              "target": "env_logger"
-            },
-            {
-              "id": "filetime 0.2.22",
-              "target": "filetime"
-            },
-            {
-              "id": "fixed-buffer 0.2.3",
-              "target": "fixed_buffer"
-            },
-            {
-              "id": "formatx 0.2.1",
-              "target": "formatx"
-            },
-            {
-              "id": "futures 0.3.29",
-              "target": "futures"
-            },
-            {
-              "id": "hashbrown 0.14.2",
-              "target": "hashbrown"
-            },
-            {
-              "id": "hex 0.4.3",
-              "target": "hex"
-            },
-            {
-              "id": "http 0.2.11",
-              "target": "http"
-            },
-            {
-              "id": "hyper 0.14.27",
-              "target": "hyper"
-            },
-            {
-              "id": "hyper-rustls 0.24.2",
-              "target": "hyper_rustls"
-            },
-            {
-              "id": "json5 0.4.1",
-              "target": "json5"
-            },
-            {
-              "id": "log 0.4.20",
-              "target": "log"
-            },
-            {
-              "id": "lru 0.10.1",
-              "target": "lru"
-            },
-            {
-              "id": "lz4_flex 0.11.1",
-              "target": "lz4_flex"
-            },
-            {
-              "id": "maplit 1.0.2",
-              "target": "maplit"
-            },
-            {
-              "id": "memory-stats 1.1.0",
-              "target": "memory_stats"
-            },
-            {
-              "id": "mock_instant 0.3.1",
-              "target": "mock_instant"
-            },
-            {
-              "id": "nix 0.26.4",
-              "target": "nix"
-            },
-            {
-              "id": "once_cell 1.18.0",
-              "target": "once_cell"
-            },
-            {
-              "id": "parking_lot 0.12.1",
-              "target": "parking_lot"
-            },
-            {
-              "id": "pin-project-lite 0.2.13",
-              "target": "pin_project_lite"
-            },
-            {
-              "id": "pretty_assertions 1.4.0",
-              "target": "pretty_assertions"
-            },
-            {
-              "id": "prometheus-client 0.21.2",
-              "target": "prometheus_client"
-            },
-            {
-              "id": "prost 0.11.9",
-              "target": "prost"
-            },
-            {
-              "id": "prost-build 0.11.9",
-              "target": "prost_build"
-            },
-            {
-              "id": "prost-types 0.11.9",
-              "target": "prost_types"
-            },
-            {
-              "id": "rand 0.8.5",
-              "target": "rand"
-            },
-            {
-              "id": "rcgen 0.11.3",
-              "target": "rcgen"
-            },
-            {
-              "id": "relative-path 1.9.0",
-              "target": "relative_path"
-            },
-            {
-              "id": "rustls-pemfile 1.0.4",
-              "target": "rustls_pemfile"
-            },
-            {
-              "id": "scopeguard 1.2.0",
-              "target": "scopeguard"
-            },
-            {
-              "id": "serde 1.0.192",
-              "target": "serde"
-            },
-            {
-              "id": "sha2 0.10.8",
-              "target": "sha2"
-            },
-            {
-              "id": "shellexpand 3.1.0",
-              "target": "shellexpand"
-            },
-            {
-              "id": "shlex 1.2.0",
-              "target": "shlex"
-            },
-            {
-              "id": "stdext 0.3.1",
-              "target": "stdext"
-            },
-            {
-              "id": "tls-listener 0.7.0",
-              "target": "tls_listener"
-            },
-            {
-              "id": "tokio 1.34.0",
-              "target": "tokio"
-            },
-            {
-              "id": "tokio-rustls 0.24.1",
-              "target": "tokio_rustls"
-            },
-            {
-              "id": "tokio-stream 0.1.14",
-              "target": "tokio_stream"
-            },
-            {
-              "id": "tokio-util 0.7.10",
-              "target": "tokio_util"
-            },
-            {
-              "id": "tonic 0.9.2",
-              "target": "tonic"
-            },
-            {
-              "id": "tonic-build 0.9.2",
-              "target": "tonic_build"
-            },
-            {
-              "id": "tower 0.4.13",
-              "target": "tower"
-            },
-            {
-              "id": "uuid 1.5.0",
-              "target": "uuid"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "proc_macro_deps": {
-          "common": [
-            {
-              "id": "async-trait 0.1.74",
-              "target": "async_trait"
-            },
-            {
-              "id": "ctor 0.2.5",
-              "target": "ctor"
-            }
-          ],
-          "selects": {}
-        },
-        "version": "0.0.1"
-      },
-      "license": null
-    },
     "dirs 5.0.1": {
       "name": "dirs",
       "version": "5.0.1",
@@ -5274,6 +4867,56 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "error 0.0.0": {
+      "name": "error",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "error",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "error",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "hex 0.4.3",
+              "target": "hex"
+            },
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "prost-types 0.11.9",
+              "target": "prost_types"
+            },
+            {
+              "id": "tokio 1.34.0",
+              "target": "tokio"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.0.0"
+      },
+      "license": null
+    },
     "event-listener 2.5.3": {
       "name": "event-listener",
       "version": "2.5.3",
@@ -5643,13 +5286,13 @@
       },
       "license": "Apache-2.0 / MIT"
     },
-    "form_urlencoded 1.2.0": {
+    "form_urlencoded 1.2.1": {
       "name": "form_urlencoded",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/form_urlencoded/1.2.0/download",
-          "sha256": "a62bc1cf6f830c2ec14a513a9fb124d0a213a629668a4186f329db21fe045652"
+          "url": "https://crates.io/api/v1/crates/form_urlencoded/1.2.1/download",
+          "sha256": "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
         }
       },
       "targets": [
@@ -5679,14 +5322,14 @@
         "deps": {
           "common": [
             {
-              "id": "percent-encoding 2.3.0",
+              "id": "percent-encoding 2.3.1",
               "target": "percent_encoding"
             }
           ],
           "selects": {}
         },
         "edition": "2018",
-        "version": "1.2.0"
+        "version": "1.2.1"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -6200,7 +5843,6 @@
             "async-await",
             "async-await-macro",
             "channel",
-            "default",
             "futures-channel",
             "futures-io",
             "futures-macro",
@@ -7295,7 +6937,7 @@
               "target": "tokio_rustls"
             },
             {
-              "id": "webpki-roots 0.25.2",
+              "id": "webpki-roots 0.25.3",
               "target": "webpki_roots"
             }
           ],
@@ -7357,13 +6999,13 @@
       },
       "license": "MIT/Apache-2.0"
     },
-    "idna 0.4.0": {
+    "idna 0.5.0": {
       "name": "idna",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/idna/0.4.0/download",
-          "sha256": "7d20d6b07bfbc108882d88ed8e37d39636dcc260e15e30c45e6ba089610b917c"
+          "url": "https://crates.io/api/v1/crates/idna/0.5.0/download",
+          "sha256": "634d9b1461af396cad843f47fdba5597a4f9e6ddd4bfb6ff5d85028c25cb12f6"
         }
       },
       "targets": [
@@ -7404,7 +7046,7 @@
           "selects": {}
         },
         "edition": "2018",
-        "version": "0.4.0"
+        "version": "0.5.0"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -7652,45 +7294,6 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "js-sys 0.3.65": {
-      "name": "js-sys",
-      "version": "0.3.65",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/js-sys/0.3.65/download",
-          "sha256": "54c0c35952f67de54bb584e9fd912b3023117cbafc0a77d8f3dee1fb5f572fe8"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "js_sys",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "js_sys",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "wasm-bindgen 0.2.88",
-              "target": "wasm_bindgen"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "version": "0.3.65"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
     "json5 0.4.1": {
       "name": "json5",
       "version": "0.4.1",
@@ -7723,7 +7326,7 @@
               "target": "pest"
             },
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             }
           ],
@@ -7808,12 +7411,25 @@
           "**"
         ],
         "crate_features": {
-          "common": [
-            "default",
-            "extra_traits",
-            "std"
-          ],
-          "selects": {}
+          "common": [],
+          "selects": {
+            "aarch64-unknown-linux-gnu": [
+              "default",
+              "std"
+            ],
+            "arm-unknown-linux-gnueabi": [
+              "default",
+              "std"
+            ],
+            "armv7-unknown-linux-gnueabi": [
+              "default",
+              "std"
+            ],
+            "x86_64-unknown-linux-gnu": [
+              "default",
+              "std"
+            ]
+          }
         },
         "deps": {
           "common": [
@@ -8279,74 +7895,6 @@
       },
       "license": "Unlicense OR MIT"
     },
-    "memoffset 0.7.1": {
-      "name": "memoffset",
-      "version": "0.7.1",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/memoffset/0.7.1/download",
-          "sha256": "5de893c32cde5f383baa4c04c5d6dbdd735cfd4a794b0debdb2bb1b421da5ff4"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "memoffset",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        },
-        {
-          "BuildScript": {
-            "crate_name": "build_script_build",
-            "crate_root": "build.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "memoffset",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "default"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "memoffset 0.7.1",
-              "target": "build_script_build"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2015",
-        "version": "0.7.1"
-      },
-      "build_script_attrs": {
-        "data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "autocfg 1.1.0",
-              "target": "autocfg"
-            }
-          ],
-          "selects": {}
-        }
-      },
-      "license": "MIT"
-    },
     "memory-stats 1.1.0": {
       "name": "memory-stats",
       "version": "1.1.0",
@@ -8600,19 +8148,94 @@
       },
       "license": "MIT/Apache-2.0"
     },
-    "nix 0.26.4": {
-      "name": "nix",
-      "version": "0.26.4",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/nix/0.26.4/download",
-          "sha256": "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
-        }
+    "native-link 0.0.0": {
+      "name": "native-link",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [],
+      "library_target_name": null,
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "async-lock 2.8.0",
+              "target": "async_lock"
+            },
+            {
+              "id": "axum 0.6.20",
+              "target": "axum"
+            },
+            {
+              "id": "clap 4.4.8",
+              "target": "clap"
+            },
+            {
+              "id": "env_logger 0.10.1",
+              "target": "env_logger"
+            },
+            {
+              "id": "futures 0.3.29",
+              "target": "futures"
+            },
+            {
+              "id": "hyper 0.14.27",
+              "target": "hyper"
+            },
+            {
+              "id": "json5 0.4.1",
+              "target": "json5"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
+            },
+            {
+              "id": "prometheus-client 0.21.2",
+              "target": "prometheus_client"
+            },
+            {
+              "id": "rustls-pemfile 1.0.4",
+              "target": "rustls_pemfile"
+            },
+            {
+              "id": "scopeguard 1.2.0",
+              "target": "scopeguard"
+            },
+            {
+              "id": "tokio 1.34.0",
+              "target": "tokio"
+            },
+            {
+              "id": "tokio-rustls 0.24.1",
+              "target": "tokio_rustls"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            },
+            {
+              "id": "tower 0.4.13",
+              "target": "tower"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.0.0"
       },
+      "license": null
+    },
+    "native-link-config 0.0.0": {
+      "name": "native-link-config",
+      "version": "0.0.0",
+      "repository": null,
       "targets": [
         {
           "Library": {
-            "crate_name": "nix",
+            "crate_name": "native_link_config",
             "crate_root": "src/lib.rs",
             "srcs": [
               "**/*.rs"
@@ -8620,83 +8243,656 @@
           }
         }
       ],
-      "library_target_name": "nix",
+      "library_target_name": "native_link_config",
       "common_attrs": {
         "compile_data_glob": [
           "**"
         ],
-        "crate_features": {
-          "common": [
-            "acct",
-            "aio",
-            "default",
-            "dir",
-            "env",
-            "event",
-            "feature",
-            "fs",
-            "hostname",
-            "inotify",
-            "ioctl",
-            "kmod",
-            "memoffset",
-            "mman",
-            "mount",
-            "mqueue",
-            "net",
-            "personality",
-            "pin-utils",
-            "poll",
-            "process",
-            "pthread",
-            "ptrace",
-            "quota",
-            "reboot",
-            "resource",
-            "sched",
-            "signal",
-            "socket",
-            "term",
-            "time",
-            "ucontext",
-            "uio",
-            "user",
-            "zerocopy"
-          ],
-          "selects": {}
-        },
         "deps": {
           "common": [
             {
-              "id": "bitflags 1.3.2",
-              "target": "bitflags"
+              "id": "serde 1.0.193",
+              "target": "serde"
             },
             {
-              "id": "cfg-if 1.0.0",
-              "target": "cfg_if"
-            },
-            {
-              "id": "libc 0.2.150",
-              "target": "libc"
-            },
-            {
-              "id": "pin-utils 0.1.0",
-              "target": "pin_utils"
+              "id": "shellexpand 3.1.0",
+              "target": "shellexpand"
             }
           ],
-          "selects": {
-            "cfg(not(target_os = \"redox\"))": [
-              {
-                "id": "memoffset 0.7.1",
-                "target": "memoffset"
-              }
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.0.0"
+      },
+      "license": null
+    },
+    "native-link-scheduler 0.0.0": {
+      "name": "native-link-scheduler",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "native_link_scheduler",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
             ]
           }
+        }
+      ],
+      "library_target_name": "native_link_scheduler",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "blake3 1.5.0",
+              "target": "blake3"
+            },
+            {
+              "id": "futures 0.3.29",
+              "target": "futures"
+            },
+            {
+              "id": "hashbrown 0.14.2",
+              "target": "hashbrown"
+            },
+            {
+              "id": "lru 0.10.1",
+              "target": "lru"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
+            },
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "prost-types 0.11.9",
+              "target": "prost_types"
+            },
+            {
+              "id": "rand 0.8.5",
+              "target": "rand"
+            },
+            {
+              "id": "scopeguard 1.2.0",
+              "target": "scopeguard"
+            },
+            {
+              "id": "tokio 1.34.0",
+              "target": "tokio"
+            },
+            {
+              "id": "tokio-stream 0.1.14",
+              "target": "tokio_stream"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            },
+            {
+              "id": "uuid 1.6.1",
+              "target": "uuid"
+            }
+          ],
+          "selects": {}
         },
-        "edition": "2018",
-        "version": "0.26.4"
+        "deps_dev": {
+          "common": [
+            {
+              "id": "pretty_assertions 1.4.0",
+              "target": "pretty_assertions"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "proc_macro_deps": {
+          "common": [
+            {
+              "id": "async-trait 0.1.74",
+              "target": "async_trait"
+            }
+          ],
+          "selects": {}
+        },
+        "version": "0.0.0"
       },
-      "license": "MIT"
+      "license": null
+    },
+    "native-link-service 0.0.0": {
+      "name": "native-link-service",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "native_link_service",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "native_link_service",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "bytes 1.5.0",
+              "target": "bytes"
+            },
+            {
+              "id": "futures 0.3.29",
+              "target": "futures"
+            },
+            {
+              "id": "log 0.4.20",
+              "target": "log"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
+            },
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "rand 0.8.5",
+              "target": "rand"
+            },
+            {
+              "id": "tokio 1.34.0",
+              "target": "tokio"
+            },
+            {
+              "id": "tokio-stream 0.1.14",
+              "target": "tokio_stream"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            },
+            {
+              "id": "uuid 1.6.1",
+              "target": "uuid"
+            }
+          ],
+          "selects": {}
+        },
+        "deps_dev": {
+          "common": [
+            {
+              "id": "hyper 0.14.27",
+              "target": "hyper"
+            },
+            {
+              "id": "maplit 1.0.2",
+              "target": "maplit"
+            },
+            {
+              "id": "pretty_assertions 1.4.0",
+              "target": "pretty_assertions"
+            },
+            {
+              "id": "prometheus-client 0.21.2",
+              "target": "prometheus_client"
+            },
+            {
+              "id": "prost-types 0.11.9",
+              "target": "prost_types"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.0.0"
+      },
+      "license": null
+    },
+    "native-link-store 0.0.0": {
+      "name": "native-link-store",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "native_link_store",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "native_link_store",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "async-lock 2.8.0",
+              "target": "async_lock"
+            },
+            {
+              "id": "aws-config 0.57.2",
+              "target": "aws_config"
+            },
+            {
+              "id": "aws-sdk-s3 0.35.0",
+              "target": "aws_sdk_s3"
+            },
+            {
+              "id": "aws-smithy-runtime 0.57.2",
+              "target": "aws_smithy_runtime"
+            },
+            {
+              "id": "bincode 1.3.3",
+              "target": "bincode"
+            },
+            {
+              "id": "blake3 1.5.0",
+              "target": "blake3"
+            },
+            {
+              "id": "byteorder 1.5.0",
+              "target": "byteorder"
+            },
+            {
+              "id": "bytes 1.5.0",
+              "target": "bytes"
+            },
+            {
+              "id": "filetime 0.2.22",
+              "target": "filetime"
+            },
+            {
+              "id": "futures 0.3.29",
+              "target": "futures"
+            },
+            {
+              "id": "hashbrown 0.14.2",
+              "target": "hashbrown"
+            },
+            {
+              "id": "hex 0.4.3",
+              "target": "hex"
+            },
+            {
+              "id": "hyper 0.14.27",
+              "target": "hyper"
+            },
+            {
+              "id": "hyper-rustls 0.24.2",
+              "target": "hyper_rustls"
+            },
+            {
+              "id": "lz4_flex 0.11.1",
+              "target": "lz4_flex"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
+            },
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "rand 0.8.5",
+              "target": "rand"
+            },
+            {
+              "id": "serde 1.0.193",
+              "target": "serde"
+            },
+            {
+              "id": "sha2 0.10.8",
+              "target": "sha2"
+            },
+            {
+              "id": "shellexpand 3.1.0",
+              "target": "shellexpand"
+            },
+            {
+              "id": "tokio 1.34.0",
+              "target": "tokio"
+            },
+            {
+              "id": "tokio-stream 0.1.14",
+              "target": "tokio_stream"
+            },
+            {
+              "id": "tokio-util 0.7.10",
+              "target": "tokio_util"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            },
+            {
+              "id": "uuid 1.6.1",
+              "target": "uuid"
+            }
+          ],
+          "selects": {}
+        },
+        "deps_dev": {
+          "common": [
+            {
+              "id": "aws-smithy-types 0.57.2",
+              "target": "aws_smithy_types"
+            },
+            {
+              "id": "http 0.2.11",
+              "target": "http"
+            },
+            {
+              "id": "memory-stats 1.1.0",
+              "target": "memory_stats"
+            },
+            {
+              "id": "once_cell 1.18.0",
+              "target": "once_cell"
+            },
+            {
+              "id": "pretty_assertions 1.4.0",
+              "target": "pretty_assertions"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "proc_macro_deps": {
+          "common": [
+            {
+              "id": "async-trait 0.1.74",
+              "target": "async_trait"
+            }
+          ],
+          "selects": {}
+        },
+        "version": "0.0.0"
+      },
+      "license": null
+    },
+    "native-link-util 0.0.0": {
+      "name": "native-link-util",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "native_link_util",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "native_link_util",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "async-lock 2.8.0",
+              "target": "async_lock"
+            },
+            {
+              "id": "blake3 1.5.0",
+              "target": "blake3"
+            },
+            {
+              "id": "bytes 1.5.0",
+              "target": "bytes"
+            },
+            {
+              "id": "fixed-buffer 0.2.3",
+              "target": "fixed_buffer"
+            },
+            {
+              "id": "futures 0.3.29",
+              "target": "futures"
+            },
+            {
+              "id": "hex 0.4.3",
+              "target": "hex"
+            },
+            {
+              "id": "log 0.4.20",
+              "target": "log"
+            },
+            {
+              "id": "lru 0.10.1",
+              "target": "lru"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
+            },
+            {
+              "id": "pin-project-lite 0.2.13",
+              "target": "pin_project_lite"
+            },
+            {
+              "id": "prometheus-client 0.21.2",
+              "target": "prometheus_client"
+            },
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "serde 1.0.193",
+              "target": "serde"
+            },
+            {
+              "id": "sha2 0.10.8",
+              "target": "sha2"
+            },
+            {
+              "id": "tokio 1.34.0",
+              "target": "tokio"
+            },
+            {
+              "id": "tokio-util 0.7.10",
+              "target": "tokio_util"
+            }
+          ],
+          "selects": {}
+        },
+        "deps_dev": {
+          "common": [
+            {
+              "id": "mock_instant 0.3.1",
+              "target": "mock_instant"
+            },
+            {
+              "id": "pretty_assertions 1.4.0",
+              "target": "pretty_assertions"
+            },
+            {
+              "id": "rand 0.8.5",
+              "target": "rand"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "proc_macro_deps": {
+          "common": [
+            {
+              "id": "async-trait 0.1.74",
+              "target": "async_trait"
+            }
+          ],
+          "selects": {}
+        },
+        "version": "0.0.0"
+      },
+      "license": null
+    },
+    "native-link-worker 0.0.0": {
+      "name": "native-link-worker",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "native_link_worker",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "native_link_worker",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "async-lock 2.8.0",
+              "target": "async_lock"
+            },
+            {
+              "id": "bytes 1.5.0",
+              "target": "bytes"
+            },
+            {
+              "id": "filetime 0.2.22",
+              "target": "filetime"
+            },
+            {
+              "id": "formatx 0.2.1",
+              "target": "formatx"
+            },
+            {
+              "id": "futures 0.3.29",
+              "target": "futures"
+            },
+            {
+              "id": "hex 0.4.3",
+              "target": "hex"
+            },
+            {
+              "id": "json5 0.4.1",
+              "target": "json5"
+            },
+            {
+              "id": "parking_lot 0.12.1",
+              "target": "parking_lot"
+            },
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "relative-path 1.9.0",
+              "target": "relative_path"
+            },
+            {
+              "id": "scopeguard 1.2.0",
+              "target": "scopeguard"
+            },
+            {
+              "id": "serde 1.0.193",
+              "target": "serde"
+            },
+            {
+              "id": "shlex 1.2.0",
+              "target": "shlex"
+            },
+            {
+              "id": "tokio 1.34.0",
+              "target": "tokio"
+            },
+            {
+              "id": "tokio-stream 0.1.14",
+              "target": "tokio_stream"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            },
+            {
+              "id": "uuid 1.6.1",
+              "target": "uuid"
+            }
+          ],
+          "selects": {}
+        },
+        "deps_dev": {
+          "common": [
+            {
+              "id": "env_logger 0.10.1",
+              "target": "env_logger"
+            },
+            {
+              "id": "hyper 0.14.27",
+              "target": "hyper"
+            },
+            {
+              "id": "once_cell 1.18.0",
+              "target": "once_cell"
+            },
+            {
+              "id": "pretty_assertions 1.4.0",
+              "target": "pretty_assertions"
+            },
+            {
+              "id": "prost-types 0.11.9",
+              "target": "prost_types"
+            },
+            {
+              "id": "rand 0.8.5",
+              "target": "rand"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "proc_macro_deps": {
+          "common": [
+            {
+              "id": "async-trait 0.1.74",
+              "target": "async_trait"
+            }
+          ],
+          "selects": {}
+        },
+        "proc_macro_deps_dev": {
+          "common": [
+            {
+              "id": "ctor 0.2.5",
+              "target": "ctor"
+            }
+          ],
+          "selects": {}
+        },
+        "version": "0.0.0"
+      },
+      "license": null
     },
     "nu-ansi-term 0.46.0": {
       "name": "nu-ansi-term",
@@ -9401,59 +9597,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "pem 3.0.2": {
-      "name": "pem",
-      "version": "3.0.2",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/pem/3.0.2/download",
-          "sha256": "3163d2912b7c3b52d651a055f2c7eec9ba5cd22d26ef75b8dd3a59980b185923"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "pem",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "pem",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "default",
-            "std"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "base64 0.21.5",
-              "target": "base64"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2021",
-        "version": "3.0.2"
-      },
-      "license": "MIT"
-    },
-    "percent-encoding 2.3.0": {
+    "percent-encoding 2.3.1": {
       "name": "percent-encoding",
-      "version": "2.3.0",
+      "version": "2.3.1",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/percent-encoding/2.3.0/download",
-          "sha256": "9b2a4787296e9989611394c33f193f676704af1686e70b8f8033ab5ba9a35a94"
+          "url": "https://crates.io/api/v1/crates/percent-encoding/2.3.1/download",
+          "sha256": "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
         }
       },
       "targets": [
@@ -9481,7 +9631,7 @@
           "selects": {}
         },
         "edition": "2018",
-        "version": "2.3.0"
+        "version": "2.3.1"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -10726,6 +10876,61 @@
       },
       "license": "Apache-2.0"
     },
+    "proto 0.0.0": {
+      "name": "proto",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "proto",
+            "crate_root": "genproto/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "proto",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "prost-types 0.11.9",
+              "target": "prost_types"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            }
+          ],
+          "selects": {}
+        },
+        "deps_dev": {
+          "common": [
+            {
+              "id": "prost-build 0.11.9",
+              "target": "prost_build"
+            },
+            {
+              "id": "tonic-build 0.9.2",
+              "target": "tonic_build"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.0.0"
+      },
+      "license": null
+    },
     "quote 1.0.33": {
       "name": "quote",
       "version": "1.0.33",
@@ -10928,64 +11133,6 @@
         },
         "edition": "2018",
         "version": "0.6.4"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
-    "rcgen 0.11.3": {
-      "name": "rcgen",
-      "version": "0.11.3",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/rcgen/0.11.3/download",
-          "sha256": "52c4f3084aa3bc7dfbba4eff4fab2a54db4324965d8872ab933565e6fbd83bc6"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "rcgen",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "rcgen",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "default",
-            "pem"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "pem 3.0.2",
-              "target": "pem"
-            },
-            {
-              "id": "ring 0.16.20",
-              "target": "ring"
-            },
-            {
-              "id": "time 0.3.30",
-              "target": "time"
-            },
-            {
-              "id": "yasna 0.5.2",
-              "target": "yasna"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2021",
-        "version": "0.11.3"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -11389,117 +11536,6 @@
       },
       "license": "Apache-2.0 OR MIT"
     },
-    "ring 0.16.20": {
-      "name": "ring",
-      "version": "0.16.20",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/ring/0.16.20/download",
-          "sha256": "3053cf52e236a3ed746dfc745aa9cacf1b791d846bdaf412f60a8d7d6e17c8fc"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "ring",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        },
-        {
-          "BuildScript": {
-            "crate_name": "build_script_build",
-            "crate_root": "build.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "ring",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "alloc",
-            "default",
-            "dev_urandom_fallback",
-            "once_cell"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "ring 0.16.20",
-              "target": "build_script_build"
-            },
-            {
-              "id": "untrusted 0.7.1",
-              "target": "untrusted"
-            }
-          ],
-          "selects": {
-            "cfg(all(target_arch = \"wasm32\", target_vendor = \"unknown\", target_os = \"unknown\", target_env = \"\"))": [
-              {
-                "id": "web-sys 0.3.65",
-                "target": "web_sys"
-              }
-            ],
-            "cfg(any(target_arch = \"x86\", target_arch = \"x86_64\", all(any(target_arch = \"aarch64\", target_arch = \"arm\"), any(target_os = \"android\", target_os = \"fuchsia\", target_os = \"linux\"))))": [
-              {
-                "id": "spin 0.5.2",
-                "target": "spin"
-              }
-            ],
-            "cfg(any(target_os = \"android\", target_os = \"linux\"))": [
-              {
-                "id": "libc 0.2.150",
-                "target": "libc"
-              },
-              {
-                "id": "once_cell 1.18.0",
-                "target": "once_cell"
-              }
-            ],
-            "cfg(any(target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"illumos\", target_os = \"netbsd\", target_os = \"openbsd\", target_os = \"solaris\"))": [
-              {
-                "id": "once_cell 1.18.0",
-                "target": "once_cell"
-              }
-            ],
-            "cfg(target_os = \"windows\")": [
-              {
-                "id": "winapi 0.3.9",
-                "target": "winapi"
-              }
-            ]
-          }
-        },
-        "edition": "2018",
-        "version": "0.16.20"
-      },
-      "build_script_attrs": {
-        "data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "cc 1.0.83",
-              "target": "cc"
-            }
-          ],
-          "selects": {}
-        },
-        "links": "ring-asm"
-      },
-      "license": null
-    },
     "ring 0.17.5": {
       "name": "ring",
       "version": "0.17.5",
@@ -11750,13 +11786,31 @@
         "crate_features": {
           "common": [
             "alloc",
-            "default",
             "fs",
-            "std",
-            "termios",
-            "use-libc-auxv"
+            "std"
           ],
-          "selects": {}
+          "selects": {
+            "aarch64-unknown-linux-gnu": [
+              "default",
+              "termios",
+              "use-libc-auxv"
+            ],
+            "arm-unknown-linux-gnueabi": [
+              "default",
+              "termios",
+              "use-libc-auxv"
+            ],
+            "armv7-unknown-linux-gnueabi": [
+              "default",
+              "termios",
+              "use-libc-auxv"
+            ],
+            "x86_64-unknown-linux-gnu": [
+              "default",
+              "termios",
+              "use-libc-auxv"
+            ]
+          }
         },
         "deps": {
           "common": [
@@ -11777,11 +11831,6 @@
               }
             ],
             "cfg(all(not(rustix_use_libc), not(miri), target_os = \"linux\", target_endian = \"little\", any(target_arch = \"arm\", all(target_arch = \"aarch64\", target_pointer_width = \"64\"), target_arch = \"riscv64\", all(rustix_use_experimental_asm, target_arch = \"powerpc64\"), all(rustix_use_experimental_asm, target_arch = \"mips\"), all(rustix_use_experimental_asm, target_arch = \"mips32r6\"), all(rustix_use_experimental_asm, target_arch = \"mips64\"), all(rustix_use_experimental_asm, target_arch = \"mips64r6\"), target_arch = \"x86\", all(target_arch = \"x86_64\", target_pointer_width = \"64\"))))": [
-              {
-                "id": "errno 0.3.7",
-                "target": "errno",
-                "alias": "libc_errno"
-              },
               {
                 "id": "linux-raw-sys 0.4.11",
                 "target": "linux_raw_sys"
@@ -12489,13 +12538,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "serde 1.0.192": {
+    "serde 1.0.193": {
       "name": "serde",
-      "version": "1.0.192",
+      "version": "1.0.193",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/serde/1.0.192/download",
-          "sha256": "bca2a08484b285dcb282d0f67b26cadc0df8b19f8c12502c13d966bf9482f001"
+          "url": "https://crates.io/api/v1/crates/serde/1.0.193/download",
+          "sha256": "25dd9975e68d0cb5aa1120c288333fc98731bd1dd12f561e468ea4728c042b89"
         }
       },
       "targets": [
@@ -12535,7 +12584,7 @@
         "deps": {
           "common": [
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "build_script_build"
             }
           ],
@@ -12545,13 +12594,13 @@
         "proc_macro_deps": {
           "common": [
             {
-              "id": "serde_derive 1.0.192",
+              "id": "serde_derive 1.0.193",
               "target": "serde_derive"
             }
           ],
           "selects": {}
         },
-        "version": "1.0.192"
+        "version": "1.0.193"
       },
       "build_script_attrs": {
         "data_glob": [
@@ -12560,13 +12609,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "serde_derive 1.0.192": {
+    "serde_derive 1.0.193": {
       "name": "serde_derive",
-      "version": "1.0.192",
+      "version": "1.0.193",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/serde_derive/1.0.192/download",
-          "sha256": "d6c7207fbec9faa48073f3e3074cbe553af6ea512d7c21ba46e434e70ea9fbc1"
+          "url": "https://crates.io/api/v1/crates/serde_derive/1.0.193/download",
+          "sha256": "43576ca501357b9b071ac53cdc7da8ef0cbd9493d8df094cd821777ea6e894d3"
         }
       },
       "targets": [
@@ -12609,7 +12658,7 @@
           "selects": {}
         },
         "edition": "2015",
-        "version": "1.0.192"
+        "version": "1.0.193"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -12666,7 +12715,7 @@
               "target": "ryu"
             },
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             },
             {
@@ -12718,7 +12767,7 @@
               "target": "itoa"
             },
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             }
           ],
@@ -12757,7 +12806,7 @@
         "deps": {
           "common": [
             {
-              "id": "form_urlencoded 1.2.0",
+              "id": "form_urlencoded 1.2.1",
               "target": "form_urlencoded"
             },
             {
@@ -12769,7 +12818,7 @@
               "target": "ryu"
             },
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             }
           ],
@@ -13316,36 +13365,6 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "spin 0.5.2": {
-      "name": "spin",
-      "version": "0.5.2",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/spin/0.5.2/download",
-          "sha256": "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "spin",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "spin",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "edition": "2015",
-        "version": "0.5.2"
-      },
-      "license": "MIT"
-    },
     "spin 0.9.8": {
       "name": "spin",
       "version": "0.9.8",
@@ -13461,36 +13480,6 @@
         "version": "1.1.0"
       },
       "license": "MIT OR Apache-2.0"
-    },
-    "stdext 0.3.1": {
-      "name": "stdext",
-      "version": "0.3.1",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/stdext/0.3.1/download",
-          "sha256": "6f3b6b32ae82412fb897ef134867d53a294f57ba5b758f06d71e865352c3e207"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "stdext",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "stdext",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "edition": "2018",
-        "version": "0.3.1"
-      },
-      "license": "MIT"
     },
     "strsim 0.10.0": {
       "name": "strsim",
@@ -13673,7 +13662,6 @@
             "printing",
             "proc-macro",
             "quote",
-            "visit",
             "visit-mut"
           ],
           "selects": {}
@@ -14037,6 +14025,15 @@
           "selects": {}
         },
         "edition": "2021",
+        "proc_macro_deps": {
+          "common": [
+            {
+              "id": "time-macros 0.2.15",
+              "target": "time_macros"
+            }
+          ],
+          "selects": {}
+        },
         "version": "0.3.30"
       },
       "license": "MIT OR Apache-2.0"
@@ -14187,76 +14184,6 @@
       },
       "license": "MIT OR Apache-2.0 OR Zlib"
     },
-    "tls-listener 0.7.0": {
-      "name": "tls-listener",
-      "version": "0.7.0",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/tls-listener/0.7.0/download",
-          "sha256": "81294c017957a1a69794f506723519255879e15a870507faf45dfed288b763dd"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "tls_listener",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "tls_listener",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "default",
-            "hyper",
-            "hyper-h2",
-            "rustls",
-            "tokio-net",
-            "tokio-rustls"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "futures-util 0.3.29",
-              "target": "futures_util"
-            },
-            {
-              "id": "hyper 0.14.27",
-              "target": "hyper"
-            },
-            {
-              "id": "pin-project-lite 0.2.13",
-              "target": "pin_project_lite"
-            },
-            {
-              "id": "thiserror 1.0.50",
-              "target": "thiserror"
-            },
-            {
-              "id": "tokio 1.34.0",
-              "target": "tokio"
-            },
-            {
-              "id": "tokio-rustls 0.24.1",
-              "target": "tokio_rustls"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "version": "0.7.0"
-      },
-      "license": "Apache-2.0"
-    },
     "tokio 1.34.0": {
       "name": "tokio",
       "version": "1.34.0",
@@ -14302,10 +14229,13 @@
             "socket2",
             "sync",
             "time",
-            "tokio-macros",
-            "windows-sys"
+            "tokio-macros"
           ],
-          "selects": {}
+          "selects": {
+            "x86_64-pc-windows-msvc": [
+              "windows-sys"
+            ]
+          }
         },
         "deps": {
           "common": [
@@ -14607,7 +14537,6 @@
             "codec",
             "default",
             "io",
-            "io-util",
             "tracing"
           ],
           "selects": {}
@@ -14729,7 +14658,7 @@
               "target": "hyper_timeout"
             },
             {
-              "id": "percent-encoding 2.3.0",
+              "id": "percent-encoding 2.3.1",
               "target": "percent_encoding"
             },
             {
@@ -15157,8 +15086,7 @@
           "common": [
             "default",
             "once_cell",
-            "std",
-            "valuable"
+            "std"
           ],
           "selects": {}
         },
@@ -15265,7 +15193,7 @@
         "deps": {
           "common": [
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             },
             {
@@ -15332,7 +15260,7 @@
               "target": "nu_ansi_term"
             },
             {
-              "id": "serde 1.0.192",
+              "id": "serde 1.0.193",
               "target": "serde"
             },
             {
@@ -15645,36 +15573,6 @@
       },
       "license": "MIT/Apache-2.0"
     },
-    "untrusted 0.7.1": {
-      "name": "untrusted",
-      "version": "0.7.1",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/untrusted/0.7.1/download",
-          "sha256": "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "untrusted",
-            "crate_root": "src/untrusted.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "untrusted",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "edition": "2018",
-        "version": "0.7.1"
-      },
-      "license": "ISC"
-    },
     "untrusted 0.9.0": {
       "name": "untrusted",
       "version": "0.9.0",
@@ -15705,13 +15603,13 @@
       },
       "license": "ISC"
     },
-    "url 2.4.1": {
+    "url 2.5.0": {
       "name": "url",
-      "version": "2.4.1",
+      "version": "2.5.0",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/url/2.4.1/download",
-          "sha256": "143b538f18257fac9cad154828a57c6bf5157e1aa604d4816b5995bf6de87ae5"
+          "url": "https://crates.io/api/v1/crates/url/2.5.0/download",
+          "sha256": "31e6302e3bb753d46e83516cae55ae196fc0c309407cf11ab35cc51a4c2a4633"
         }
       },
       "targets": [
@@ -15739,22 +15637,22 @@
         "deps": {
           "common": [
             {
-              "id": "form_urlencoded 1.2.0",
+              "id": "form_urlencoded 1.2.1",
               "target": "form_urlencoded"
             },
             {
-              "id": "idna 0.4.0",
+              "id": "idna 0.5.0",
               "target": "idna"
             },
             {
-              "id": "percent-encoding 2.3.0",
+              "id": "percent-encoding 2.3.1",
               "target": "percent_encoding"
             }
           ],
           "selects": {}
         },
         "edition": "2018",
-        "version": "2.4.1"
+        "version": "2.5.0"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -15824,13 +15722,13 @@
       },
       "license": "Apache-2.0 OR MIT"
     },
-    "uuid 1.5.0": {
+    "uuid 1.6.1": {
       "name": "uuid",
-      "version": "1.5.0",
+      "version": "1.6.1",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/uuid/1.5.0/download",
-          "sha256": "88ad59a7560b41a70d191093a945f0b87bc1deeda46fb237479708a1d6b6cdfc"
+          "url": "https://crates.io/api/v1/crates/uuid/1.6.1/download",
+          "sha256": "5e395fcf16a7a3d8127ec99782007af141946b4795001f876d54fb0d55978560"
         }
       },
       "targets": [
@@ -15869,7 +15767,7 @@
           "selects": {}
         },
         "edition": "2018",
-        "version": "1.5.0"
+        "version": "1.6.1"
       },
       "license": "Apache-2.0 OR MIT"
     },
@@ -16063,337 +15961,13 @@
       },
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
     },
-    "wasm-bindgen 0.2.88": {
-      "name": "wasm-bindgen",
-      "version": "0.2.88",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/wasm-bindgen/0.2.88/download",
-          "sha256": "7daec296f25a1bae309c0cd5c29c4b260e510e6d813c286b19eaadf409d40fce"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "wasm_bindgen",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        },
-        {
-          "BuildScript": {
-            "crate_name": "build_script_build",
-            "crate_root": "build.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "wasm_bindgen",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "cfg-if 1.0.0",
-              "target": "cfg_if"
-            },
-            {
-              "id": "wasm-bindgen 0.2.88",
-              "target": "build_script_build"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "proc_macro_deps": {
-          "common": [
-            {
-              "id": "wasm-bindgen-macro 0.2.88",
-              "target": "wasm_bindgen_macro"
-            }
-          ],
-          "selects": {}
-        },
-        "version": "0.2.88"
-      },
-      "build_script_attrs": {
-        "data_glob": [
-          "**"
-        ]
-      },
-      "license": "MIT OR Apache-2.0"
-    },
-    "wasm-bindgen-backend 0.2.88": {
-      "name": "wasm-bindgen-backend",
-      "version": "0.2.88",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/wasm-bindgen-backend/0.2.88/download",
-          "sha256": "e397f4664c0e4e428e8313a469aaa58310d302159845980fd23b0f22a847f217"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "wasm_bindgen_backend",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "wasm_bindgen_backend",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "bumpalo 3.14.0",
-              "target": "bumpalo"
-            },
-            {
-              "id": "log 0.4.20",
-              "target": "log"
-            },
-            {
-              "id": "once_cell 1.18.0",
-              "target": "once_cell"
-            },
-            {
-              "id": "proc-macro2 1.0.69",
-              "target": "proc_macro2"
-            },
-            {
-              "id": "quote 1.0.33",
-              "target": "quote"
-            },
-            {
-              "id": "syn 2.0.39",
-              "target": "syn"
-            },
-            {
-              "id": "wasm-bindgen-shared 0.2.88",
-              "target": "wasm_bindgen_shared"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "version": "0.2.88"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
-    "wasm-bindgen-macro 0.2.88": {
-      "name": "wasm-bindgen-macro",
-      "version": "0.2.88",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/wasm-bindgen-macro/0.2.88/download",
-          "sha256": "5961017b3b08ad5f3fe39f1e79877f8ee7c23c5e5fd5eb80de95abc41f1f16b2"
-        }
-      },
-      "targets": [
-        {
-          "ProcMacro": {
-            "crate_name": "wasm_bindgen_macro",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "wasm_bindgen_macro",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "quote 1.0.33",
-              "target": "quote"
-            },
-            {
-              "id": "wasm-bindgen-macro-support 0.2.88",
-              "target": "wasm_bindgen_macro_support"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "version": "0.2.88"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
-    "wasm-bindgen-macro-support 0.2.88": {
-      "name": "wasm-bindgen-macro-support",
-      "version": "0.2.88",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/wasm-bindgen-macro-support/0.2.88/download",
-          "sha256": "c5353b8dab669f5e10f5bd76df26a9360c748f054f862ff5f3f8aae0c7fb3907"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "wasm_bindgen_macro_support",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "wasm_bindgen_macro_support",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "proc-macro2 1.0.69",
-              "target": "proc_macro2"
-            },
-            {
-              "id": "quote 1.0.33",
-              "target": "quote"
-            },
-            {
-              "id": "syn 2.0.39",
-              "target": "syn"
-            },
-            {
-              "id": "wasm-bindgen-backend 0.2.88",
-              "target": "wasm_bindgen_backend"
-            },
-            {
-              "id": "wasm-bindgen-shared 0.2.88",
-              "target": "wasm_bindgen_shared"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "version": "0.2.88"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
-    "wasm-bindgen-shared 0.2.88": {
-      "name": "wasm-bindgen-shared",
-      "version": "0.2.88",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/wasm-bindgen-shared/0.2.88/download",
-          "sha256": "0d046c5d029ba91a1ed14da14dca44b68bf2f124cfbaf741c54151fdb3e0750b"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "wasm_bindgen_shared",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        },
-        {
-          "BuildScript": {
-            "crate_name": "build_script_build",
-            "crate_root": "build.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "wasm_bindgen_shared",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "wasm-bindgen-shared 0.2.88",
-              "target": "build_script_build"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "version": "0.2.88"
-      },
-      "build_script_attrs": {
-        "data_glob": [
-          "**"
-        ],
-        "links": "wasm_bindgen"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
-    "web-sys 0.3.65": {
-      "name": "web-sys",
-      "version": "0.3.65",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/web-sys/0.3.65/download",
-          "sha256": "5db499c5f66323272151db0e666cd34f78617522fb0c1604d31a27c50c206a85"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "web_sys",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "web_sys",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "js-sys 0.3.65",
-              "target": "js_sys"
-            },
-            {
-              "id": "wasm-bindgen 0.2.88",
-              "target": "wasm_bindgen"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "version": "0.3.65"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
-    "webpki-roots 0.25.2": {
+    "webpki-roots 0.25.3": {
       "name": "webpki-roots",
-      "version": "0.25.2",
+      "version": "0.25.3",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/webpki-roots/0.25.2/download",
-          "sha256": "14247bb57be4f377dfb94c72830b8ce8fc6beac03cf4bf7b9732eadd414123fc"
+          "url": "https://crates.io/api/v1/crates/webpki-roots/0.25.3/download",
+          "sha256": "1778a42e8b3b90bff8d0f5032bf22250792889a5cdc752aa0020c84abe3aaf10"
         }
       },
       "targets": [
@@ -16413,7 +15987,7 @@
           "**"
         ],
         "edition": "2018",
-        "version": "0.25.2"
+        "version": "0.25.3"
       },
       "license": "MPL-2.0"
     },
@@ -16514,7 +16088,6 @@
             "fileapi",
             "handleapi",
             "minwindef",
-            "ntsecapi",
             "processenv",
             "processthreadsapi",
             "psapi",
@@ -16525,8 +16098,7 @@
             "winerror",
             "winnt",
             "ws2ipdef",
-            "ws2tcpip",
-            "wtypesbase"
+            "ws2tcpip"
           ],
           "selects": {}
         },
@@ -17296,53 +16868,6 @@
       },
       "license": "MIT/Apache-2.0"
     },
-    "yasna 0.5.2": {
-      "name": "yasna",
-      "version": "0.5.2",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/yasna/0.5.2/download",
-          "sha256": "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "yasna",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "yasna",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "default",
-            "std",
-            "time"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "time 0.3.30",
-              "target": "time"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "version": "0.5.2"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
     "zerocopy 0.7.26": {
       "name": "zerocopy",
       "version": "0.7.26",
@@ -17477,7 +17002,15 @@
   },
   "binary_crates": [],
   "workspace_members": {
-    "direct-cargo-bazel-deps 0.0.1": ""
+    "error 0.0.0": "error",
+    "native-link 0.0.0": "",
+    "native-link-config 0.0.0": "native-link-config",
+    "native-link-scheduler 0.0.0": "native-link-scheduler",
+    "native-link-service 0.0.0": "native-link-service",
+    "native-link-store 0.0.0": "native-link-store",
+    "native-link-util 0.0.0": "native-link-util",
+    "native-link-worker 0.0.0": "native-link-worker",
+    "proto 0.0.0": "proto"
   },
   "conditions": {
     "aarch64-linux-android": [],
@@ -17506,7 +17039,6 @@
     "cfg(all(target_arch = \"aarch64\", target_os = \"windows\"))": [],
     "cfg(all(target_arch = \"aarch64\", target_vendor = \"apple\"))": [],
     "cfg(all(target_arch = \"loongarch64\", target_os = \"linux\"))": [],
-    "cfg(all(target_arch = \"wasm32\", target_vendor = \"unknown\", target_os = \"unknown\", target_env = \"\"))": [],
     "cfg(all(target_arch = \"x86\", target_env = \"gnu\", not(windows_raw_dylib)))": [],
     "cfg(all(target_arch = \"x86\", target_env = \"msvc\", not(windows_raw_dylib)))": [],
     "cfg(all(target_arch = \"x86_64\", target_env = \"gnu\", not(target_abi = \"llvm\"), not(windows_raw_dylib)))": [
@@ -17532,13 +17064,6 @@
       "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu"
     ],
-    "cfg(any(target_arch = \"x86\", target_arch = \"x86_64\", all(any(target_arch = \"aarch64\", target_arch = \"arm\"), any(target_os = \"android\", target_os = \"fuchsia\", target_os = \"linux\"))))": [
-      "aarch64-unknown-linux-gnu",
-      "arm-unknown-linux-gnueabi",
-      "armv7-unknown-linux-gnueabi",
-      "x86_64-pc-windows-msvc",
-      "x86_64-unknown-linux-gnu"
-    ],
     "cfg(any(target_arch = \"x86\", target_arch = \"x86_64\", all(any(target_arch = \"aarch64\", target_arch = \"arm\"), any(target_os = \"android\", target_os = \"fuchsia\", target_os = \"linux\", target_os = \"windows\"))))": [
       "aarch64-unknown-linux-gnu",
       "arm-unknown-linux-gnueabi",
@@ -17552,7 +17077,6 @@
       "armv7-unknown-linux-gnueabi",
       "x86_64-unknown-linux-gnu"
     ],
-    "cfg(any(target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"illumos\", target_os = \"netbsd\", target_os = \"openbsd\", target_os = \"solaris\"))": [],
     "cfg(any(target_os = \"linux\", target_os = \"android\", target_os = \"macos\", target_os = \"ios\"))": [
       "aarch64-unknown-linux-gnu",
       "arm-unknown-linux-gnueabi",
@@ -17593,13 +17117,6 @@
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(not(target_family = \"wasm\"))": [
-      "aarch64-unknown-linux-gnu",
-      "arm-unknown-linux-gnueabi",
-      "armv7-unknown-linux-gnueabi",
-      "x86_64-pc-windows-msvc",
-      "x86_64-unknown-linux-gnu"
-    ],
-    "cfg(not(target_os = \"redox\"))": [
       "aarch64-unknown-linux-gnu",
       "arm-unknown-linux-gnueabi",
       "armv7-unknown-linux-gnueabi",

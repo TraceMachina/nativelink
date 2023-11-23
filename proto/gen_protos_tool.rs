@@ -1,7 +1,8 @@
-use clap::{Arg, ArgAction, Command};
-use prost_build::Config;
 use std::path::PathBuf;
 use std::vec::Vec;
+
+use clap::{Arg, ArgAction, Command};
+use prost_build::Config;
 
 fn main() -> std::io::Result<()> {
     let matches = Command::new("Rust gRPC Codegen")
