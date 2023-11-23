@@ -52,4 +52,20 @@ in
     entry = "${pkgs.python311Packages.pre-commit-hooks}/bin/detect-private-key";
     types = [ "text" ];
   };
+
+  # Starlark
+  bazel-buildifier-format = {
+    enable = true;
+    name = "buildifier format";
+    description = "Format Starlark";
+    entry = "${pkgs.bazel-buildtools}/bin/buildifier";
+    types = [ "bazel" ];
+  };
+  bazel-buildifier-lint = {
+    enable = true;
+    name = "buildifier lint";
+    description = "Lint Starlark";
+    entry = "${pkgs.bazel-buildtools}/bin/buildifier -lint=warn";
+    types = [ "bazel" ];
+  };
 }
