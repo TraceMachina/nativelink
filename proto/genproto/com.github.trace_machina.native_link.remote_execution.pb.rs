@@ -42,7 +42,7 @@ pub struct SupportedProperties {
     /// / the unsupported properties.
     /// /
     /// / The details on how to use this property can be found here:
-    /// / <https://github.com/tracemachina/native-link/blob/c91f61edf182f2b64451fd48a5e63fa506a43aae/config/cas_server.rs>
+    /// / <https://github.com/tracemachina/native-link/blob/master/native-link-config/src/cas_server.rs>
     #[prost(message, repeated, tag = "1")]
     pub properties: ::prost::alloc::vec::Vec<
         super::super::super::super::super::build::bazel::remote::execution::v2::platform::Property,
