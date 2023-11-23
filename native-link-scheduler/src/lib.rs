@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod action_messages;
 pub mod action_scheduler;
 pub mod cache_lookup_scheduler;
 pub mod default_scheduler_factory;

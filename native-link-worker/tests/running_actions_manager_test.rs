@@ -29,14 +29,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use error::{make_input_err, Code, Error, ResultExt};
 use futures::{FutureExt, TryFutureExt};
 use native_link_config::cas_server::EnvironmentSource;
+#[cfg_attr(target_family = "windows", allow(unused_imports))]
+use native_link_scheduler::action_messages::{
+    ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
+};
 use native_link_store::ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
 use native_link_store::fast_slow_store::FastSlowStore;
 use native_link_store::filesystem_store::FilesystemStore;
 use native_link_store::memory_store::MemoryStore;
-#[cfg_attr(target_family = "windows", allow(unused_imports))]
-use native_link_util::action_messages::{
-    ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
-};
 use native_link_util::common::{fs, DigestInfo};
 use native_link_util::digest_hasher::DigestHasherFunc;
 use native_link_util::store_trait::Store;

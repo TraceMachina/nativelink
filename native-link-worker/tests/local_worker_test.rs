@@ -31,13 +31,15 @@ mod utils {
 
 use error::{make_err, make_input_err, Code, Error};
 use native_link_config::cas_server::{LocalWorkerConfig, WorkerProperty};
+use native_link_scheduler::action_messages::{
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata,
+};
+use native_link_scheduler::platform_property_manager::PlatformProperties;
 use native_link_store::fast_slow_store::FastSlowStore;
 use native_link_store::filesystem_store::FilesystemStore;
 use native_link_store::memory_store::MemoryStore;
-use native_link_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata};
 use native_link_util::common::{encode_stream_proto, fs, DigestInfo};
 use native_link_util::digest_hasher::DigestHasherFunc;
-use native_link_util::platform_properties::PlatformProperties;
 use native_link_worker::local_worker::new_local_worker;
 use prost::Message;
 use proto::build::bazel::remote::execution::v2::platform::Property;

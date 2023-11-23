@@ -18,14 +18,15 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use error::{make_err, make_input_err, Code, Error, ResultExt};
-use native_link_util::action_messages::ActionInfo;
 use native_link_util::metrics_utils::{CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent};
-use native_link_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use proto::com::github::trace_machina::native_link::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
+
+use crate::action_messages::ActionInfo;
+use crate::platform_property_manager::{PlatformProperties, PlatformPropertyValue};
 
 pub type WorkerTimestamp = u64;
 

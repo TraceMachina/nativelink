@@ -1436,6 +1436,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af150ab688ff2122fcef229be89cb50dd66af9e01a4ff320cc137eecc9bacc38"
 
 [[package]]
+name = "json5"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b0db21af676c1ce64250b5f40f3ce2cf27e4e47cb91ed91eb6fe9350b430c1"
+dependencies = [
+ "pest",
+ "pest_derive",
+ "serde",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1585,6 +1596,7 @@ dependencies = [
  "error",
  "futures",
  "hyper",
+ "json5",
  "native-link-config",
  "native-link-scheduler",
  "native-link-service",
@@ -1596,7 +1608,6 @@ dependencies = [
  "proto",
  "rustls-pemfile",
  "scopeguard",
- "serde_json5",
  "tokio",
  "tokio-rustls",
  "tonic",
@@ -1627,6 +1638,7 @@ dependencies = [
  "parking_lot",
  "pretty_assertions",
  "prost",
+ "prost-types",
  "proto",
  "rand",
  "scopeguard",
@@ -1680,6 +1692,7 @@ dependencies = [
  "error",
  "filetime",
  "futures",
+ "hashbrown 0.14.2",
  "hex",
  "http",
  "hyper",
@@ -1725,7 +1738,6 @@ dependencies = [
  "pretty_assertions",
  "prometheus-client",
  "prost",
- "prost-types",
  "proto",
  "rand",
  "serde",
@@ -1749,6 +1761,7 @@ dependencies = [
  "futures",
  "hex",
  "hyper",
+ "json5",
  "native-link-config",
  "native-link-scheduler",
  "native-link-store",
@@ -1763,7 +1776,6 @@ dependencies = [
  "relative-path",
  "scopeguard",
  "serde",
- "serde_json5",
  "shlex",
  "tokio",
  "tokio-stream",
@@ -2466,17 +2478,6 @@ checksum = "3d1c7e3eac408d115102c4c24ad393e0821bb3a5df4d506a80f85f7a742a526b"
 dependencies = [
  "itoa",
  "ryu",
- "serde",
-]
-
-[[package]]
-name = "serde_json5"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a6b754515e1a7bd79fc2edeaecee526fc80cb3a918607e5ca149225a3a9586"
-dependencies = [
- "pest",
- "pest_derive",
  "serde",
 ]
 

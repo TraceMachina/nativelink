@@ -15,6 +15,8 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use error::{make_input_err, Code, Error, ResultExt};
+use native_link_config::schedulers::PropertyType;
 use proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
 
 /// `PlatformProperties` helps manage the configuration of platform properties to

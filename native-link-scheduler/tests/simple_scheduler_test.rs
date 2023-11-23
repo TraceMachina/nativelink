@@ -18,12 +18,12 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use error::{make_err, Code, Error, ResultExt};
-use native_link_scheduler::action_scheduler::ActionScheduler;
-use native_link_util::action_messages::{
+use native_link_scheduler::action_messages::{
     ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath,
     SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
 };
-use native_link_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
+use native_link_scheduler::action_scheduler::ActionScheduler;
+use native_link_scheduler::platform_property_manager::{PlatformProperties, PlatformPropertyValue};
 mod utils {
     pub(crate) mod scheduler_utils;
 }

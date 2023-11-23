@@ -9,7 +9,6 @@ load(
 rust_library(
     name = "native-link-util",
     srcs = [
-        "src/action_messages.rs",
         "src/async_fixed_buffer.rs",
         "src/buf_channel.rs",
         "src/common.rs",
@@ -19,7 +18,6 @@ rust_library(
         "src/fs.rs",
         "src/lib.rs",
         "src/metrics_utils.rs",
-        "src/platform_properties.rs",
         "src/resource_info.rs",
         "src/retry.rs",
         "src/store_trait.rs",
@@ -46,7 +44,6 @@ rust_library(
         "@crate_index//:pin-project-lite",
         "@crate_index//:prometheus-client",
         "@crate_index//:prost",
-        "@crate_index//:prost-types",
         "@crate_index//:serde",
         "@crate_index//:sha2",
         "@crate_index//:tokio",

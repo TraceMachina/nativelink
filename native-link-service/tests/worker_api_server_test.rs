@@ -18,15 +18,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use error::{Error, ResultExt};
 use native_link_config::cas_server::WorkerApiConfig;
+use native_link_scheduler::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage};
 use native_link_scheduler::action_scheduler::ActionScheduler;
+use native_link_scheduler::platform_property_manager::PlatformProperties;
 use native_link_scheduler::simple_scheduler::SimpleScheduler;
 use native_link_scheduler::worker::WorkerId;
 use native_link_scheduler::worker_scheduler::WorkerScheduler;
 use native_link_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
-use native_link_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage};
 use native_link_util::common::DigestInfo;
 use native_link_util::digest_hasher::DigestHasherFunc;
-use native_link_util::platform_properties::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile, OutputDirectory, OutputFile,
     OutputSymlink,

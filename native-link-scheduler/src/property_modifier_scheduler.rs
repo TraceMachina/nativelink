@@ -19,24 +19,21 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use error::{Error, ResultExt};
 use native_link_config::schedulers::{PropertyModification, PropertyType};
-use native_link_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
+use crate::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 
 pub struct PropertyModifierScheduler {
-    modifications: Vec<native_link_config::schedulers::PropertyModification>,
+    modifications: Vec<config::schedulers::PropertyModification>,
     scheduler: Arc<dyn ActionScheduler>,
     property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
 }
 
 impl PropertyModifierScheduler {
-    pub fn new(
-        config: &native_link_config::schedulers::PropertyModifierScheduler,
-        scheduler: Arc<dyn ActionScheduler>,
-    ) -> Self {
+    pub fn new(config: &config::schedulers::PropertyModifierScheduler, scheduler: Arc<dyn ActionScheduler>) -> Self {
         Self {
             modifications: config.modifications.clone(),
             scheduler,

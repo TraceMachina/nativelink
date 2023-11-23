@@ -21,23 +21,16 @@ use async_trait::async_trait;
 use error::{make_err, Code, Error, ResultExt};
 use futures::stream::unfold;
 use futures::TryFutureExt;
-use native_link_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use native_link_util::common::log;
 use native_link_util::retry::{ExponentialBackoff, Retrier, RetryResult};
 use parking_lot::Mutex;
-use proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
-use proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
-use proto::build::bazel::remote::execution::v2::{
-    digest_function, ExecuteRequest, ExecutionPolicy, GetCapabilitiesRequest, WaitExecutionRequest,
-};
-use proto::google::longrunning::Operation;
-use rand::rngs::OsRng;
-use rand::Rng;
+use rand::{rngs::OsRng, Rng};
 use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{transport, Request, Streaming};
 
+use crate::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 
@@ -46,12 +39,12 @@ pub struct GrpcScheduler {
     execution_client: ExecutionClient<transport::Channel>,
     platform_property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
     jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
-    retry: native_link_config::stores::Retry,
+    retry: config::stores::Retry,
     retrier: Retrier,
 }
 
 impl GrpcScheduler {
-    pub fn new(config: &native_link_config::schedulers::GrpcScheduler) -> Result<Self, Error> {
+    pub fn new(config: &config::schedulers::GrpcScheduler) -> Result<Self, Error> {
         let jitter_amt = config.retry.jitter;
         Self::new_with_jitter(
             config,
@@ -67,7 +60,7 @@ impl GrpcScheduler {
     }
 
     pub fn new_with_jitter(
-        config: &native_link_config::schedulers::GrpcScheduler,
+        config: &config::schedulers::GrpcScheduler,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
         let endpoint = transport::Channel::balance_list(std::iter::once(
@@ -173,7 +166,7 @@ impl ActionScheduler for GrpcScheduler {
                     .err_tip(|| "Unable to get execution properties in GrpcScheduler")?
                     .supported_node_properties
                     .iter()
-                    .map(|property| (property.clone(), native_link_config::schedulers::PropertyType::Exact))
+                    .map(|property| (property.clone(), config::schedulers::PropertyType::Exact))
                     .collect(),
             ));
 

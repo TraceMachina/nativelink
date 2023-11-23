@@ -17,7 +17,7 @@ use std::sync::Arc;
 use async_lock::Mutex;
 use async_trait::async_trait;
 use error::{make_input_err, Error};
-use native_link_util::action_messages::ActionResult;
+use native_link_scheduler::action_messages::ActionResult;
 use native_link_util::common::DigestInfo;
 use native_link_util::digest_hasher::DigestHasherFunc;
 use native_link_worker::running_actions_manager::{Metrics, RunningAction, RunningActionsManager};

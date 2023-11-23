@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod action_messages;
 pub mod async_fixed_buffer;
 pub mod buf_channel;
 pub mod common;
@@ -21,7 +20,6 @@ pub mod evicting_map;
 pub mod fastcdc;
 pub mod fs;
 pub mod metrics_utils;
-pub mod platform_properties;
 pub mod resource_info;
 pub mod retry;
 pub mod store_trait;

@@ -16,9 +16,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use error::{make_input_err, Error};
+use native_link_scheduler::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use native_link_scheduler::action_scheduler::ActionScheduler;
 use native_link_scheduler::platform_property_manager::PlatformPropertyManager;
-use native_link_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use tokio::sync::{mpsc, watch, Mutex};
 
 #[allow(clippy::large_enum_variant)]

@@ -20,6 +20,7 @@ byteorder = "1.4.3"
 bytes = "1.4.0"
 filetime = "0.2.21"
 futures = "0.3.28"
+hashbrown = "0.14"
 hex = "0.4.3"
 hyper = { version = "0.14.27" }
 hyper-rustls = { version = "0.24.2", features = ["webpki-tokio"] }
