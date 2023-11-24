@@ -35,7 +35,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # --release causes link-time-optmization to be enabled, which can take a while
 # to compile, but will result in a much faster binary.
-cargo run --release --bin cas -- ./config/examples/basic_cas.json
+cargo run --release --bin cas -- ./native-link-config/examples/basic_cas.json
 ```
 In a separate terminal session, run the following command to connect the running server launched above to Bazel or another RBE client:
 ```sh
@@ -45,7 +45,7 @@ bazel test //... \
   --remote_executor=grpc://127.0.0.1:50051 \
   --remote_default_exec_properties=cpu_count=1
 ```
-This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/tracemachina/native-link/tree/master/config) for configuration documentation and [here](https://github.com/tracemachina/native-link/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
+This will cause bazel to run the commands through an all-in-one `CAS`, `scheduler` and `worker`. See [here](https://github.com/tracemachina/native-link/tree/master/native-link-config) for configuration documentation and [here](https://github.com/tracemachina/native-link/tree/main/deployment-examples/terraform) for an example of multi-node cloud deployment example.
 
 ## Example Deployments
 We currently have a few example deployments in [deployment-examples directory](https://github.com/tracemachina/native-link/tree/master/deployment-examples).
@@ -107,7 +107,7 @@ cargo build --release
 
 ### Configure
 
-Configuration is done via a JSON file that is passed in as the first parameter to the `cas` program. See [here](https://github.com/tracemachina/native-link/tree/master/config) for more details and examples.
+Configuration is done via a JSON file that is passed in as the first parameter to the `cas` program. See [here](https://github.com/tracemachina/native-link/tree/master/native-link-config) for more details and examples.
 
 ## How to update internal or external rust deps
 
