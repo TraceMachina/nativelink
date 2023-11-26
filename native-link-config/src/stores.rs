@@ -44,6 +44,12 @@ pub enum StoreConfig {
     /// hash and size and the AC validate nothing.
     verify(Box<VerifyStore>),
 
+    /// Completeness checking store verifies if the
+    /// output files & folders exist in the CAS before forwarding 
+    /// the request to the underlying store.
+    /// Note: This store should only be used on AC stores.
+    completeness_checking(Box<CompletenessCheckingStore>),
+
     /// A compression store that will compress the data inbound and
     /// outbound. There will be a non-trivial cost to compress and
     /// decompress the data, but in many cases if the final store is
@@ -329,6 +335,16 @@ pub struct VerifyStore {
     /// This should be set to false for AC, but true for CAS stores.
     #[serde(default)]
     pub verify_hash: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CompletenessCheckingStore {
+    /// The underlying store that will have it's results validated before sending to client.
+    pub backend: StoreConfig,
+
+    /// When a request is made, the results are decoded and all output digests/files are verified
+    /// to exist in this CAS store before returning success.
+    pub cas_store: StoreConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]
