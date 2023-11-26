@@ -23,7 +23,7 @@ use std::pin::Pin;
 use bytes::{Bytes, BytesMut};
 use error::{Code, Error, ResultExt};
 use futures::future::join;
-use futures::{Future, FutureExt};
+use futures::{Future, FutureExt, TryFutureExt};
 use native_link_util::buf_channel::{make_buf_channel_pair, DropCloserWriteHalf};
 use native_link_util::common::{fs, DigestInfo};
 use native_link_util::digest_hasher::DigestHasher;
@@ -48,6 +48,14 @@ pub async fn get_and_decode_digest<T: Message + Default>(
     store: Pin<&dyn Store>,
     digest: &DigestInfo,
 ) -> Result<T, Error> {
+    get_size_and_decode_digest(store, digest).map_ok(|(v, _)| v).await
+}
+
+/// Attempts to fetch the digest contents from a store into the associated proto.
+pub async fn get_size_and_decode_digest<T: Message + Default>(
+    store: Pin<&dyn Store>,
+    digest: &DigestInfo,
+) -> Result<(T, usize), Error> {
     let mut store_data_resp = store
         .get_part_unchunked(*digest, 0, Some(MAX_ACTION_MSG_SIZE), Some(ESTIMATED_DIGEST_SIZE))
         .await;
@@ -60,8 +68,11 @@ pub async fn get_and_decode_digest<T: Message + Default>(
         }
     }
     let store_data = store_data_resp?;
+    let store_data_len = store_data.len();
 
-    T::decode(store_data).err_tip_with_code(|e| (Code::NotFound, format!("Stored value appears to be corrupt: {}", e)))
+    T::decode(store_data)
+        .err_tip_with_code(|e| (Code::NotFound, format!("Stored value appears to be corrupt: {}", e)))
+        .map(|v| (v, store_data_len))
 }
 
 /// Computes the digest of a message.

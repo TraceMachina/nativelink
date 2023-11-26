@@ -23,6 +23,7 @@ futures = "0.3.28"
 hex = "0.4.3"
 hyper = { version = "0.14.27" }
 hyper-rustls = { version = "0.24.2", features = ["webpki-tokio"] }
+tracing = "0.1.40"
 lz4_flex = "0.11.1"
 parking_lot = "0.12.1"
 prost = "0.11.9"
