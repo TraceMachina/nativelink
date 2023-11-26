@@ -1,5 +1,5 @@
 {
-  "checksum": "5c9608af6e959d25bdae4ff438bca27d04472bf9c473c0b131727c9e96e96c50",
+  "checksum": "7023cf3f32f6978209c55378c2fc422167a8c8f14498925207b4c19466a11576",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -3723,6 +3723,56 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "colored 2.0.4": {
+      "name": "colored",
+      "version": "2.0.4",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/colored/2.0.4/download",
+          "sha256": "2674ec482fbc38012cf31e6c42ba0177b431a0cb6f15fe40efa5aab1bda516f6"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "colored",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "colored",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "is-terminal 0.4.9",
+              "target": "is_terminal"
+            },
+            {
+              "id": "lazy_static 1.4.0",
+              "target": "lazy_static"
+            }
+          ],
+          "selects": {
+            "cfg(windows)": [
+              {
+                "id": "windows-sys 0.48.0",
+                "target": "windows_sys"
+              }
+            ]
+          }
+        },
+        "edition": "2021",
+        "version": "2.0.4"
+      },
+      "license": "MPL-2.0"
+    },
     "const-oid 0.9.5": {
       "name": "const-oid",
       "version": "0.9.5",
@@ -6288,13 +6338,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "hashbrown 0.14.2": {
+    "hashbrown 0.14.3": {
       "name": "hashbrown",
-      "version": "0.14.2",
+      "version": "0.14.3",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/hashbrown/0.14.2/download",
-          "sha256": "f93e7192158dbcda357bdec5fb5788eebf8bbac027f3f33e719d29135ae84156"
+          "url": "https://crates.io/api/v1/crates/hashbrown/0.14.3/download",
+          "sha256": "290f1a1d9242c78d09ce40a5e87e7554ee637af1351968159f4952f028f75604"
         }
       },
       "targets": [
@@ -6337,7 +6387,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.14.2"
+        "version": "0.14.3"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -7155,7 +7205,7 @@
               "target": "equivalent"
             },
             {
-              "id": "hashbrown 0.14.2",
+              "id": "hashbrown 0.14.3",
               "target": "hashbrown"
             }
           ],
@@ -7359,28 +7409,13 @@
           "**"
         ],
         "crate_features": {
-          "common": [],
+          "common": [
+            "default",
+            "std"
+          ],
           "selects": {
             "aarch64-apple-darwin": [
-              "default",
-              "extra_traits",
-              "std"
-            ],
-            "aarch64-unknown-linux-gnu": [
-              "default",
-              "std"
-            ],
-            "arm-unknown-linux-gnueabi": [
-              "default",
-              "std"
-            ],
-            "armv7-unknown-linux-gnueabi": [
-              "default",
-              "std"
-            ],
-            "x86_64-unknown-linux-gnu": [
-              "default",
-              "std"
+              "extra_traits"
             ]
           }
         },
@@ -8250,7 +8285,7 @@
               "target": "futures"
             },
             {
-              "id": "hashbrown 0.14.2",
+              "id": "hashbrown 0.14.3",
               "target": "hashbrown"
             },
             {
@@ -8473,6 +8508,10 @@
               "target": "futures"
             },
             {
+              "id": "hashbrown 0.14.3",
+              "target": "hashbrown"
+            },
+            {
               "id": "hex 0.4.3",
               "target": "hex"
             },
@@ -8483,6 +8522,10 @@
             {
               "id": "hyper-rustls 0.24.2",
               "target": "hyper_rustls"
+            },
+            {
+              "id": "log 0.4.20",
+              "target": "log"
             },
             {
               "id": "lz4_flex 0.11.1",
@@ -8511,6 +8554,10 @@
             {
               "id": "shellexpand 3.1.0",
               "target": "shellexpand"
+            },
+            {
+              "id": "simple_logger 4.3.0",
+              "target": "simple_logger"
             },
             {
               "id": "tokio 1.34.0",
@@ -9153,6 +9200,47 @@
         },
         "edition": "2015",
         "version": "1.16.0"
+      },
+      "license": "MIT OR Apache-2.0"
+    },
+    "num_threads 0.1.6": {
+      "name": "num_threads",
+      "version": "0.1.6",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/num_threads/0.1.6/download",
+          "sha256": "2819ce041d2ee131036f4fc9d6ae7ae125a3a40e97ba64d04fe799ad9dabbb44"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "num_threads",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "num_threads",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [],
+          "selects": {
+            "cfg(any(target_os = \"macos\", target_os = \"ios\", target_os = \"freebsd\"))": [
+              {
+                "id": "libc 0.2.150",
+                "target": "libc"
+              }
+            ]
+          }
+        },
+        "edition": "2015",
+        "version": "0.1.6"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -13179,6 +13267,70 @@
       },
       "license": "Apache-2.0 OR MIT"
     },
+    "simple_logger 4.3.0": {
+      "name": "simple_logger",
+      "version": "4.3.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/simple_logger/4.3.0/download",
+          "sha256": "da0ca6504625ee1aa5fda33913d2005eab98c7a42dd85f116ecce3ff54c9d3ef"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "simple_logger",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "simple_logger",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "colored",
+            "colors",
+            "default",
+            "time",
+            "timestamps"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "colored 2.0.4",
+              "target": "colored"
+            },
+            {
+              "id": "log 0.4.20",
+              "target": "log"
+            },
+            {
+              "id": "time 0.3.30",
+              "target": "time"
+            }
+          ],
+          "selects": {
+            "cfg(windows)": [
+              {
+                "id": "windows-sys 0.48.0",
+                "target": "windows_sys"
+              }
+            ]
+          }
+        },
+        "edition": "2018",
+        "version": "4.3.0"
+      },
+      "license": "MIT"
+    },
     "slab 0.4.9": {
       "name": "slab",
       "version": "0.4.9",
@@ -14021,6 +14173,9 @@
           "common": [
             "alloc",
             "default",
+            "formatting",
+            "local-offset",
+            "macros",
             "parsing",
             "std"
           ],
@@ -14033,6 +14188,10 @@
               "target": "deranged"
             },
             {
+              "id": "itoa 1.0.9",
+              "target": "itoa"
+            },
+            {
               "id": "powerfmt 0.2.0",
               "target": "powerfmt"
             },
@@ -14041,7 +14200,18 @@
               "target": "time_core"
             }
           ],
-          "selects": {}
+          "selects": {
+            "cfg(target_family = \"unix\")": [
+              {
+                "id": "libc 0.2.150",
+                "target": "libc"
+              },
+              {
+                "id": "num_threads 0.1.6",
+                "target": "num_threads"
+              }
+            ]
+          }
         },
         "edition": "2021",
         "proc_macro_deps": {
@@ -14112,6 +14282,13 @@
         "compile_data_glob": [
           "**"
         ],
+        "crate_features": {
+          "common": [
+            "formatting",
+            "parsing"
+          ],
+          "selects": {}
+        },
         "deps": {
           "common": [
             {
@@ -17113,6 +17290,9 @@
       "armv7-unknown-linux-gnueabi",
       "x86_64-unknown-linux-gnu"
     ],
+    "cfg(any(target_os = \"macos\", target_os = \"ios\", target_os = \"freebsd\"))": [
+      "aarch64-apple-darwin"
+    ],
     "cfg(any(unix, target_os = \"wasi\"))": [
       "aarch64-apple-darwin",
       "aarch64-unknown-linux-gnu",
@@ -17160,6 +17340,13 @@
       "x86_64-unknown-linux-gnu"
     ],
     "cfg(not(windows))": [
+      "aarch64-apple-darwin",
+      "aarch64-unknown-linux-gnu",
+      "arm-unknown-linux-gnueabi",
+      "armv7-unknown-linux-gnueabi",
+      "x86_64-unknown-linux-gnu"
+    ],
+    "cfg(target_family = \"unix\")": [
       "aarch64-apple-darwin",
       "aarch64-unknown-linux-gnu",
       "arm-unknown-linux-gnueabi",
