@@ -82,6 +82,7 @@ pub enum StoreConfig {
     /// to has so that subsequent has_with_results calls will be
     /// faster. This is useful for cases when you have a store that
     /// is slow to respond to has calls.
+    /// Note: This store should only be used on CAS stores.
     existence_store(Box<ExistenceStore>),
 
     /// FastSlow store will first try to fetch the data from the `fast`
@@ -299,6 +300,11 @@ pub struct ExistenceStore {
     /// will be terminated, and early termination should always cause
     /// updates to fail on the backend.
     pub inner: StoreConfig,
+
+    /// Policy used to evict items out of the store. Failure to set this
+    /// value will cause items to never be removed from the store causing
+    /// infinite memory usage.
+    pub eviction_policy: Option<EvictionPolicy>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

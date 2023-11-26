@@ -49,11 +49,7 @@ impl Store for NoopStore {
     ) -> Result<(), Error> {
         // We need to drain the reader to avoid the writer complaining that we dropped
         // the connection prematurely.
-        loop {
-            if reader.recv().await.err_tip(|| "In NoopStore::update")?.is_empty() {
-                break; // EOF.
-            }
-        }
+        reader.drain().await.err_tip(|| "In NoopStore::update")?;
         Ok(())
     }
 

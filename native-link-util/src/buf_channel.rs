@@ -199,6 +199,22 @@ impl DropCloserReadHalf {
         }
     }
 
+    /// Drains the reader until an EOF is received, but sends data to the void.
+    pub async fn drain(&mut self) -> Result<(), Error> {
+        loop {
+            if self
+                .recv()
+                .await
+                .err_tip(|| "Failed to drain in buf_channel::drain")?
+                .is_empty()
+            {
+                break; // EOF.
+            }
+        }
+        Ok(())
+    }
+
+    /// Peek the next set of bytes in the stream without consuming them.
     pub async fn peek(&mut self) -> &Result<Bytes, Error> {
         assert!(
             self.close_after_size == u64::MAX,
