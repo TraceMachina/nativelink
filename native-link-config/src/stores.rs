@@ -44,6 +44,15 @@ pub enum StoreConfig {
     /// hash and size and the AC validate nothing.
     verify(Box<VerifyStore>),
 
+    /// Completeness checking store verifies if the
+    /// output files & folders exist.
+    ///
+    /// The action cache api requires the outputs to exist if you return
+    /// an action result. This store is only valid for Action Cache stores
+    /// and will verify that all outputs of a previously ran result still exist
+    /// in the CAS.
+    completeness_checking(Box<CompletenessCheckingStore>),
+
     /// A compression store that will compress the data inbound and
     /// outbound. There will be a non-trivial cost to compress and
     /// decompress the data, but in many cases if the final store is
@@ -329,6 +338,19 @@ pub struct VerifyStore {
     /// This should be set to false for AC, but true for CAS stores.
     #[serde(default)]
     pub verify_hash: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CompletenessCheckingStore {
+    /// The underlying Action Cache store completeness checking wraps around to forward through update and get methods. In the event there
+    /// is an error detected in self, the connection to the backend
+    /// will be terminated, and early termination should always cause
+    /// updates to fail on the backend.
+    pub backend: StoreConfig,
+
+    /// The CAS store that completeness checking uses to assure there are no cache misses in the case where
+    /// any digets being checked are not contained within this CAS.
+    pub cas_store: StoreConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]

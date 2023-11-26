@@ -43,7 +43,7 @@ pub struct DigestInfo {
 }
 
 impl DigestInfo {
-    pub fn new(packed_hash: [u8; 32], size_bytes: i64) -> Self {
+    pub const fn new(packed_hash: [u8; 32], size_bytes: i64) -> Self {
         DigestInfo {
             size_bytes,
             packed_hash,
