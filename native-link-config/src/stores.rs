@@ -44,12 +44,21 @@ pub enum StoreConfig {
     /// hash and size and the AC validate nothing.
     verify(Box<VerifyStore>),
 
+    /// Completeness checking store verifies if the
+    /// action items exist in the CAS or else return not found.
+    ///
+    /// The action cache api requires the outputs to exist if you return
+    /// an action result. This store is only valid for Action Cache stores
+    /// and will verify that all outputs of a previously ran result still exist
+    /// in the CAS.
+    completeness_checking(Box<CompletenessCheckingStore>),
+
     /// A compression store that will compress the data inbound and
     /// outbound. There will be a non-trivial cost to compress and
     /// decompress the data, but in many cases if the final store is
     /// a store that requires network transport and/or storage space
     /// is a concern it is often faster and more efficient to use this
-    /// store before those stores.
+    /// store before those storese
     compression(Box<CompressionStore>),
 
     /// A dedup store will take the inputs and run a rolling hash
@@ -323,6 +332,34 @@ pub struct VerifyStore {
     /// This should be set to false for AC, but true for CAS stores.
     #[serde(default)]
     pub verify_hash: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RefStoreConfig {
+    pub config: StoreConfig,
+}
+
+impl RefStoreConfig {
+    pub fn new(config: StoreConfig) -> Option<Self> {
+        match config {
+            StoreConfig::ref_store(_) => Some(Self { config }),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CompletenessCheckingStore {
+    /// The underlying store wrap around. All content will first flow
+    /// through self before forwarding to backend. In the event there
+    /// is an error detected in self, the connection to the backend
+    /// will be terminated, and early termination should always cause
+    /// updates to fail on the backend.
+    pub backend: StoreConfig,
+
+    /// The CAS that will have item's existence validated within it.
+    /// This store should always be a RefStore
+    pub cas_store: RefStoreConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]

@@ -1,5 +1,5 @@
 {
-  "checksum": "3c48f6a8f523f1a947c7efa5d041ee99d7187465e154ab7fcb2896f842d77e89",
+  "checksum": "698e19fd16d51931e2355531d7571d3c4fdb45aaf813e5ef0e1c515356c4cdb1",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -7411,25 +7411,11 @@
           "**"
         ],
         "crate_features": {
-          "common": [],
-          "selects": {
-            "aarch64-unknown-linux-gnu": [
-              "default",
-              "std"
-            ],
-            "arm-unknown-linux-gnueabi": [
-              "default",
-              "std"
-            ],
-            "armv7-unknown-linux-gnueabi": [
-              "default",
-              "std"
-            ],
-            "x86_64-unknown-linux-gnu": [
-              "default",
-              "std"
-            ]
-          }
+          "common": [
+            "default",
+            "std"
+          ],
+          "selects": {}
         },
         "deps": {
           "common": [
