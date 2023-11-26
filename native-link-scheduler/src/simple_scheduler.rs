@@ -26,20 +26,21 @@ use futures::Future;
 use hashbrown::{HashMap, HashSet};
 use lru::LruCache;
 use native_link_config::schedulers::WorkerAllocationStrategy;
+use native_link_util::action_messages::{
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
+};
 use native_link_util::common::log;
 use native_link_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent, Registry,
 };
+use native_link_util::platform_properties::PlatformPropertyValue;
 use parking_lot::{Mutex, MutexGuard};
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
-use crate::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
-};
 use crate::action_scheduler::ActionScheduler;
-use crate::platform_property_manager::{PlatformPropertyManager, PlatformPropertyValue};
+use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
 

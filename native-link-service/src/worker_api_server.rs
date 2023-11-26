@@ -21,11 +21,11 @@ use error::{make_err, Code, Error, ResultExt};
 use futures::stream::unfold;
 use futures::Stream;
 use native_link_config::cas_server::WorkerApiConfig;
-use native_link_scheduler::action_messages::ActionInfoHashKey;
-use native_link_scheduler::platform_property_manager::PlatformProperties;
 use native_link_scheduler::worker::{Worker, WorkerId};
 use native_link_scheduler::worker_scheduler::WorkerScheduler;
+use native_link_util::action_messages::ActionInfoHashKey;
 use native_link_util::common::{log, DigestInfo};
+use native_link_util::platform_properties::PlatformProperties;
 use proto::com::github::trace_machina::native_link::remote_execution::worker_api_server::{
     WorkerApi, WorkerApiServer as Server,
 };

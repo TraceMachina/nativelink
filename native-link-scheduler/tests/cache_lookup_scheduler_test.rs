@@ -24,13 +24,11 @@ mod utils {
 
 use error::{Error, ResultExt};
 use futures::join;
-use native_link_scheduler::action_messages::{
-    ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo,
-};
 use native_link_scheduler::action_scheduler::ActionScheduler;
 use native_link_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
 use native_link_scheduler::platform_property_manager::PlatformPropertyManager;
 use native_link_store::memory_store::MemoryStore;
+use native_link_util::action_messages::{ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo};
 use native_link_util::common::DigestInfo;
 use native_link_util::store_trait::Store;
 use prost::Message;

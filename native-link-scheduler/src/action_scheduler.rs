@@ -16,10 +16,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use error::Error;
+use native_link_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use native_link_util::metrics_utils::Registry;
 use tokio::sync::watch;
 
-use crate::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use crate::platform_property_manager::PlatformPropertyManager;
 
 /// ActionScheduler interface is responsible for interactions between the scheduler
