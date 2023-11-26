@@ -1242,9 +1242,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.14.2"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f93e7192158dbcda357bdec5fb5788eebf8bbac027f3f33e719d29135ae84156"
+checksum = "290f1a1d9242c78d09ce40a5e87e7554ee637af1351968159f4952f028f75604"
 dependencies = [
  "ahash",
  "allocator-api2",
@@ -1406,7 +1406,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d530e1a18b1cb4c484e6e34556a0d948706958449fca0cab753d649f2bce3d1f"
 dependencies = [
  "equivalent",
- "hashbrown 0.14.2",
+ "hashbrown 0.14.3",
 ]
 
 [[package]]
@@ -1619,7 +1619,7 @@ dependencies = [
  "blake3",
  "error",
  "futures",
- "hashbrown 0.14.2",
+ "hashbrown 0.14.3",
  "lru",
  "native-link-config",
  "native-link-store",
@@ -1680,6 +1680,7 @@ dependencies = [
  "error",
  "filetime",
  "futures",
+ "hashbrown 0.14.3",
  "hex",
  "http",
  "hyper",

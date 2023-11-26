@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod ac_utils;
+pub mod completeness_checking_store;
 pub mod compression_store;
 pub mod dedup_store;
 pub mod default_store_factory;
