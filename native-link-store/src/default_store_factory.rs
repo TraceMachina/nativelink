@@ -22,6 +22,7 @@ use native_link_config::stores::StoreConfig;
 use native_link_util::metrics_utils::Registry;
 use native_link_util::store_trait::Store;
 
+use crate::completeness_checking_store::CompletenessCheckingStore;
 use crate::compression_store::CompressionStore;
 use crate::dedup_store::DedupStore;
 use crate::existence_cache_store::ExistenceCacheStore;
@@ -64,6 +65,10 @@ pub fn store_factory<'a>(
             StoreConfig::existence_cache(config) => Arc::new(ExistenceCacheStore::new(
                 config,
                 store_factory(&config.backend, store_manager, None).await?,
+            )),
+            StoreConfig::completeness_checking(config) => Arc::new(CompletenessCheckingStore::new(
+                store_factory(&config.backend, store_manager, None).await?,
+                store_factory(&config.cas_store, store_manager, None).await?,
             )),
             StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
                 config,
