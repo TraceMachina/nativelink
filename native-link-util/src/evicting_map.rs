@@ -297,27 +297,53 @@ where
 
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, digest: DigestInfo, data: T, seconds_since_anchor: i32) -> Option<T> {
-        let new_item_size = data.len() as u64;
-        let eviction_item = EvictionItem {
-            seconds_since_anchor,
-            data,
-        };
         let mut state = self.state.lock().await;
+        let results = self
+            .inner_insert_many(&mut state, [(digest, data)], seconds_since_anchor)
+            .await;
+        results.into_iter().next()
+    }
 
-        let maybe_old_item = if let Some(old_item) = state.lru.put(digest, eviction_item) {
-            state.sum_store_size -= old_item.data.len() as u64;
-            state.replaced_items.inc();
-            state.replaced_bytes.add(old_item.data.len() as u64);
-            // Note: See comment in `unref()` requring global lock of insert/remove.
-            old_item.data.unref().await;
-            Some(old_item.data)
-        } else {
-            None
-        };
-        state.sum_store_size += new_item_size;
-        state.lifetime_inserted_bytes.add(new_item_size);
-        self.evict_items(state.deref_mut()).await;
-        maybe_old_item
+    /// Same as insert(), but optimized for multiple inserts.
+    /// Returns the replaced items if any.
+    pub async fn insert_many(&self, inserts: impl IntoIterator<Item = (DigestInfo, T)>) -> Vec<T> {
+        let mut inserts = inserts.into_iter().peekable();
+        // Shortcut for cases where there are no inserts, so we don't need to lock.
+        if inserts.peek().is_none() {
+            return Vec::new();
+        }
+        let state = &mut self.state.lock().await;
+        self.inner_insert_many(state, inserts, self.anchor_time.elapsed().as_secs() as i32)
+            .await
+    }
+
+    async fn inner_insert_many(
+        &self,
+        mut state: &mut State<T>,
+        inserts: impl IntoIterator<Item = (DigestInfo, T)>,
+        seconds_since_anchor: i32,
+    ) -> Vec<T> {
+        let mut replaced_items = Vec::new();
+        for (digest, data) in inserts.into_iter() {
+            let new_item_size = data.len() as u64;
+            let eviction_item = EvictionItem {
+                seconds_since_anchor,
+                data,
+            };
+
+            if let Some(old_item) = state.lru.put(digest, eviction_item) {
+                state.sum_store_size -= old_item.data.len() as u64;
+                state.replaced_items.inc();
+                state.replaced_bytes.add(old_item.data.len() as u64);
+                // Note: See comment in `unref()` requring global lock of insert/remove.
+                old_item.data.unref().await;
+                replaced_items.push(old_item.data);
+            }
+            state.sum_store_size += new_item_size;
+            state.lifetime_inserted_bytes.add(new_item_size);
+            self.evict_items(state.deref_mut()).await;
+        }
+        replaced_items
     }
 
     pub async fn remove(&self, digest: &DigestInfo) -> bool {

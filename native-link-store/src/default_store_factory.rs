@@ -62,6 +62,7 @@ pub fn store_factory<'a>(
                 store_factory(&config.content_store, store_manager, None).await?,
             )),
             StoreConfig::existence_store(config) => Arc::new(ExistenceStore::new(
+                config,
                 store_factory(&config.inner, store_manager, None).await?,
             )),
             StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
