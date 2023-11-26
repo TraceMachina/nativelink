@@ -44,12 +44,25 @@ pub enum StoreConfig {
     /// hash and size and the AC validate nothing.
     verify(Box<VerifyStore>),
 
+    /// Because pruning stale actions and the actions need to exist for a
+    /// sufficient amount of time so they can be used to request
+    /// action results from the Action Cache
+    /// we need to assure that the actions exist in the
+    /// CAS or else return not found.
+    ///
+    /// Blaise comment:
+    /// The action cache api requires the outputs to exist if you return
+    /// an action result. This store is only valid for Action Cache stores
+    /// and will verify that all outputs of a previously ran result still exist
+    /// in the CAS.
+    completeness_checking_store(Box<CompletenessCheckingStore>),
+
     /// A compression store that will compress the data inbound and
     /// outbound. There will be a non-trivial cost to compress and
     /// decompress the data, but in many cases if the final store is
     /// a store that requires network transport and/or storage space
     /// is a concern it is often faster and more efficient to use this
-    /// store before those stores.
+    /// store before those storese
     compression(Box<CompressionStore>),
 
     /// A dedup store will take the inputs and run a rolling hash
@@ -323,6 +336,16 @@ pub struct VerifyStore {
     /// This should be set to false for AC, but true for CAS stores.
     #[serde(default)]
     pub verify_hash: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CompletenessCheckingStore {
+    /// The underlying store to wrap around. All content will initially pass
+    /// through this store before being forwarded to the backend. If an error is
+    /// detected in this store, the connection to the backend will be terminated.
+    /// Any early termination should always cause updates to fail on the backend.
+    pub ac_store: StoreConfig,
+    pub cas_store: StoreConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]
