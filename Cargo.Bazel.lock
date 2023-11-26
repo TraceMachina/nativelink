@@ -1,5 +1,5 @@
 {
-  "checksum": "b6ac671d2578b85d845eb82ff6476b66191872c127cd21141c325f53caf48152",
+  "checksum": "d2d8bddfe8e7b7c926ed509a2dbc85a590d898ee897e54415926ee80ffb64240",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -6288,13 +6288,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "hashbrown 0.14.2": {
+    "hashbrown 0.14.3": {
       "name": "hashbrown",
-      "version": "0.14.2",
+      "version": "0.14.3",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/hashbrown/0.14.2/download",
-          "sha256": "f93e7192158dbcda357bdec5fb5788eebf8bbac027f3f33e719d29135ae84156"
+          "url": "https://crates.io/api/v1/crates/hashbrown/0.14.3/download",
+          "sha256": "290f1a1d9242c78d09ce40a5e87e7554ee637af1351968159f4952f028f75604"
         }
       },
       "targets": [
@@ -6337,7 +6337,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.14.2"
+        "version": "0.14.3"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -7155,7 +7155,7 @@
               "target": "equivalent"
             },
             {
-              "id": "hashbrown 0.14.2",
+              "id": "hashbrown 0.14.3",
               "target": "hashbrown"
             }
           ],
@@ -7359,25 +7359,11 @@
           "**"
         ],
         "crate_features": {
-          "common": [],
-          "selects": {
-            "aarch64-unknown-linux-gnu": [
-              "default",
-              "std"
-            ],
-            "arm-unknown-linux-gnueabi": [
-              "default",
-              "std"
-            ],
-            "armv7-unknown-linux-gnueabi": [
-              "default",
-              "std"
-            ],
-            "x86_64-unknown-linux-gnu": [
-              "default",
-              "std"
-            ]
-          }
+          "common": [
+            "default",
+            "std"
+          ],
+          "selects": {}
         },
         "deps": {
           "common": [
@@ -8245,7 +8231,7 @@
               "target": "futures"
             },
             {
-              "id": "hashbrown 0.14.2",
+              "id": "hashbrown 0.14.3",
               "target": "hashbrown"
             },
             {
@@ -8468,6 +8454,10 @@
               "target": "futures"
             },
             {
+              "id": "hashbrown 0.14.3",
+              "target": "hashbrown"
+            },
+            {
               "id": "hex 0.4.3",
               "target": "hex"
             },
@@ -8478,6 +8468,10 @@
             {
               "id": "hyper-rustls 0.24.2",
               "target": "hyper_rustls"
+            },
+            {
+              "id": "log 0.4.20",
+              "target": "log"
             },
             {
               "id": "lz4_flex 0.11.1",
