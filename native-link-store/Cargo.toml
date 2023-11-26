@@ -23,6 +23,7 @@ futures = "0.3.28"
 hex = "0.4.3"
 hyper = { version = "0.14.27" }
 hyper-rustls = { version = "0.24.2", features = ["webpki-tokio"] }
+tracing = "0.1.40"
 lz4_flex = "0.11.1"
 parking_lot = "0.12.1"
 prost = "0.11.9"
@@ -34,7 +35,6 @@ tokio = { version = "1.29.1" }
 tokio-stream = { version = "0.1.14", features = ["fs"] }
 tokio-util = { version = "0.7.8" }
 tonic = { version = "0.9.2", features = ["gzip"] }
-tracing = "0.1.40"
 uuid = { version = "1.4.0", features = ["v4"] }
 
 [dev-dependencies]
