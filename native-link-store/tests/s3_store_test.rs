@@ -19,9 +19,12 @@ use std::time::Duration;
 use aws_sdk_s3::config::{Builder, Region};
 use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
-use error::Error;
+use bytes::Bytes;
+use error::{Error, ResultExt};
+use futures::join;
 use http::header;
 use http::status::StatusCode;
+use hyper::Body;
 use native_link_store::s3_store::S3Store;
 use native_link_util::common::DigestInfo;
 use native_link_util::store_trait::Store;
@@ -461,6 +464,61 @@ mod s3_store_tests {
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
         let _ = Pin::new(&store).update_oneshot(digest, send_data.clone().into()).await;
+        mock_client.assert_requests_match(&[]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
+        const CAS_ENTRY_SIZE: usize = 10; // Length of "helloworld".
+        let (mut tx, channel_body) = Body::channel();
+        let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
+            http::Request::builder()
+                .uri(format!(
+                    "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{CAS_ENTRY_SIZE}?x-id=GetObject",
+                ))
+                .header("range", format!("bytes={}-{}", 0, CAS_ENTRY_SIZE))
+                .body(SdkBody::empty())
+                .unwrap(),
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .body(SdkBody::from_body_0_4(channel_body))
+                .unwrap(),
+        )]);
+        let test_config = Builder::new()
+            .region(Region::from_static(REGION))
+            .http_client(mock_client.clone())
+            .build();
+        let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+        let store = S3Store::new_with_client_and_jitter(
+            &native_link_config::stores::S3Store {
+                bucket: BUCKET_NAME.to_string(),
+                ..Default::default()
+            },
+            s3_client,
+            Arc::new(move |_delay| Duration::from_secs(0)),
+        )?;
+        let store_pin = Pin::new(&store);
+
+        let (_, get_part_result) = join!(
+            async move {
+                tx.send_data(Bytes::from_static(b"hello")).await?;
+                tx.send_data(Bytes::from_static(b"")).await?;
+                tx.send_data(Bytes::from_static(b"world")).await?;
+                Result::<(), hyper::Error>::Ok(())
+            },
+            store_pin.get_part_unchunked(
+                DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE)?,
+                0,
+                Some(CAS_ENTRY_SIZE),
+                None
+            )
+        );
+        assert_eq!(
+            get_part_result.err_tip(|| "Expected get_part_result to pass")?,
+            "helloworld".as_bytes()
+        );
+
         mock_client.assert_requests_match(&[]);
         Ok(())
     }
