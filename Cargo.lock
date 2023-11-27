@@ -1692,7 +1692,6 @@ dependencies = [
  "error",
  "filetime",
  "futures",
- "hashbrown 0.14.2",
  "hex",
  "http",
  "hyper",

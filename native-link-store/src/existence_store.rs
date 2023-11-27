@@ -12,32 +12,114 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::mem::size_of;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
-use error::Error;
-use hashbrown::HashSet;
+use error::{error_if, Error, ResultExt};
+use native_link_config::stores::{EvictionPolicy, ExistenceStore as ExistenceStoreConfig};
 use native_link_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use native_link_util::common::DigestInfo;
+use native_link_util::evicting_map::{EvictingMap, LenEntry};
 use native_link_util::store_trait::{Store, UploadSizeInfo};
+
+#[derive(Clone, Debug)]
+struct ExistanceItem(usize);
+
+impl LenEntry for ExistanceItem {
+    #[inline]
+    fn len(&self) -> usize {
+        size_of::<Self>()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        false
+    }
+}
 
 pub struct ExistenceStore {
     inner_store: Arc<dyn Store>,
-    pub existence_cache: Mutex<HashSet<DigestInfo>>,
+    existence_cache: EvictingMap<ExistanceItem, SystemTime>,
 }
 
 impl ExistenceStore {
-    pub fn new(inner_store: Arc<dyn Store>) -> Self {
+    pub fn new(config: &ExistenceStoreConfig, inner_store: Arc<dyn Store>) -> Self {
+        let empty_policy = EvictionPolicy::default();
+        let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
         Self {
             inner_store,
-            // TODO (BlakeHatch):
-            // Consider using RwLock in a future commit.
-            // Since HashSet implements Send and Sync this should
-            // be a drop-in replacement in theory.
-            // Make sure benchmark is done to justify.
-            existence_cache: Mutex::new(HashSet::new()),
+            existence_cache: EvictingMap::new(eviction_policy, SystemTime::now()),
         }
+    }
+
+    pub async fn exists_in_cache(&self, digest: &DigestInfo) -> bool {
+        self.existence_cache.size_for_key(digest).await.is_some()
+    }
+
+    pub async fn remove_from_cache(&self, digest: &DigestInfo) {
+        self.existence_cache.remove(digest).await;
+    }
+
+    async fn inner_has_with_results(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+        results: &mut [Option<usize>],
+    ) -> Result<(), Error> {
+        self.existence_cache.sizes_for_keys(digests, results).await;
+
+        let not_cached_digests: Vec<DigestInfo> = digests
+            .iter()
+            .zip(results.iter())
+            .filter_map(|(digest, result)| result.map_or_else(|| Some(*digest), |_| None))
+            .collect();
+
+        // Hot path optimization when all digests are cached.
+        if not_cached_digests.is_empty() {
+            return Ok(());
+        }
+
+        // Now query only the items not found in the cache.
+        let mut inner_results = vec![None; not_cached_digests.len()];
+        self.pin_inner()
+            .has_with_results(&not_cached_digests, &mut inner_results)
+            .await
+            .err_tip(|| "In ExistenceStore::inner_has_with_results")?;
+
+        // Insert found from previous query into our cache.
+        {
+            // Note: Sadly due to some weird lifetime issues we need to collect here, but
+            // in theory we don't actually need to collect.
+            let inserts = not_cached_digests
+                .iter()
+                .zip(inner_results.iter())
+                .filter_map(|(digest, result)| result.map(|size| (*digest, ExistanceItem(size))))
+                .collect::<Vec<_>>();
+            let _ = self.existence_cache.insert_many(inserts).await;
+        }
+
+        // Merge the results from the cache and the query.
+        {
+            let mut inner_results_iter = inner_results.into_iter();
+            // We know at this point that any None in results was queried and will have
+            // a result in inner_results_iter, so use this knowledge to fill in the results.
+            for result in results.iter_mut() {
+                if result.is_none() {
+                    *result = inner_results_iter
+                        .next()
+                        .expect("has_with_results returned less results than expected");
+                }
+            }
+            // Ensure that there was no logic error by ensuring our iterator is not empty.
+            error_if!(
+                inner_results_iter.next().is_some(),
+                "has_with_results returned more results than expected"
+            );
+        }
+
+        Ok(())
     }
 
     fn pin_inner(&self) -> Pin<&dyn Store> {
@@ -52,40 +134,32 @@ impl Store for ExistenceStore {
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        let mut pruned_digests = Vec::new();
-
-        for (i, digest) in digests.iter().enumerate() {
-            if self.existence_cache.lock().unwrap().contains(digest) {
-                results[i] = Some(1);
-            } else {
-                pruned_digests.push(*digest);
-            }
-        }
-
-        if !pruned_digests.is_empty() {
-            let mut inner_results = vec![None; pruned_digests.len()];
-            self.pin_inner()
-                .has_with_results(&pruned_digests, &mut inner_results)
-                .await?;
-
-            for (i, result) in inner_results.iter().enumerate() {
-                if result.is_some() {
-                    self.existence_cache.lock().unwrap().insert(pruned_digests[i]);
-                    results[i] = Some(1);
-                }
-            }
-        }
-
-        Ok(())
+        self.inner_has_with_results(digests, results).await
     }
 
     async fn update(
         self: Pin<&Self>,
         digest: DigestInfo,
-        reader: DropCloserReadHalf,
+        mut reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        self.pin_inner().update(digest, reader, size_info).await
+        let mut exists = [None];
+        self.inner_has_with_results(&[digest], &mut exists)
+            .await
+            .err_tip(|| "In ExistenceStore::update")?;
+        if exists[0].is_some() {
+            // We need to drain the reader to avoid the writer complaining that we dropped
+            // the connection prematurely.
+            reader.drain().await.err_tip(|| "In ExistenceStore::update")?;
+            return Ok(());
+        }
+        let result = self.pin_inner().update(digest, reader, size_info).await;
+        if result.is_ok() {
+            if let UploadSizeInfo::ExactSize(size) = size_info {
+                let _ = self.existence_cache.insert(digest, ExistanceItem(size)).await;
+            }
+        }
+        result
     }
 
     async fn get_part_ref(
@@ -95,7 +169,13 @@ impl Store for ExistenceStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        self.pin_inner().get_part_ref(digest, writer, offset, length).await
+        let result = self.pin_inner().get_part_ref(digest, writer, offset, length).await;
+        if result.is_ok() {
+            let size = usize::try_from(digest.size_bytes)
+                .err_tip(|| "Could not convert size_bytes in ExistenceStore::get_part")?;
+            let _ = self.existence_cache.insert(digest, ExistanceItem(size)).await;
+        }
+        result
     }
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
