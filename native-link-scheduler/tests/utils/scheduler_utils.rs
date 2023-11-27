@@ -15,10 +15,10 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use native_link_scheduler::action_messages::{ActionInfo, ActionInfoHashKey};
-use native_link_scheduler::platform_property_manager::PlatformProperties;
+use native_link_util::action_messages::{ActionInfo, ActionInfoHashKey};
 use native_link_util::common::DigestInfo;
 use native_link_util::digest_hasher::DigestHasherFunc;
+use native_link_util::platform_properties::PlatformProperties;
 
 pub const INSTANCE_NAME: &str = "foobar_instance_name";
 

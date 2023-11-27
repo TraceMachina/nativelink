@@ -19,10 +19,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use error::{Error, ResultExt};
 use native_link_config::schedulers::{PropertyModification, PropertyType};
+use native_link_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
-use crate::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 

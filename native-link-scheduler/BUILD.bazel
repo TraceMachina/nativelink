@@ -9,7 +9,6 @@ load(
 rust_library(
     name = "native-link-scheduler",
     srcs = [
-        "src/action_messages.rs",
         "src/action_scheduler.rs",
         "src/cache_lookup_scheduler.rs",
         "src/default_scheduler_factory.rs",
@@ -38,7 +37,6 @@ rust_library(
         "@crate_index//:lru",
         "@crate_index//:parking_lot",
         "@crate_index//:prost",
-        "@crate_index//:prost-types",
         "@crate_index//:rand",
         "@crate_index//:scopeguard",
         "@crate_index//:tokio",

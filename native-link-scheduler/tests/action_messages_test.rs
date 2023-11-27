@@ -17,12 +17,12 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use error::Error;
-use native_link_scheduler::action_messages::{
+use native_link_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
-use native_link_scheduler::platform_property_manager::PlatformProperties;
 use native_link_util::common::DigestInfo;
 use native_link_util::digest_hasher::DigestHasherFunc;
+use native_link_util::platform_properties::PlatformProperties;
 use proto::build::bazel::remote::execution::v2::ExecuteResponse;
 use proto::google::longrunning::{operation, Operation};
 use proto::google::rpc::Status;
