@@ -1,5 +1,5 @@
 {
-  "checksum": "3c48f6a8f523f1a947c7efa5d041ee99d7187465e154ab7fcb2896f842d77e89",
+  "checksum": "b6ac671d2578b85d845eb82ff6476b66191872c127cd21141c325f53caf48152",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -7294,58 +7294,6 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "json5 0.4.1": {
-      "name": "json5",
-      "version": "0.4.1",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/json5/0.4.1/download",
-          "sha256": "96b0db21af676c1ce64250b5f40f3ce2cf27e4e47cb91ed91eb6fe9350b430c1"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "json5",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "json5",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "pest 2.7.5",
-              "target": "pest"
-            },
-            {
-              "id": "serde 1.0.193",
-              "target": "serde"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2018",
-        "proc_macro_deps": {
-          "common": [
-            {
-              "id": "pest_derive 2.7.5",
-              "target": "pest_derive"
-            }
-          ],
-          "selects": {}
-        },
-        "version": "0.4.1"
-      },
-      "license": "ISC"
-    },
     "lazy_static 1.4.0": {
       "name": "lazy_static",
       "version": "1.4.0",
@@ -8185,10 +8133,6 @@
               "target": "hyper"
             },
             {
-              "id": "json5 0.4.1",
-              "target": "json5"
-            },
-            {
               "id": "parking_lot 0.12.1",
               "target": "parking_lot"
             },
@@ -8203,6 +8147,10 @@
             {
               "id": "scopeguard 1.2.0",
               "target": "scopeguard"
+            },
+            {
+              "id": "serde_json5 0.1.0",
+              "target": "serde_json5"
             },
             {
               "id": "tokio 1.34.0",
@@ -8311,10 +8259,6 @@
             {
               "id": "prost 0.11.9",
               "target": "prost"
-            },
-            {
-              "id": "prost-types 0.11.9",
-              "target": "prost_types"
             },
             {
               "id": "rand 0.8.5",
@@ -8524,10 +8468,6 @@
               "target": "futures"
             },
             {
-              "id": "hashbrown 0.14.2",
-              "target": "hashbrown"
-            },
-            {
               "id": "hex 0.4.3",
               "target": "hex"
             },
@@ -8700,6 +8640,10 @@
               "target": "prost"
             },
             {
+              "id": "prost-types 0.11.9",
+              "target": "prost_types"
+            },
+            {
               "id": "serde 1.0.193",
               "target": "serde"
             },
@@ -8796,10 +8740,6 @@
               "target": "hex"
             },
             {
-              "id": "json5 0.4.1",
-              "target": "json5"
-            },
-            {
               "id": "parking_lot 0.12.1",
               "target": "parking_lot"
             },
@@ -8818,6 +8758,10 @@
             {
               "id": "serde 1.0.193",
               "target": "serde"
+            },
+            {
+              "id": "serde_json5 0.1.0",
+              "target": "serde_json5"
             },
             {
               "id": "shlex 1.2.0",
@@ -12734,6 +12678,58 @@
         ]
       },
       "license": "MIT OR Apache-2.0"
+    },
+    "serde_json5 0.1.0": {
+      "name": "serde_json5",
+      "version": "0.1.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/serde_json5/0.1.0/download",
+          "sha256": "32a6b754515e1a7bd79fc2edeaecee526fc80cb3a918607e5ca149225a3a9586"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "serde_json5",
+            "crate_root": "third_party/src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "serde_json5",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "pest 2.7.5",
+              "target": "pest"
+            },
+            {
+              "id": "serde 1.0.193",
+              "target": "serde"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "proc_macro_deps": {
+          "common": [
+            {
+              "id": "pest_derive 2.7.5",
+              "target": "pest_derive"
+            }
+          ],
+          "selects": {}
+        },
+        "version": "0.1.0"
+      },
+      "license": "Apache-2.0"
     },
     "serde_path_to_error 0.1.14": {
       "name": "serde_path_to_error",
