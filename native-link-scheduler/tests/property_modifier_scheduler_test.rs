@@ -25,11 +25,12 @@ mod utils {
 use error::Error;
 use futures::join;
 use native_link_config::schedulers::{PlatformPropertyAddition, PropertyModification, PropertyType};
-use native_link_scheduler::action_messages::{ActionInfoHashKey, ActionStage, ActionState};
 use native_link_scheduler::action_scheduler::ActionScheduler;
-use native_link_scheduler::platform_property_manager::{PlatformPropertyManager, PlatformPropertyValue};
+use native_link_scheduler::platform_property_manager::PlatformPropertyManager;
 use native_link_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
+use native_link_util::action_messages::{ActionInfoHashKey, ActionStage, ActionState};
 use native_link_util::common::DigestInfo;
+use native_link_util::platform_properties::PlatformPropertyValue;
 use tokio::sync::watch;
 use utils::mock_scheduler::MockActionScheduler;
 use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};

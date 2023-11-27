@@ -24,8 +24,8 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{select, Future, FutureExt, StreamExt, TryFutureExt};
 use native_link_config::cas_server::LocalWorkerConfig;
-use native_link_scheduler::action_messages::{ActionResult, ActionStage};
 use native_link_store::fast_slow_store::FastSlowStore;
+use native_link_util::action_messages::{ActionResult, ActionStage};
 use native_link_util::common::{fs, log};
 use native_link_util::digest_hasher::DigestHasherFunc;
 use native_link_util::metrics_utils::{

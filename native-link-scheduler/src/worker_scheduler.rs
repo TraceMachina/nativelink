@@ -16,9 +16,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use error::Error;
+use native_link_util::action_messages::{ActionInfoHashKey, ActionStage};
 use native_link_util::metrics_utils::Registry;
 
-use crate::action_messages::{ActionInfoHashKey, ActionStage};
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{Worker, WorkerId, WorkerTimestamp};
 
