@@ -12,15 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
+use std::borrow::Cow;
 use std::future::Future;
 use std::marker::Send;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use std::{cmp, env};
 
 use async_trait::async_trait;
+use aws_sdk_s3::config::Region;
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
@@ -147,8 +149,16 @@ impl S3Store {
         });
         let s3_client = {
             let http_client = HyperClientBuilder::new().build(TlsConnector::new(config, jitter_fn.clone()));
-            let shared_config = aws_config::from_env().http_client(http_client).load().await;
-            aws_sdk_s3::Client::new(&shared_config)
+            let mut config_builder = aws_config::from_env()
+                .region(Region::new(Cow::Owned(config.region.clone())))
+                .http_client(http_client);
+            // TODO(allada) When aws-sdk supports this env variable we should be able
+            // to remove this.
+            // See: https://github.com/awslabs/aws-sdk-rust/issues/932
+            if let Ok(endpoint_url) = env::var("AWS_ENDPOINT_URL") {
+                config_builder = config_builder.endpoint_url(endpoint_url);
+            }
+            aws_sdk_s3::Client::new(&config_builder.load().await)
         };
         Self::new_with_client_and_jitter(config, s3_client, jitter_fn)
     }
@@ -488,6 +498,11 @@ impl Store for S3Store {
                     while let Some(maybe_bytes) = s3_in_stream.next().await {
                         match maybe_bytes {
                             Ok(bytes) => {
+                                if bytes.is_empty() {
+                                    // Ignore possible EOF. Different implimentations of S3 may or may not
+                                    // send EOF this way.
+                                    continue;
+                                }
                                 if let Err(e) = writer.send(bytes).await {
                                     return Some((
                                         RetryResult::Err(make_input_err!("Error sending bytes to consumer in S3: {e}")),
