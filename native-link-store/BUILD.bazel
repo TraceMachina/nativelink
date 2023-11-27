@@ -97,6 +97,7 @@ rust_test_suite(
         "@crate_index//:filetime",
         "@crate_index//:futures",
         "@crate_index//:http",
+        "@crate_index//:hyper",
         "@crate_index//:memory-stats",
         "@crate_index//:once_cell",
         "@crate_index//:pretty_assertions",
