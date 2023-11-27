@@ -25,21 +25,22 @@ ARG ADDITIONAL_SETUP_WORKER_CMD=
 
 FROM ubuntu:${OS_VERSION} AS dependencies
 ARG OS_VERSION
-RUN apt update && \
-    DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y \
-        npm \
-        git \
-        gcc \
-        g++ \
-        python3 \
-        ca-certificates && \
-    npm install -g @bazel/bazelisk
-
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+        npm=8.5.1~ds \
+        git=1:2.34.1-1ubuntu1 \
+        gcc=4:11.2.0-1ubuntu1 \
+        g++=4:11.2.0-1ubuntu1 \
+        python3=3.10.4-0ubuntu2 \
+        ca-certificates=20230311ubuntu0.22.04.1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @bazel/bazelisk@1.19.0
 
 # Build the binary.
 FROM dependencies AS builder
 WORKDIR /root/native-link
-ADD . .
+COPY . .
 ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
 RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} cas && \
@@ -52,10 +53,14 @@ COPY --from=builder /root/native-link-bin /usr/local/bin/native-link
 # Install runtime packages.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        ca-certificates
-ARG ADDITIONAL_SETUP_WORKER_CMD
-RUN bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}"
+        ca-certificates=20230311ubuntu0.22.04.1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /root/.cache/native-link
+ARG ADDITIONAL_SETUP_WORKER_CMD
+
+RUN bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}" \
+    && mkdir -p /root/.cache/native-link
+
 EXPOSE 50051/tcp 50052/tcp
 CMD ["native-link"]
