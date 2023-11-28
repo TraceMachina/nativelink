@@ -59,7 +59,7 @@ resource "aws_instance" "build_native_link_instance" {
     command = <<EOT
       set -ex
       SELF_DIR=$(pwd)
-      cd ../../
+      cd ../../..
       rm -rf $SELF_DIR/.terraform-native-link-builder
       mkdir -p $SELF_DIR/.terraform-native-link-builder
       find . ! -ipath '*/target*' -and ! \( -ipath '*/.*' -and ! -name '.rustfmt.toml' -and ! -name '.bazelrc' \) -and ! -ipath './bazel-*' -type f -print0 | tar cvf $SELF_DIR/.terraform-native-link-builder/file.tar.gz --null -T -
@@ -124,12 +124,12 @@ resource "aws_instance" "build_native_link_instance" {
         sudo docker rm $(sudo docker ps -a -q) &&
         sudo docker rmi $(sudo docker images -q) &&
         `` &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/scripts/scheduler.json /root/scheduler.json &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/scripts/cas.json /root/cas.json &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/scripts/worker.json /root/worker.json &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/scripts/start_native_link.sh /root/start_native_link.sh &&
+        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/scheduler.json /root/scheduler.json &&
+        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/cas.json /root/cas.json &&
+        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/worker.json /root/worker.json &&
+        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/start_native_link.sh /root/start_native_link.sh &&
         sudo chmod +x /root/start_native_link.sh &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/scripts/native-link.service /etc/systemd/system/native-link.service &&
+        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/native-link.service /etc/systemd/system/native-link.service &&
         sudo systemctl enable native-link &&
         sync
       EOT
