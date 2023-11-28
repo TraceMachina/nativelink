@@ -648,6 +648,7 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
             if buf.is_empty() {
                 break; // EOF.
             }
+            let buf_content = buf.split().freeze();
             // In the event it takes a while to send the data to the client, we want to close the
             // reading file, to prevent the file descriptor left open for long periods of time.
             // Failing to do so might cause deadlocks if the receiver is unable to receive data
@@ -655,7 +656,7 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
             // Using `ResumeableFileSlot` will re-open the file in the event it gets closed on the
             // next iteration.
             loop {
-                match timeout(fs::idle_file_descriptor_timeout(), writer.send(buf.split().freeze())).await {
+                match timeout(fs::idle_file_descriptor_timeout(), writer.send(buf_content.clone())).await {
                     Ok(Ok(())) => break,
                     Ok(Err(err)) => {
                         return Err(err).err_tip(|| "Failed to send chunk in filesystem store get_part");
