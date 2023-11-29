@@ -497,6 +497,7 @@ impl SimpleSchedulerImpl {
 
         // Re-queue the action or fail on max attempts.
         self.retry_action(&action_info, worker_id, err);
+        self.tasks_or_workers_change_notify.notify_one();
     }
 
     fn update_action(
