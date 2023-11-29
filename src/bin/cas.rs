@@ -29,6 +29,7 @@ use native_link_config::cas_server::{
     CasConfig, CompressionAlgorithm, ConfigDigestHashFunction, GlobalConfig, ServerConfig, WorkerConfig,
 };
 use native_link_scheduler::default_scheduler_factory::scheduler_factory;
+use native_link_scheduler::worker::WorkerId;
 use native_link_service::ac_server::AcServer;
 use native_link_service::bytestream_server::ByteStreamServer;
 use native_link_service::capabilities_server::CapabilitiesServer;
@@ -57,6 +58,9 @@ use tower::util::ServiceExt;
 
 /// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
 const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
+
+/// Note: This must be kept in sync with the documentation in `AdminConfig::path`.
+const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 
 /// Name of environment variable to disable metrics.
 const METRICS_DISABLE_ENV: &str = "NATIVE_LINK_DISABLE_METRICS";
@@ -387,6 +391,54 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     .await
                     .unwrap_or_else(error_to_response)
                 }),
+            )
+        }
+
+        if let Some(admin_config) = services.admin {
+            fn error_to_response<E: std::error::Error>(e: E) -> hyper::Response<Body> {
+                hyper::Response::builder()
+                    .status(500)
+                    .body(format!("Error: {e:?}").into())
+                    .unwrap()
+            }
+            let path = if admin_config.path.is_empty() {
+                DEFAULT_ADMIN_API_PATH
+            } else {
+                &admin_config.path
+            };
+            let scheduler = Arc::new(worker_schedulers
+                .get(&admin_config.scheduler)
+                .err_tip(|| {
+                    format!(
+                        "Scheduler needs config for '{}' because it exists in admin api",
+                        &admin_config.scheduler
+                    )
+                }).unwrap()
+                .clone());
+            // Build a nested admin API.
+            svc = svc.nest_service(
+                path,
+                Router::new().route(
+                    "/drain/:worker_id",
+                    axum::routing::post(move |axum::extract::Path(worker_id): axum::extract::Path<u128>|  {
+                        let scheduler = Arc::clone(&scheduler);
+                        async move {
+                            spawn_blocking(move || {
+                                let worker_id = WorkerId(worker_id);
+                                let _ = scheduler.drain_worker(worker_id);
+                                Response::builder()
+                                    .header(
+                                        hyper::header::CONTENT_TYPE,
+                                        "text/plain; version=0.0.4; charset=utf-8",
+                                    )
+                                    .body(Body::from(format!("Worker {} is drained", worker_id)))
+                                    .unwrap()
+                            })
+                            .await
+                            .unwrap_or_else(error_to_response)
+                        }
+                    })
+                )
             )
         }
 

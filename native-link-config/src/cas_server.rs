@@ -150,6 +150,21 @@ pub struct PrometheusConfig {
     pub path: String,
 }
 
+#[derive(Deserialize, Debug, Default)]
+pub struct AdminConfig {
+    /// Path to register the admin API. If path is "/admin", and your
+    /// domain is "example.com", you can reach the endpoint with:
+    /// <http://example.com/admin>.
+    ///
+    /// Default: "/admin"
+    #[serde(default)]
+    pub path: String,
+
+    /// The scheduler name referenced in the `schedulers` map in the main config.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub scheduler: SchedulerRefName,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
@@ -189,6 +204,12 @@ pub struct ServicesConfig {
     /// Prometheus metrics configuration. Metrics are gathered as a singleton
     /// but may be served on multiple endpoints.
     pub prometheus: Option<PrometheusConfig>,
+
+    /// This is the service for managing workers in the scheduler.
+    /// It provides a REST API endpoint for administrative purposes.
+    /// For example, we will use this API to drain a specific worker from the
+    /// scheduler.
+    pub admin: Option<AdminConfig>,
 }
 
 #[derive(Deserialize, Debug)]

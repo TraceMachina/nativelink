@@ -385,6 +385,23 @@ impl SimpleSchedulerImpl {
         self.tasks_or_workers_change_notify.notify_one();
     }
 
+    /// Drains the worker in the pool and puts items back into the queue if anything was being executed on it.
+    fn drain_worker(&mut self, worker_id: &WorkerId, err: Error) {
+        if let Some(worker) = self.workers.workers.get_mut(worker_id) {
+            self.metrics.workers_drained.inc();
+            worker.is_paused = true;
+            // We create a temporary Vec to avoid doubt about a possible code
+            // path touching the worker.running_action_infos elsewhere.
+            let running_action_infos = worker.running_action_infos.drain().collect::<Vec<_>>();
+            for action_info in running_action_infos  {
+                self.metrics.workers_drained_with_running_action.inc();
+                self.retry_action(&action_info, worker_id, err.clone());
+            }
+        }
+        // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
+        self.tasks_or_workers_change_notify.notify_one();
+    }
+
     // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we can create a map
     // of capabilities of each worker and then try and match the actions to the worker using
     // the map lookup (ie. map reduce).
@@ -827,6 +844,14 @@ impl WorkerScheduler for SimpleScheduler {
         })
     }
 
+    async fn drain_worker(&self, worker_id: WorkerId) {
+        let mut inner = self.get_inner_lock();
+        inner.drain_worker(
+            &worker_id,
+            make_err!(Code::Internal, "Received request to drain worker"),
+        );
+    }
+
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
         // We do not register anything here because we only want to register metrics
         // once and we rely on the `ActionScheduler::register_metrics()` to do that.
@@ -979,6 +1004,8 @@ struct Metrics {
     update_action_with_internal_error_from_wrong_worker: CounterWithTime,
     workers_evicted: CounterWithTime,
     workers_evicted_with_running_action: CounterWithTime,
+    workers_drained: CounterWithTime,
+    workers_drained_with_running_action: CounterWithTime,
     retry_action: CounterWithTime,
     retry_action_max_attempts_reached: CounterWithTime,
     retry_action_no_more_listeners: CounterWithTime,
@@ -1082,6 +1109,16 @@ impl Metrics {
             "workers_evicted_with_running_action",
             &self.workers_evicted_with_running_action,
             "The number of jobs cancelled because worker was evicted from scheduler.",
+        );
+        c.publish(
+            "workers_drained_total",
+            &self.workers_drained,
+            "The number of workers drained from scheduler.",
+        );
+        c.publish(
+            "workers_drained_with_running_action",
+            &self.workers_drained_with_running_action,
+            "The number of jobs cancelled because worker was drained from scheduler.",
         );
         {
             c.publish_with_labels(

@@ -59,6 +59,9 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     /// external source.
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error>;
 
+    /// Drains a worker from the pool and reschedule any tasks that might be running on it.
+    async fn drain_worker(&self, worker_id: WorkerId);
+
     /// Register the metrics for the worker scheduler.
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }
