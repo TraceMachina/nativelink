@@ -49,11 +49,6 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain=1.70.0 \
         ' && \
         docker commit native-link-cargo trace_machina/native-link:cargo
-    - name: Check Cargo.toml is up to date
-      run: |
-        docker run --rm -w /root/native-link -v $PWD:/root/native-link trace_machina/native-link:cargo python3 ./tools/build_cargo_manifest.py && \
-        git diff --exit-code || \
-        (echo "Cargo.toml is out of date. Please run: python ./tools/build_cargo_manifest.py" && exit 1)
     - name: Compile & test with cargo
       run: |
         docker run --rm -w /root/native-link -v $PWD:/root/native-link trace_machina/native-link:cargo bash -c ' \

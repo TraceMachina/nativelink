@@ -12,16 +12,6 @@
       imports = [ inputs.pre-commit-hooks.flakeModule ];
       perSystem = { config, self', inputs', pkgs, system, ... }:
         let
-          # Link OpenSSL statically into the openssl-sys crate.
-          openssl_static = pkgs.openssl.override { static = true; };
-
-          # Wrap Bazel so that the Cargo build can see OpenSSL from nixpkgs.
-          bazel = import ./tools/wrapped-bazel.nix {
-            openssl = openssl_static;
-            bazel = pkgs.bazel;
-            writeShellScriptBin = pkgs.writeShellScriptBin;
-          };
-
           hooks = import ./tools/pre-commit-hooks.nix { inherit pkgs; };
         in
         {
@@ -32,8 +22,8 @@
               pkgs.cargo
               pkgs.rustc
               pkgs.pre-commit
-              openssl_static # Required explicitly for cargo test support.
-              bazel
+              pkgs.bazel
+              pkgs.awscli2
             ];
             shellHook = ''
               # Generate the .pre-commit-config.yaml symlink when entering the

@@ -1,0 +1,33 @@
+[package]
+name = "native-link-util"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+native-link-config = { path = "../native-link-config" }
+error = { path = "../error" }
+proto = { path = "../proto" }
+
+async-lock = "2.7.0"
+async-trait = "0.1.71"
+blake3 = "1.4.1"
+bytes = "1.4.0"
+fixed-buffer = "0.2.3"
+futures = "0.3.28"
+hex = "0.4.3"
+log = "0.4.19"
+lru = "0.10.1"
+parking_lot = "0.12.1"
+pin-project-lite = "0.2.10"
+prometheus-client = "0.21.2"
+prost = "0.11.9"
+prost-types = "0.11.9"
+serde = { version = "1.0.167", features = ["derive"] }
+sha2 = "0.10.7"
+tokio = { version = "1.29.1", features = [ "sync", "fs", "rt", "time", "io-util" ] }
+tokio-util = { version = "0.7.8" }
+
+[dev-dependencies]
+pretty_assertions = "1.4.0"
+rand = "0.8.5"
+mock_instant = "0.3.1"
