@@ -29,6 +29,7 @@ use native_link_config::cas_server::{
     CasConfig, CompressionAlgorithm, ConfigDigestHashFunction, GlobalConfig, ServerConfig, WorkerConfig,
 };
 use native_link_scheduler::default_scheduler_factory::scheduler_factory;
+use native_link_scheduler::worker::WorkerId;
 use native_link_service::ac_server::AcServer;
 use native_link_service::bytestream_server::ByteStreamServer;
 use native_link_service::capabilities_server::CapabilitiesServer;
@@ -57,6 +58,9 @@ use tower::util::ServiceExt;
 
 /// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
 const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
+
+/// Note: This must be kept in sync with the documentation in `AdminConfig::path`.
+const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 
 /// Name of environment variable to disable metrics.
 const METRICS_DISABLE_ENV: &str = "NATIVE_LINK_DISABLE_METRICS";
@@ -387,6 +391,52 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     .await
                     .unwrap_or_else(error_to_response)
                 }),
+            )
+        }
+
+        if let Some(admin_config) = services.admin {
+            let path = if admin_config.path.is_empty() {
+                DEFAULT_ADMIN_API_PATH
+            } else {
+                &admin_config.path
+            };
+            let worker_schedulers = Arc::new(worker_schedulers.clone());
+            svc = svc.nest_service(
+                path,
+                Router::new().route(
+                    "/scheduler/:instance_name/drain/:worker_id",
+                    axum::routing::post(move |axum::extract::Path((instance_name, worker_id)): axum::extract::Path<(String, u128)>| async move {
+                        spawn_blocking(move || {
+                            let _ = worker_schedulers
+                            .get(&instance_name)
+                            .err_tip(|| {
+                                format!(
+                                    "Scheduler needs config for '{}' because it exists in admin api",
+                                    &instance_name
+                                )
+                            })
+                            .unwrap()
+                            .clone()
+                            .drain_worker(WorkerId(worker_id));
+                            Response::builder()
+                                .header(
+                                    hyper::header::CONTENT_TYPE,
+                                    "text/plain; version=0.0.4; charset=utf-8",
+                                )
+                                .body(Body::from(format!("Draining worker {worker_id}")))
+                                .err_tip(|| "Could not return response for drain worker api")
+                                .unwrap()
+                        })
+                        .await
+                        .unwrap_or_else(|e| {
+                            Response::builder()
+                                .status(500)
+                                .body(Body::from(format!("Error: {e:?}")))
+                                .err_tip(|| "Could not return error for drain worker api")
+                                .unwrap()
+                        })
+                    })
+                )
             )
         }
 

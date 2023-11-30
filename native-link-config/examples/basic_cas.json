@@ -137,6 +137,9 @@
       // are a frontend api.
       "worker_api": {
         "scheduler": "MAIN_SCHEDULER",
+      },
+      "admin": {
+        "scheduler": "MAIN_SCHEDULER",
       }
     }
   }],
