@@ -1,8 +1,1 @@
 max_width = 120
-reorder_imports = true
-imports_granularity = "Module"
-group_imports = "StdExternalCrate"
-
-# Don't format out of line modules.
-unstable_features = true
-skip_children = true

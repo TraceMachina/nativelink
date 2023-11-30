@@ -14,7 +14,7 @@
 # limitations under the License.
 
 if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
-  echo "This script should be run under run_integration_tests.sh"
+  echo "This script should be run under run_integration_tests.sh" 
   exit 1
 fi
 

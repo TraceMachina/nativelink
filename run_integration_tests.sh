@@ -102,7 +102,7 @@ for pattern in "${TEST_PATTERNS[@]}"; do
     FILENAME=$(basename $fullpath)
     echo "Running test $FILENAME"
     sudo docker-compose up -d
-    if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker-compose logs | grep -q "Ready, listening on"; do sleep 1; done'
+    if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker-compose logs | grep -q "Ready, listening on"; do sleep 1; done'    
     then
       echo "String 'Ready, listening on' found in the logs."
     else
