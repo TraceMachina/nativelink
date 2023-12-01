@@ -29,6 +29,32 @@ For use in production pin the executable to a specific revision:
 nix run github:TraceMachina/native-link/<revision> ./basic_cas.json
 ```
 
+## 📦 Using the OCI image
+
+See the published [OCI images](https://github.com/TraceMachina/native-link/pkgs/container/native-link)
+for pull commands.
+
+Images are tagged by nix derivation hash. The most recently pushed image
+corresponds to the `main` branch. Images are signed by the GitHub action that
+produced the image:
+
+```sh
+# Get the tag for the latest commit
+export LATEST=$(nix eval github:TraceMachina/native-link#image.imageTag --raw)
+
+# Verify the signature
+cosign verify ghcr.io/TraceMachina/native-link:${LATEST} \
+    --certificate-identity=https://github.com/TraceMachina/native-link/.github/workflows/image.yaml@refs/heads/main \
+    --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+> [TIP!]
+> The images are reproducible on `X86_64-unknown-linux-gnu`. If you're on such a
+> system you can produce a binary-identical image by building the `.#image`
+> flake output locally. Make sure that your `git status` is completely clean and
+> aligned with the commit you want to reproduce. Otherwise the image will be
+> tainted with a `"dirty"` revision label.
+
 ## 🌱 Building with Bazel
 
 **Build requirements:**
