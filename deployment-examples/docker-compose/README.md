@@ -49,7 +49,7 @@ The CAS (Content Addressable Storage) service is used as a local cache for the N
         target: /root
     environment:
       RUST_LOG: ${RUST_LOG:-warn}
-    ports: 
+    ports:
       [
         "50051:50051/tcp",
         "127.0.0.1:50061:50061",
@@ -115,7 +115,7 @@ Worker instances are responsible for executing tasks. They are configured in the
 
 The Docker Compose setup is configured to run all services locally, which may not be suitable for production environments. The scheduler is currently the only single point of failure in the system. If the scheduler service fails, the entire system will be affected.
 
-The Docker Compose setup does not automatically delete old data. This could lead to storage issues over time if not managed properly. 
+The Docker Compose setup does not automatically delete old data. This could lead to storage issues over time if not managed properly.
 
 If you decide to stop using this setup, you can use `docker-compose down` to stop and remove all the containers. However, in a non-local setup, additional steps may be required to ensure that all data is securely deleted.
 
