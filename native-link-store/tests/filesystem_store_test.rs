@@ -25,6 +25,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use core::time::Duration;
+
 use async_lock::RwLock;
 use async_trait::async_trait;
 use error::{Code, Error, ResultExt};
@@ -43,6 +45,8 @@ use once_cell::sync::Lazy;
 use rand::{thread_rng, Rng};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Barrier;
+use tokio::time::sleep;
+use tokio::time::Sleep;
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::StreamExt;
 
@@ -862,6 +866,66 @@ mod filesystem_store_tests {
 
         // Finally ensure that our entry is not in the store.
         assert_eq!(store.as_ref().has(digest).await?, None, "Entry should not be in store");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_part_timeout_test() -> Result<(), Error> {
+        let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+
+        fs::set_idle_file_descriptor_timeout(Duration::from_millis(100))
+            .err_tip(|| "Error setting idle file descriptor timeout")?;
+
+        assert_eq!(fs::idle_file_descriptor_timeout(), Duration::from_millis(100));
+
+        fn sleep_fn(_: Duration) -> Sleep {
+            sleep(Duration::ZERO)
+        }
+
+        let store = Arc::new(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout(&native_link_config::stores::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                eviction_policy: Some(native_link_config::stores::EvictionPolicy {
+                    max_count: 3,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            sleep_fn)
+            .await?,
+        );
+
+        let store_pin = Pin::new(store.as_ref());
+        // Insert data into store.
+        store_pin.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
+
+        let (writer, mut reader) = make_buf_channel_pair();
+        let store_clone = store.clone();
+        let digest1_clone = digest1;
+
+        tokio::spawn(async move { Pin::new(store_clone.as_ref()).get(digest1_clone, writer).await });
+
+        // Check to ensure our first byte has been received. The future should be stalled here.
+        let first_byte = DropCloserReadHalf::take(&mut reader, 1)
+            .await
+            .err_tip(|| "Error reading first byte")?;
+        assert_eq!(first_byte[0], VALUE1.as_bytes()[0], "Expected first byte to match");
+
+        sleep(Duration::from_millis(200)).await;
+
+        let remaining_file_data = DropCloserReadHalf::take(&mut reader, 1024)
+            .await
+            .err_tip(|| "Error reading remaining bytes")?;
+
+        assert_eq!(
+            &remaining_file_data,
+            VALUE1[1..].as_bytes(),
+            "Expected file content to match"
+        );
 
         Ok(())
     }

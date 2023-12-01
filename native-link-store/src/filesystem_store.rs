@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use core::time::Duration;
+
 use async_lock::RwLock;
 use async_trait::async_trait;
 use bytes::BytesMut;
@@ -34,6 +36,8 @@ use native_link_util::store_trait::{Store, UploadSizeInfo};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::task::spawn_blocking;
 use tokio::time::timeout;
+use tokio::time::Sleep;
+use tokio::time::sleep;
 use tokio_stream::wrappers::ReadDirStream;
 
 // Default size to allocate memory of the buffer when reading files.
@@ -439,10 +443,15 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     shared_context: Arc<SharedContext>,
     evicting_map: EvictingMap<Arc<Fe>, SystemTime>,
     read_buffer_size: usize,
+    sleep_fn: fn(Duration) -> Sleep
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
     pub async fn new(config: &native_link_config::stores::FilesystemStore) -> Result<Self, Error> {
+        Self::new_with_timeout(config, sleep).await
+    }
+
+    pub async fn new_with_timeout(config: &native_link_config::stores::FilesystemStore, sleep_fn: fn(Duration) -> Sleep) -> Result<Self, Error> {
         let now = SystemTime::now();
 
         let empty_policy = native_link_config::stores::EvictionPolicy::default();
@@ -473,6 +482,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             shared_context,
             evicting_map,
             read_buffer_size,
+            sleep_fn,
         };
         Ok(store)
     }
@@ -654,21 +664,46 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
             // because it is waiting for a file descriptor to open before receiving data.
             // Using `ResumeableFileSlot` will re-open the file in the event it gets closed on the
             // next iteration.
+            // loop {
+            //     match timeout(fs::idle_file_descriptor_timeout(), writer.send(buf.split().freeze())).await {
+            //         Ok(Ok(())) => break,
+            //         Ok(Err(err)) => {
+            //             return Err(err).err_tip(|| "Failed to send chunk in filesystem store get_part");
+            //         }
+            //         Err(_) => {
+            //             resumeable_temp_file
+            //                 .close_file()
+            //                 .await
+            //                 .err_tip(|| "Could not close file due to timeout in FileSystemStore::get_part")?;
+            //             continue;
+            //         }
+            //     }
+            // }
+            // let sleep_fn = (self.sleep_fn)(fs::idle_file_descriptor_timeout());
+            // tokio::pin!(sleep_fn);
+
             loop {
-                match timeout(fs::idle_file_descriptor_timeout(), writer.send(buf.split().freeze())).await {
-                    Ok(Ok(())) => break,
-                    Ok(Err(err)) => {
-                        return Err(err).err_tip(|| "Failed to send chunk in filesystem store get_part");
-                    }
-                    Err(_) => {
+                tokio::select! {
+                    // _ = & mut (sleep_fn) => {
+                    _ = (self.sleep_fn)(fs::idle_file_descriptor_timeout()) => {
                         resumeable_temp_file
                             .close_file()
                             .await
                             .err_tip(|| "Could not close file due to timeout in FileSystemStore::get_part")?;
                         continue;
                     }
+                    res = writer.send(buf.split().freeze()) => {
+                        match res {
+                            Ok(()) => break,
+                            Err(err) => {
+                                return Err(err).err_tip(|| "Failed to send chunk in filesystem store get_part");
+                            }
+                        }
+                    }
                 }
             }
+
+
         }
         writer
             .send_eof()
