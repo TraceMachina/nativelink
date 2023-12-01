@@ -19,7 +19,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use error::{error_if, Error, ResultExt};
-use native_link_config::stores::{EvictionPolicy, ExistenceStore as ExistenceStoreConfig};
+use native_link_config::stores::{EvictionPolicy, ExistenceCacheStore as ExistenceCacheStoreConfig};
 use native_link_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use native_link_util::common::DigestInfo;
 use native_link_util::evicting_map::{EvictingMap, LenEntry};
@@ -40,13 +40,13 @@ impl LenEntry for ExistanceItem {
     }
 }
 
-pub struct ExistenceStore {
+pub struct ExistenceCacheStore {
     inner_store: Arc<dyn Store>,
     existence_cache: EvictingMap<ExistanceItem, SystemTime>,
 }
 
-impl ExistenceStore {
-    pub fn new(config: &ExistenceStoreConfig, inner_store: Arc<dyn Store>) -> Self {
+impl ExistenceCacheStore {
+    pub fn new(config: &ExistenceCacheStoreConfig, inner_store: Arc<dyn Store>) -> Self {
         let empty_policy = EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
         Self {
@@ -86,7 +86,7 @@ impl ExistenceStore {
         self.pin_inner()
             .has_with_results(&not_cached_digests, &mut inner_results)
             .await
-            .err_tip(|| "In ExistenceStore::inner_has_with_results")?;
+            .err_tip(|| "In ExistenceCacheStore::inner_has_with_results")?;
 
         // Insert found from previous query into our cache.
         {
@@ -128,7 +128,7 @@ impl ExistenceStore {
 }
 
 #[async_trait]
-impl Store for ExistenceStore {
+impl Store for ExistenceCacheStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -146,11 +146,11 @@ impl Store for ExistenceStore {
         let mut exists = [None];
         self.inner_has_with_results(&[digest], &mut exists)
             .await
-            .err_tip(|| "In ExistenceStore::update")?;
+            .err_tip(|| "In ExistenceCacheStore::update")?;
         if exists[0].is_some() {
             // We need to drain the reader to avoid the writer complaining that we dropped
             // the connection prematurely.
-            reader.drain().await.err_tip(|| "In ExistenceStore::update")?;
+            reader.drain().await.err_tip(|| "In ExistenceCacheStore::update")?;
             return Ok(());
         }
         let result = self.pin_inner().update(digest, reader, size_info).await;
@@ -172,7 +172,7 @@ impl Store for ExistenceStore {
         let result = self.pin_inner().get_part_ref(digest, writer, offset, length).await;
         if result.is_ok() {
             let size = usize::try_from(digest.size_bytes)
-                .err_tip(|| "Could not convert size_bytes in ExistenceStore::get_part")?;
+                .err_tip(|| "Could not convert size_bytes in ExistenceCacheStore::get_part")?;
             let _ = self.existence_cache.insert(digest, ExistanceItem(size)).await;
         }
         result

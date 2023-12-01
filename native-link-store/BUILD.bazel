@@ -13,7 +13,7 @@ rust_library(
         "src/compression_store.rs",
         "src/dedup_store.rs",
         "src/default_store_factory.rs",
-        "src/existence_store.rs",
+        "src/existence_cache_store.rs",
         "src/fast_slow_store.rs",
         "src/filesystem_store.rs",
         "src/grpc_store.rs",
