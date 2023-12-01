@@ -1,0 +1,148 @@
+{
+  "stores": {
+    "AC_STORE": {
+      "compression": {
+        "backend": {
+          "fast_slow": {
+            "fast": {
+              "memory": {
+                "eviction_policy": {
+                  "max_bytes": "${NATIVE_LINK_AC_MEMORY_CONTENT_LIMIT:-100000000}"
+                }
+              }
+            },
+            "slow": {
+              "s3_store": {
+                "region": "${NATIVE_LINK_AC_S3_BUCKET_REGION:-}",
+                "bucket": "${NATIVE_LINK_AC_S3_BUCKET:-}",
+                "retry": {
+                  "max_retries": 7,
+                  "delay": 0.1,
+                  "jitter": 0.5
+                }
+              }
+            }
+          }
+        },
+        "compression_algorithm": {
+          "LZ4": {}
+        }
+      }
+    },
+    "CAS_STORE": {
+      "existence_cache": {
+        "backend": {
+          "compression": {
+            "backend": {
+              "fast_slow": {
+                "fast": {
+                  // In memory only cache smaller files. Large files will always read from S3.
+                  "size_partitioning": {
+                    "size": 134217728, // 128mib.
+                    "lower_store": {
+                      "memory": {
+                        "eviction_policy": {
+                          "max_bytes": "${NATIVE_LINK_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
+                        }
+                      }
+                    },
+                    "upper_store": {
+                      "noop": {}
+                    }
+                  }
+                },
+                "slow": {
+                  "s3_store": {
+                    "region": "${NATIVE_LINK_CAS_S3_BUCKET_REGION:-}",
+                    "bucket": "${NATIVE_LINK_CAS_S3_BUCKET:-}",
+                    "retry": {
+                      "max_retries": 7,
+                      "delay": 0.1,
+                      "jitter": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "compression_algorithm": {
+              "LZ4": {}
+            }
+          }
+        },
+        "eviction_policy": {
+          "max_seconds": 3600, // 1 hour.
+          "max_count": 1000000
+        }
+      }
+    }
+  },
+  "servers": [{
+    "listen_address": "0.0.0.0:50051",
+    "tls": {
+      "cert_file": "${NATIVE_LINK_CERT_FILE:-}",
+      "key_file": "${NATIVE_LINK_KEY_FILE:-}"
+    },
+    "advanced_http": {
+      "http2_keep_alive_interval": 10
+    },
+    // External apis support compression.
+    "compression": {
+      "send_compression_algorithm": "Gzip",
+      "accepted_compression_algorithms": ["Gzip"]
+    },
+    "services": {
+      "cas": {
+        "main": {
+          "cas_store": "CAS_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "ac_store": "AC_STORE"
+        }
+      },
+      "capabilities": {
+        "main": {}
+      },
+      "bytestream": {
+        "cas_stores": {
+          "main": "CAS_STORE"
+        },
+        // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
+        "max_bytes_per_stream": 64000 // 64kb.
+      }
+    }
+  }, {
+    // Non-public apis. We re-export the CAS services so we don't need to go through
+    // an external load balancer.
+    "listen_address": "0.0.0.0:50052",
+    "advanced_http": {
+      "http2_keep_alive_interval": 10
+    },
+    "services": {
+      "prometheus": {
+        "path": "/metrics"
+      },
+      "cas": {
+        "main": {
+          "cas_store": "CAS_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "ac_store": "AC_STORE"
+        }
+      },
+      "capabilities": {
+        "main": {}
+      },
+      "bytestream": {
+        "cas_stores": {
+          "main": "CAS_STORE"
+        },
+        // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
+        "max_bytes_per_stream": 64000 // 64kb.
+      }
+    }
+  }]
+}
