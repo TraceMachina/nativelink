@@ -872,7 +872,8 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn get_part_timeout_test() -> Result<(), Error> {
-        let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+        let large_value = std::iter::repeat("x").take(1024).collect::<String>();
+        let digest1 = DigestInfo::try_new(HASH1, large_value.len())?;
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
 
@@ -893,6 +894,7 @@ mod filesystem_store_tests {
                     max_count: 3,
                     ..Default::default()
                 }),
+                read_buffer_size: 1,
                 ..Default::default()
             },
             sleep_fn)
@@ -901,7 +903,7 @@ mod filesystem_store_tests {
 
         let store_pin = Pin::new(store.as_ref());
         // Insert data into store.
-        store_pin.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
+        store_pin.as_ref().update_oneshot(digest1, large_value.clone().into()).await?;
 
         let (writer, mut reader) = make_buf_channel_pair();
         let store_clone = store.clone();
@@ -913,7 +915,7 @@ mod filesystem_store_tests {
         let first_byte = DropCloserReadHalf::take(&mut reader, 1)
             .await
             .err_tip(|| "Error reading first byte")?;
-        assert_eq!(first_byte[0], VALUE1.as_bytes()[0], "Expected first byte to match");
+        assert_eq!(first_byte[0], large_value.as_bytes()[0], "Expected first byte to match");
 
         sleep(Duration::from_millis(200)).await;
 
@@ -923,7 +925,7 @@ mod filesystem_store_tests {
 
         assert_eq!(
             &remaining_file_data,
-            VALUE1[1..].as_bytes(),
+            large_value[1..].as_bytes(),
             "Expected file content to match"
         );
 
