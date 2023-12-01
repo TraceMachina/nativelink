@@ -83,7 +83,7 @@ pub enum StoreConfig {
     /// faster. This is useful for cases when you have a store that
     /// is slow to respond to has calls.
     /// Note: This store should only be used on CAS stores.
-    existence_store(Box<ExistenceStore>),
+    existence_cache(Box<ExistenceCacheStore>),
 
     /// FastSlow store will first try to fetch the data from the `fast`
     /// store and then if it does not exist try the `slow` store.
@@ -293,13 +293,13 @@ pub struct DedupStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ExistenceStore {
+pub struct ExistenceCacheStore {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
     /// is an error detected in self, the connection to the backend
     /// will be terminated, and early termination should always cause
     /// updates to fail on the backend.
-    pub inner: StoreConfig,
+    pub backend: StoreConfig,
 
     /// Policy used to evict items out of the store. Failure to set this
     /// value will cause items to never be removed from the store causing

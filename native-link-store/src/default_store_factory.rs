@@ -24,7 +24,7 @@ use native_link_util::store_trait::Store;
 
 use crate::compression_store::CompressionStore;
 use crate::dedup_store::DedupStore;
-use crate::existence_store::ExistenceStore;
+use crate::existence_cache_store::ExistenceCacheStore;
 use crate::fast_slow_store::FastSlowStore;
 use crate::filesystem_store::FilesystemStore;
 use crate::grpc_store::GrpcStore;
@@ -61,9 +61,9 @@ pub fn store_factory<'a>(
                 store_factory(&config.index_store, store_manager, None).await?,
                 store_factory(&config.content_store, store_manager, None).await?,
             )),
-            StoreConfig::existence_store(config) => Arc::new(ExistenceStore::new(
+            StoreConfig::existence_cache(config) => Arc::new(ExistenceCacheStore::new(
                 config,
-                store_factory(&config.inner, store_manager, None).await?,
+                store_factory(&config.backend, store_manager, None).await?,
             )),
             StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
                 config,

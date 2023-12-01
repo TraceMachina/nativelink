@@ -16,7 +16,7 @@ pub mod ac_utils;
 pub mod compression_store;
 pub mod dedup_store;
 pub mod default_store_factory;
-pub mod existence_store;
+pub mod existence_cache_store;
 pub mod fast_slow_store;
 pub mod filesystem_store;
 pub mod grpc_store;
