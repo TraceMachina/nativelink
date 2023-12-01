@@ -654,5 +654,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
         .build()?;
+
+    runtime.spawn(async move {
+        tokio::signal::ctrl_c().await.expect("Failed to listen to SIGINT");
+        eprintln!("User terminated process via SIGINT");
+        std::process::exit(130);
+    });
+
     runtime.block_on(inner_main(cfg, server_start_time))
 }

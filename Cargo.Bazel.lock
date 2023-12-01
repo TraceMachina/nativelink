@@ -1,5 +1,5 @@
 {
-  "checksum": "b6ac671d2578b85d845eb82ff6476b66191872c127cd21141c325f53caf48152",
+  "checksum": "90b8428777cc2161b6d05d40a5619a40b90482c862dc6e5d4044ab671eb3189d",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -14221,6 +14221,7 @@
             "process",
             "rt",
             "rt-multi-thread",
+            "signal",
             "signal-hook-registry",
             "socket2",
             "sync",
