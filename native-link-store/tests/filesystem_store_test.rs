@@ -23,7 +23,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
 use async_trait::async_trait;
@@ -36,13 +36,14 @@ use native_link_store::filesystem_store::{
     digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
 };
 use native_link_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
-use native_link_util::common::{fs, DigestInfo};
+use native_link_util::common::{fs, DigestInfo, JoinHandleDropGuard};
 use native_link_util::evicting_map::LenEntry;
 use native_link_util::store_trait::{Store, UploadSizeInfo};
 use once_cell::sync::Lazy;
 use rand::{thread_rng, Rng};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Barrier;
+use tokio::time::sleep;
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::StreamExt;
 
@@ -273,7 +274,6 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        // Insert data into store.
         store.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
 
         let expected_file_name = OsString::from(format!(
@@ -862,6 +862,50 @@ mod filesystem_store_tests {
 
         // Finally ensure that our entry is not in the store.
         assert_eq!(store.as_ref().has(digest).await?, None, "Entry should not be in store");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_part_timeout_test() -> Result<(), Error> {
+        let large_value = "x".repeat(1024);
+        let digest = DigestInfo::try_new(HASH1, large_value.len())?;
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+
+        let store = Arc::new(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout(
+                &native_link_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    read_buffer_size: 1,
+                    ..Default::default()
+                },
+                |_| sleep(Duration::ZERO),
+            )
+            .await?,
+        );
+
+        let store_pin = Pin::new(store.as_ref());
+
+        store_pin
+            .as_ref()
+            .update_oneshot(digest, large_value.clone().into())
+            .await?;
+
+        let (writer, mut reader) = make_buf_channel_pair();
+        let store_clone = store.clone();
+        let digest_clone = digest;
+
+        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
+            Pin::new(store_clone.as_ref()).get(digest_clone, writer).await
+        }));
+
+        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+            .await
+            .err_tip(|| "Error reading bytes")?;
+
+        assert_eq!(&file_data, large_value.as_bytes(), "Expected file content to match");
 
         Ok(())
     }
