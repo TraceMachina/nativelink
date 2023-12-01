@@ -605,7 +605,14 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
     Ok(serde_json5::from_str(&json_contents)?)
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.unwrap();
+        eprintln!("User terminated process via SIGINT");
+        std::process::exit(130);
+    });
+
     let mut cfg = futures::executor::block_on(get_config())?;
 
     let mut metrics_enabled = {
@@ -650,9 +657,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics_enabled = false;
     }
     let server_start_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
-        .build()?;
-    runtime.block_on(inner_main(cfg, server_start_time))
+    set_metrics_enabled_for_this_thread(metrics_enabled);
+    inner_main(cfg, server_start_time).await
 }
