@@ -1,0 +1,22 @@
+{
+  "blobstore": {
+    "actionCache": {
+      "grpc": {
+        "address": "127.0.0.1:50052"
+      }
+    },
+    "contentAddressableStorage": {
+      "grpc": {
+        "address": "127.0.0.1:50052"
+      }
+    }
+  },
+  "maximumMessageSizeBytes": 16777216,
+  "httpServers": [{
+    "listenAddresses": ["0.0.0.0:50051"],
+    "authenticationPolicy": { "allow": {} }
+  }],
+  "authorizer": {
+    "allow": {}
+  }
+}

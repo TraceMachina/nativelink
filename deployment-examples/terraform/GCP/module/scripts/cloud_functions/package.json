@@ -1,0 +1,8 @@
+{
+  "main": "index.js",
+  "dependencies": {
+    "@google-cloud/compute": "^4.0.1",
+    "@google-cloud/dns": "^4.0.0",
+    "@google-cloud/functions-framework": "^3.3.0"
+  }
+}
