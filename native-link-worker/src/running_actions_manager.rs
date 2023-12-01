@@ -1293,7 +1293,10 @@ impl UploadActionResults {
         maybe_historical_digest_info: Option<DigestInfo>,
         hasher: DigestHasherFunc,
     ) -> Result<String, Error> {
-        template_str.replace("digest_function", hasher.proto_digest_func().as_str_name());
+        template_str.replace(
+            "digest_function",
+            hasher.proto_digest_func().as_str_name().to_lowercase(),
+        );
         template_str.replace("action_digest_hash", action_digest_info.hash_str());
         template_str.replace("action_digest_size", action_digest_info.size_bytes);
         if let Some(historical_digest_info) = maybe_historical_digest_info {

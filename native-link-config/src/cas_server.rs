@@ -210,27 +210,29 @@ pub struct TlsConfig {
 /// specified.
 #[derive(Deserialize, Debug, Default)]
 pub struct HttpServerConfig {
-    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_max_pending_accept_reset_streams: Option<u32>,
-    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_initial_stream_window_size: Option<u32>,
-    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_initial_connection_window_size: Option<u32>,
+    #[serde(default)]
     pub http2_adaptive_window: Option<bool>,
-    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_max_frame_size: Option<u32>,
-    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_max_concurrent_streams: Option<u32>,
     /// Note: This is in seconds.
-    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_keep_alive_interval: Option<u32>,
     /// Note: This is in seconds.
-    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_keep_alive_timeout: Option<u32>,
-    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_max_send_buf_size: Option<u32>,
+    #[serde(default)]
     pub http2_enable_connect_protocol: Option<bool>,
-    #[serde(deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_max_header_list_size: Option<u32>,
 }
 
@@ -390,7 +392,7 @@ pub struct UploadActionResultConfig {
     /// Same as `success_message_template` but for failure case.
     ///
     /// An example that is fully compatible with `bb_browser` is:
-    /// <https://example.com/{instance_name}/blobs/{digest_function}/historical_execute_response/{historical_results_hash}-{historical_results_size}/>
+    /// <https://example.com/my-instance-name-here/blobs/{digest_function}/historical_execute_response/{historical_results_hash}-{historical_results_size}/>
     ///
     /// Default: "" (no message)
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
