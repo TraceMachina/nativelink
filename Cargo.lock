@@ -982,6 +982,7 @@ dependencies = [
 name = "error"
 version = "0.0.0"
 dependencies = [
+ "axum",
  "hex",
  "prost",
  "prost-types",
