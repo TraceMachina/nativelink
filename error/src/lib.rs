@@ -211,6 +211,12 @@ impl From<Error> for tonic::Status {
     }
 }
 
+impl From<axum::http::Error> for Error {
+    fn from(error: axum::http::Error) -> Self {
+        make_err!(Code::Internal, "{}", error.to_string())
+    }
+}
+
 pub trait ResultExt<T> {
     fn err_tip_with_code<F, S>(self, tip_fn: F) -> Result<T, Error>
     where

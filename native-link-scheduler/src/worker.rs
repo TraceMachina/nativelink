@@ -95,6 +95,9 @@ pub struct Worker {
     /// Whether the worker rejected the last action due to back pressure.
     pub is_paused: bool,
 
+    /// Whether the worker is draining.
+    pub is_draining: bool,
+
     /// Stats about the worker.
     metrics: Arc<Metrics>,
 }
@@ -133,6 +136,7 @@ impl Worker {
             running_action_infos: HashSet::new(),
             last_update_timestamp: timestamp,
             is_paused: false,
+            is_draining: false,
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                 actions_completed: CounterWithTime::default(),
@@ -215,6 +219,10 @@ impl Worker {
             }
         }
     }
+
+    pub fn can_accept_work(&self) -> bool {
+        !self.is_paused && !self.is_draining
+    }
 }
 
 impl PartialEq for Worker {
@@ -278,6 +286,12 @@ impl MetricsComponent for Worker {
             "is_paused",
             &self.is_paused,
             "If this worker is paused.",
+            vec![("worker_id".into(), format!("{}", self.id).into())],
+        );
+        c.publish_with_labels(
+            "is_draining",
+            &self.is_draining,
+            "If this worker is draining.",
             vec![("worker_id".into(), format!("{}", self.id).into())],
         );
         for action_info in self.running_action_infos.iter() {

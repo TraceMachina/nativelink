@@ -350,6 +350,116 @@ mod scheduler_tests {
     }
 
     #[tokio::test]
+    async fn drain_worker_pauses_worker_test() -> Result<(), Error> {
+        const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
+        let scheduler = SimpleScheduler::new_with_callback(
+            &native_link_config::schedulers::SimpleScheduler {
+                worker_timeout_s: WORKER_TIMEOUT_S,
+                ..Default::default()
+            },
+            || async move {},
+        );
+        let action_digest1 = DigestInfo::new([99u8; 32], 512);
+        let action_digest2 = DigestInfo::new([88u8; 32], 512);
+
+        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
+        let insert_timestamp1 = make_system_time(1);
+        let mut client_rx1 = setup_action(
+            &scheduler,
+            action_digest1,
+            PlatformProperties::default(),
+            insert_timestamp1,
+        )
+        .await?;
+        let insert_timestamp2 = make_system_time(2);
+        let mut client_rx2 = setup_action(
+            &scheduler,
+            action_digest2,
+            PlatformProperties::default(),
+            insert_timestamp2,
+        )
+        .await?;
+
+        let unique_qualifier = ActionInfoHashKey {
+            instance_name: "".to_string(),
+            digest: DigestInfo::zero_digest(),
+            salt: 0,
+        };
+
+        let mut expected_action_state1 = ActionState {
+            // Name is a random string, so we ignore it and just make it the same.
+            unique_qualifier: unique_qualifier.clone(),
+            stage: ActionStage::Executing,
+        };
+        let mut expected_action_state2 = ActionState {
+            // Name is a random string, so we ignore it and just make it the same.
+            unique_qualifier,
+            stage: ActionStage::Executing,
+        };
+
+        let execution_request_for_worker1 = UpdateForWorker {
+            update: Some(update_for_worker::Update::StartAction(StartExecute {
+                execute_request: Some(ExecuteRequest {
+                    instance_name: INSTANCE_NAME.to_string(),
+                    skip_cache_lookup: true,
+                    action_digest: Some(action_digest1.into()),
+                    digest_function: digest_function::Value::Sha256.into(),
+                    ..Default::default()
+                }),
+                salt: 0,
+                queued_timestamp: Some(insert_timestamp1.into()),
+            })),
+        };
+        {
+            // Worker1 should now see execution request.
+            let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+            assert_eq!(msg_for_worker, execution_request_for_worker1);
+        }
+        let execution_request_for_worker2 = UpdateForWorker {
+            update: Some(update_for_worker::Update::StartAction(StartExecute {
+                execute_request: Some(ExecuteRequest {
+                    instance_name: INSTANCE_NAME.to_string(),
+                    skip_cache_lookup: true,
+                    action_digest: Some(action_digest2.into()),
+                    digest_function: digest_function::Value::Sha256.into(),
+                    ..Default::default()
+                }),
+                salt: 0,
+                queued_timestamp: Some(insert_timestamp2.into()),
+            })),
+        };
+        {
+            // Worker1 should now see second execution request.
+            let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+            assert_eq!(msg_for_worker, execution_request_for_worker2);
+        }
+
+        {
+            // Client should get notification saying it's being executed.
+            let action_state = client_rx1.borrow_and_update();
+            // We now know the name of the action so populate it.
+            expected_action_state1.unique_qualifier = action_state.unique_qualifier.clone();
+            assert_eq!(action_state.as_ref(), &expected_action_state1);
+        }
+        {
+            // Client should get notification saying it's being executed.
+            let action_state = client_rx2.borrow_and_update();
+            // We now know the name of the action so populate it.
+            expected_action_state2.unique_qualifier = action_state.unique_qualifier.clone();
+            assert_eq!(action_state.as_ref(), &expected_action_state2);
+        }
+
+        // Now remove worker.
+        scheduler.drain_worker(WORKER_ID1).await?;
+        tokio::task::yield_now().await; // Allow task<->worker matcher to run.
+
+        // Checks whether the worker can not accept worker
+        assert_eq!(scheduler.can_worker_accept_worker_for_test(&WORKER_ID1)?, false);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x0010_0001);
         const WORKER_ID2: WorkerId = WorkerId(0x0010_0002);
