@@ -1,0 +1,70 @@
+{
+  "stores": {
+    "AC_STORE": {
+      "compression": {
+        "backend": {
+          "s3_store": {
+            "region": "${NATIVE_LINK_AC_S3_BUCKET_REGION:-}",
+            "bucket": "${NATIVE_LINK_AC_S3_BUCKET:-}",
+            "retry": {
+              "max_retries": 7,
+              "delay": 0.1,
+              "jitter": 0.5
+            }
+          }
+        },
+        "compression_algorithm": {
+          "LZ4": {}
+        }
+      }
+    },
+    "CAS_STORE": {
+      "compression": {
+        "backend": {
+          "s3_store": {
+            "region": "${NATIVE_LINK_CAS_S3_BUCKET_REGION:-}",
+            "bucket": "${NATIVE_LINK_CAS_S3_BUCKET:-}",
+            "retry": {
+              "max_retries": 7,
+              "delay": 0.1,
+              "jitter": 0.5
+            }
+          }
+        },
+        "compression_algorithm": {
+          "LZ4": {}
+        }
+      }
+    }
+  },
+  "servers": [{
+    // Non-public apis. We re-export the CAS services so we don't need to go through
+    // an external load balancer.
+    "listen_address": "0.0.0.0:50052",
+    "services": {
+      "prometheus": {
+        "path": "/metrics"
+      },
+      "cas": {
+        "main": {
+          "cas_store": "CAS_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "ac_store": "AC_STORE"
+        }
+      },
+      "capabilities": {
+        "main": {}
+      },
+      "bytestream": {
+        "cas_stores": {
+          "main": "CAS_STORE"
+        },
+        // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
+        "max_bytes_per_stream": 64000 // 64kb.
+      }
+    }
+  }]
+}
