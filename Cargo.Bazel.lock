@@ -1,5 +1,5 @@
 {
-  "checksum": "dc0784bec054d555c4643aca5880a90c3362bc82e90cf390b74f4eb467f72b65",
+  "checksum": "5c9608af6e959d25bdae4ff438bca27d04472bf9c473c0b131727c9e96e96c50",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -7359,13 +7359,28 @@
           "**"
         ],
         "crate_features": {
-          "common": [
-            "default",
-            "std"
-          ],
+          "common": [],
           "selects": {
             "aarch64-apple-darwin": [
-              "extra_traits"
+              "default",
+              "extra_traits",
+              "std"
+            ],
+            "aarch64-unknown-linux-gnu": [
+              "default",
+              "std"
+            ],
+            "arm-unknown-linux-gnueabi": [
+              "default",
+              "std"
+            ],
+            "armv7-unknown-linux-gnueabi": [
+              "default",
+              "std"
+            ],
+            "x86_64-unknown-linux-gnu": [
+              "default",
+              "std"
             ]
           }
         },
@@ -14229,6 +14244,7 @@
             "process",
             "rt",
             "rt-multi-thread",
+            "signal",
             "signal-hook-registry",
             "socket2",
             "sync",
