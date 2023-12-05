@@ -24,7 +24,6 @@ use error::{make_err, Code, Error, ResultExt};
 use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
 use futures::FutureExt;
 use hyper::server::conn::Http;
-use hyper::{Body, Response};
 use native_link_config::cas_server::{
     CasConfig, CompressionAlgorithm, ConfigDigestHashFunction, GlobalConfig, ServerConfig, WorkerConfig,
 };
@@ -48,7 +47,6 @@ use parking_lot::Mutex;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use scopeguard::guard;
 use tokio::net::TcpListener;
-use tokio::task::spawn_blocking;
 use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig as TlsServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
@@ -344,12 +342,6 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             .route_service("/status", axum::routing::get(move || async move { "Ok".to_string() }));
 
         if let Some(prometheus_cfg) = services.prometheus {
-            fn error_to_response<E: std::error::Error>(e: E) -> hyper::Response<Body> {
-                hyper::Response::builder()
-                    .status(500)
-                    .body(format!("Error: {e:?}").into())
-                    .unwrap()
-            }
             let path = if prometheus_cfg.path.is_empty() {
                 DEFAULT_PROMETHEUS_METRICS_PATH
             } else {
@@ -358,34 +350,35 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             svc = svc.route_service(
                 path,
                 axum::routing::get(move |_request: hyper::Request<hyper::Body>| async move {
-                    // We spawn on a thread that can block to give more freedom to our metrics
-                    // collection. This allows it to call functions like `tokio::block_in_place`
-                    // if it needs to wait on a future.
-                    spawn_blocking(move || {
+                    (async move {
                         let mut buf = String::new();
                         let root_metrics_registry_guard = futures::executor::block_on(root_metrics_registry.lock());
-                        prometheus_client::encoding::text::encode(&mut buf, &root_metrics_registry_guard)
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                            .map(|_| {
-                                // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
-                                buf = buf.replace("native_link_native_link_stores_", "");
-                                buf = buf.replace("native_link_native_link_workers_", "");
-                                let body = Body::from(buf);
-                                Response::builder()
-                                    .header(
-                                        hyper::header::CONTENT_TYPE,
-                                        // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
-                                        // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
-                                        // However, this makes debugging more difficult, so we use the old text/plain instead.
-                                        "text/plain; version=0.0.4; charset=utf-8",
-                                    )
-                                    .body(body)
-                                    .unwrap()
-                            })
-                            .unwrap_or_else(error_to_response)
+                        let _ = prometheus_client::encoding::text::encode(&mut buf, &root_metrics_registry_guard)
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+                        buf = buf.replace("native_link_native_link_stores_", "");
+                        buf = buf.replace("native_link_native_link_workers_", "");
+                        let mut headers = axum::http::HeaderMap::new();
+                        headers.insert(
+                            axum::http::header::CONTENT_TYPE,
+                            axum::http::header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+                        );
+                        Ok::<(axum::http::StatusCode, axum::http::HeaderMap, String), Error>((
+                            axum::http::StatusCode::OK,
+                            axum::http::HeaderMap::new(),
+                            buf,
+                        ))
                     })
                     .await
-                    .unwrap_or_else(error_to_response)
+                    .map_err(|e| {
+                        Err::<
+                            (axum::http::StatusCode, axum::http::HeaderMap, String),
+                            (axum::http::StatusCode, axum::http::HeaderMap, String),
+                        >((
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            axum::http::HeaderMap::new(),
+                            format!("Error: {e:?}"),
+                        ))
+                    })
                 }),
             )
         }
