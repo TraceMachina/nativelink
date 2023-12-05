@@ -350,6 +350,79 @@ mod scheduler_tests {
     }
 
     #[tokio::test]
+    async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> {
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
+
+        let scheduler = SimpleScheduler::new_with_callback(
+            &native_link_config::schedulers::SimpleScheduler::default(),
+            || async move {},
+        );
+        let action_digest = DigestInfo::new([99u8; 32], 512);
+
+        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+
+        {
+            // Other tests check full data. We only care if we got StartAction.
+            match rx_from_worker.recv().await.unwrap().update {
+                Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+                v => panic!("Expected StartAction, got : {v:?}"),
+            }
+            // Other tests check full data. We only care if client thinks we are Executing.
+            assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+        }
+
+        // Set the worker draining.
+        scheduler.set_drain_worker(WORKER_ID, true).await?;
+        tokio::task::yield_now().await;
+
+        let action_digest = DigestInfo::new([88u8; 32], 512);
+        let insert_timestamp = make_system_time(14);
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+
+        {
+            // Client should get notification saying it's been queued.
+            let action_state = client_rx.borrow_and_update();
+            let expected_action_state = ActionState {
+                // Name is a random string, so we ignore it and just make it the same.
+                unique_qualifier: action_state.unique_qualifier.clone(),
+                stage: ActionStage::Queued,
+            };
+            assert_eq!(action_state.as_ref(), &expected_action_state);
+        }
+
+        // Set the worker not draining.
+        scheduler.set_drain_worker(WORKER_ID, false).await?;
+        tokio::task::yield_now().await;
+
+        {
+            // Client should get notification saying it's being executed.
+            let action_state = client_rx.borrow_and_update();
+            let expected_action_state = ActionState {
+                // Name is a random string, so we ignore it and just make it the same.
+                unique_qualifier: action_state.unique_qualifier.clone(),
+                stage: ActionStage::Executing,
+            };
+            assert_eq!(action_state.as_ref(), &expected_action_state);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x0010_0001);
         const WORKER_ID2: WorkerId = WorkerId(0x0010_0002);
