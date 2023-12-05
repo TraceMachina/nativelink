@@ -142,15 +142,14 @@ impl Workers {
         assert!(matches!(awaited_action.current_state.stage, ActionStage::Queued));
         let action_properties = &awaited_action.action_info.platform_properties;
         let mut workers_iter = self.workers.iter_mut();
-        let workers_iter =
-            match self.allocation_strategy {
-                // Use rfind to get the least recently used that satisfies the properties.
-                WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
-                    .rfind(|(_, w)| !w.is_paused && action_properties.is_satisfied_by(&w.platform_properties)),
-                // Use find to get the most recently used that satisfies the properties.
-                WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
-                    .find(|(_, w)| !w.is_paused && action_properties.is_satisfied_by(&w.platform_properties)),
-            };
+        let workers_iter = match self.allocation_strategy {
+            // Use rfind to get the least recently used that satisfies the properties.
+            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
+                .rfind(|(_, w)| w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)),
+            // Use find to get the most recently used that satisfies the properties.
+            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
+                .find(|(_, w)| w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)),
+        };
         let worker_id = workers_iter.map(|(_, w)| &w.id);
         // We need to "touch" the worker to ensure it gets re-ordered in the LRUCache, since it was selected.
         if let Some(&worker_id) = worker_id {
@@ -385,6 +384,19 @@ impl SimpleSchedulerImpl {
         self.tasks_or_workers_change_notify.notify_one();
     }
 
+    /// Sets if the worker is draining or not.
+    fn set_drain_worker(&mut self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
+        let worker = self
+            .workers
+            .workers
+            .get_mut(&worker_id)
+            .err_tip(|| format!("Worker {worker_id} doesn't exist in the pool"))?;
+        self.metrics.workers_drained.inc();
+        worker.is_draining = is_draining;
+        self.tasks_or_workers_change_notify.notify_one();
+        Ok(())
+    }
+
     // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we can create a map
     // of capabilities of each worker and then try and match the actions to the worker using
     // the map lookup (ie. map reduce).
@@ -486,7 +498,7 @@ impl SimpleSchedulerImpl {
 
         // Clear this action from the current worker.
         if let Some(worker) = self.workers.workers.get_mut(worker_id) {
-            let was_paused = worker.is_paused;
+            let was_paused = !worker.can_accept_work();
             // This unpauses, but since we're completing with an error, don't
             // unpause unless all actions have completed.
             worker.complete_action(&action_info);
@@ -678,6 +690,17 @@ impl SimpleScheduler {
         inner.workers.workers.contains(worker_id)
     }
 
+    /// Checks to see if the worker can accept work. Should only be used in unit tests.
+    pub fn can_worker_accept_work_for_test(&self, worker_id: &WorkerId) -> Result<bool, Error> {
+        let mut inner = self.get_inner_lock();
+        let worker = inner
+            .workers
+            .workers
+            .get_mut(worker_id)
+            .ok_or_else(|| make_input_err!("WorkerId '{}' does not exist in workers map", worker_id))?;
+        Ok(worker.can_accept_work())
+    }
+
     /// A unit test function used to send the keep alive message to the worker from the server.
     pub fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
         let mut inner = self.get_inner_lock();
@@ -825,6 +848,11 @@ impl WorkerScheduler for SimpleScheduler {
 
             Ok(())
         })
+    }
+
+    async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
+        let mut inner = self.get_inner_lock();
+        inner.set_drain_worker(worker_id, is_draining)
     }
 
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
@@ -979,6 +1007,7 @@ struct Metrics {
     update_action_with_internal_error_from_wrong_worker: CounterWithTime,
     workers_evicted: CounterWithTime,
     workers_evicted_with_running_action: CounterWithTime,
+    workers_drained: CounterWithTime,
     retry_action: CounterWithTime,
     retry_action_max_attempts_reached: CounterWithTime,
     retry_action_no_more_listeners: CounterWithTime,
@@ -1082,6 +1111,11 @@ impl Metrics {
             "workers_evicted_with_running_action",
             &self.workers_evicted_with_running_action,
             "The number of jobs cancelled because worker was evicted from scheduler.",
+        );
+        c.publish(
+            "workers_drained_total",
+            &self.workers_drained,
+            "The number of workers drained from scheduler.",
         );
         {
             c.publish_with_labels(
