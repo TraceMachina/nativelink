@@ -51,6 +51,7 @@ rust_library(
         "@crate_index//:sha2",
         "@crate_index//:tokio",
         "@crate_index//:tokio-util",
+        "@crate_index//:tracing",
     ],
 )
 

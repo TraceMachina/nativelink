@@ -70,13 +70,6 @@ mod local_worker_tests {
 
     use super::*; // Must be declared in every module.
 
-    #[ctor::ctor]
-    fn init() {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
-            .format_timestamp_millis()
-            .init();
-    }
-
     #[tokio::test]
     async fn platform_properties_smoke_test() -> Result<(), Error> {
         let mut platform_properties = HashMap::new();

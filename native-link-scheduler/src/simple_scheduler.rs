@@ -29,7 +29,6 @@ use native_link_config::schedulers::WorkerAllocationStrategy;
 use native_link_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
-use native_link_util::common::log;
 use native_link_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent, Registry,
 };
@@ -38,6 +37,7 @@ use parking_lot::{Mutex, MutexGuard};
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
+use tracing::{error, warn};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -119,7 +119,7 @@ impl Workers {
             .send_initial_connection_result()
             .err_tip(|| "Failed to send initial connection result to worker");
         if let Err(e) = &res {
-            log::error!(
+            error!(
                 "Worker connection appears to have been closed while adding to pool : {:?}",
                 e
             );
@@ -354,7 +354,7 @@ impl SimpleSchedulerImpl {
                     // Don't remove this task, instead we keep them around for a bit just in case
                     // the client disconnected and will reconnect and ask for same job to be executed
                     // again.
-                    log::warn!(
+                    warn!(
                         "Action {} has no more listeners during evict_worker()",
                         action_info.digest().hash_str()
                     );
@@ -362,7 +362,7 @@ impl SimpleSchedulerImpl {
             }
             None => {
                 self.metrics.retry_action_but_action_missing.inc();
-                log::error!("Worker stated it was running an action, but it was not in the active_actions : Worker: {:?}, ActionInfo: {:?}", worker_id, action_info);
+                error!("Worker stated it was running an action, but it was not in the active_actions : Worker: {:?}, ActionInfo: {:?}", worker_id, action_info);
             }
         }
     }
@@ -409,7 +409,7 @@ impl SimpleSchedulerImpl {
         let action_infos: Vec<Arc<ActionInfo>> = self.queued_actions.keys().rev().cloned().collect();
         for action_info in action_infos {
             let Some(awaited_action) = self.queued_actions.get(action_info.as_ref()) else {
-                log::error!(
+                error!(
                     "queued_actions out of sync with itself for action {}",
                     action_info.digest().hash_str()
                 );
@@ -428,7 +428,7 @@ impl SimpleSchedulerImpl {
             if notify_worker_result.is_err() {
                 // Remove worker, as it is no longer receiving messages and let it try to find another worker.
                 let err = make_err!(Code::Internal, "Worker command failed, removing worker {}", worker_id);
-                log::warn!("{:?}", err);
+                warn!("{:?}", err);
                 self.immediate_evict_worker(&worker_id, err);
                 return;
             }
@@ -445,7 +445,7 @@ impl SimpleSchedulerImpl {
                 // Don't remove this task, instead we keep them around for a bit just in case
                 // the client disconnected and will reconnect and ask for same job to be executed
                 // again.
-                log::warn!(
+                warn!(
                     "Action {} has no more listeners",
                     awaited_action.action_info.digest().hash_str()
                 );
@@ -470,7 +470,7 @@ impl SimpleSchedulerImpl {
         self.metrics.update_action_with_internal_error.inc();
         let Some((action_info, mut running_action)) = self.active_actions.remove_entry(action_info_hash_key) else {
             self.metrics.update_action_with_internal_error_no_action.inc();
-            log::error!("Could not find action info in active actions : {action_info_hash_key:?}");
+            error!("Could not find action info in active actions : {action_info_hash_key:?}");
             return;
         };
 
@@ -483,11 +483,11 @@ impl SimpleSchedulerImpl {
 
         if running_action.worker_id == *worker_id {
             // Don't set the error on an action that's running somewhere else.
-            log::warn!("Internal error for worker {}: {}", worker_id, err);
+            warn!("Internal error for worker {}: {}", worker_id, err);
             running_action.action.last_error = Some(err.clone());
         } else {
             self.metrics.update_action_with_internal_error_from_wrong_worker.inc();
-            log::error!(
+            error!(
                 "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {}",
                     running_action.worker_id, worker_id
             );
@@ -524,7 +524,7 @@ impl SimpleSchedulerImpl {
                 Code::Internal,
                 "Worker '{worker_id}' set the action_stage of running action {action_info_hash_key:?} to {action_stage:?}. Removing worker.",
             );
-            log::error!("{:?}", err);
+            error!("{:?}", err);
             self.immediate_evict_worker(worker_id, err.clone());
             return Err(err);
         }
@@ -541,7 +541,7 @@ impl SimpleSchedulerImpl {
                 "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {worker_id}",
                 running_action.worker_id,
             );
-            log::error!("{:?}", err);
+            error!("{:?}", err);
             // First put it back in our active_actions or we will drop the task.
             self.active_actions.insert(action_info, running_action);
             self.immediate_evict_worker(worker_id, err.clone());
@@ -558,7 +558,7 @@ impl SimpleSchedulerImpl {
         if !running_action.action.current_state.stage.is_finished() {
             if send_result.is_err() {
                 self.metrics.update_action_no_more_listeners.inc();
-                log::warn!(
+                warn!(
                     "Action {} has no more listeners during update_action()",
                     action_info.digest().hash_str()
                 );
@@ -842,7 +842,7 @@ impl WorkerScheduler for SimpleScheduler {
                 .collect();
             for worker_id in &worker_ids_to_remove {
                 let err = make_err!(Code::Internal, "Worker {worker_id} timed out, removing from pool");
-                log::warn!("{:?}", err);
+                warn!("{:?}", err);
                 inner.immediate_evict_worker(worker_id, err);
             }
 

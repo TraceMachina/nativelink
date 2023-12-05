@@ -22,11 +22,12 @@ use bincode::{self, DefaultOptions, Options};
 use error::{make_err, Code, Error, ResultExt};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use native_link_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
-use native_link_util::common::{log, DigestInfo};
+use native_link_util::common::DigestInfo;
 use native_link_util::fastcdc::FastCDC;
 use native_link_util::store_trait::{Store, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
+use tracing::warn;
 
 // NOTE: If these change update the comments in `stores.rs` to reflect
 // the new defaults.
@@ -112,7 +113,7 @@ impl DedupStore {
 
             match self.bincode_options.deserialize::<DedupIndex>(&data) {
                 Err(e) => {
-                    log::warn!(
+                    warn!(
                         "Failed to deserialize index in dedup store : {} - {:?}",
                         digest.hash_str(),
                         e

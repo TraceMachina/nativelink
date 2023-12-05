@@ -39,7 +39,6 @@ use native_link_service::worker_api_server::WorkerApiServer;
 use native_link_store::default_store_factory::store_factory;
 use native_link_store::store_manager::StoreManager;
 use native_link_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
-use native_link_util::common::log;
 use native_link_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
 use native_link_util::metrics_utils::{
     set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent, Registry,
@@ -55,6 +54,8 @@ use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
+use tracing::{error, warn};
+use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 /// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
 const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
@@ -514,14 +515,14 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             http.http2_max_header_list_size(value);
         }
 
-        log::warn!("Ready, listening on {}", socket_addr);
+        warn!("Ready, listening on {}", socket_addr);
         root_futures.push(Box::pin(async move {
             loop {
                 // Wait for client to connect.
                 let (tcp_stream, remote_addr) = match tcp_listener.accept().await {
                     Ok(result) => result,
                     Err(e) => {
-                        log::error!(
+                        error!(
                             "{:?}",
                             Result::<(), _>::Err(e).err_tip(|| "Failed to accept tcp connection")
                         );
@@ -541,7 +542,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     let tls_stream = match tls_acceptor.accept(tcp_stream).await {
                         Ok(result) => result,
                         Err(e) => {
-                            log::error!(
+                            error!(
                                 "{:?}",
                                 Result::<(), _>::Err(e).err_tip(|| "Failed to accept tls stream")
                             );
@@ -556,7 +557,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     // Move it into our spawn, so if our spawn dies the cleanup happens.
                     let _guard = scope_guard;
                     if let Err(e) = fut.await {
-                        log::error!("Failed running service : {:?}", e);
+                        error!("Failed running service : {:?}", e);
                     }
                 });
             }
@@ -640,12 +641,6 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
 
 async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
     let args = Args::parse();
-    // Note: We cannot mutate args, so we create another variable for it here.
-
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
-        .format_timestamp_millis()
-        .init();
-
     let json_contents = String::from_utf8(
         std::fs::read(&args.config_file).err_tip(|| format!("Could not open config file {}", args.config_file))?,
     )?;
@@ -653,6 +648,17 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .pretty()
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::WARN.into())
+                .from_env_lossy(),
+        )
+        .init();
+
     let mut cfg = futures::executor::block_on(get_config())?;
 
     let mut metrics_enabled = {

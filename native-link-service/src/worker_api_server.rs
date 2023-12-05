@@ -24,7 +24,7 @@ use native_link_config::cas_server::WorkerApiConfig;
 use native_link_scheduler::worker::{Worker, WorkerId};
 use native_link_scheduler::worker_scheduler::WorkerScheduler;
 use native_link_util::action_messages::ActionInfoHashKey;
-use native_link_util::common::{log, DigestInfo};
+use native_link_util::common::DigestInfo;
 use native_link_util::platform_properties::PlatformProperties;
 use proto::com::github::trace_machina::native_link::remote_execution::worker_api_server::{
     WorkerApi, WorkerApiServer as Server,
@@ -35,6 +35,7 @@ use proto::com::github::trace_machina::native_link::remote_execution::{
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tonic::{Request, Response, Status};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 pub type ConnectWorkerStream = Pin<Box<dyn Stream<Item = Result<UpdateForWorker, Status>> + Send + Sync + 'static>>;
@@ -66,7 +67,7 @@ impl WorkerApiServer {
                     match weak_scheduler.upgrade() {
                         Some(scheduler) => {
                             if let Err(e) = scheduler.remove_timedout_workers(timestamp.as_secs()).await {
-                                log::error!("Error while running remove_timedout_workers : {:?}", e);
+                                error!("Error while running remove_timedout_workers : {:?}", e);
                             }
                         }
                         // If we fail to upgrade, our service is probably destroyed, so return.
@@ -150,7 +151,7 @@ impl WorkerApiServer {
                 if let Some(update_for_worker) = rx.recv().await {
                     return Some((Ok(update_for_worker), (rx, worker_id)));
                 }
-                log::warn!(
+                warn!(
                     "UpdateForWorker channel was closed, thus closing connection to worker node : {}",
                     worker_id
                 );
@@ -218,56 +219,56 @@ impl WorkerApi for WorkerApiServer {
         grpc_request: Request<SupportedProperties>,
     ) -> Result<Response<Self::ConnectWorkerStream>, Status> {
         let now = Instant::now();
-        log::info!("\x1b[0;31mconnect_worker Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mconnect_worker Req\x1b[0m: {:?}", grpc_request.get_ref());
         let supported_properties = grpc_request.into_inner();
         let resp = self.inner_connect_worker(supported_properties).await;
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = resp.as_ref() {
-            log::error!("\x1b[0;31mconnect_worker Resp\x1b[0m: {} {:?}", d, err);
+            error!("\x1b[0;31mconnect_worker Resp\x1b[0m: {} {:?}", d, err);
         } else {
-            log::info!("\x1b[0;31mconnect_worker Resp\x1b[0m: {}", d);
+            info!("\x1b[0;31mconnect_worker Resp\x1b[0m: {}", d);
         }
         return resp.map_err(|e| e.into());
     }
 
     async fn keep_alive(&self, grpc_request: Request<KeepAliveRequest>) -> Result<Response<()>, Status> {
         let now = Instant::now();
-        log::info!("\x1b[0;31mkeep_alive Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mkeep_alive Req\x1b[0m: {:?}", grpc_request.get_ref());
         let keep_alive_request = grpc_request.into_inner();
         let resp = self.inner_keep_alive(keep_alive_request).await;
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = resp.as_ref() {
-            log::error!("\x1b[0;31mkeep_alive Resp\x1b[0m: {} {:?}", d, err);
+            error!("\x1b[0;31mkeep_alive Resp\x1b[0m: {} {:?}", d, err);
         } else {
-            log::info!("\x1b[0;31mkeep_alive Resp\x1b[0m: {}", d);
+            info!("\x1b[0;31mkeep_alive Resp\x1b[0m: {}", d);
         }
         return resp.map_err(|e| e.into());
     }
 
     async fn going_away(&self, grpc_request: Request<GoingAwayRequest>) -> Result<Response<()>, Status> {
         let now = Instant::now();
-        log::info!("\x1b[0;31mgoing_away Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mgoing_away Req\x1b[0m: {:?}", grpc_request.get_ref());
         let going_away_request = grpc_request.into_inner();
         let resp = self.inner_going_away(going_away_request).await;
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = resp.as_ref() {
-            log::error!("\x1b[0;31mgoing_away Resp\x1b[0m: {} {:?}", d, err);
+            error!("\x1b[0;31mgoing_away Resp\x1b[0m: {} {:?}", d, err);
         } else {
-            log::info!("\x1b[0;31mgoing_away Resp\x1b[0m: {}", d);
+            info!("\x1b[0;31mgoing_away Resp\x1b[0m: {}", d);
         }
         return resp.map_err(|e| e.into());
     }
 
     async fn execution_response(&self, grpc_request: Request<ExecuteResult>) -> Result<Response<()>, Status> {
         let now = Instant::now();
-        log::info!("\x1b[0;31mexecution_response Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mexecution_response Req\x1b[0m: {:?}", grpc_request.get_ref());
         let execute_result = grpc_request.into_inner();
         let resp = self.inner_execution_response(execute_result).await;
         let d = now.elapsed().as_secs_f32();
         if let Err(err) = resp.as_ref() {
-            log::error!("\x1b[0;31mexecution_response Resp\x1b[0m: {} {:?}", d, err);
+            error!("\x1b[0;31mexecution_response Resp\x1b[0m: {} {:?}", d, err);
         } else {
-            log::info!("\x1b[0;31mexecution_response Resp\x1b[0m: {}", d);
+            info!("\x1b[0;31mexecution_response Resp\x1b[0m: {}", d);
         }
         return resp.map_err(|e| e.into());
     }

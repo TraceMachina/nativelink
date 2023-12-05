@@ -21,10 +21,10 @@ use std::str::from_utf8;
 use error::{make_err, make_input_err, Error, ResultExt};
 use futures::future::try_join_all;
 use native_link_config::cas_server::WorkerProperty;
-use native_link_util::common::log;
 use proto::build::bazel::remote::execution::v2::platform::Property;
 use proto::com::github::trace_machina::native_link::remote_execution::SupportedProperties;
 use tokio::process;
+use tracing::info;
 
 pub async fn make_supported_properties<S: BuildHasher>(
     worker_properties: &HashMap<String, WorkerProperty, S>,
@@ -60,7 +60,7 @@ pub async fn make_supported_properties<S: BuildHasher>(
                     process.args(args);
                     process.stdin(Stdio::null());
                     let err_fn = || format!("Error executing property_name {property_name} command");
-                    log::info!("Spawning process for cmd: '{}' for property: '{}'", cmd, property_name);
+                    info!("Spawning process for cmd: '{}' for property: '{}'", cmd, property_name);
                     let process_output = process.output().await.err_tip(err_fn)?;
                     if !process_output.status.success() {
                         return Err(make_err!(process_output.status.code().unwrap().into(), "{}", err_fn()));

@@ -19,8 +19,9 @@ use std::sync::{Arc, Mutex, Weak};
 use async_trait::async_trait;
 use error::{make_err, make_input_err, Code, Error, ResultExt};
 use native_link_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use native_link_util::common::{log, DigestInfo};
+use native_link_util::common::DigestInfo;
 use native_link_util::store_trait::{Store, UploadSizeInfo};
+use tracing::error;
 
 use crate::store_manager::StoreManager;
 
@@ -126,7 +127,7 @@ impl Store for RefStore {
         match self.get_store() {
             Ok(store) => store.clone().inner_store(digest),
             Err(e) => {
-                log::error!("Failed to get store for digest: {e:?}");
+                error!("Failed to get store for digest: {e:?}");
                 self
             }
         }

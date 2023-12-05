@@ -24,12 +24,13 @@ use native_link_config::cas_server::{AcStoreConfig, InstanceName};
 use native_link_store::ac_utils::{get_and_decode_digest, ESTIMATED_DIGEST_SIZE};
 use native_link_store::grpc_store::GrpcStore;
 use native_link_store::store_manager::StoreManager;
-use native_link_util::common::{log, DigestInfo};
+use native_link_util::common::DigestInfo;
 use native_link_util::store_trait::Store;
 use prost::Message;
 use proto::build::bazel::remote::execution::v2::action_cache_server::{ActionCache, ActionCacheServer as Server};
 use proto::build::bazel::remote::execution::v2::{ActionResult, GetActionResultRequest, UpdateActionResultRequest};
 use tonic::{Request, Response, Status};
+use tracing::{error, info};
 
 pub struct AcServer {
     stores: HashMap<String, Arc<dyn Store>>,
@@ -133,7 +134,7 @@ impl ActionCache for AcServer {
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let now = Instant::now();
-        log::info!("\x1b[0;31mget_action_result Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!("\x1b[0;31mget_action_result Req\x1b[0m: {:?}", grpc_request.get_ref());
         let hash = grpc_request
             .get_ref()
             .action_digest
@@ -142,9 +143,9 @@ impl ActionCache for AcServer {
         let resp = self.inner_get_action_result(grpc_request).await;
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
-            log::error!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
+            error!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
         } else {
-            log::info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
+            info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
         }
         return resp.map_err(|e| e.into());
     }
@@ -154,7 +155,7 @@ impl ActionCache for AcServer {
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let now = Instant::now();
-        log::info!(
+        info!(
             "\x1b[0;31mupdate_action_result Req\x1b[0m: {:?}",
             grpc_request.get_ref()
         );
