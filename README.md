@@ -45,7 +45,7 @@ might take a few minutes to publish the latest image.
 export LATEST=$(nix eval github:TraceMachina/native-link#image.imageTag --raw)
 
 # Verify the signature
-cosign verify ghcr.io/TraceMachina/native-link:${LATEST} \
+cosign verify ghcr.io/tracemachina/native-link:${LATEST} \
     --certificate-identity=https://github.com/TraceMachina/native-link/.github/workflows/image.yaml@refs/heads/main \
     --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
@@ -57,7 +57,7 @@ For use in production pin the image to a specific revision:
 export PINNED_TAG=$(nix eval github:TraceMachina/native-link/<revision>#image.imageTag --raw)
 
 # Verify the signature
-cosign verify ghcr.io/TraceMachina/native-link:${PINNED_TAG} \
+cosign verify ghcr.io/tracemachina/native-link:${PINNED_TAG} \
     --certificate-identity=https://github.com/TraceMachina/native-link/.github/workflows/image.yaml@refs/heads/main \
     --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```

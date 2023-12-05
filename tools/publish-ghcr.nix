@@ -16,7 +16,7 @@ pkgs.writeShellScriptBin "publish-ghcr" ''
   # didn't change.
   IMAGE_TAG=$(nix eval .#image.imageTag --raw)
 
-  TAGGED_IMAGE=''${GHCR_REGISTRY}/''${GHCR_IMAGE_NAME}:''${IMAGE_TAG}
+  TAGGED_IMAGE=''${GHCR_REGISTRY}/''${GHCR_IMAGE_NAME,,}:''${IMAGE_TAG}
 
   $(nix build .#image --print-build-logs --verbose) \
     && ./result \
@@ -35,7 +35,7 @@ pkgs.writeShellScriptBin "publish-ghcr" ''
   ${pkgs.cosign}/bin/cosign \
     sign \
     --yes \
-    ''${GHCR_REGISTRY}/''${GHCR_IMAGE_NAME}@$( \
+    ''${GHCR_REGISTRY}/''${GHCR_IMAGE_NAME,,}@$( \
       ${pkgs.skopeo}/bin/skopeo \
         inspect \
         --format "{{ .Digest }}" \
