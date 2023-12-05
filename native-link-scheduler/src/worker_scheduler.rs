@@ -59,6 +59,9 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     /// external source.
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error>;
 
+    /// Sets if the worker is draining or not.
+    async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error>;
+
     /// Register the metrics for the worker scheduler.
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }
