@@ -29,7 +29,7 @@ variable "gcp_region" {
 
 variable "gcp_zone" {
   description = "Google cloud zone"
-  default     = "us-central1-b"
+  default     = "us-central1-a"
 }
 
 variable "project_prefix" {

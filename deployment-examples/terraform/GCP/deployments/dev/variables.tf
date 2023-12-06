@@ -24,10 +24,35 @@ variable "gcp_region" {
 
 variable "gcp_zone" {
   description = "Google cloud zone"
-  default     = "us-central1-b"
+  default     = "us-central1-a"
 }
 
 variable "project_prefix" {
   description = "Prefix all names with this value"
   default     = "nldev"
+}
+
+variable "base_image_machine_type" {
+  description = "Machine type for build image"
+  default     = "e2-highcpu-16"
+}
+
+variable "browser_machine_type" {
+  description = "Machine type for BB Browser"
+  default     = "e2-micro"
+}
+
+variable "cas_machine_type" {
+  description = "Machine type for CAS"
+  default     = "e2-highcpu-4"
+}
+
+variable "scheduler_machine_type" {
+  description = "Machine type for Scheduler"
+  default     = "e2-highcpu-8"
+}
+
+variable "x86_cpu_worker_machine_type" {
+  description = "Machine type for x86 Worker"
+  default     = "n2d-standard-8"
 }

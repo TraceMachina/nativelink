@@ -31,8 +31,13 @@ provider "google" {
 module "native_link" {
   source = "../../module"
 
-  gcp_project_id = var.gcp_project_id
-  gcp_region     = var.gcp_region
-  gcp_zone       = var.gcp_zone
-  project_prefix = var.project_prefix
+  gcp_project_id              = var.gcp_project_id
+  gcp_region                  = var.gcp_region
+  gcp_zone                    = var.gcp_zone
+  project_prefix              = var.project_prefix
+  base_image_machine_type     = var.base_image_machine_type
+  browser_machine_type        = var.browser_machine_type
+  cas_machine_type            = var.cas_machine_type
+  scheduler_machine_type      = var.scheduler_machine_type
+  x86_cpu_worker_machine_type = var.x86_cpu_worker_machine_type
 }
