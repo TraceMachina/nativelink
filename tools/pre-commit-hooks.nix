@@ -44,8 +44,9 @@ in
   };
   detect-private-key = {
     excludes = excludes ++ [
-      # This is an integration testfile that is not intended for production.
+      # Integration testfiles not intended for production.
       "deployment-examples/docker-compose/example-do-not-use-in-prod-key.pem"
+      "deployment-examples/kubernetes/example-do-not-use-in-prod-key.pem"
     ];
     enable = true;
     name = "detect-private-key";
