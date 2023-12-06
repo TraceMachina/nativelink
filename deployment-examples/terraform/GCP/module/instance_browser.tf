@@ -65,7 +65,7 @@ resource "google_compute_region_instance_template" "browser_instance_template" {
   name = "${var.project_prefix}-browser-instance-template"
 
   # This instance is rarely used, so we can get away with a micro instance.
-  machine_type   = "e2-micro"
+  machine_type   = var.browser_machine_type
   can_ip_forward = false
 
   service_account {

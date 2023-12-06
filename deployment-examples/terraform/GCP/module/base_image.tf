@@ -16,7 +16,7 @@ resource "google_compute_instance" "build_instance" {
   project      = var.gcp_project_id
   provider     = google-beta
   name         = "${var.project_prefix}-build-instance"
-  machine_type = "e2-highcpu-32"
+  machine_type = var.base_image_machine_type
   zone         = var.gcp_zone
 
   boot_disk {
