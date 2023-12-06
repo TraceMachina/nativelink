@@ -1,0 +1,64 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: native-link-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: native-link
+  template:
+    metadata:
+      labels:
+        app: native-link
+    spec:
+      containers:
+        - name: native-link-cas
+          image: ghcr.io/tracemachina/native-link:76sa0dv3w10297lnqh3zpw2k2g6756gn
+          ports:
+            - containerPort: 50051
+          volumeMounts:
+            - name: cas-config
+              mountPath: /cas.json
+              subPath: cas.json
+          args: ["/cas.json"]
+          env:
+            - name: RUST_LOG
+              value: "info"
+
+        - name: native-link-scheduler
+          image: ghcr.io/tracemachina/native-link:76sa0dv3w10297lnqh3zpw2k2g6756gn
+          ports:
+            - containerPort: 50052
+            - containerPort: 50061
+          volumeMounts:
+            - name: scheduler-config
+              mountPath: /scheduler.json
+              subPath: scheduler.json
+          args: ["/scheduler.json"]
+          env:
+            - name: RUST_LOG
+              value: "info"
+
+        - name: native-link-worker
+          image: ghcr.io/tracemachina/native-link:76sa0dv3w10297lnqh3zpw2k2g6756gn
+          volumeMounts:
+            - name: worker-config
+              mountPath: /worker.json
+              subPath: worker.json
+          args: ["/worker.json"]
+          env:
+            - name: RUST_LOG
+              value: "info"
+
+      volumes:
+        - name: cas-config
+          configMap:
+            name: cas
+        - name: scheduler-config
+          configMap:
+            name: scheduler
+        - name: worker-config
+          configMap:
+            name: worker

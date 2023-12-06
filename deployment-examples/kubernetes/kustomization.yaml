@@ -1,0 +1,15 @@
+---
+resources:
+  - service.yaml
+  - deployment.yaml
+
+configMapGenerator:
+  - name: cas
+    files:
+      - cas.json
+  - name: scheduler
+    files:
+      - scheduler.json
+  - name: worker
+    files:
+      - worker.json
