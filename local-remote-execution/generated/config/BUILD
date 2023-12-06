@@ -40,7 +40,7 @@ platform(
         "@bazel_tools//tools/cpp:clang",
     ],
     exec_properties = {
-        "container-image": "docker://nativelink-toolchain:h8andgczmivnnz4blabfqfya4bdqrnhg",
+        "container-image": "docker://nativelink-toolchain:clkxjqphr5a689p8x8q0wykbbawnk2s1",
         "OSFamily": "Linux",
     },
     parents = ["@local_config_platform//:host"],

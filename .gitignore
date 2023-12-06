@@ -11,3 +11,4 @@ __pycache__
 .DS_Store
 .pre-commit-config.yaml
 result
+.bazelrc.user

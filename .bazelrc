@@ -68,3 +68,6 @@ build:lre --define=EXECUTOR=remote
 
 # See: https://github.com/bazelbuild/bazel/issues/19714#issuecomment-1745604978
 build:lre --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+
+# Allow user-side customization.
+try-import %workspace%/.bazelrc.user
