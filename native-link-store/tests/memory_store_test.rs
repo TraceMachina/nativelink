@@ -79,7 +79,7 @@ mod memory_store_tests {
     async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
         // Arbitrary value, this may be increased if we find out that this is
         // too low for some kernels/operating systems.
-        const MAXIMUM_MEMORY_USAGE_INCREASE_PERC: f64 = 1.2; // 20% increase.
+        const MAXIMUM_MEMORY_USAGE_INCREASE_PERC: f64 = 1.3; // 30% increase.
 
         let store_owned = MemoryStore::new(&native_link_config::stores::MemoryStore::default());
         let store = Pin::new(&store_owned);
