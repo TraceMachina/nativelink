@@ -1,0 +1,35 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: native-link-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: native-link-worker
+  template:
+    metadata:
+      labels:
+        app: native-link-worker
+    spec:
+      containers:
+        - name: native-link-worker
+          image: "localhost:5001/native-link-toolchain:local"
+          env:
+            - name: RUST_LOG
+              value: debug
+            - name: CAS_ENDPOINT
+              value: native-link-cas
+            - name: SCHEDULER_ENDPOINT
+              value: native-link-scheduler
+          volumeMounts:
+            - name: worker-config
+              mountPath: /worker.json
+              subPath: worker.json
+          command: ["/bin/cas"]
+          args: ["/worker.json"]
+      volumes:
+        - name: worker-config
+          configMap:
+            name: worker

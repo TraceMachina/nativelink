@@ -1,0 +1,27 @@
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: GRPCRoute
+metadata:
+  name: cache-route
+spec:
+  parentRefs:
+    - sectionName: cache
+      name: cache
+  rules:
+    - backendRefs:
+        - name: native-link-cas
+          port: 50051
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute # TODO(aaronmondal): Pure GRPC is unstable here. Find out why
+                #                    and migrate to a GRPCRoute.
+metadata:
+  name: scheduler-route
+spec:
+  parentRefs:
+    - sectionName: scheduler
+      name: scheduler
+  rules:
+    - backendRefs:
+        - name: native-link-scheduler
+          port: 50052
