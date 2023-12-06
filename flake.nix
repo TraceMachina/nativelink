@@ -130,6 +130,9 @@
               pkgs.skopeo
               pkgs.dive
               pkgs.cosign
+              pkgs.kubectl
+              pkgs.kubernetes-helm
+              pkgs.cilium-cli
 
               # Additional tools from within our development environment.
               local-image-test
