@@ -121,6 +121,7 @@
               pkgs.skopeo
               pkgs.dive
               pkgs.cosign
+              pkgs.kubectl
 
               # Additional tools from within our development environment.
               local-image-test
