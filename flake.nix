@@ -15,10 +15,24 @@
 
   outputs = inputs @ { self, flake-parts, crane, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
       imports = [ inputs.pre-commit-hooks.flakeModule ];
       perSystem = { config, pkgs, system, ... }:
         let
+          isDarwin = builtins.elem system [
+            "x86_64-darwin"
+            "aarch64-darwin"
+          ];
+
+          maybeDarwinDeps = pkgs.lib.optionals isDarwin [
+              pkgs.darwin.apple_sdk.frameworks.Security
+              pkgs.libiconv
+          ];
+
           customStdenv = import ./tools/llvmStdenv.nix { inherit pkgs; };
 
           craneLib = crane.lib.${system};
@@ -34,7 +48,10 @@
             inherit src;
             strictDeps = true;
             buildInputs = [ ];
-            nativeBuildInputs = [ pkgs.autoPatchelfHook pkgs.cacert ];
+            nativeBuildInputs = [
+              pkgs.autoPatchelfHook
+              pkgs.cacert
+            ] ++ maybeDarwinDeps;
             stdenv = customStdenv;
           };
 
@@ -107,7 +124,7 @@
 
               # Additional tools from within our development environment.
               local-image-test
-            ];
+            ] ++ maybeDarwinDeps;
             shellHook = ''
               # Generate the .pre-commit-config.yaml symlink when entering the
               # development shell.
