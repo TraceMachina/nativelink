@@ -652,7 +652,7 @@ mod running_actions_manager_tests {
             let arguments = vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "echo -n \"123 \" > ./test.txt; echo -n \"foo-stdout \"; >&2 echo -n \"bar-stderr  \"".to_string(),
+                "printf '123 ' > ./test.txt; printf 'foo-stdout '; >&2 printf 'bar-stderr  '".to_string(),
             ];
             #[cfg(target_family = "windows")]
             let arguments = vec![
@@ -811,7 +811,7 @@ mod running_actions_manager_tests {
             let arguments = vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "echo -n \"123 \" > ./test.txt; echo -n \"foo-stdout \"; >&2 echo -n \"bar-stderr  \"".to_string(),
+                "printf '123 ' > ./test.txt; printf 'foo-stdout '; >&2 printf 'bar-stderr  '".to_string(),
             ];
             #[cfg(target_family = "windows")]
             let arguments = vec![

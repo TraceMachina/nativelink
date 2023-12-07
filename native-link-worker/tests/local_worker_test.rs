@@ -81,7 +81,7 @@ mod local_worker_tests {
             "baz".to_string(),
             // Note: new lines will result in two entries for same key.
             #[cfg(target_family = "unix")]
-            WorkerProperty::query_cmd("echo -e 'hello\ngoodbye'".to_string()),
+            WorkerProperty::query_cmd("printf 'hello\ngoodbye'".to_string()),
             #[cfg(target_family = "windows")]
             WorkerProperty::query_cmd("cmd /C \"echo hello && echo goodbye\"".to_string()),
         );
