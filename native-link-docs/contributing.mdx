@@ -1,0 +1,84 @@
+---
+title: 'Contributing'
+description: 'Learn how to contribute to NativeLink'
+---
+
+<Info>
+  **Prerequisite** You should have Rust installed (version 1.71.0 or
+  higher).
+</Info>
+
+<Warning>MacOS and Windows developers will not be able to run the full unit-test suite, which is necessary for contributing. Follow the Docker instructions in quickstart to get docker set up with NativeLink.</Warning>
+
+## Fork the repository
+
+To fork a GitHub repository, navigate to the repository's page on GitHub. In the upper right corner of the repository page, you'll find a 'Fork' button. Clicking this button creates a copy of the repository under your GitHub account. This allows you to freely experiment, make changes, and contribute to the codebase without affecting the original repository. Once forked, you can clone the forked repository to your local machine to start working on your changes.
+
+## Contributions
+
+Contributions to Native Link or its dependencies should be made in the form of
+[GitHub pull requests](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork). Each pull request will be reviewed by a core contributor
+(someone with permission to land patches) and either landed in the main tree or
+given feedback for changes that would be required. All contributions should
+follow this format, even those from core contributors.
+
+Should you wish to work on an issue, please claim it first by commenting on
+the GitHub issue that you want to work on it. This is to prevent duplicated
+efforts from contributors on the same issue.
+
+<Tip>Look for the `good first issue` label or ask contributors in comments if something is a good issue to get started with!</Tip>
+
+## Pull Request Checklist
+
+- Branch from the main branch and, if needed, rebase to the current main
+  branch before submitting your pull request. If it doesn't merge cleanly with
+  main you may be asked to rebase your changes.
+
+- Link to the associated issue your PR is fixing in the description (ex: `#337`). You will see the issue in a dropdown when putting the number after the `#` if formatted correctly.
+
+- A PR should be one commit, any changes to that commit should be amended on using `git commit --amend --no-edit` followed by `git push --force` to overwrite the commit.
+
+- Commits should be as small as possible, while ensuring that each commit is
+  correct independently. Commit should only include exactly what is needed to solve the issue, avoid poor Git hygeine and add each file individually before committing.
+
+- Commits should be accompanied by a [Developer Certificate of Origin](http://developercertificate.org)
+  sign-off, which indicates that you (and your employer if applicable) agree to
+  be bound by the terms of the [project license](LICENSE). In git, this is the
+  `-s` option to `git commit`.
+
+- If your patch is not getting reviewed or you need a specific person to review
+  it, you can @-reply a reviewer asking for a review in the pull request or a
+  comment.
+
+- Add tests relevant to the fixed bug or new feature.
+
+- Unit-tests run with `bazel test //..` must pass locally. 
+
+<Note>See Quickstart if having trouble running unit tests.</Note>
+
+- If `rustfmt` complains you can use the following command to apply its
+  suggested changes to the Rust sources:
+
+  ```bash
+  bazel run \
+    --@rules_rust//:rustfmt.toml=//:.rustfmt.toml \
+    @rules_rust//:rustfmt
+  ```
+
+## Nix development flake
+
+You can use the Nix development flake to automatically set up Bazel, Cargo and
+various Cloud CLIs for you:
+
+1. Install the [nix package manger](https://nixos.org/download.html) and enable
+   [flakes](https://nixos.wiki/wiki/Flakes).
+2. Optionally, install [direnv](https://direnv.net/docs/installation.html) and
+   hook it into your shell.
+3. We currently don't ship a C++ toolchain as part of the flake. Make sure to
+   install a recent version of Clang.
+
+
+## Conduct
+
+Native Link Code of Conduct is available in the
+[CODE_OF_CONDUCT](CODE_OF_CONDUCT.md) file.
