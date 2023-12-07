@@ -11,47 +11,59 @@ permissions: read-all
 
 jobs:
   nix-bazel:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04]
+    name: Bazel Dev / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     steps:
+
       - name: Checkout
-        uses: actions/checkout@v3.5.3
-        with:
-          fetch-depth: 0
+        uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
       - name: Install Nix
-        uses: cachix/install-nix-action@v22
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-      - name: Mount Nix cache
-        uses: actions/cache@v3.3.2
-        with:
-          key: ${{ runner.os }}-nix
-          path: ~/nix
+        uses: >- #v7
+          DeterminateSystems/nix-installer-action@5620eb4af6b562c53e4d4628c0b6e4f9d9ae8612
+
+      - name: Cache Nix derivations
+        uses: >- # Custom commit, last pinned at 2023-11-17.
+          DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+
       - name: Mount bazel cache
-        uses: actions/cache@v3
+        uses: >- # v3.3.2
+          actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84
         with:
           path: "~/.cache/bazel"
           key: ${{ runner.os }}-bazel-nix
+
       - name: Invoke Bazel build in Nix shell
         run: >
-          nix --store ~/nix develop --impure --command
-          bash -c "bazel test ..."
+          nix develop --impure --command
+          bash -c "bazel test ... --verbose_failures"
+
   nix-cargo:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04]
+    name: Cargo Dev / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3.5.3
-        with:
-          fetch-depth: 0
+        uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
       - name: Install Nix
-        uses: cachix/install-nix-action@v22
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-      - name: Mount Nix cache
-        uses: actions/cache@v3.3.2
-        with:
-          key: ${{ runner.os }}-nix
-          path: ~/nix
+        uses: >- #v7
+          DeterminateSystems/nix-installer-action@5620eb4af6b562c53e4d4628c0b6e4f9d9ae8612
+
+      - name: Cache Nix derivations
+        uses: >- # Custom commit, last pinned at 2023-11-17.
+          DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+
       - name: Invoke Cargo build in Nix shell
         run: >
-          nix --store ~/nix develop --impure --command
+          nix develop --impure --command
           bash -c "cargo test --all"

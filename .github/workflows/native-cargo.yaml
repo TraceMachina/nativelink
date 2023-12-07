@@ -1,0 +1,52 @@
+---
+name: Cargo Native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  cargo-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04, windows-2022]
+        toolchain: [stable, beta]
+    name: ${{ matrix.os }} / ${{ matrix.toolchain }}
+    runs-on: ${{ matrix.os }}
+    steps:
+
+      - name: Checkout
+        uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Set up Rust toolchain
+        run: >
+          rustup update ${{ matrix.toolchain }}
+          && rustup default ${{ matrix.toolchain }}
+        shell: bash
+
+      - name: Set up Cargo cache
+        uses: >- # v3.3.2
+          actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: |
+            ${{ runner.os }}-cargo-native-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-native-
+
+      - name: Build on ${{ runner.os }}
+        run: cargo build --all
+
+      - name: Test on ${{ runner.os }}
+        run: cargo test --all
