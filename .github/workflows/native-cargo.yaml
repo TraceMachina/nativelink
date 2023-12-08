@@ -30,21 +30,6 @@ jobs:
           && rustup default ${{ matrix.toolchain }}
         shell: bash
 
-      - name: Set up Cargo cache
-        uses: >- # v3.3.2
-          actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: |
-            ${{ runner.os }}-cargo-native-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-native-
-
       - name: Build on ${{ runner.os }}
         run: cargo build --all
 
