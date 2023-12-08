@@ -101,7 +101,7 @@ bazel run --config=windows -c opt cas -- ./native-link-config/examples/basic_cas
 
 **Build requirements:**
 
-* Cargo 1.73.0+
+* Cargo 1.74.0+
 * A recent C++ toolchain with LLD as linker
 
 > [!TIP]
