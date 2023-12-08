@@ -79,7 +79,7 @@ const EXIT_CODE_FOR_SIGNAL: i32 = 9;
 /// Default strategy for uploading historical results.
 /// Note: If this value changes the config documentation
 /// should reflect it.
-const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy = UploadCacheResultsStrategy::FailuresOnly;
+const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy = UploadCacheResultsStrategy::failures_only;
 
 /// Valid string reasons for a failure.
 /// Note: If these change, the documentation should be updated.
@@ -92,7 +92,7 @@ enum SideChannelFailureReason {
 
 /// This represents the json data that can be passed from the running process
 /// to the parent via the SideChannelFile. See:
-/// `config::EnvironmentSource::SideChannelFile` for more details.
+/// `config::EnvironmentSource::sidechannelfile` for more details.
 /// Note: Any fields added here must be added to the documentation.
 #[derive(Debug, Deserialize, Default)]
 struct SideChannelInfo {
@@ -678,15 +678,15 @@ impl RunningActionImpl {
         {
             for (name, source) in additional_environment {
                 let value = match source {
-                    EnvironmentSource::Property(property) => self
+                    EnvironmentSource::property(property) => self
                         .action_info
                         .platform_properties
                         .properties
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| v.as_str()),
-                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
-                    EnvironmentSource::TimeoutMillis => Cow::Owned(self.timeout.as_millis().to_string()),
-                    EnvironmentSource::SideChannelFile => {
+                    EnvironmentSource::value(value) => Cow::Borrowed(value.as_str()),
+                    EnvironmentSource::timeout_millis => Cow::Owned(self.timeout.as_millis().to_string()),
+                    EnvironmentSource::side_channel_file => {
                         let file_cow = format!(
                             "{}/{}/{}",
                             self.work_directory,
@@ -1243,7 +1243,7 @@ impl UploadActionResults {
         let upload_historical_results_strategy = config
             .upload_historical_results_strategy
             .unwrap_or(DEFAULT_HISTORICAL_RESULTS_STRATEGY);
-        if !matches!(config.upload_ac_results_strategy, UploadCacheResultsStrategy::Never) && ac_store.is_none() {
+        if !matches!(config.upload_ac_results_strategy, UploadCacheResultsStrategy::never) && ac_store.is_none() {
             return Err(make_input_err!(
                 "upload_ac_results_strategy is set, but no ac_store is configured"
             ));
@@ -1278,11 +1278,11 @@ impl UploadActionResults {
             did_fail = true;
         }
         match strategy {
-            UploadCacheResultsStrategy::SuccessOnly => !did_fail,
-            UploadCacheResultsStrategy::Never => false,
+            UploadCacheResultsStrategy::success_only => !did_fail,
+            UploadCacheResultsStrategy::never => false,
             // Never cache internal errors or timeouts.
-            UploadCacheResultsStrategy::Everything => treat_infra_error_as_failure || action_result.error.is_none(),
-            UploadCacheResultsStrategy::FailuresOnly => did_fail,
+            UploadCacheResultsStrategy::everything => treat_infra_error_as_failure || action_result.error.is_none(),
+            UploadCacheResultsStrategy::failures_only => did_fail,
         }
     }
 

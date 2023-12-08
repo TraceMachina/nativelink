@@ -67,7 +67,7 @@ A very basic configuration that is a pure in-memory store is:
 
 The following configuration will cause the underlying data to be backed by the
 filesystem, and when the number of bytes reaches over 100mb for AC objects and
-10gb for CAS objects evict them, but apply LZ4 compression on the data before
+10gb for CAS objects evict them, but apply lz4 compression on the data before
 sending it to to be stored. This will also automatically decompress the data
 when the data is retrieved.
 
@@ -77,7 +77,7 @@ when the data is retrieved.
     "CAS_MAIN_STORE": {
       "compression": {
         "compression_algorithm": {
-          "LZ4": {}
+          "lz4": {}
         },
         "backend": {
           "filesystem": {
@@ -145,7 +145,7 @@ only transfer the the bytes around where the changes occurred.
           // Then apply a compression configuration to the individual file chunks.
           "compression": {
             "compression_algorithm": {
-              "LZ4": {}
+              "lz4": {}
             },
             "backend": {
               // Then take those compressed chunks and store them to the filesystem.

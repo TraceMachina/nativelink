@@ -3,7 +3,7 @@
     "AC_S3_STORE": {
       "compression": {
         "compression_algorithm": {
-          "LZ4": {}
+          "lz4": {}
         },
         "backend": {
           "fast_slow": {
@@ -70,7 +70,7 @@
             "content_store": {
               "compression": {
                 "compression_algorithm": {
-                  "LZ4": {}
+                  "lz4": {}
                 },
                 "backend": {
                   "fast_slow": {
@@ -116,7 +116,7 @@
     "MAIN_SCHEDULER": {
       "simple": {
         "supported_platform_properties": {
-          "cpu_count": "Minimum"
+          "cpu_count": "minimum"
         }
       }
     }

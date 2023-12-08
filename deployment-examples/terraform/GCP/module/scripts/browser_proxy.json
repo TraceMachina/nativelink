@@ -14,7 +14,7 @@
           }
         },
         "compression_algorithm": {
-          "LZ4": {}
+          "lz4": {}
         }
       }
     },
@@ -32,7 +32,7 @@
           }
         },
         "compression_algorithm": {
-          "LZ4": {}
+          "lz4": {}
         }
       }
     }

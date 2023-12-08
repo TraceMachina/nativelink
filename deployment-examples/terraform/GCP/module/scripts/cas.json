@@ -25,7 +25,7 @@
           }
         },
         "compression_algorithm": {
-          "LZ4": {}
+          "lz4": {}
         }
       }
     },
@@ -65,7 +65,7 @@
               }
             },
             "compression_algorithm": {
-              "LZ4": {}
+              "lz4": {}
             }
           }
         },
@@ -87,8 +87,8 @@
     },
     // External apis support compression.
     "compression": {
-      "send_compression_algorithm": "Gzip",
-      "accepted_compression_algorithms": ["Gzip"]
+      "send_compression_algorithm": "gzip",
+      "accepted_compression_algorithms": ["gzip"]
     },
     "services": {
       "cas": {
