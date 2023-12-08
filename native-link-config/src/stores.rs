@@ -353,6 +353,7 @@ pub struct Lz4Config {
     pub max_decode_block_size: u32,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum CompressionAlgorithm {
     /// LZ4 compression algorithm is extremely fast for compression and
@@ -362,7 +363,7 @@ pub enum CompressionAlgorithm {
     /// compressible.
     ///
     /// see: <https://lz4.github.io/lz4/>
-    LZ4(Lz4Config),
+    lz4(Lz4Config),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -437,12 +438,13 @@ pub struct S3Store {
     pub insecure_allow_http: bool,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum StoreType {
     /// The store is content addressable storage.
-    CAS,
+    cas,
     /// The store is an action cache.
-    AC,
+    ac,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

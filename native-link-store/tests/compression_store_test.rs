@@ -68,7 +68,7 @@ mod compression_store_tests {
                 backend: native_link_config::stores::StoreConfig::memory(
                     native_link_config::stores::MemoryStore::default(),
                 ),
-                compression_algorithm: native_link_config::stores::CompressionAlgorithm::LZ4(
+                compression_algorithm: native_link_config::stores::CompressionAlgorithm::lz4(
                     native_link_config::stores::Lz4Config { ..Default::default() },
                 ),
             },
@@ -97,7 +97,7 @@ mod compression_store_tests {
                 backend: native_link_config::stores::StoreConfig::memory(
                     native_link_config::stores::MemoryStore::default(),
                 ),
-                compression_algorithm: native_link_config::stores::CompressionAlgorithm::LZ4(
+                compression_algorithm: native_link_config::stores::CompressionAlgorithm::lz4(
                     native_link_config::stores::Lz4Config {
                         block_size: 10,
                         ..Default::default()
@@ -150,7 +150,7 @@ mod compression_store_tests {
                 backend: native_link_config::stores::StoreConfig::memory(
                     native_link_config::stores::MemoryStore::default(),
                 ),
-                compression_algorithm: native_link_config::stores::CompressionAlgorithm::LZ4(
+                compression_algorithm: native_link_config::stores::CompressionAlgorithm::lz4(
                     native_link_config::stores::Lz4Config { ..Default::default() },
                 ),
             },
@@ -183,7 +183,7 @@ mod compression_store_tests {
                 backend: native_link_config::stores::StoreConfig::memory(
                     native_link_config::stores::MemoryStore::default(),
                 ),
-                compression_algorithm: native_link_config::stores::CompressionAlgorithm::LZ4(
+                compression_algorithm: native_link_config::stores::CompressionAlgorithm::lz4(
                     native_link_config::stores::Lz4Config { ..Default::default() },
                 ),
             },
@@ -232,7 +232,7 @@ mod compression_store_tests {
                 backend: native_link_config::stores::StoreConfig::memory(
                     native_link_config::stores::MemoryStore::default(),
                 ),
-                compression_algorithm: native_link_config::stores::CompressionAlgorithm::LZ4(
+                compression_algorithm: native_link_config::stores::CompressionAlgorithm::lz4(
                     native_link_config::stores::Lz4Config {
                         block_size: BLOCK_SIZE,
                         ..Default::default()
@@ -311,7 +311,7 @@ mod compression_store_tests {
                 backend: native_link_config::stores::StoreConfig::memory(
                     native_link_config::stores::MemoryStore::default(),
                 ),
-                compression_algorithm: native_link_config::stores::CompressionAlgorithm::LZ4(
+                compression_algorithm: native_link_config::stores::CompressionAlgorithm::lz4(
                     native_link_config::stores::Lz4Config {
                         block_size: BLOCK_SIZE,
                         ..Default::default()

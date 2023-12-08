@@ -117,8 +117,8 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
 
     fn into_encoding(from: &CompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
-            CompressionAlgorithm::Gzip => Some(CompressionEncoding::Gzip),
-            CompressionAlgorithm::None => None,
+            CompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
+            CompressionAlgorithm::none => None,
         }
     }
 
@@ -195,7 +195,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         AcServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
+                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in server_cfg
@@ -219,7 +219,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         CasServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
+                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in server_cfg
@@ -243,7 +243,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         ExecutionServer::new(&cfg, &action_schedulers, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
+                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in server_cfg
@@ -267,7 +267,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         ByteStreamServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
+                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in server_cfg
@@ -300,7 +300,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 .map(|v| {
                     let mut service = v.into_service();
                     let send_algo = &server_cfg.compression.send_compression_algorithm;
-                    if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
+                    if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                         service = service.send_compressed(encoding);
                     }
                     for encoding in server_cfg
@@ -322,7 +322,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         WorkerApiServer::new(&cfg, &worker_schedulers).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &server_cfg.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::None)) {
+                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in server_cfg

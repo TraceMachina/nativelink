@@ -65,7 +65,7 @@ mod property_modifier_scheduler_tests {
     async fn add_action_adds_property() -> Result<(), Error> {
         let name = "name".to_string();
         let value = "value".to_string();
-        let context = make_modifier_scheduler(vec![PropertyModification::Add(PlatformPropertyAddition {
+        let context = make_modifier_scheduler(vec![PropertyModification::add(PlatformPropertyAddition {
             name: name.clone(),
             value: value.clone(),
         })]);
@@ -76,7 +76,7 @@ mod property_modifier_scheduler_tests {
         }));
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
             name.clone(),
-            PropertyType::Exact,
+            PropertyType::exact,
         )])));
         let (_, _, action_info) = join!(
             context.modifier_scheduler.add_action(action_info),
@@ -97,7 +97,7 @@ mod property_modifier_scheduler_tests {
         let name = "name".to_string();
         let original_value = "value".to_string();
         let replaced_value = "replaced".to_string();
-        let context = make_modifier_scheduler(vec![PropertyModification::Add(PlatformPropertyAddition {
+        let context = make_modifier_scheduler(vec![PropertyModification::add(PlatformPropertyAddition {
             name: name.clone(),
             value: replaced_value.clone(),
         })]);
@@ -112,7 +112,7 @@ mod property_modifier_scheduler_tests {
         }));
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
             name.clone(),
-            PropertyType::Exact,
+            PropertyType::exact,
         )])));
         let (_, _, action_info) = join!(
             context.modifier_scheduler.add_action(action_info),
@@ -133,8 +133,8 @@ mod property_modifier_scheduler_tests {
         let name = "name".to_string();
         let value = "value".to_string();
         let context = make_modifier_scheduler(vec![
-            PropertyModification::Remove(name.clone()),
-            PropertyModification::Add(PlatformPropertyAddition {
+            PropertyModification::remove(name.clone()),
+            PropertyModification::add(PlatformPropertyAddition {
                 name: name.clone(),
                 value: value.clone(),
             }),
@@ -146,7 +146,7 @@ mod property_modifier_scheduler_tests {
         }));
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
             name.clone(),
-            PropertyType::Exact,
+            PropertyType::exact,
         )])));
         let (_, _, action_info) = join!(
             context.modifier_scheduler.add_action(action_info),
@@ -167,11 +167,11 @@ mod property_modifier_scheduler_tests {
         let name = "name".to_string();
         let value = "value".to_string();
         let context = make_modifier_scheduler(vec![
-            PropertyModification::Add(PlatformPropertyAddition {
+            PropertyModification::add(PlatformPropertyAddition {
                 name: name.clone(),
                 value: value.clone(),
             }),
-            PropertyModification::Remove(name.clone()),
+            PropertyModification::remove(name.clone()),
         ]);
         let action_info = make_base_action_info(UNIX_EPOCH);
         let (_forward_watch_channel_tx, forward_watch_channel_rx) = watch::channel(Arc::new(ActionState {
@@ -180,7 +180,7 @@ mod property_modifier_scheduler_tests {
         }));
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
             name,
-            PropertyType::Exact,
+            PropertyType::exact,
         )])));
         let (_, _, action_info) = join!(
             context.modifier_scheduler.add_action(action_info),
@@ -197,7 +197,7 @@ mod property_modifier_scheduler_tests {
     async fn add_action_property_remove() -> Result<(), Error> {
         let name = "name".to_string();
         let value = "value".to_string();
-        let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
+        let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
         let mut action_info = make_base_action_info(UNIX_EPOCH);
         action_info
             .platform_properties
@@ -239,7 +239,7 @@ mod property_modifier_scheduler_tests {
     #[tokio::test]
     async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
         let name = "name".to_string();
-        let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
+        let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
         let scheduler_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
         let get_property_manager_fut = context
             .mock_scheduler
@@ -247,7 +247,7 @@ mod property_modifier_scheduler_tests {
         let property_manager_fut = context.modifier_scheduler.get_platform_property_manager(INSTANCE_NAME);
         let (actual_instance_name, property_manager) = join!(get_property_manager_fut, property_manager_fut);
         assert_eq!(
-            HashMap::<_, _>::from_iter([(name, PropertyType::Priority)]),
+            HashMap::<_, _>::from_iter([(name, PropertyType::priority)]),
             *property_manager?.get_known_properties()
         );
         assert_eq!(actual_instance_name, INSTANCE_NAME);
@@ -257,10 +257,10 @@ mod property_modifier_scheduler_tests {
     #[tokio::test]
     async fn remove_retains_type_in_underlying_manager() -> Result<(), Error> {
         let name = "name".to_string();
-        let context = make_modifier_scheduler(vec![PropertyModification::Remove(name.clone())]);
+        let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
         let scheduler_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::<_, _>::from_iter([(
             name.clone(),
-            PropertyType::Exact,
+            PropertyType::exact,
         )])));
         let get_property_manager_fut = context
             .mock_scheduler
@@ -268,7 +268,7 @@ mod property_modifier_scheduler_tests {
         let property_manager_fut = context.modifier_scheduler.get_platform_property_manager(INSTANCE_NAME);
         let (_, property_manager) = join!(get_property_manager_fut, property_manager_fut);
         assert_eq!(
-            HashMap::<_, _>::from_iter([(name, PropertyType::Exact)]),
+            HashMap::<_, _>::from_iter([(name, PropertyType::exact)]),
             *property_manager?.get_known_properties()
         );
         Ok(())

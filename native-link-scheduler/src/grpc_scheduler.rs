@@ -173,7 +173,7 @@ impl ActionScheduler for GrpcScheduler {
                     .err_tip(|| "Unable to get execution properties in GrpcScheduler")?
                     .supported_node_properties
                     .iter()
-                    .map(|property| (property.clone(), native_link_config::schedulers::PropertyType::Exact))
+                    .map(|property| (property.clone(), native_link_config::schedulers::PropertyType::exact))
                     .collect(),
             ));
 

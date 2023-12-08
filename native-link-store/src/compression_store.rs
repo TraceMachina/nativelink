@@ -209,7 +209,7 @@ impl CompressionStore {
         inner_store: Arc<dyn Store>,
     ) -> Result<Self, Error> {
         let lz4_config = match compression_config.compression_algorithm {
-            native_link_config::stores::CompressionAlgorithm::LZ4(mut lz4_config) => {
+            native_link_config::stores::CompressionAlgorithm::lz4(mut lz4_config) => {
                 if lz4_config.block_size == 0 {
                     lz4_config.block_size = DEFAULT_BLOCK_SIZE;
                 }

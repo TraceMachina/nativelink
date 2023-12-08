@@ -428,7 +428,7 @@ mod running_actions_manager_tests {
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
                 upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                     ..Default::default()
                 },
                 max_action_timeout: Duration::MAX,
@@ -528,7 +528,7 @@ mod running_actions_manager_tests {
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
                 upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                     ..Default::default()
                 },
                 max_action_timeout: Duration::MAX,
@@ -635,7 +635,7 @@ mod running_actions_manager_tests {
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
                 upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                     ..Default::default()
                 },
                 max_action_timeout: Duration::MAX,
@@ -794,7 +794,7 @@ mod running_actions_manager_tests {
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
                 upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                     ..Default::default()
                 },
                 max_action_timeout: Duration::MAX,
@@ -954,7 +954,7 @@ mod running_actions_manager_tests {
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
                 upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                     ..Default::default()
                 },
                 max_action_timeout: Duration::MAX,
@@ -1131,7 +1131,7 @@ mod running_actions_manager_tests {
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
                 upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                     ..Default::default()
                 },
                 max_action_timeout: Duration::MAX,
@@ -1248,7 +1248,7 @@ mod running_actions_manager_tests {
             ac_store: Some(Pin::into_inner(ac_store.clone())),
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1384,7 +1384,7 @@ exit 0
             ac_store: Some(Pin::into_inner(ac_store.clone())),
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1510,17 +1510,17 @@ exit 0
                 additional_environment: Some(HashMap::from([
                     (
                         "PROPERTY".to_string(),
-                        EnvironmentSource::Property("property_name".to_string()),
+                        EnvironmentSource::property("property_name".to_string()),
                     ),
-                    ("VALUE".to_string(), EnvironmentSource::Value("raw_value".to_string())),
-                    ("INNER_TIMEOUT".to_string(), EnvironmentSource::TimeoutMillis),
+                    ("VALUE".to_string(), EnvironmentSource::value("raw_value".to_string())),
+                    ("INNER_TIMEOUT".to_string(), EnvironmentSource::timeout_millis),
                 ])),
             },
             cas_store: Pin::into_inner(cas_store.clone()),
             ac_store: Some(Pin::into_inner(ac_store.clone())),
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1650,14 +1650,14 @@ exit 1
                 entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: Some(HashMap::from([(
                     "SIDE_CHANNEL_FILE".to_string(),
-                    EnvironmentSource::SideChannelFile,
+                    EnvironmentSource::side_channel_file,
                 )])),
             },
             cas_store: Pin::into_inner(cas_store.clone()),
             ac_store: Some(Pin::into_inner(ac_store.clone())),
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1720,7 +1720,7 @@ exit 1
             ac_store: Some(Pin::into_inner(ac_store.clone())),
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
+                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::success_only,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1779,7 +1779,7 @@ exit 1
             ac_store: Some(Pin::into_inner(ac_store.clone())),
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Everything,
+                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::everything,
                 ..Default::default()
             },
             max_action_timeout: Duration::MAX,
@@ -1839,7 +1839,7 @@ exit 1
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
-                    native_link_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
+                    native_link_config::cas_server::UploadCacheResultsStrategy::success_only,
                 ),
                 success_message_template: "{historical_results_hash}-{historical_results_size}".to_string(),
                 ..Default::default()
@@ -1921,7 +1921,7 @@ exit 1
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
-                    native_link_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
+                    native_link_config::cas_server::UploadCacheResultsStrategy::success_only,
                 ),
                 success_message_template: "{historical_results_hash}-{historical_results_size}".to_string(),
                 ..Default::default()
@@ -1955,7 +1955,7 @@ exit 1
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
-                    native_link_config::cas_server::UploadCacheResultsStrategy::FailuresOnly,
+                    native_link_config::cas_server::UploadCacheResultsStrategy::failures_only,
                 ),
                 failure_message_template: "{historical_results_hash}-{historical_results_size}".to_string(),
                 ..Default::default()
@@ -2013,7 +2013,7 @@ exit 1
             ac_store: Some(Pin::into_inner(ac_store.clone())),
             historical_store: Pin::into_inner(cas_store.clone()),
             upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::SuccessOnly,
+                upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::success_only,
                 success_message_template: "{action_digest_hash}-{action_digest_size}".to_string(),
                 ..Default::default()
             },
@@ -2109,7 +2109,7 @@ exit 1
                     ac_store: Some(Pin::into_inner(ac_store.clone())),
                     historical_store: Pin::into_inner(cas_store.clone()),
                     upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                        upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                         ..Default::default()
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
@@ -2177,7 +2177,7 @@ exit 1
                     ac_store: Some(Pin::into_inner(ac_store.clone())),
                     historical_store: Pin::into_inner(cas_store.clone()),
                     upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                        upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                         ..Default::default()
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
@@ -2248,7 +2248,7 @@ exit 1
                     ac_store: Some(Pin::into_inner(ac_store.clone())),
                     historical_store: Pin::into_inner(cas_store.clone()),
                     upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                        upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                         ..Default::default()
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
@@ -2320,7 +2320,7 @@ exit 1
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
                 upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                     ..Default::default()
                 },
                 max_action_timeout: Duration::MAX,
@@ -2428,7 +2428,7 @@ exit 1
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
                 upload_action_result_config: &native_link_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::Never,
+                    upload_ac_results_strategy: native_link_config::cas_server::UploadCacheResultsStrategy::never,
                     ..Default::default()
                 },
                 max_action_timeout: Duration::MAX,

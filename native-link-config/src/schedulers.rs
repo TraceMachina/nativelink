@@ -30,25 +30,26 @@ pub enum SchedulerConfig {
 
 /// When the scheduler matches tasks to workers that are capable of running
 /// the task, this value will be used to determine how the property is treated.
+#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub enum PropertyType {
     /// Requires the platform property to be a u64 and when the scheduler looks
     /// for appropriate worker nodes that are capable of executing the task,
     /// the task will not run on a node that has less than this value.
-    Minimum,
+    minimum,
 
     /// Requires the platform property to be a string and when the scheduler
     /// looks for appropriate worker nodes that are capable of executing the
     /// task, the task will not run on a node that does not have this property
     /// set to the value with exact string match.
-    Exact,
+    exact,
 
     /// Does not restrict on this value and instead will be passed to the worker
     /// as an informational piece.
     /// TODO(allada) In the future this will be used by the scheduler and worker
     /// to cause the scheduler to prefer certain workers over others, but not
     /// restrict them based on these values.
-    Priority,
+    priority,
 }
 
 /// When a worker is being searched for to run a job, this will be used
@@ -59,9 +60,9 @@ pub enum PropertyType {
 pub enum WorkerAllocationStrategy {
     /// Prefer workers that have been least recently used to run a job.
     #[default]
-    LeastRecentlyUsed,
+    least_recently_used,
     /// Prefer workers that have been most recently used to run a job.
-    MostRecentlyUsed,
+    most_recently_used,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -156,12 +157,13 @@ pub struct PlatformPropertyAddition {
     pub value: String,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug, Clone)]
 pub enum PropertyModification {
     /// Add a property to the action properties.
-    Add(PlatformPropertyAddition),
+    add(PlatformPropertyAddition),
     /// Remove a named property from the action.
-    Remove(String),
+    remove(String),
 }
 
 #[derive(Deserialize, Debug)]

@@ -29,13 +29,14 @@ pub type SchedulerRefName = String;
 /// Used when the config references `instance_name` in the protocol.
 pub type InstanceName = String;
 
+#[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug, Default, Clone, Copy)]
 pub enum CompressionAlgorithm {
     /// No compression.
     #[default]
-    None,
+    none,
     /// Zlib compression.
-    Gzip,
+    gzip,
 }
 
 /// Note: Compressing data in the cloud rarely has a benefit, since most
@@ -309,33 +310,35 @@ pub struct EndpointConfig {
     pub timeout: Option<f32>,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Deserialize, Debug, Default)]
 pub enum UploadCacheResultsStrategy {
     /// Only upload action results with an exit code of 0.
     #[default]
-    SuccessOnly,
+    success_only,
 
     /// Don't upload any action results.
-    Never,
+    never,
 
     /// Upload all action results that complete.
-    Everything,
+    everything,
 
     /// Only upload action results that fail.
-    FailuresOnly,
+    failures_only,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Clone, Deserialize, Debug)]
 pub enum EnvironmentSource {
     /// The name of the property in the action to get the value from.
-    Property(String),
+    property(String),
 
     /// The raw value to set.
-    Value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
+    value(#[serde(deserialize_with = "convert_string_with_shellexpand")] String),
 
     /// The max amount of time in milliseconds the command is allowed to run
     /// (requested by the client).
-    TimeoutMillis,
+    timeout_millis,
 
     /// A special file path will be provided that can be used to comminicate
     /// with the parent process about out-of-band information. This file
@@ -353,7 +356,7 @@ pub enum EnvironmentSource {
     ///
     /// All fields are optional, file does not need to be created and may be
     /// empty.
-    SideChannelFile,
+    side_channel_file,
 }
 
 #[derive(Deserialize, Debug, Default)]
