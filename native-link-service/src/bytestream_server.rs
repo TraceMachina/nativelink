@@ -70,12 +70,11 @@ struct ActiveStreamGuard<'a> {
 }
 
 impl<'a> ActiveStreamGuard<'a> {
-    /// Consumes the guard and returns the inner state. The stream will be considered
-    /// "finished", will remove it from the active_uploads.
-    fn graceful_finish(mut self) -> (DropCloserWriteHalf, StoreUpdateFuture) {
+    /// Consumes the guard. The stream will be considered "finished", will
+    /// remove it from the active_uploads.
+    fn graceful_finish(mut self) {
         let stream_state = self.stream_state.take().unwrap();
         self.bytestream_server.active_uploads.lock().remove(&stream_state.uuid);
-        (stream_state.tx, stream_state.store_update_fut)
     }
 }
 

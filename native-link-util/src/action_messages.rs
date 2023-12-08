@@ -191,7 +191,7 @@ impl ActionInfo {
                 .unwrap_or_default()
                 .try_into()
                 .map_err(|_| make_input_err!("Failed convert proto duration to system duration"))?,
-            platform_properties: action.platform.unwrap_or_default().try_into()?,
+            platform_properties: action.platform.unwrap_or_default().into(),
             priority: execute_request.execution_policy.unwrap_or_default().priority,
             load_timestamp,
             insert_timestamp: queued_timestamp,
