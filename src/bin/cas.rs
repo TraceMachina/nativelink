@@ -48,6 +48,8 @@ use parking_lot::Mutex;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use scopeguard::guard;
 use tokio::net::TcpListener;
+#[cfg(target_family = "unix")]
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::task::spawn_blocking;
 use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig as TlsServerConfig};
 use tokio_rustls::TlsAcceptor;
@@ -709,6 +711,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::signal::ctrl_c().await.expect("Failed to listen to SIGINT");
         eprintln!("User terminated process via SIGINT");
         std::process::exit(130);
+    });
+
+    #[cfg(target_family = "unix")]
+    runtime.spawn(async move {
+        signal(SignalKind::terminate())
+            .expect("Failed to listen to SIGTERM")
+            .recv()
+            .await;
+        eprintln!("Process terminated via SIGTERM");
+        std::process::exit(143);
     });
 
     runtime.block_on(inner_main(cfg, server_start_time))
