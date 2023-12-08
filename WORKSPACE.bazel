@@ -30,7 +30,7 @@ rules_rust_dependencies()
 rust_register_toolchains(
     edition = "2021",
     versions = [
-        "1.73.0",
+        "1.74.0",
         "nightly/2023-12-07",
     ],
 )
