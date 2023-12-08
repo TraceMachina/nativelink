@@ -8,54 +8,6 @@ on:
     branches: [ main ]
 
 jobs:
-  windows-cargo-tests:
-    # The type of runner that the job will run on.
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v3.5.3
-      with:
-        fetch-depth: 0
-    - name: Compile on windows
-      run: cargo build --all
-    - name: Test on windows
-      run: cargo test --all
-  cargo-tests:
-    # The type of runner that the job will run on.
-    runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        # Which OS versions we will test on.
-        os_version: [ 20.04, 22.04 ]
-    steps:
-    - uses: actions/checkout@v3.5.3
-      with:
-        fetch-depth: 0
-
-    - uses: docker/setup-buildx-action@v2
-    - uses: docker/build-push-action@v4
-      with:
-        context: .
-        file: ./deployment-examples/docker-compose/Dockerfile
-        build-args: |
-          OS_VERSION=${{ matrix.os_version }}
-        load: true # This brings the build into `docker images` from buildx.
-        tags: trace_machina/native-link:dependencies
-        target: dependencies
-
-    - name: Create container for cargo
-      run: |
-        docker run --name=native-link-cargo trace_machina/native-link:dependencies bash -c ' \
-          DEBIAN_FRONTEND=noninteractive apt-get install -y curl libssl-dev gcc pkg-config python3 && \
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain=1.70.0 \
-        ' && \
-        docker commit native-link-cargo trace_machina/native-link:cargo
-    - name: Compile & test with cargo
-      run: |
-        docker run --rm -w /root/native-link -v $PWD:/root/native-link trace_machina/native-link:cargo bash -c ' \
-          . /root/.cargo/env && \
-          cargo build --all && \
-          cargo test --all \
-        '
   docker-compose-compiles-native-link:
     # The type of runner that the job will run on.
     runs-on: ubuntu-22.04

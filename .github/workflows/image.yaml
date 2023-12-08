@@ -17,18 +17,21 @@ jobs:
       packages: write
       id-token: write
     steps:
+
       - name: Checkout
-        uses: >- # v3.5.3
-          actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+        uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
       - name: Install Nix
         uses: >- # v7
           DeterminateSystems/nix-installer-action@5620eb4af6b562c53e4d4628c0b6e4f9d9ae8612
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Cache Nix derivations
         uses: >- # Custom commit, last pinned at 2023-11-17.
           DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+
       - name: Test image
         run: |
           nix run .#local-image-test
