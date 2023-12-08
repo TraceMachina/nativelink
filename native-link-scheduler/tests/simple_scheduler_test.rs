@@ -1477,4 +1477,62 @@ mod scheduler_tests {
 
         Ok(())
     }
+
+    /// Regression test for: https://github.com/TraceMachina/native-link/issues/257.
+    #[tokio::test]
+    async fn ensure_task_or_worker_change_notification_received_test() -> Result<(), Error> {
+        const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
+        const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);
+
+        let scheduler = SimpleScheduler::new_with_callback(
+            &native_link_config::schedulers::SimpleScheduler::default(),
+            || async move {},
+        );
+        let action_digest = DigestInfo::new([99u8; 32], 512);
+
+        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            make_system_time(1),
+        )
+        .await?;
+
+        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
+
+        {
+            // Other tests check full data. We only care if we got StartAction.
+            match rx_from_worker1.recv().await.unwrap().update {
+                Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+                v => panic!("Expected StartAction, got : {v:?}"),
+            }
+            // Other tests check full data. We only care if client thinks we are Executing.
+            assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+        }
+
+        scheduler
+            .update_action_with_internal_error(
+                &WORKER_ID1,
+                &ActionInfoHashKey {
+                    instance_name: INSTANCE_NAME.to_string(),
+                    digest: action_digest,
+                    salt: 0,
+                },
+                make_err!(Code::NotFound, "Some error"),
+            )
+            .await;
+
+        tokio::task::yield_now().await; // Allow task<->worker matcher to run.
+
+        // Now connect a new worker and it should pickup the action.
+        {
+            // Other tests check full data. We only care if we got StartAction.
+            rx_from_worker2.recv().await.err_tip(|| "worker went away")?;
+            // Other tests check full data. We only care if client thinks we are Executing.
+            assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+        }
+
+        Ok(())
+    }
 }
