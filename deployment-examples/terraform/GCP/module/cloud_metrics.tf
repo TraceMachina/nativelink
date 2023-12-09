@@ -16,7 +16,7 @@
 resource "google_monitoring_metric_descriptor" "metric_x86_cpu_worker_cpu_total" {
   description  = "Total number of CPU resources available for x86 tasks."
   display_name = "x86_cpu_total"
-  type         = "custom.googleapis.com/native-link/x86_workers/cpu_total"
+  type         = "custom.googleapis.com/nativelink/x86_workers/cpu_total"
   metric_kind  = "GAUGE"
   value_type   = "INT64"
 }
@@ -24,7 +24,7 @@ resource "google_monitoring_metric_descriptor" "metric_x86_cpu_worker_cpu_total"
 resource "google_monitoring_metric_descriptor" "metric_x86_cpu_worker_actions_queued" {
   description  = "Total number of CPU resources actions queued for x86 tasks."
   display_name = "x86_actions_queued"
-  type         = "custom.googleapis.com/native-link/x86_workers/actions_queued"
+  type         = "custom.googleapis.com/nativelink/x86_workers/actions_queued"
   metric_kind  = "GAUGE"
   value_type   = "INT64"
 }
@@ -32,7 +32,7 @@ resource "google_monitoring_metric_descriptor" "metric_x86_cpu_worker_actions_qu
 resource "google_monitoring_metric_descriptor" "metric_x86_cpu_worker_actions_active" {
   description  = "Total number of CPU resources actions active for x86 tasks."
   display_name = "x86_actions_active"
-  type         = "custom.googleapis.com/native-link/x86_workers/actions_active"
+  type         = "custom.googleapis.com/nativelink/x86_workers/actions_active"
   metric_kind  = "GAUGE"
   value_type   = "INT64"
 }
@@ -40,7 +40,7 @@ resource "google_monitoring_metric_descriptor" "metric_x86_cpu_worker_actions_ac
 resource "google_monitoring_metric_descriptor" "metric_x86_cpu_worker_actions_total" {
   description  = "Total number of CPU resources actions for x86 tasks."
   display_name = "x86_actions_total"
-  type         = "custom.googleapis.com/native-link/x86_workers/actions_total"
+  type         = "custom.googleapis.com/nativelink/x86_workers/actions_total"
   metric_kind  = "GAUGE"
   value_type   = "INT64"
 }
@@ -48,7 +48,7 @@ resource "google_monitoring_metric_descriptor" "metric_x86_cpu_worker_actions_to
 resource "google_monitoring_metric_descriptor" "metric_x86_cpu_worker_cpu_ratio" {
   description  = "CPU resources actions to cpus available for x86 tasks."
   display_name = "x86_cpu_ratio"
-  type         = "custom.googleapis.com/native-link/x86_workers/cpu_ratio"
+  type         = "custom.googleapis.com/nativelink/x86_workers/cpu_ratio"
   metric_kind  = "GAUGE"
   value_type   = "DOUBLE"
 }

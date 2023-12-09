@@ -1,5 +1,5 @@
 target/
-*/*/.terraform-native-link-builder
+*/*/.terraform-nativelink-builder
 */*/.update_scheduler_ips.zip
 */*/terraform.tfstate
 */*/.terraform

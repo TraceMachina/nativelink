@@ -34,9 +34,9 @@ pub mod build {
 pub mod com {
   pub mod github {
     pub mod trace_machina {
-      pub mod native_link {
+      pub mod nativelink {
         pub mod remote_execution {
-          include!("com.github.trace_machina.native_link.remote_execution.pb.rs");
+          include!("com.github.trace_machina.nativelink.remote_execution.pb.rs");
         }
       }
     }

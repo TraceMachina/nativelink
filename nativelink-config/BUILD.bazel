@@ -1,0 +1,32 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+)
+
+rust_library(
+    name = "nativelink-config",
+    srcs = [
+        "src/cas_server.rs",
+        "src/lib.rs",
+        "src/schedulers.rs",
+        "src/serde_utils.rs",
+        "src/stores.rs",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:serde",
+        "@crate_index//:shellexpand",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-config",
+)
+
+rust_doc_test(
+    name = "doc_test",
+    crate = ":nativelink-config",
+)

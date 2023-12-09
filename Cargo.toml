@@ -7,7 +7,7 @@
 resolver = "2"
 
 [package]
-name = "native-link"
+name = "nativelink"
 version = "0.0.0"
 edition = "2021"
 
@@ -21,12 +21,12 @@ name = "cas"
 [dependencies]
 error = { path = "error" }
 proto = { path = "proto" }
-native-link-config = { path = "native-link-config" }
-native-link-scheduler = { path = "native-link-scheduler" }
-native-link-service = { path = "native-link-service" }
-native-link-store = { path = "native-link-store" }
-native-link-util = { path = "native-link-util" }
-native-link-worker = { path = "native-link-worker" }
+nativelink-config = { path = "nativelink-config" }
+nativelink-scheduler = { path = "nativelink-scheduler" }
+nativelink-service = { path = "nativelink-service" }
+nativelink-store = { path = "nativelink-store" }
+nativelink-util = { path = "nativelink-util" }
+nativelink-worker = { path = "nativelink-worker" }
 
 async-lock = "2.8.0"
 axum = "0.6.20"

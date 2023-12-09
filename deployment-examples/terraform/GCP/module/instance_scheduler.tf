@@ -88,10 +88,10 @@ resource "google_compute_region_instance_template" "scheduler_instance_template"
   }
 
   metadata = {
-    native-link-type            = "scheduler"
-    native-link-cas-bucket      = "${google_storage_bucket.cas_s3_bucket.name}:${google_storage_bucket.cas_s3_bucket.location}"
-    native-link-ac-bucket       = "${google_storage_bucket.ac_s3_bucket.name}:${google_storage_bucket.ac_s3_bucket.location}"
-    native-link-hmac-secret-key = google_secret_manager_secret.scheduler_secret_manager_hmac_key.secret_id
+    nativelink-type            = "scheduler"
+    nativelink-cas-bucket      = "${google_storage_bucket.cas_s3_bucket.name}:${google_storage_bucket.cas_s3_bucket.location}"
+    nativelink-ac-bucket       = "${google_storage_bucket.ac_s3_bucket.name}:${google_storage_bucket.ac_s3_bucket.location}"
+    nativelink-hmac-secret-key = google_secret_manager_secret.scheduler_secret_manager_hmac_key.secret_id
   }
 }
 

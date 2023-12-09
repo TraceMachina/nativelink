@@ -24,7 +24,7 @@ resource "google_compute_region_autoscaler" "x86_cpu_worker_autoscaler" {
     cooldown_period = 60 # 1 minutes.
 
     metric {
-      name   = "custom.googleapis.com/native-link/x86_workers/cpu_ratio"
+      name   = "custom.googleapis.com/nativelink/x86_workers/cpu_ratio"
       target = 1.0
       type   = "GAUGE"
       filter = "resource.type=\"global\""
@@ -100,12 +100,12 @@ resource "google_compute_region_instance_template" "x86_cpu_worker_instance_temp
   }
 
   metadata = {
-    native-link-type                               = "worker"
-    native-link-internal-worker-scheduler-endpoint = trim(google_dns_record_set.scheduler_internal_for_worker_dns_record_set.name, ".")
-    native-link-cas-bucket                         = "${google_storage_bucket.cas_s3_bucket.name}:${google_storage_bucket.cas_s3_bucket.location}"
-    native-link-ac-bucket                          = "${google_storage_bucket.ac_s3_bucket.name}:${google_storage_bucket.ac_s3_bucket.location}"
-    native-link-hmac-secret-key                    = google_secret_manager_secret.x86_cpu_worker_secret_manager_hmac_key.secret_id
-    native-link-browser-endpoint                   = trim(google_dns_record_set.browser_dns_record_set.name, ".")
+    nativelink-type                               = "worker"
+    nativelink-internal-worker-scheduler-endpoint = trim(google_dns_record_set.scheduler_internal_for_worker_dns_record_set.name, ".")
+    nativelink-cas-bucket                         = "${google_storage_bucket.cas_s3_bucket.name}:${google_storage_bucket.cas_s3_bucket.location}"
+    nativelink-ac-bucket                          = "${google_storage_bucket.ac_s3_bucket.name}:${google_storage_bucket.ac_s3_bucket.location}"
+    nativelink-hmac-secret-key                    = google_secret_manager_secret.x86_cpu_worker_secret_manager_hmac_key.secret_id
+    nativelink-browser-endpoint                   = trim(google_dns_record_set.browser_dns_record_set.name, ".")
   }
 }
 
