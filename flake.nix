@@ -1,5 +1,5 @@
 {
-  description = "native-link";
+  description = "nativelink";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -58,7 +58,7 @@
           # Additional target for external dependencies to simplify caching.
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-          native-link = craneLib.buildPackage (commonArgs
+          nativelink = craneLib.buildPackage (commonArgs
             // {
             inherit cargoArtifacts;
           });
@@ -73,26 +73,26 @@
           apps = {
             default = {
               type = "app";
-              program = "${native-link}/bin/cas";
+              program = "${nativelink}/bin/cas";
             };
           };
           packages = {
             inherit publish-ghcr local-image-test;
-            default = native-link;
+            default = nativelink;
             image = pkgs.dockerTools.streamLayeredImage {
-              name = "native-link";
+              name = "nativelink";
               contents = [
-                native-link
+                nativelink
                 pkgs.dockerTools.caCertificates
               ];
               config = {
                 Entrypoint = [ "/bin/cas" ];
                 Labels = {
                   "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
-                  "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/native-link";
+                  "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
                   "org.opencontainers.image.licenses" = "Apache-2.0";
                   "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
-                  "org.opencontainers.image.source" = "https://github.com/TraceMachina/native-link";
+                  "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
                   "org.opencontainers.image.title" = "Native Link";
                   "org.opencontainers.image.vendor" = "Trace Machina, Inc.";
                 };

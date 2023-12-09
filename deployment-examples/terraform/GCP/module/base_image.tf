@@ -48,7 +48,7 @@ resource "google_compute_instance" "build_instance" {
   }
 
   metadata = {
-    ssh-keys = "ubuntu:${data.tls_public_key.native_link_pem.public_key_openssh}"
+    ssh-keys = "ubuntu:${data.tls_public_key.nativelink_pem.public_key_openssh}"
   }
 
   connection {
@@ -56,19 +56,19 @@ resource "google_compute_instance" "build_instance" {
     agent       = true
     type        = "ssh"
     user        = "ubuntu"
-    private_key = data.tls_public_key.native_link_pem.private_key_openssh
+    private_key = data.tls_public_key.nativelink_pem.private_key_openssh
   }
 
-  # Create tarball of current native-link checkout.
+  # Create tarball of current nativelink checkout.
   # Note: In production this should be changed to some pinned release version.
   provisioner "local-exec" {
     command = <<EOT
       set -ex
       ROOT_MODULE="$(realpath ${path.root})"
-      rm -rf $ROOT_MODULE/.terraform-native-link-builder
-      mkdir -p $ROOT_MODULE/.terraform-native-link-builder
+      rm -rf $ROOT_MODULE/.terraform-nativelink-builder
+      mkdir -p $ROOT_MODULE/.terraform-nativelink-builder
       cd $ROOT_MODULE/../../../../..
-      find . ! -ipath '*/target*' -and ! \( -ipath '*/.*' -and ! -name '.rustfmt.toml' -and ! -name '.bazelrc' \) -and ! -ipath './bazel-*' -type f -print0 | tar cvf $ROOT_MODULE/.terraform-native-link-builder/file.tar.gz --null -T -
+      find . ! -ipath '*/target*' -and ! \( -ipath '*/.*' -and ! -name '.rustfmt.toml' -and ! -name '.bazelrc' \) -and ! -ipath './bazel-*' -type f -print0 | tar cvf $ROOT_MODULE/.terraform-nativelink-builder/file.tar.gz --null -T -
     EOT
   }
 
@@ -94,36 +94,36 @@ resource "google_compute_instance" "build_instance" {
 
   # Upload our tarball to the instance.
   provisioner "file" {
-    source      = "${path.root}/.terraform-native-link-builder/file.tar.gz"
+    source      = "${path.root}/.terraform-nativelink-builder/file.tar.gz"
     destination = "/tmp/file.tar.gz"
   }
 
-  # Build and install native-link.
+  # Build and install nativelink.
   provisioner "remote-exec" {
     inline = [
       <<EOT
         set -eux &&
-        mkdir -p /tmp/native-link &&
-        cd /tmp/native-link &&
+        mkdir -p /tmp/nativelink &&
+        cd /tmp/nativelink &&
         tar xvf /tmp/file.tar.gz &&
         . ~/.cargo/env &&
         cargo build --release --bin cas &&
-        sudo mv /tmp/native-link/target/release/cas /usr/local/bin/native-link &&
+        sudo mv /tmp/nativelink/target/release/cas /usr/local/bin/nativelink &&
         `` &&
-        cd /tmp/native-link/deployment-examples/terraform/GCP/module/scripts &&
+        cd /tmp/nativelink/deployment-examples/terraform/GCP/module/scripts &&
         sudo mv ./bb_browser_config.json    /root/bb_browser_config.json &&
         sudo mv ./browser_proxy.json        /root/browser_proxy.json &&
         sudo mv ./scheduler.json            /root/scheduler.json &&
         sudo mv ./cas.json                  /root/cas.json &&
         sudo mv ./worker.json               /root/worker.json &&
-        sudo mv ./start_native_link.sh      /root/start_native_link.sh &&
+        sudo mv ./start_nativelink.sh      /root/start_nativelink.sh &&
         sudo mv ./entrypoint.sh             /root/entrypoint.sh &&
         sudo mv ./cloud_publisher.py        /root/cloud_publisher.py &&
         `` &&
-        sudo mv ./native-link.service       /etc/systemd/system/native-link.service &&
-        sudo chmod +x /root/start_native_link.sh &&
-        sudo systemctl enable native-link &&
-        sudo rm -rf /tmp/file.tar.gz /tmp/native-link &&
+        sudo mv ./nativelink.service       /etc/systemd/system/nativelink.service &&
+        sudo chmod +x /root/start_nativelink.sh &&
+        sudo systemctl enable nativelink &&
+        sudo rm -rf /tmp/file.tar.gz /tmp/nativelink &&
         sync
       EOT
     ]

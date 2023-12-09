@@ -1,0 +1,87 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+    "rust_test_suite",
+)
+
+rust_library(
+    name = "nativelink-scheduler",
+    srcs = [
+        "src/action_scheduler.rs",
+        "src/cache_lookup_scheduler.rs",
+        "src/default_scheduler_factory.rs",
+        "src/grpc_scheduler.rs",
+        "src/lib.rs",
+        "src/platform_property_manager.rs",
+        "src/property_modifier_scheduler.rs",
+        "src/simple_scheduler.rs",
+        "src/worker.rs",
+        "src/worker_scheduler.rs",
+    ],
+    proc_macro_deps = [
+        "@crate_index//:async-trait",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//error",
+        "//nativelink-config",
+        "//nativelink-store",
+        "//nativelink-util",
+        "//proto",
+        "@crate_index//:blake3",
+        "@crate_index//:futures",
+        "@crate_index//:hashbrown",
+        "@crate_index//:lru",
+        "@crate_index//:parking_lot",
+        "@crate_index//:prost",
+        "@crate_index//:rand",
+        "@crate_index//:scopeguard",
+        "@crate_index//:tokio",
+        "@crate_index//:tokio-stream",
+        "@crate_index//:tonic",
+        "@crate_index//:tracing",
+        "@crate_index//:uuid",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    srcs = [
+        "tests/action_messages_test.rs",
+        "tests/cache_lookup_scheduler_test.rs",
+        "tests/property_modifier_scheduler_test.rs",
+        "tests/simple_scheduler_test.rs",
+    ],
+    compile_data = [
+        "tests/utils/mock_scheduler.rs",
+        "tests/utils/scheduler_utils.rs",
+    ],
+    proc_macro_deps = [
+        "@crate_index//:async-trait",
+    ],
+    deps = [
+        ":nativelink-scheduler",
+        "//error",
+        "//nativelink-config",
+        "//nativelink-store",
+        "//nativelink-util",
+        "//proto",
+        "@crate_index//:futures",
+        "@crate_index//:pretty_assertions",
+        "@crate_index//:prost",
+        "@crate_index//:tokio",
+        "@crate_index//:tokio-stream",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-scheduler",
+)
+
+rust_doc_test(
+    name = "doc_test",
+    crate = ":nativelink-scheduler",
+)

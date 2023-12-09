@@ -14,7 +14,7 @@
 
 # -- Begin Base AMI ---
 
-resource "aws_instance" "build_native_link_instance" {
+resource "aws_instance" "build_nativelink_instance" {
   for_each = {
     arm = {
       "instance_type": var.build_arm_instance_type,
@@ -29,7 +29,7 @@ resource "aws_instance" "build_native_link_instance" {
   ami                         = each.value["ami"]
   instance_type               = each.value["instance_type"]
   associate_public_ip_address = true
-  key_name                    = aws_key_pair.native_link_key.key_name
+  key_name                    = aws_key_pair.nativelink_key.key_name
   iam_instance_profile        = aws_iam_instance_profile.builder_profile.name
 
   vpc_security_group_ids = [
@@ -44,7 +44,7 @@ resource "aws_instance" "build_native_link_instance" {
   }
 
   tags = {
-    "native_link:instance_type" = "ami_builder",
+    "nativelink:instance_type" = "ami_builder",
   }
 
   connection {
@@ -52,7 +52,7 @@ resource "aws_instance" "build_native_link_instance" {
     agent       = true
     type        = "ssh"
     user        = "ubuntu"
-    private_key = data.tls_public_key.native_link_pem.private_key_openssh
+    private_key = data.tls_public_key.nativelink_pem.private_key_openssh
   }
 
   provisioner "local-exec" {
@@ -60,9 +60,9 @@ resource "aws_instance" "build_native_link_instance" {
       set -ex
       SELF_DIR=$(pwd)
       cd ../../..
-      rm -rf $SELF_DIR/.terraform-native-link-builder
-      mkdir -p $SELF_DIR/.terraform-native-link-builder
-      find . ! -ipath '*/target*' -and ! \( -ipath '*/.*' -and ! -name '.rustfmt.toml' -and ! -name '.bazelrc' \) -and ! -ipath './bazel-*' -type f -print0 | tar cvf $SELF_DIR/.terraform-native-link-builder/file.tar.gz --null -T -
+      rm -rf $SELF_DIR/.terraform-nativelink-builder
+      mkdir -p $SELF_DIR/.terraform-nativelink-builder
+      find . ! -ipath '*/target*' -and ! \( -ipath '*/.*' -and ! -name '.rustfmt.toml' -and ! -name '.bazelrc' \) -and ! -ipath './bazel-*' -type f -print0 | tar cvf $SELF_DIR/.terraform-nativelink-builder/file.tar.gz --null -T -
     EOT
   }
 
@@ -102,7 +102,7 @@ resource "aws_instance" "build_native_link_instance" {
   }
 
   provisioner "file" {
-    source      = "./.terraform-native-link-builder/file.tar.gz"
+    source      = "./.terraform-nativelink-builder/file.tar.gz"
     destination = "/tmp/file.tar.gz"
   }
 
@@ -110,27 +110,27 @@ resource "aws_instance" "build_native_link_instance" {
     inline = [
       <<EOT
         set -eux &&
-        mkdir -p /tmp/native-link &&
-        cd /tmp/native-link &&
+        mkdir -p /tmp/nativelink &&
+        cd /tmp/nativelink &&
         tar xvf /tmp/file.tar.gz &&
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io awscli &&
-        cd /tmp/native-link &&
+        cd /tmp/nativelink &&
         . /etc/lsb-release &&
-        sudo docker build --build-arg OS_VERSION=$DISTRIB_RELEASE -t native-link-runner -f ./deployment-examples/docker-compose/Dockerfile . &&
-        container_id=$(sudo docker create native-link-runner) &&
+        sudo docker build --build-arg OS_VERSION=$DISTRIB_RELEASE -t nativelink-runner -f ./deployment-examples/docker-compose/Dockerfile . &&
+        container_id=$(sudo docker create nativelink-runner) &&
         `# Copy the compiled binary out of the container` &&
-        sudo docker cp $container_id:/usr/local/bin/native-link /usr/local/bin/native-link &&
+        sudo docker cp $container_id:/usr/local/bin/nativelink /usr/local/bin/nativelink &&
         `# Stop and remove all containers, as they are not needed` &&
         sudo docker rm $(sudo docker ps -a -q) &&
         sudo docker rmi $(sudo docker images -q) &&
         `` &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/scheduler.json /root/scheduler.json &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/cas.json /root/cas.json &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/worker.json /root/worker.json &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/start_native_link.sh /root/start_native_link.sh &&
-        sudo chmod +x /root/start_native_link.sh &&
-        sudo mv /tmp/native-link/deployment-examples/terraform/AWS/scripts/native-link.service /etc/systemd/system/native-link.service &&
-        sudo systemctl enable native-link &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/scheduler.json /root/scheduler.json &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/cas.json /root/cas.json &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/worker.json /root/worker.json &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/start_nativelink.sh /root/start_nativelink.sh &&
+        sudo chmod +x /root/start_nativelink.sh &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/nativelink.service /etc/systemd/system/nativelink.service &&
+        sudo systemctl enable nativelink &&
         sync
       EOT
     ]
@@ -143,9 +143,9 @@ resource "aws_ami_from_instance" "base_ami" {
     x86 = "x86"
   }
 
-  name               = "native_link_${each.key}_base"
-  source_instance_id = aws_instance.build_native_link_instance[each.key].id
-  # If we reboot the instance it will terminate the instance because of native-link.service file.
+  name               = "nativelink_${each.key}_base"
+  source_instance_id = aws_instance.build_nativelink_instance[each.key].id
+  # If we reboot the instance it will terminate the instance because of nativelink.service file.
   # So, we can control if the instance should terminate only by if the instance will reboot.
   snapshot_without_reboot = !var.terminate_ami_builder
 }

@@ -25,25 +25,25 @@ use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
 use futures::FutureExt;
 use hyper::server::conn::Http;
 use hyper::{Response, StatusCode};
-use native_link_config::cas_server::{
+use nativelink_config::cas_server::{
     CasConfig, CompressionAlgorithm, ConfigDigestHashFunction, GlobalConfig, ServerConfig, WorkerConfig,
 };
-use native_link_scheduler::default_scheduler_factory::scheduler_factory;
-use native_link_scheduler::worker::WorkerId;
-use native_link_service::ac_server::AcServer;
-use native_link_service::bytestream_server::ByteStreamServer;
-use native_link_service::capabilities_server::CapabilitiesServer;
-use native_link_service::cas_server::CasServer;
-use native_link_service::execution_server::ExecutionServer;
-use native_link_service::worker_api_server::WorkerApiServer;
-use native_link_store::default_store_factory::store_factory;
-use native_link_store::store_manager::StoreManager;
-use native_link_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
-use native_link_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
-use native_link_util::metrics_utils::{
+use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
+use nativelink_scheduler::worker::WorkerId;
+use nativelink_service::ac_server::AcServer;
+use nativelink_service::bytestream_server::ByteStreamServer;
+use nativelink_service::capabilities_server::CapabilitiesServer;
+use nativelink_service::cas_server::CasServer;
+use nativelink_service::execution_server::ExecutionServer;
+use nativelink_service::worker_api_server::WorkerApiServer;
+use nativelink_store::default_store_factory::store_factory;
+use nativelink_store::store_manager::StoreManager;
+use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
+use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
+use nativelink_util::metrics_utils::{
     set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent, Registry,
 };
-use native_link_worker::local_worker::new_local_worker;
+use nativelink_worker::local_worker::new_local_worker;
 use parking_lot::Mutex;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use scopeguard::guard;
@@ -64,12 +64,12 @@ const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
 const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 
 /// Name of environment variable to disable metrics.
-const METRICS_DISABLE_ENV: &str = "NATIVE_LINK_DISABLE_METRICS";
+const METRICS_DISABLE_ENV: &str = "nativelink_DISABLE_METRICS";
 
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
 #[clap(
-    author = "Trace Machina, Inc. <native-link@tracemachina.com>",
+    author = "Trace Machina, Inc. <nativelink@tracemachina.com>",
     version = "0.0.1",
     about,
     long_about = None
@@ -81,7 +81,7 @@ struct Args {
 }
 
 async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), Box<dyn std::error::Error>> {
-    let mut root_metrics_registry = <Registry>::with_prefix("native_link");
+    let mut root_metrics_registry = <Registry>::with_prefix("nativelink");
 
     let store_manager = Arc::new(StoreManager::new());
     {
@@ -372,8 +372,8 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
                             .map(|_| {
                                 // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
-                                buf = buf.replace("native_link_native_link_stores_", "");
-                                buf = buf.replace("native_link_native_link_workers_", "");
+                                buf = buf.replace("nativelink_nativelink_stores_", "");
+                                buf = buf.replace("nativelink_nativelink_workers_", "");
                                 let mut response = Response::new(buf);
                                 // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
                                 // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure

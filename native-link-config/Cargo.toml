@@ -1,8 +1,0 @@
-[package]
-name = "native-link-config"
-version = "0.0.0"
-edition = "2021"
-
-[dependencies]
-serde = { version = "1.0.193", features = ["derive"] }
-shellexpand = "3.1.0"

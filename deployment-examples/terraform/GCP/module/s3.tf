@@ -64,7 +64,7 @@ resource "google_storage_bucket" "cf_bucket" {
 
 data "archive_file" "cf_zip_file" {
   type        = "zip"
-  output_path = "${path.root}/.terraform-native-link-builder/cf_files.zip"
+  output_path = "${path.root}/.terraform-nativelink-builder/cf_files.zip"
   source_dir  = "${path.module}/scripts/cloud_functions"
   depends_on  = [google_compute_instance.build_instance]
 }

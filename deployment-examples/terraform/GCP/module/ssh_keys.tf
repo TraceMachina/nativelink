@@ -16,6 +16,6 @@ resource "tls_private_key" "ssh_key" {
   algorithm = "ED25519"
 }
 
-data "tls_public_key" "native_link_pem" {
+data "tls_public_key" "nativelink_pem" {
   private_key_openssh = tls_private_key.ssh_key.private_key_openssh
 }

@@ -15,8 +15,8 @@
 version: '3.4'
 
 services:
-  native_link_local_cas:
-    image: trace_machina/native-link:latest
+  nativelink_local_cas:
+    image: trace_machina/nativelink:latest
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
@@ -24,7 +24,7 @@ services:
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
     volumes:
-      - ${NATIVE_LINK_DIR:-~/.cache/native-link}:/root/.cache/native-link
+      - ${nativelink_DIR:-~/.cache/nativelink}:/root/.cache/nativelink
       - type: bind
         source: .
         target: /root
@@ -32,10 +32,10 @@ services:
       RUST_LOG: ${RUST_LOG:-warn}
     ports: [ "50051:50051/tcp", "127.0.0.1:50061:50061", "50071:50071/tcp", ]
     command: |
-      native-link /root/local-storage-cas.json
+      nativelink /root/local-storage-cas.json
 
-  native_link_scheduler:
-    image: trace_machina/native-link:latest
+  nativelink_scheduler:
+    image: trace_machina/nativelink:latest
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
@@ -48,13 +48,13 @@ services:
         target: /root
     environment:
       RUST_LOG: ${RUST_LOG:-warn}
-      CAS_ENDPOINT: native_link_local_cas
+      CAS_ENDPOINT: nativelink_local_cas
     ports: [ "50052:50052/tcp" ]
     command: |
-      native-link /root/scheduler.json
+      nativelink /root/scheduler.json
 
-  native_link_executor:
-    image: trace_machina/native-link:latest
+  nativelink_executor:
+    image: trace_machina/nativelink:latest
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
@@ -62,13 +62,13 @@ services:
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
     volumes:
-      - ${NATIVE_LINK_DIR:-~/.cache/native-link}:/root/.cache/native-link
+      - ${nativelink_DIR:-~/.cache/nativelink}:/root/.cache/nativelink
       - type: bind
         source: .
         target: /root
     environment:
       RUST_LOG: ${RUST_LOG:-warn}
-      CAS_ENDPOINT: native_link_local_cas
-      SCHEDULER_ENDPOINT: native_link_scheduler
+      CAS_ENDPOINT: nativelink_local_cas
+      SCHEDULER_ENDPOINT: nativelink_scheduler
     command: |
-      native-link /root/worker.json
+      nativelink /root/worker.json

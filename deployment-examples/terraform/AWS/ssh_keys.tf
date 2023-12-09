@@ -16,12 +16,12 @@ resource "tls_private_key" "ssh_key" {
   algorithm = "ED25519"
 }
 
-resource "aws_key_pair" "native_link_key" {
-  key_name   = "native-link-key"
-  public_key = data.tls_public_key.native_link_pem.public_key_openssh
+resource "aws_key_pair" "nativelink_key" {
+  key_name   = "nativelink-key"
+  public_key = data.tls_public_key.nativelink_pem.public_key_openssh
 }
 
-data "tls_public_key" "native_link_pem" {
+data "tls_public_key" "nativelink_pem" {
   private_key_openssh = tls_private_key.ssh_key.private_key_openssh
   # This is left here for convenience. Comment out the line above and uncomment and modify this
   # line to use a custom SSH key.

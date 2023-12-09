@@ -10,7 +10,7 @@
             "fast": {
               "memory": {
                 "eviction_policy": {
-                  "max_bytes": "${NATIVE_LINK_AC_CONTENT_LIMIT:-100000000}",
+                  "max_bytes": "${nativelink_AC_CONTENT_LIMIT:-100000000}",
                 }
               }
             },
@@ -20,8 +20,8 @@
               // enough shards and point them to the same bucket/path but with some key
               // to distinguish each shard based on the key.
               "s3_store": {
-                "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
-                "bucket": "${NATIVE_LINK_AWS_S3_CAS_BUCKET:-not_set}",
+                "region": "${nativelink_AWS_REGION:-us-east-1}",
+                "bucket": "${nativelink_AWS_S3_CAS_BUCKET:-not_set}",
                 "key_prefix": "ac/",
                 "retry": {
                   "max_retries": 6,
@@ -44,7 +44,7 @@
                 "fast": {
                   "memory": {
                     "eviction_policy": {
-                      "max_bytes": "${NATIVE_LINK_CAS_INDEX_CACHE_LIMIT:-100000000}",
+                      "max_bytes": "${nativelink_CAS_INDEX_CACHE_LIMIT:-100000000}",
                     }
                   }
                 },
@@ -54,8 +54,8 @@
                   // enough shards and point them to the same bucket/path but with some key
                   // to distinguish each shard based on the key.
                   "s3_store": {
-                    "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
-                    "bucket": "${NATIVE_LINK_AWS_S3_CAS_BUCKET:-not_set}",
+                    "region": "${nativelink_AWS_REGION:-us-east-1}",
+                    "bucket": "${nativelink_AWS_S3_CAS_BUCKET:-not_set}",
                     "key_prefix": "cas-index/",
                     "retry": {
                       "max_retries": 6,
@@ -80,7 +80,7 @@
                       // in the scheduler.
                       "memory": {
                         "eviction_policy": {
-                          "max_bytes": "${NATIVE_LINK_CAS_CONTENT_LIMIT:-1000000000}",
+                          "max_bytes": "${nativelink_CAS_CONTENT_LIMIT:-1000000000}",
                         }
                       }
                     },
@@ -90,8 +90,8 @@
                       // enough shards and point them to the same bucket/path but with some key
                       // to distinguish each shard based on the key.
                       "s3_store": {
-                        "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
-                        "bucket": "${NATIVE_LINK_AWS_S3_CAS_BUCKET:-not_set}",
+                        "region": "${nativelink_AWS_REGION:-us-east-1}",
+                        "bucket": "${nativelink_AWS_S3_CAS_BUCKET:-not_set}",
                         "key_prefix": "cas/",
                         "retry": {
                           "max_retries": 6,
