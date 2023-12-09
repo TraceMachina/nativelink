@@ -7,14 +7,14 @@
             "fast": {
               "memory": {
                 "eviction_policy": {
-                  "max_bytes": "${NATIVE_LINK_AC_MEMORY_CONTENT_LIMIT:-100000000}"
+                  "max_bytes": "${nativelink_AC_MEMORY_CONTENT_LIMIT:-100000000}"
                 }
               }
             },
             "slow": {
               "s3_store": {
-                "region": "${NATIVE_LINK_AC_S3_BUCKET_REGION:-}",
-                "bucket": "${NATIVE_LINK_AC_S3_BUCKET:-}",
+                "region": "${nativelink_AC_S3_BUCKET_REGION:-}",
+                "bucket": "${nativelink_AC_S3_BUCKET:-}",
                 "retry": {
                   "max_retries": 7,
                   "delay": 0.1,
@@ -42,7 +42,7 @@
                     "lower_store": {
                       "memory": {
                         "eviction_policy": {
-                          "max_bytes": "${NATIVE_LINK_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
+                          "max_bytes": "${nativelink_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
                         }
                       }
                     },
@@ -53,8 +53,8 @@
                 },
                 "slow": {
                   "s3_store": {
-                    "region": "${NATIVE_LINK_CAS_S3_BUCKET_REGION:-}",
-                    "bucket": "${NATIVE_LINK_CAS_S3_BUCKET:-}",
+                    "region": "${nativelink_CAS_S3_BUCKET_REGION:-}",
+                    "bucket": "${nativelink_CAS_S3_BUCKET:-}",
                     "retry": {
                       "max_retries": 7,
                       "delay": 0.1,
@@ -79,8 +79,8 @@
   "servers": [{
     "listen_address": "0.0.0.0:50051",
     "tls": {
-      "cert_file": "${NATIVE_LINK_CERT_FILE:-}",
-      "key_file": "${NATIVE_LINK_KEY_FILE:-}"
+      "cert_file": "${nativelink_CERT_FILE:-}",
+      "key_file": "${nativelink_KEY_FILE:-}"
     },
     "advanced_http": {
       "http2_keep_alive_interval": 10

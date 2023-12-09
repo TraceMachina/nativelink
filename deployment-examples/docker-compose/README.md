@@ -27,15 +27,15 @@ bazel test //... \
 
 ## Instances
 
-All instances use the same Docker image, trace_machina/native-link:latest, built from the Dockerfile located at ./deployment-examples/docker-compose/Dockerfile.
+All instances use the same Docker image, trace_machina/nativelink:latest, built from the Dockerfile located at ./deployment-examples/docker-compose/Dockerfile.
 
 ### CAS
 
-The CAS (Content Addressable Storage) service is used as a local cache for the Native Link system. It is configured in the docker-compose.yml file under the native_link_local_cas service.
+The CAS (Content Addressable Storage) service is used as a local cache for the Native Link system. It is configured in the docker-compose.yml file under the nativelink_local_cas service.
 
 ```yml
-  native_link_local_cas:
-    image: trace_machina/native-link:latest
+  nativelink_local_cas:
+    image: trace_machina/nativelink:latest
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
@@ -43,7 +43,7 @@ The CAS (Content Addressable Storage) service is used as a local cache for the N
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
     volumes:
-      - ${NATIVE_LINK_DIR:-~/.cache/native-link}:/root/.cache/native-link
+      - ${nativelink_DIR:-~/.cache/nativelink}:/root/.cache/nativelink
       - type: bind
         source: .
         target: /root
@@ -56,17 +56,17 @@ The CAS (Content Addressable Storage) service is used as a local cache for the N
         "50071":50071/tcp",
       ]
     command: |
-      native-link /root/local-storage-cas.json
+      nativelink /root/local-storage-cas.json
 ```
 
 ### Scheduler
 
 The scheduler is currently the only single point of failure in the system. We currently only support one scheduler at a time.
-The scheduler service is responsible for scheduling tasks in the Native Link system. It is configured in the docker-compose.yml file under the native_link_scheduler service.
+The scheduler service is responsible for scheduling tasks in the Native Link system. It is configured in the docker-compose.yml file under the nativelink_scheduler service.
 
 ```yml
-  native_link_scheduler:
-    image: trace_machina/native-link:latest
+  nativelink_scheduler:
+    image: trace_machina/nativelink:latest
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
@@ -79,19 +79,19 @@ The scheduler service is responsible for scheduling tasks in the Native Link sys
         target: /root
     environment:
       RUST_LOG: ${RUST_LOG:-warn}
-      CAS_ENDPOINT: native_link_local_cas
+      CAS_ENDPOINT: nativelink_local_cas
     ports: [ "50052:50052/tcp" ]
     command: |
-      native-link /root/scheduler.json
+      nativelink /root/scheduler.json
 ```
 
 ### Workers
 
-Worker instances are responsible for executing tasks. They are configured in the docker-compose.yml file under the native_link_executor service.
+Worker instances are responsible for executing tasks. They are configured in the docker-compose.yml file under the nativelink_executor service.
 
 ```yml
-  native_link_executor:
-    image: trace_machina/native-link:latest
+  nativelink_executor:
+    image: trace_machina/nativelink:latest
     build:
       context: ../..
       dockerfile: ./deployment-examples/docker-compose/Dockerfile
@@ -99,16 +99,16 @@ Worker instances are responsible for executing tasks. They are configured in the
       args:
         - ADDITIONAL_SETUP_WORKER_CMD=${ADDITIONAL_SETUP_WORKER_CMD:-}
     volumes:
-      - ${NATIVE_LINK_DIR:-~/.cache/native-link}:/root/.cache/native-link
+      - ${nativelink_DIR:-~/.cache/nativelink}:/root/.cache/nativelink
       - type: bind
         source: .
         target: /root
     environment:
       RUST_LOG: ${RUST_LOG:-warn}
-      CAS_ENDPOINT: native_link_local_cas
-      SCHEDULER_ENDPOINT: native_link_scheduler
+      CAS_ENDPOINT: nativelink_local_cas
+      SCHEDULER_ENDPOINT: nativelink_scheduler
     command: |
-      native-link /root/worker.json
+      nativelink /root/worker.json
 ```
 
 ## Security

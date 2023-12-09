@@ -15,7 +15,7 @@
 # --- Begin CAS S3 ---
 
 resource "aws_s3_bucket" "cas_bucket" {
-  bucket        = "native-link-cas-bucket-${data.aws_caller_identity.current.account_id}"
+  bucket        = "nativelink-cas-bucket-${data.aws_caller_identity.current.account_id}"
 
   # Sadly terraform does not support having these values be defined as a terraform variable.
   # In reality we want to allow "dev" environments to destroy the buckets, but not allow
@@ -53,7 +53,7 @@ resource "aws_s3_bucket_ownership_controls" "cas_bucket_ownership_controls" {
 # a little extra to store access pattern logs, so in the event of a security
 # breach there will at least be a record of it somewhere.
 resource "aws_s3_bucket" "access_logs" {
-  bucket        = "native-link-access-logs-${data.aws_caller_identity.current.account_id}"
+  bucket        = "nativelink-access-logs-${data.aws_caller_identity.current.account_id}"
 
   # Sadly terraform does not support having these values be defined as a terraform variable.
   # In reality we want to allow "dev" environments to destroy the buckets, but not allow

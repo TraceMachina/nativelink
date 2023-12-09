@@ -1,6 +1,6 @@
 # Native Link
 
-[![CI](https://github.com/tracemachina/native-link/workflows/CI/badge.svg)](https://github.com/tracemachina/native-link/actions/workflows/main.yml)
+[![CI](https://github.com/tracemachina/nativelink/workflows/CI/badge.svg)](https://github.com/tracemachina/nativelink/actions/workflows/main.yml)
 
 Native link is an extremely (blazingly?) fast and efficient build cache and
 remote executor for systems that communicate using the [Remote execution
@@ -16,37 +16,37 @@ Supports Unix-based operating systems and Windows.
 * Nix with [flakes](https://nixos.wiki/wiki/Flakes) enabled
 
 This build does not require cloning the repository, but you need to provide a
-config file, for instance the one at [native-link-config/examples/basic_cas.json](./native-link-config/examples/basic_cas.json).
+config file, for instance the one at [nativelink-config/examples/basic_cas.json](./nativelink-config/examples/basic_cas.json).
 
 The following command builds and runs Native Link in release (optimized) mode:
 
 ```sh
-nix run github:TraceMachina/native-link ./basic_cas.json
+nix run github:TraceMachina/nativelink ./basic_cas.json
 ```
 
 For use in production pin the executable to a specific revision:
 
 ```sh
-nix run github:TraceMachina/native-link/<revision> ./basic_cas.json
+nix run github:TraceMachina/nativelink/<revision> ./basic_cas.json
 ```
 
 ## 📦 Using the OCI image
 
-See the published [OCI images](https://github.com/TraceMachina/native-link/pkgs/container/native-link)
+See the published [OCI images](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
 for pull commands.
 
 Images are tagged by nix derivation hash. The most recently pushed image
 corresponds to the `main` branch. Images are signed by the GitHub action that
-produced the image. Note that the [OCI workflow](https://github.com/TraceMachina/native-link/actions/workflows/image.yaml)
+produced the image. Note that the [OCI workflow](https://github.com/TraceMachina/nativelink/actions/workflows/image.yaml)
 might take a few minutes to publish the latest image.
 
 ```sh
 # Get the tag for the latest commit
-export LATEST=$(nix eval github:TraceMachina/native-link#image.imageTag --raw)
+export LATEST=$(nix eval github:TraceMachina/nativelink#image.imageTag --raw)
 
 # Verify the signature
-cosign verify ghcr.io/tracemachina/native-link:${LATEST} \
-    --certificate-identity=https://github.com/TraceMachina/native-link/.github/workflows/image.yaml@refs/heads/main \
+cosign verify ghcr.io/tracemachina/nativelink:${LATEST} \
+    --certificate-identity=https://github.com/TraceMachina/nativelink/.github/workflows/image.yaml@refs/heads/main \
     --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
@@ -54,11 +54,11 @@ For use in production pin the image to a specific revision:
 
 ```sh
 # Get the tag for a specific commit
-export PINNED_TAG=$(nix eval github:TraceMachina/native-link/<revision>#image.imageTag --raw)
+export PINNED_TAG=$(nix eval github:TraceMachina/nativelink/<revision>#image.imageTag --raw)
 
 # Verify the signature
-cosign verify ghcr.io/tracemachina/native-link:${PINNED_TAG} \
-    --certificate-identity=https://github.com/TraceMachina/native-link/.github/workflows/image.yaml@refs/heads/main \
+cosign verify ghcr.io/tracemachina/nativelink:${PINNED_TAG} \
+    --certificate-identity=https://github.com/TraceMachina/nativelink/.github/workflows/image.yaml@refs/heads/main \
     --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
@@ -85,16 +85,16 @@ the service:
 
 ```sh
 # Unoptimized development build on Unix
-bazel run cas -- ./native-link-config/examples/basic_cas.json
+bazel run cas -- ./nativelink-config/examples/basic_cas.json
 
 # Optimized release build on Unix
-bazel run -c opt cas -- ./native-link-config/examples/basic_cas.json
+bazel run -c opt cas -- ./nativelink-config/examples/basic_cas.json
 
 # Unoptimized development build on Windows
-bazel run --config=windows cas -- ./native-link-config/examples/basic_cas.json
+bazel run --config=windows cas -- ./nativelink-config/examples/basic_cas.json
 
 # Optimized release build on Windows
-bazel run --config=windows -c opt cas -- ./native-link-config/examples/basic_cas.json
+bazel run --config=windows -c opt cas -- ./nativelink-config/examples/basic_cas.json
 ```
 
 ## 🦀 Building with Cargo
@@ -110,10 +110,10 @@ bazel run --config=windows -c opt cas -- ./native-link-config/examples/basic_cas
 
 ```bash
 # Unoptimized development build
-cargo run --bin cas -- ./native-link-config/examples/basic_cas.json
+cargo run --bin cas -- ./nativelink-config/examples/basic_cas.json
 
 # Optimized release build
-cargo run --release --bin cas -- ./native-link-config/examples/basic_cas.json
+cargo run --release --bin cas -- ./nativelink-config/examples/basic_cas.json
 ```
 
 ## 🧪 Evaluating Native Link
@@ -136,7 +136,7 @@ and `worker`.
 
 ## ⚙️ Configuration
 
-The `cas` executable reads a JSON file as it's only parameter. See [native-link-config](./native-link-config)
+The `cas` executable reads a JSON file as it's only parameter. See [nativelink-config](./nativelink-config)
 for more details and examples.
 
 ## 🚀 Example Deployments

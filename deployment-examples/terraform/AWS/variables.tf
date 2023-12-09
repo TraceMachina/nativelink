@@ -49,7 +49,7 @@ variable "allow_ssh_from_cidrs" {
 
 variable "base_domain" {
   description = "Base domain name of existing Route53 hosted zone. Subdomains will be added to this zone."
-  default     = "native-link.demo.trace_machina.com"
+  default     = "nativelink.demo.trace_machina.com"
 }
 
 variable "cas_domain_prefix" {

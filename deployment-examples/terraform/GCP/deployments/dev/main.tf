@@ -28,7 +28,7 @@ provider "google" {
   zone    = var.gcp_zone
 }
 
-module "native_link" {
+module "nativelink" {
   source = "../../module"
 
   gcp_project_id = var.gcp_project_id

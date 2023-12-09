@@ -4,8 +4,8 @@
       "compression": {
         "backend": {
           "s3_store": {
-            "region": "${NATIVE_LINK_AC_S3_BUCKET_REGION:-}",
-            "bucket": "${NATIVE_LINK_AC_S3_BUCKET:-}",
+            "region": "${nativelink_AC_S3_BUCKET_REGION:-}",
+            "bucket": "${nativelink_AC_S3_BUCKET:-}",
             "retry": {
               "max_retries": 7,
               "delay": 0.1,
@@ -22,8 +22,8 @@
       "compression": {
         "backend": {
           "s3_store": {
-            "region": "${NATIVE_LINK_CAS_S3_BUCKET_REGION:-}",
-            "bucket": "${NATIVE_LINK_CAS_S3_BUCKET:-}",
+            "region": "${nativelink_CAS_S3_BUCKET_REGION:-}",
+            "bucket": "${nativelink_CAS_S3_BUCKET:-}",
             "retry": {
               "max_retries": 7,
               "delay": 0.1,

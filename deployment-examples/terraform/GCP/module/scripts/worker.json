@@ -4,8 +4,8 @@
       "compression": {
         "backend": {
           "s3_store": {
-            "region": "${NATIVE_LINK_AC_S3_BUCKET_REGION:-}",
-            "bucket": "${NATIVE_LINK_AC_S3_BUCKET:-}",
+            "region": "${nativelink_AC_S3_BUCKET_REGION:-}",
+            "bucket": "${nativelink_AC_S3_BUCKET:-}",
             "retry": {
               "max_retries": 7,
               "delay": 0.1,
@@ -22,8 +22,8 @@
       "compression": {
         "backend": {
           "s3_store": {
-            "region": "${NATIVE_LINK_CAS_S3_BUCKET_REGION:-}",
-            "bucket": "${NATIVE_LINK_CAS_S3_BUCKET:-}",
+            "region": "${nativelink_CAS_S3_BUCKET_REGION:-}",
+            "bucket": "${nativelink_CAS_S3_BUCKET:-}",
             "retry": {
               "max_retries": 7,
               "delay": 0.1,
@@ -43,7 +43,7 @@
             "content_path": "/worker/cas/content",
             "temp_path": "/worker/cas/temp",
             "eviction_policy": {
-              "max_bytes": "${NATIVE_LINK_CAS_FS_CONTENT_LIMIT:-100000000}"
+              "max_bytes": "${nativelink_CAS_FS_CONTENT_LIMIT:-100000000}"
             }
           }
         },
@@ -66,14 +66,14 @@
   "workers": [{
     "local": {
       "worker_api_endpoint": {
-        "uri": "grpc://${NATIVE_LINK_SCHEDULER_ENDPOINT:-127.0.0.1}:50061"
+        "uri": "grpc://${nativelink_SCHEDULER_ENDPOINT:-127.0.0.1}:50061"
       },
       "cas_fast_slow_store": "CAS_STORE",
       "upload_action_result": {
         "ac_store": "AC_STORE",
         "historical_results_store": "S3_CAS_STORE",
-        "success_message_template": "https://${NATIVE_LINK_BROWSER_ENDPOINT:-example.com}/main/blobs/{digest_function}/action/{action_digest_hash}-{action_digest_size}/",
-        "failure_message_template": "https://${NATIVE_LINK_BROWSER_ENDPOINT:-example.com}/main/blobs/{digest_function}/historical_execute_response/{historical_results_hash}-{historical_results_size}/"
+        "success_message_template": "https://${nativelink_BROWSER_ENDPOINT:-example.com}/main/blobs/{digest_function}/action/{action_digest_hash}-{action_digest_size}/",
+        "failure_message_template": "https://${nativelink_BROWSER_ENDPOINT:-example.com}/main/blobs/{digest_function}/historical_execute_response/{historical_results_hash}-{historical_results_size}/"
       },
       "work_directory": "/worker/work",
       "platform_properties": {

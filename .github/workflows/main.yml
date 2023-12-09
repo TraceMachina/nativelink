@@ -8,7 +8,7 @@ on:
     branches: [ main ]
 
 jobs:
-  docker-compose-compiles-native-link:
+  docker-compose-compiles-nativelink:
     # The type of runner that the job will run on.
     runs-on: ubuntu-22.04
     strategy:
@@ -30,7 +30,7 @@ jobs:
           OS_VERSION=${{ matrix.os_version }}
           ADDITIONAL_SETUP_WORKER_CMD=DEBIAN_FRONTEND=noninteractive apt-get install -y gcc g++ lld pkg-config python3
         load: true # This brings the build into `docker images` from buildx.
-        tags: trace_machina/native-link:latest
+        tags: trace_machina/nativelink:latest
     - uses: docker/build-push-action@v4
       with:
         context: .
@@ -39,7 +39,7 @@ jobs:
           OPT_LEVEL=opt
           OS_VERSION=${{ matrix.os_version }}
         load: true # This brings the build into `docker images` from buildx.
-        tags: trace_machina/native-link:builder
+        tags: trace_machina/nativelink:builder
         target: builder
 
     - name: Compile Native Link with Native Link
@@ -48,7 +48,7 @@ jobs:
         cd deployment-examples/docker-compose && \
         docker-compose up -d && \
         cd ../../ && \
-        docker run --rm --net=host -w /root/native-link -v $PWD:/root/native-link trace_machina/native-link:builder sh -c ' \
+        docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
           bazel clean && \
           bazel test //... \
           --remote_instance_name=main \
@@ -56,7 +56,7 @@ jobs:
           --remote_executor=grpc://127.0.0.1:50052 \
           --remote_default_exec_properties=cpu_count=1 \
         ' && \
-        docker run --rm --net=host -w /root/native-link -v $PWD:/root/native-link trace_machina/native-link:builder sh -c ' \
+        docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
           bazel clean && \
           bazel test //... \
           --remote_instance_name=main \
@@ -85,7 +85,7 @@ jobs:
           OPT_LEVEL=fastbuild
           OS_VERSION=${{ matrix.os_version }}
         load: true # This brings the build into `docker images` from buildx.
-        tags: trace_machina/native-link:latest
+        tags: trace_machina/nativelink:latest
 
     - name: Run tests
       run: ./run_integration_tests.sh

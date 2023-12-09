@@ -47,7 +47,7 @@ def publish_google_cloud_monitoring(metrics, project_id):
 
         series = monitoring_v3.TimeSeries()
         # TODO(allada) This should be a variable (x86_workers).
-        series.metric.type = f"custom.googleapis.com/native-link/x86_workers/{metric_name}"
+        series.metric.type = f"custom.googleapis.com/nativelink/x86_workers/{metric_name}"
         series.points = [{
             "interval": monitoring_v3.TimeInterval({
                 "start_time": {
@@ -83,7 +83,7 @@ def get_metric_value(line):
 
 
 def main():
-    req = urllib.request.Request("http://metadata.google.internal/computeMetadata/v1/instance/attributes/native-link-type")
+    req = urllib.request.Request("http://metadata.google.internal/computeMetadata/v1/instance/attributes/nativelink-type")
     req.add_header("Metadata-Flavor", "Google")
     instance_type = urllib.request.urlopen(req).read()
     # Only the scheduler should publish metrics.
@@ -108,11 +108,11 @@ def main():
             continue
         (metric_name, value) = parts
         # TODO(#384) Prometheus has a bug where it duplicates names a lot, when it's fixed this must be changed.
-        if metric_name.startswith("native_link_native_link_schedulers_native_link_schedulers_MAIN_SCHEDULER_active_actions_total"):
+        if metric_name.startswith("nativelink_nativelink_schedulers_nativelink_schedulers_MAIN_SCHEDULER_active_actions_total"):
             active_actions_total = value
-        if metric_name.startswith("native_link_native_link_schedulers_native_link_schedulers_MAIN_SCHEDULER_queued_actions_total"):
+        if metric_name.startswith("nativelink_nativelink_schedulers_nativelink_schedulers_MAIN_SCHEDULER_queued_actions_total"):
             queued_actions_total = value
-        if metric_name.startswith("native_link_native_link_schedulers_native_link_schedulers_MAIN_SCHEDULER_cpu_count_available_properties"):
+        if metric_name.startswith("nativelink_nativelink_schedulers_nativelink_schedulers_MAIN_SCHEDULER_cpu_count_available_properties"):
             available_cpus = value
 
     all_cpus = None

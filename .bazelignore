@@ -5,7 +5,7 @@ bazel-out
 bazel-remote-bin
 bazel-remote-out
 bazel-remote-testlogs
-bazel-remote-native-link
+bazel-remote-nativelink
 bazel-root
 bazel-testlogs
-bazel-native-link
+bazel-nativelink
