@@ -45,6 +45,9 @@ use tracing::{enabled, error, info, Level};
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// If this value changes update the documentation in the config definition.
+const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
+
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
 type StoreUpdateFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 
@@ -170,9 +173,14 @@ impl ByteStreamServer {
                 .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", store_name))?;
             stores.insert(instance_name.to_string(), store);
         }
+        let max_bytes_per_stream = if config.max_bytes_per_stream == 0 {
+            DEFAULT_MAX_BYTES_PER_STREAM
+        } else {
+            config.max_bytes_per_stream
+        };
         Ok(ByteStreamServer {
             stores,
-            max_bytes_per_stream: config.max_bytes_per_stream,
+            max_bytes_per_stream,
             active_uploads: Arc::new(Mutex::new(HashMap::new())),
             sleep_fn,
         })

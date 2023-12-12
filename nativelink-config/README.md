@@ -53,10 +53,7 @@ A very basic configuration that is a pure in-memory store is:
       "bytestream": {
         "cas_stores": {
           "main": "CAS_MAIN_STORE",
-        },
-        // According to https://github.com/grpc/grpc.github.io/issues/371
-        // 16KiB - 64KiB is optimal.
-        "max_bytes_per_stream": 64000, // 64kb.
+        }
       }
     }
   }]
