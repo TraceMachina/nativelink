@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use bytes::BytesMut;
 use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
-use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::{
     ActionCache, ActionCacheServer as Server,
 };
@@ -36,8 +36,14 @@ use prost::Message;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
+#[derive(Clone)]
+pub struct AcStoreInfo {
+    store: Arc<dyn Store>,
+    read_only: bool,
+}
+
 pub struct AcServer {
-    stores: HashMap<String, Arc<dyn Store>>,
+    stores: HashMap<String, AcStoreInfo>,
 }
 
 impl AcServer {
@@ -47,7 +53,13 @@ impl AcServer {
             let store = store_manager
                 .get_store(&ac_cfg.ac_store)
                 .ok_or_else(|| make_input_err!("'ac_store': '{}' does not exist", ac_cfg.ac_store))?;
-            stores.insert(instance_name.to_string(), store);
+            stores.insert(
+                instance_name.to_string(),
+                AcStoreInfo {
+                    store,
+                    read_only: ac_cfg.read_only,
+                },
+            );
         }
         Ok(AcServer { stores: stores.clone() })
     }
@@ -63,7 +75,7 @@ impl AcServer {
         let get_action_request = grpc_request.into_inner();
 
         let instance_name = &get_action_request.instance_name;
-        let store = self
+        let store_info = self
             .stores
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?;
@@ -76,14 +88,14 @@ impl AcServer {
             .try_into()?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.clone().inner_store(Some(digest)).as_any();
+        let any_store = store_info.store.clone().inner_store(Some(digest)).as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store.get_action_result(Request::new(get_action_request)).await;
         }
 
         Ok(Response::new(
-            get_and_decode_digest::<ActionResult>(Pin::new(store.as_ref()), &digest).await?,
+            get_and_decode_digest::<ActionResult>(Pin::new(store_info.store.as_ref()), &digest).await?,
         ))
     }
 
@@ -94,10 +106,17 @@ impl AcServer {
         let update_action_request = grpc_request.into_inner();
 
         let instance_name = &update_action_request.instance_name;
-        let store = self
+        let store_info = self
             .stores
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?;
+
+        if store_info.read_only {
+            return Err(make_err!(
+                Code::PermissionDenied,
+                "The store '{instance_name}' is read only on this endpoint",
+            ));
+        }
 
         let digest: DigestInfo = update_action_request
             .action_digest
@@ -106,7 +125,8 @@ impl AcServer {
             .try_into()?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.clone().inner_store(Some(digest)).as_any();
+        let any_store = store_info.store.clone().inner_store(Some(digest)).as_any();
+
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store
@@ -123,7 +143,7 @@ impl AcServer {
             .encode(&mut store_data)
             .err_tip(|| "Provided ActionResult could not be serialized")?;
 
-        Pin::new(store.as_ref())
+        Pin::new(store_info.store.as_ref())
             .update_oneshot(digest, store_data.freeze())
             .await
             .err_tip(|| "Failed to update in action cache")?;

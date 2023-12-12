@@ -37,11 +37,11 @@ use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
 };
 use nativelink_util::store_trait::Store;
+use nativelink_util::tls_utils;
 use tokio::process;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tonic::transport::Channel as TonicChannel;
 use tonic::Streaming;
 use tracing::{error, warn};
 
@@ -381,21 +381,17 @@ pub async fn new_local_worker(
                 let timeout = config.worker_api_endpoint.timeout.unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
                 let timeout_duration = Duration::from_secs_f32(timeout);
 
-                let uri = config
-                    .worker_api_endpoint
-                    .uri
-                    .clone()
-                    .try_into()
-                    .map_err(|e| make_input_err!("Invalid URI for worker endpoint : {:?}", e))?;
-                let endpoint = TonicChannel::builder(uri)
+                let tls_config = tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)?;
+                let endpoint = tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
+                    .map_err(|e| make_input_err!("Invalid URI for worker endpoint : {e:?}"))?
                     .connect_timeout(timeout_duration)
                     .timeout(timeout_duration);
+
                 let transport = endpoint.connect().await.map_err(|e| {
                     make_err!(
                         Code::Internal,
-                        "Could not connect to endpoint {}: {:?}",
-                        config.worker_api_endpoint.uri,
-                        e
+                        "Could not connect to endpoint {}: {e:?}",
+                        config.worker_api_endpoint.uri
                     )
                 })?;
                 Ok(WorkerApiClient::new(transport).into())

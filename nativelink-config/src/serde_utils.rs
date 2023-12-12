@@ -58,7 +58,7 @@ where
 }
 
 /// Same as convert_numeric_with_shellexpand, but supports Option<T>.
-pub fn convert_optinoal_numeric_with_shellexpand<'de, D, T, E>(deserializer: D) -> Result<Option<T>, D::Error>
+pub fn convert_optional_numeric_with_shellexpand<'de, D, T, E>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     E: fmt::Display,
@@ -105,4 +105,18 @@ where
 pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     let value = String::deserialize(deserializer)?;
     Ok((*(shellexpand::env(&value).map_err(de::Error::custom)?)).to_string())
+}
+
+/// Same as convert_string_with_shellexpand, but supports Option<String>.
+pub fn convert_optional_string_with_shellexpand<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = Option::<String>::deserialize(deserializer)?;
+    if let Some(value) = value {
+        Ok(Some(
+            (*(shellexpand::env(&value).map_err(de::Error::custom)?)).to_string(),
+        ))
+    } else {
+        Ok(None)
+    }
 }
