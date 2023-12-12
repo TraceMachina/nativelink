@@ -1,0 +1,41 @@
+diff --git a/pkg/rbeconfigsgen/rbeconfigsgen.go b/pkg/rbeconfigsgen/rbeconfigsgen.go
+index a752642..b3d8206 100644
+--- a/pkg/rbeconfigsgen/rbeconfigsgen.go
++++ b/pkg/rbeconfigsgen/rbeconfigsgen.go
+@@ -260,16 +260,26 @@ func newDockerRunner(containerImage string, stopContainer bool) (*dockerRunner,
+ 		stopContainer:  stopContainer,
+ 		dockerPath:     "docker",
+ 	}
+-	if _, err := runCmd(d.dockerPath, "pull", d.containerImage); err != nil {
+-		return nil, fmt.Errorf("docker was unable to pull the toolchain container image %q: %w", d.containerImage, err)
+-	}
+-	resolvedImage, err := runCmd(d.dockerPath, "inspect", "--format={{index .RepoDigests 0}}", d.containerImage)
+-	if err != nil {
+-		return nil, fmt.Errorf("failed to convert toolchain container image %q into a fully qualified image name by digest: %w", d.containerImage, err)
+-	}
+-	resolvedImage = strings.TrimSpace(resolvedImage)
+-	log.Printf("Resolved toolchain image %q to fully qualified reference %q.", d.containerImage, resolvedImage)
+-	d.resolvedImage = resolvedImage
++    // We're disabling this because Skopeo lets us directly load the image into
++    // the docker-daemon instead of pulling it from an intermediary container
++    // registry. Skipping this hash is not a generally safe practice and only
++    // works for us because our images are reproducible.
++    //
++    // TODO(aaronmondal): In our case it's technically not necessary to use
++    //                    images at all since we can get all the information we
++    //                    need directly from nix derivations. Rewrite this tool
++    //                    for much more performant and flexible toochain config
++    //                    generation.
++	// if _, err := runCmd(d.dockerPath, "pull", d.containerImage); err != nil {
++	// 	return nil, fmt.Errorf("docker was unable to pull the toolchain container image %q: %w", d.containerImage, err)
++	// }
++	// resolvedImage, err := runCmd(d.dockerPath, "inspect", "--format={{index .RepoDigests 0}}", d.containerImage)
++	// if err != nil {
++	// 	return nil, fmt.Errorf("failed to convert toolchain container image %q into a fully qualified image name by digest: %w", d.containerImage, err)
++	// }
++	// resolvedImage = strings.TrimSpace(resolvedImage)
++	// log.Printf("Resolved toolchain image %q to fully qualified reference %q.", d.containerImage, resolvedImage)
++	d.resolvedImage = d.containerImage
+
+ 	cid, err := runCmd(d.dockerPath, "create", "--rm", d.resolvedImage, "sleep", "infinity")
+ 	if err != nil {

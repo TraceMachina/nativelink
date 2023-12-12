@@ -58,7 +58,7 @@ in
     enable = true;
     name = "buildifier format";
     description = "Format Starlark";
-    entry = "${pkgs.bazel-buildtools}/bin/buildifier";
+    entry = "${pkgs.bazel-buildtools}/bin/buildifier -lint=fix";
     types = [ "bazel" ];
   };
   bazel-buildifier-lint = {
