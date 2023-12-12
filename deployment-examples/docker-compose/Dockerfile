@@ -38,16 +38,16 @@ RUN apt update && \
 
 # Build the binary.
 FROM dependencies AS builder
-WORKDIR /root/native-link
+WORKDIR /root/nativelink
 ADD . .
 ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
 RUN bazel build -c ${OPT_LEVEL} ${ADDITIONAL_BAZEL_FLAGS} cas && \
-    cp ./bazel-bin/cas /root/native-link-bin
+    cp ./bazel-bin/cas /root/nativelink-bin
 
 # Go back to a fresh ubuntu container and copy only the compiled binary.
 FROM ubuntu:${OS_VERSION} as final
-COPY --from=builder /root/native-link-bin /usr/local/bin/native-link
+COPY --from=builder /root/nativelink-bin /usr/local/bin/nativelink
 # Install any specific dependencies needed by the user.
 # Install runtime packages.
 RUN apt-get update && \
@@ -56,6 +56,6 @@ RUN apt-get update && \
 ARG ADDITIONAL_SETUP_WORKER_CMD
 RUN bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}"
 
-RUN mkdir -p /root/.cache/native-link
+RUN mkdir -p /root/.cache/nativelink
 EXPOSE 50051/tcp 50052/tcp
-CMD ["native-link"]
+CMD ["nativelink"]

@@ -15,10 +15,10 @@ pkgs.writeShellScriptBin "local-image-test" ''
     | ${pkgs.skopeo}/bin/skopeo \
       copy \
       docker-archive:/dev/stdin \
-      docker-daemon:native-link:''${IMAGE_TAG}
+      docker-daemon:nativelink:''${IMAGE_TAG}
 
   # Ensure that the image has minimal closure size.
   CI=1 ${pkgs.dive}/bin/dive \
-    native-link:''${IMAGE_TAG} \
+    nativelink:''${IMAGE_TAG} \
     --highestWastedBytes=0
 ''

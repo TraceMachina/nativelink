@@ -96,10 +96,10 @@ resource "google_compute_region_instance_template" "cas_instance_template" {
   }
 
   metadata = {
-    native-link-type            = "cas"
-    native-link-cas-bucket      = "${google_storage_bucket.cas_s3_bucket.name}:${google_storage_bucket.cas_s3_bucket.location}"
-    native-link-ac-bucket       = "${google_storage_bucket.ac_s3_bucket.name}:${google_storage_bucket.ac_s3_bucket.location}"
-    native-link-hmac-secret-key = google_secret_manager_secret.cas_secret_manager_hmac_key.secret_id
+    nativelink-type            = "cas"
+    nativelink-cas-bucket      = "${google_storage_bucket.cas_s3_bucket.name}:${google_storage_bucket.cas_s3_bucket.location}"
+    nativelink-ac-bucket       = "${google_storage_bucket.ac_s3_bucket.name}:${google_storage_bucket.ac_s3_bucket.location}"
+    nativelink-hmac-secret-key = google_secret_manager_secret.cas_secret_manager_hmac_key.secret_id
   }
 }
 
