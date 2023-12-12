@@ -35,6 +35,12 @@
 
           customStdenv = import ./tools/llvmStdenv.nix { inherit pkgs; };
 
+          # TODO(aaronmondal): This doesn't work with rules_rust yet.
+          customClang = pkgs.callPackage ./tools/customClang.nix {
+            inherit pkgs;
+            stdenv = customStdenv;
+          };
+
           craneLib = crane.lib.${system};
 
           src = pkgs.lib.cleanSourceWith {
@@ -68,6 +74,8 @@
           publish-ghcr = import ./tools/publish-ghcr.nix { inherit pkgs; };
 
           local-image-test = import ./tools/local-image-test.nix { inherit pkgs; };
+
+          generate-toolchains = import ./tools/generate-toolchains.nix { inherit pkgs; };
         in
         {
           apps = {
@@ -79,6 +87,7 @@
           packages = {
             inherit publish-ghcr local-image-test;
             default = nativelink;
+            lre = import ./local-remote-execution/image.nix { inherit pkgs nativelink; };
             image = pkgs.dockerTools.streamLayeredImage {
               name = "nativelink";
               contents = [
@@ -124,6 +133,8 @@
 
               # Additional tools from within our development environment.
               local-image-test
+              generate-toolchains
+              customClang
             ] ++ maybeDarwinDeps;
             shellHook = ''
               # Generate the .pre-commit-config.yaml symlink when entering the
