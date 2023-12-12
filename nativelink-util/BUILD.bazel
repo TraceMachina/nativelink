@@ -22,6 +22,7 @@ rust_library(
         "src/resource_info.rs",
         "src/retry.rs",
         "src/store_trait.rs",
+        "src/tls_utils.rs",
         "src/write_counter.rs",
         "src/write_request_stream_wrapper.rs",
     ],
@@ -49,6 +50,7 @@ rust_library(
         "@crate_index//:sha2",
         "@crate_index//:tokio",
         "@crate_index//:tokio-util",
+        "@crate_index//:tonic",
         "@crate_index//:tracing",
     ],
 )
