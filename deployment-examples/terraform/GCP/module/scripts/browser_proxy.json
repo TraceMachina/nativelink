@@ -42,7 +42,7 @@
     // an external load balancer.
     "listen_address": "0.0.0.0:50052",
     "services": {
-      "prometheus": {
+      "experimental_prometheus": {
         "path": "/metrics"
       },
       "cas": {

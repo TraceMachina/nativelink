@@ -65,7 +65,7 @@
     // Only publish metrics on a private port.
     "listen_address": "0.0.0.0:50061",
     "services": {
-      "prometheus": {
+      "experimental_prometheus": {
         "path": "/metrics"
       }
     }
