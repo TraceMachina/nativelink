@@ -1,0 +1,54 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "NativeLink",
+  "logo": {
+    "dark": "/logo/dark.svg",
+    "light": "/logo/light.svg"
+  },
+  "favicon": "/favicon.svg",
+  "colors": {
+    "primary": "#7C54FF",
+    "light": "#AE97F9",
+    "dark": "#6245C3",
+    "anchors": {
+      "from": "#AE97F9",
+      "to": "#6245C3"
+    }
+  },
+  "topbarLinks": [
+    {
+      "name": "Support",
+      "url": "mailto:marcus@tracemachina.com"
+    }
+  ],
+  "tabs": [
+  ],
+  "anchors": [
+    {
+      "name": "Documentation",
+      "icon": "book-open-cover",
+      "url": "/"
+    },
+    {
+      "name": "Community",
+      "icon": "slack",
+      "url": "https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A"
+    },
+    {
+      "name": "Blog",
+      "icon": "newspaper",
+      "url": "https://nativelink.substack.com/"
+    }
+  ],
+  "navigation": [
+    {
+      "group": "Get Started",
+      "pages": ["introduction", "quickstart", "contributing"]
+    }
+  ],
+  "footerSocials": {
+    "github": "https://github.com/TraceMachina/native-link",
+    "website": "https://tracemachina.com/",
+    "twitter": "https://twitter.com/tracemachina"
+  }
+}

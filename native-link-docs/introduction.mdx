@@ -1,0 +1,37 @@
+---
+title: Introduction
+description: 'What is NativeLink?'
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-dark.png"
+  alt="Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.png"
+  alt="Hero Dark"
+/>
+
+Native link is an extremely (blazingly?) fast and efficient build cache and
+remote executor for systems that communicate using the [Remote execution
+protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) 
+such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), 
+[Goma](https://chromium.googlesource.com/infra/goma/client/) and
+[Reclient](https://github.com/bazelbuild/reclient).
+
+Supports Unix-based operating systems and Windows.
+
+**The goals of this project are:**
+<Steps>
+  <Step title="Stability">
+    Things should work out of the box as expected.
+  </Step>
+  <Step title="Efficiency">
+    Don't waste time on inefficiencies &amp; low resource usage.
+  </Step>
+  <Step title="User First">
+    Design choices should be optimized for what users want.
+  </Step>
+</Steps>
