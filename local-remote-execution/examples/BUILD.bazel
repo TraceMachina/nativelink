@@ -1,0 +1,8 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+cc_binary(
+    name = "hello_lre",
+    srcs = ["hello.cpp"],
+    # Enable verbose logging just for this target.
+    copts = ["--verbose"],
+)
