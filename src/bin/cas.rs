@@ -350,7 +350,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             // This is a generic endpoint used to check if the server is up.
             .route_service("/status", axum::routing::get(move || async move { "Ok".to_string() }));
 
-        if let Some(prometheus_cfg) = services.prometheus {
+        if let Some(prometheus_cfg) = services.experimental_prometheus {
             fn error_to_response<E: std::error::Error>(e: E) -> Response<String> {
                 let mut response = Response::new(format!("Error: {e:?}"));
                 *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
@@ -683,7 +683,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let Some(service) = &v.services else {
                         return true;
                     };
-                    service.prometheus.is_none()
+                    service.experimental_prometheus.is_none()
                 }),
                 default_digest_hash_function: None,
             }

@@ -198,9 +198,9 @@ pub struct ServicesConfig {
     /// that makes the remote execution/cache requests.
     pub worker_api: Option<WorkerApiConfig>,
 
-    /// Prometheus metrics configuration. Metrics are gathered as a singleton
-    /// but may be served on multiple endpoints.
-    pub prometheus: Option<PrometheusConfig>,
+    /// Experimental - Prometheus metrics configuration. Metrics are gathered
+    /// as a singleton but may be served on multiple endpoints.
+    pub experimental_prometheus: Option<PrometheusConfig>,
 
     /// This is the service for any administrative tasks.
     /// It provides a REST API endpoint for administrative purposes.

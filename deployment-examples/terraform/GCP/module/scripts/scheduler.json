@@ -122,7 +122,7 @@
       "http2_keep_alive_interval": 10
     },
     "services": {
-      "prometheus": {
+      "experimental_prometheus": {
         "path": "/metrics"
       },
       "ac": {
