@@ -1321,7 +1321,7 @@ mod running_actions_manager_tests {
     // print to stdout. We then check the results of both to make sure the shell script was
     // invoked and the actual command was invoked under the shell script.
     #[tokio::test]
-    async fn entrypoint_cmd_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
+    async fn entrypoint_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_family = "unix")]
         const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
 #!/bin/bash
@@ -1377,7 +1377,7 @@ exit 0
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_work_directory: root_work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
-                entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
+                entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: None,
             },
             cas_store: Pin::into_inner(cas_store.clone()),
@@ -1450,7 +1450,7 @@ exit 0
     }
 
     #[tokio::test]
-    async fn entrypoint_cmd_injects_properties() -> Result<(), Box<dyn std::error::Error>> {
+    async fn entrypoint_injects_properties() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_family = "unix")]
         const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
 #!/bin/bash
@@ -1506,7 +1506,7 @@ exit 0
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_work_directory: root_work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
-                entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
+                entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: Some(HashMap::from([
                     (
                         "PROPERTY".to_string(),
@@ -1647,7 +1647,7 @@ exit 1
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_work_directory: root_work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
-                entrypoint_cmd: Some(test_wrapper_script.into_string().unwrap()),
+                entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                 additional_environment: Some(HashMap::from([(
                     "SIDE_CHANNEL_FILE".to_string(),
                     EnvironmentSource::side_channel_file,

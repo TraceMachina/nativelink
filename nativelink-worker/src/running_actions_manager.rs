@@ -652,8 +652,8 @@ impl RunningActionImpl {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
         let args: Vec<&OsStr> =
-            if let Some(entrypoint_cmd) = &self.running_actions_manager.execution_configuration.entrypoint_cmd {
-                std::iter::once(entrypoint_cmd.as_ref())
+            if let Some(entrypoint) = &self.running_actions_manager.execution_configuration.entrypoint {
+                std::iter::once(entrypoint.as_ref())
                     .chain(command_proto.arguments.iter().map(AsRef::as_ref))
                     .collect()
             } else {
@@ -1218,7 +1218,7 @@ pub struct ExecutionConfiguration {
     /// If set, will be executed instead of the first argument passed in the
     /// ActionInfo with all of the arguments in the ActionInfo passed as
     /// arguments to this command.
-    pub entrypoint_cmd: Option<String>,
+    pub entrypoint: Option<String>,
     /// The only environment variables that will be specified when the command
     /// executes other than those in the ActionInfo.  On Windows, SystemRoot
     /// and PATH are also assigned (see inner_execute).

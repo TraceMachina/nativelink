@@ -92,7 +92,7 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
     //       so that's not currently possible.  Perhaps we'll move this in
     //       future to pass useful information through?  Or perhaps we'll
     //       have a pre-condition and a pre-execute script instead, although
-    //       arguably entrypoint_cmd already gives us that.
+    //       arguably entrypoint already gives us that.
     let precondition_process = process::Command::new(precondition_script)
         .kill_on_drop(true)
         .stdin(Stdio::null())
@@ -221,7 +221,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 .err_tip(|| "In LocalWorkerImpl::new()");
                             let running_actions_manager = self.running_actions_manager.clone();
                             let worker_id_clone = worker_id.clone();
-                            let precondition_script_cfg = self.config.precondition_script.clone();
+                            let precondition_script_cfg = self.config.experimental_precondition_script.clone();
                             let actions_in_transit = self.actions_in_transit.clone();
                             let start_action_fut = self.metrics.clone().wrap(move |metrics| async move {
                                 metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
@@ -349,10 +349,10 @@ pub async fn new_local_worker(
     fs::create_dir_all(&config.work_directory)
         .await
         .err_tip(|| format!("Could not make work_directory : {}", config.work_directory))?;
-    let entrypoint_cmd = if config.entrypoint_cmd.is_empty() {
+    let entrypoint = if config.entrypoint.is_empty() {
         None
     } else {
-        Some(config.entrypoint_cmd.clone())
+        Some(config.entrypoint.clone())
     };
     let max_action_timeout = if config.max_action_timeout == 0 {
         DEFAULT_MAX_ACTION_TIMEOUT
@@ -362,7 +362,7 @@ pub async fn new_local_worker(
     let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
         root_work_directory: config.work_directory.clone(),
         execution_configuration: ExecutionConfiguration {
-            entrypoint_cmd,
+            entrypoint,
             additional_environment: config.additional_environment.clone(),
         },
         cas_store: fast_slow_store,
