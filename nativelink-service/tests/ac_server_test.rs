@@ -75,6 +75,7 @@ fn make_ac_server(store_manager: &StoreManager) -> Result<AcServer, Error> {
         &hashmap! {
             "foo_instance_name".to_string() => nativelink_config::cas_server::AcStoreConfig{
                 ac_store: "main_ac".to_string(),
+                read_only: false,
             }
         },
         store_manager,

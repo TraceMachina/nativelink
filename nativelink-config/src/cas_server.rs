@@ -18,9 +18,10 @@ use serde::Deserialize;
 
 use crate::schedulers::SchedulerConfig;
 use crate::serde_utils::{
-    convert_numeric_with_shellexpand, convert_optinoal_numeric_with_shellexpand, convert_string_with_shellexpand,
+    convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
+    convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
 };
-use crate::stores::{ConfigDigestHashFunction, StoreConfig, StoreRefName};
+use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreConfig, StoreRefName};
 
 /// Name of the scheduler. This type will be used when referencing a
 /// scheduler in the `CasConfig::schedulers`'s map key.
@@ -79,6 +80,11 @@ pub struct AcStoreConfig {
     /// This store name referenced here may be reused multiple times.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub ac_store: StoreRefName,
+
+    /// Whether the Action Cache store may be written to, this if set to false
+    /// it is only possible to read from the Action Cache.
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -233,6 +239,16 @@ pub struct TlsConfig {
     /// Path to the private key file.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub key_file: String,
+
+    /// Path to the certificate authority for mTLS, if client authentication is
+    /// required for this endpoint.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub client_ca_file: Option<String>,
+
+    /// Path to the certificate revocation list for mTLS, if client
+    /// authentication is required for this endpoint.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub client_crl_file: Option<String>,
 }
 
 /// Advanced Http configurations. These are generally should not be set.
@@ -246,38 +262,38 @@ pub struct TlsConfig {
 pub struct HttpServerConfig {
     /// Interval to send keep-alive pings via HTTP2.
     /// Note: This is in seconds.
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub http2_keep_alive_interval: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub experimental_http2_max_pending_accept_reset_streams: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub experimental_http2_initial_stream_window_size: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub experimental_http2_initial_connection_window_size: Option<u32>,
 
     #[serde(default)]
     pub experimental_http2_adaptive_window: Option<bool>,
 
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub experimental_http2_max_frame_size: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub experimental_http2_max_concurrent_streams: Option<u32>,
 
     /// Note: This is in seconds.
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub experimental_http2_keep_alive_timeout: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub experimental_http2_max_send_buf_size: Option<u32>,
 
     #[serde(default)]
     pub experimental_http2_enable_connect_protocol: Option<bool>,
 
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
     pub experimental_http2_max_header_list_size: Option<u32>,
 }
 
@@ -353,6 +369,9 @@ pub struct EndpointConfig {
     /// Timeout in seconds that a request should take.
     /// Default: 5 (seconds)
     pub timeout: Option<f32>,
+
+    /// The TLS configuration to use to connect to the endpoint.
+    pub tls_config: Option<ClientTlsConfig>,
 }
 
 #[allow(non_camel_case_types)]
