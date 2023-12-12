@@ -470,7 +470,7 @@ mod local_worker_tests {
     }
 
     #[tokio::test]
-    async fn precondition_script_fails() -> Result<(), Box<dyn std::error::Error>> {
+    async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::error::Error>> {
         let temp_path = make_temp_path("scripts");
         fs::create_dir_all(temp_path.clone()).await?;
         #[cfg(target_family = "unix")]
@@ -497,7 +497,7 @@ mod local_worker_tests {
             precondition_script
         };
         let local_worker_config = LocalWorkerConfig {
-            precondition_script: Some(precondition_script),
+            experimental_precondition_script: Some(precondition_script),
             ..Default::default()
         };
 

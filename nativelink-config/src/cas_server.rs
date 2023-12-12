@@ -435,7 +435,7 @@ pub struct LocalWorkerConfig {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_action_timeout: usize,
 
-    /// If timeout is handled in `entrypoint_cmd` or another wrapper script.
+    /// If timeout is handled in `entrypoint` or another wrapper script.
     /// If set to true NativeLink will not honor the timeout the action requested
     /// and instead will always force kill the action after max_action_timeout
     /// has been reached. If this is set to false, the smaller value of the action's
@@ -445,7 +445,7 @@ pub struct LocalWorkerConfig {
     /// The real timeout can be received via an environment variable set in:
     /// `EnvironmentSource::TimeoutMillis`.
     ///
-    /// Example on where this is useful: `entrypoint_cmd` launches the action inside
+    /// Example on where this is useful: `entrypoint` launches the action inside
     /// a docker container, but the docker container may need to be downloaded. Thus
     /// the timer should not start until the docker container has started executing
     /// the action. In this case, action will likely be wrapped in another program,
@@ -461,7 +461,17 @@ pub struct LocalWorkerConfig {
     /// command like: "run.sh sleep 5".
     /// Default: {Use the command from the job request}.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
-    pub entrypoint_cmd: String,
+    pub entrypoint: String,
+
+    /// An optional script to run before every action is processed on the worker.
+    /// The value should be the full path to the script to execute and will pause
+    /// all actions on the worker if it returns an exit code other than 0.
+    /// If not set, then the worker will never pause and will continue to accept
+    /// jobs according to the scheduler configuration.
+    /// This is useful, for example, if the worker should not take any more
+    /// actions until there is enough resource available on the machine to
+    /// handle them.
+    pub experimental_precondition_script: Option<String>,
 
     /// Underlying CAS store that the worker will use to download CAS artifacts.
     /// This store must be a `FastSlowStore`. The `fast` store must be a
@@ -488,16 +498,6 @@ pub struct LocalWorkerConfig {
     /// and used to tell the scheduler to restrict what should be executed on this
     /// worker.
     pub platform_properties: HashMap<String, WorkerProperty>,
-
-    /// An optional script to run before every action is processed on the worker.
-    /// The value should be the full path to the script to execute and will pause
-    /// all actions on the worker if it returns an exit code other than 0.
-    /// If not set, then the worker will never pause and will continue to accept
-    /// jobs according to the scheduler configuration.
-    /// This is useful, for example, if the worker should not take any more
-    /// actions until there is enough resource available on the machine to
-    /// handle them.
-    pub precondition_script: Option<String>,
 
     /// An optional mapping of environment names to set for the execution
     /// as well as those specified in the action itself.  If set, will set each
