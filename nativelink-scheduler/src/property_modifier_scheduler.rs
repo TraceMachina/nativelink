@@ -58,10 +58,10 @@ impl ActionScheduler for PropertyModifierScheduler {
         let mut known_properties = property_manager.get_known_properties().clone();
         for modification in &self.modifications {
             match modification {
-                PropertyModification::Remove(name) => {
-                    known_properties.entry(name.into()).or_insert(PropertyType::Priority);
+                PropertyModification::remove(name) => {
+                    known_properties.entry(name.into()).or_insert(PropertyType::priority);
                 }
-                PropertyModification::Add(_) => (),
+                PropertyModification::add(_) => (),
             }
         }
         let property_manager = {
@@ -86,13 +86,13 @@ impl ActionScheduler for PropertyModifierScheduler {
             .err_tip(|| "In PropertyModifierScheduler::add_action")?;
         for modification in &self.modifications {
             match modification {
-                PropertyModification::Add(addition) => action_info.platform_properties.properties.insert(
+                PropertyModification::add(addition) => action_info.platform_properties.properties.insert(
                     addition.name.clone(),
                     platform_property_manager
                         .make_prop_value(&addition.name, &addition.value)
                         .err_tip(|| "In PropertyModifierScheduler::add_action")?,
                 ),
-                PropertyModification::Remove(name) => action_info.platform_properties.properties.remove(name),
+                PropertyModification::remove(name) => action_info.platform_properties.properties.remove(name),
             };
         }
         self.scheduler.add_action(action_info).await

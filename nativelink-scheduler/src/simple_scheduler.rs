@@ -144,10 +144,10 @@ impl Workers {
         let mut workers_iter = self.workers.iter_mut();
         let workers_iter = match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
-            WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
+            WorkerAllocationStrategy::least_recently_used => workers_iter
                 .rfind(|(_, w)| w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)),
             // Use find to get the most recently used that satisfies the properties.
-            WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
+            WorkerAllocationStrategy::most_recently_used => workers_iter
                 .find(|(_, w)| w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)),
         };
         let worker_id = workers_iter.map(|(_, w)| &w.id);

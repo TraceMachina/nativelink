@@ -5,7 +5,7 @@
       "grpc": {
         "instance_name": "main",
         "endpoints": ["grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"],
-        "store_type": "CAS"
+        "store_type": "cas"
       }
     },
     "GRPC_LOCAL_AC_STORE": {
@@ -13,7 +13,7 @@
       "grpc": {
         "instance_name": "main",
         "endpoints": ["grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"],
-        "store_type": "AC"
+        "store_type": "ac"
       }
     },
     "WORKER_FAST_SLOW_STORE": {

@@ -23,7 +23,7 @@
               }
             },
             "compression_algorithm": {
-              "LZ4": {}
+              "lz4": {}
             }
           }
         }
@@ -63,7 +63,7 @@
                   }
                 },
                 "compression_algorithm": {
-                  "LZ4": {}
+                  "lz4": {}
                 }
               }
             }
@@ -80,7 +80,7 @@
     "MAIN_SCHEDULER": {
       "simple": {
         "supported_platform_properties": {
-          "cpu_count": "Minimum"
+          "cpu_count": "minimum"
         }
       }
     }

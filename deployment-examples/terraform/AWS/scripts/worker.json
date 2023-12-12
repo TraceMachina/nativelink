@@ -3,7 +3,7 @@
     "AC_S3_STORE": {
       "compression": {
         "compression_algorithm": {
-          "LZ4": {}
+          "lz4": {}
         },
         "backend": {
           // TODO(allada) This needs to be some kind of sharding store, because s3 has
@@ -57,7 +57,7 @@
             "content_store": {
               "compression": {
                 "compression_algorithm": {
-                  "LZ4": {}
+                  "lz4": {}
                 },
                 "backend": {
                   // TODO(allada) This needs to be some kind of sharding store, because s3 has

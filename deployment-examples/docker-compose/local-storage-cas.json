@@ -10,7 +10,7 @@
         "backend": {
           "compression": {
             "compression_algorithm": {
-              "LZ4": {}
+              "lz4": {}
             },
             "backend": {
               "filesystem": {
