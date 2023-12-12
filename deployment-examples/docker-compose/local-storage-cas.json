@@ -40,7 +40,11 @@
     }
   },
   "servers": [{
-    "listen_address": "0.0.0.0:50051",
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50051"
+      }
+    },
     "services": {
       "cas": {
         "main": {
@@ -63,7 +67,11 @@
     }
   }, {
     // Only publish metrics on a private port.
-    "listen_address": "0.0.0.0:50061",
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50061"
+      }
+    },
     "services": {
       "prometheus": {
         "path": "/metrics"
@@ -71,10 +79,14 @@
     }
   },
   {
-    "listen_address": "0.0.0.0:50071",
-    "tls": {
-      "cert_file": "/root/example-do-not-use-in-prod-rootca.crt",
-      "key_file": "/root/example-do-not-use-in-prod-key.pem"
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50071",
+        "tls": {
+          "cert_file": "/root/example-do-not-use-in-prod-rootca.crt",
+          "key_file": "/root/example-do-not-use-in-prod-key.pem"
+        }
+      }
     },
     "services": {
       "cas": {

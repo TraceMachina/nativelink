@@ -27,7 +27,11 @@
     }
   },
   "servers": [{
-    "listen_address": "0.0.0.0:50052",
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50052",
+      }
+    },
     "services": {
       "ac": {
         "main": {
@@ -49,7 +53,11 @@
       }
     }
   }, {
-    "listen_address": "0.0.0.0:50061",
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50061",
+      }
+    },
     "services": {
       // Note: This should be served on a different port, because it has
       // a different permission set than the other services.

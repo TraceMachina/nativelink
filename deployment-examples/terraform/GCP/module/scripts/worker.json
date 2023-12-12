@@ -84,16 +84,24 @@
     }
   }],
   "servers": [{
-    "listen_address": "0.0.0.0:50051",
-    "advanced_http": {
-      "http2_keep_alive_interval": 10
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50051",
+        "advanced_http": {
+          "http2_keep_alive_interval": 10
+        }
+      }
     },
     // Only /status will be served.
     "services": {}
   }, {
-    "listen_address": "0.0.0.0:50052",
-    "advanced_http": {
-      "http2_keep_alive_interval": 10
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50052",
+        "advanced_http": {
+          "http2_keep_alive_interval": 10
+        }
+      }
     },
     "services": {
       "prometheus": {

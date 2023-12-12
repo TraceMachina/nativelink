@@ -86,13 +86,17 @@
     }
   },
   "servers": [{
-    "listen_address": "0.0.0.0:50051",
-    "tls": {
-      "cert_file": "${nativelink_CERT_FILE:-}",
-      "key_file": "${nativelink_KEY_FILE:-}"
-    },
-    "advanced_http": {
-      "http2_keep_alive_interval": 10
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50051",
+        "tls": {
+          "cert_file": "${nativelink_CERT_FILE:-}",
+          "key_file": "${nativelink_KEY_FILE:-}"
+        },
+        "advanced_http": {
+          "http2_keep_alive_interval": 10
+        }
+      }
     },
     "services": {
       "ac": {
@@ -117,9 +121,13 @@
   }, {
     // Non-public apis. We re-export the Scheduler services on a non-tls connection
     // for local services that don't need a load balancer.
-    "listen_address": "0.0.0.0:50052",
-    "advanced_http": {
-      "http2_keep_alive_interval": 10
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50052",
+        "advanced_http": {
+          "http2_keep_alive_interval": 10
+        }
+      }
     },
     "services": {
       "prometheus": {
@@ -146,9 +154,13 @@
     }
   }, {
     // Internal Worker endpoint.
-    "listen_address": "0.0.0.0:50061",
-    "advanced_http": {
-      "http2_keep_alive_interval": 10
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50061",
+        "advanced_http": {
+          "http2_keep_alive_interval": 10
+        }
+      }
     },
     "services": {
       // Note: This should be served on a different port, because it has
