@@ -119,9 +119,7 @@
       "bytestream": {
         "cas_stores": {
           "main": "WORKER_FAST_SLOW_STORE",
-        },
-        // According to https://github.com/grpc/grpc.github.io/issues/371 16KiB - 64KiB is optimal.
-        "max_bytes_per_stream": 64000, // 64kb.
+        }
       }
     }
   }, {

@@ -120,7 +120,11 @@ pub struct ByteStreamConfig {
     pub cas_stores: HashMap<InstanceName, StoreRefName>,
 
     /// Max number of bytes to send on each grpc stream chunk.
-    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    /// According to <https://github.com/grpc/grpc.github.io/issues/371>
+    /// 16KiB - 64KiB is optimal.
+    ///
+    /// Defaults: 64KiB
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_bytes_per_stream: usize,
 
     /// In the event a client disconnects while uploading a blob, we will hold
