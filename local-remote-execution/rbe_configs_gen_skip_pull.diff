@@ -1,0 +1,32 @@
+diff --git a/pkg/rbeconfigsgen/rbeconfigsgen.go b/pkg/rbeconfigsgen/rbeconfigsgen.go
+index a752642..7ec3c75 100644
+--- a/pkg/rbeconfigsgen/rbeconfigsgen.go
++++ b/pkg/rbeconfigsgen/rbeconfigsgen.go
+@@ -260,16 +260,17 @@ func newDockerRunner(containerImage string, stopContainer bool) (*dockerRunner,
+ 		stopContainer:  stopContainer,
+ 		dockerPath:     "docker",
+ 	}
+-	if _, err := runCmd(d.dockerPath, "pull", d.containerImage); err != nil {
+-		return nil, fmt.Errorf("docker was unable to pull the toolchain container image %q: %w", d.containerImage, err)
+-	}
+-	resolvedImage, err := runCmd(d.dockerPath, "inspect", "--format={{index .RepoDigests 0}}", d.containerImage)
+-	if err != nil {
+-		return nil, fmt.Errorf("failed to convert toolchain container image %q into a fully qualified image name by digest: %w", d.containerImage, err)
+-	}
+-	resolvedImage = strings.TrimSpace(resolvedImage)
+-	log.Printf("Resolved toolchain image %q to fully qualified reference %q.", d.containerImage, resolvedImage)
+-	d.resolvedImage = resolvedImage
++    // No need for this. We use Skopeo.
++	// if _, err := runCmd(d.dockerPath, "pull", d.containerImage); err != nil {
++	// 	return nil, fmt.Errorf("docker was unable to pull the toolchain container image %q: %w", d.containerImage, err)
++	// }
++	// resolvedImage, err := runCmd(d.dockerPath, "inspect", "--format={{index .RepoDigests 0}}", d.containerImage)
++	// if err != nil {
++	// 	return nil, fmt.Errorf("failed to convert toolchain container image %q into a fully qualified image name by digest: %w", d.containerImage, err)
++	// }
++	// resolvedImage = strings.TrimSpace(resolvedImage)
++	// log.Printf("Resolved toolchain image %q to fully qualified reference %q.", d.containerImage, resolvedImage)
++	d.resolvedImage = d.containerImage
+
+ 	cid, err := runCmd(d.dockerPath, "create", "--rm", d.resolvedImage, "sleep", "infinity")
+ 	if err != nil {

@@ -54,3 +54,17 @@ build:tsan --run_under=//tools:tsan.sh
 startup --windows_enable_symlinks
 build:windows --cxxopt=/std:c++14 --host_cxxopt=/std:c++14
 build:windows --enable_runfiles
+
+# Local remote execution flags.
+
+# TODO(aaronmondal): rules_rust doesn't work with this enabled.
+#
+# Tracked in: https://github.com/TraceMachina/nativelink/issues/477.
+build:lre --incompatible_enable_cc_toolchain_resolution
+
+# TODO(aaronmondal): Remove when https://github.com/bazelbuild/bazel/issues/7254
+#                    is resolved.
+build:lre --define=EXECUTOR=remote
+
+# See: https://github.com/bazelbuild/bazel/issues/19714#issuecomment-1745604978
+build:lre --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
