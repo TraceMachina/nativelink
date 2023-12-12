@@ -110,7 +110,7 @@
         "verify_size": true,
         "verify_hash": true
       }
-    },
+    }
   },
   "schedulers": {
     "MAIN_SCHEDULER": {
@@ -122,7 +122,11 @@
     }
   },
   "servers": [{
-    "listen_address": "0.0.0.0:50051",
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50051",
+      }
+    },
     "services": {
       "cas": {
         "main": {

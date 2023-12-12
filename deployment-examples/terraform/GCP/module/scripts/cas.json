@@ -77,18 +77,22 @@
     }
   },
   "servers": [{
-    "listen_address": "0.0.0.0:50051",
-    "tls": {
-      "cert_file": "${NATIVELINK_CERT_FILE:-}",
-      "key_file": "${NATIVELINK_KEY_FILE:-}"
-    },
-    "advanced_http": {
-      "http2_keep_alive_interval": 10
-    },
-    // External apis support compression.
-    "compression": {
-      "send_compression_algorithm": "gzip",
-      "accepted_compression_algorithms": ["gzip"]
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50051",
+        "tls": {
+          "cert_file": "${NATIVELINK_CERT_FILE:-}",
+          "key_file": "${NATIVELINK_KEY_FILE:-}"
+        },
+        "advanced_http": {
+          "http2_keep_alive_interval": 10
+        },
+        // External apis support compression.
+        "compression": {
+          "send_compression_algorithm": "gzip",
+          "accepted_compression_algorithms": ["gzip"]
+        }
+      }
     },
     "services": {
       "cas": {
@@ -113,9 +117,13 @@
   }, {
     // Non-public apis. We re-export the CAS services so we don't need to go through
     // an external load balancer.
-    "listen_address": "0.0.0.0:50052",
-    "advanced_http": {
-      "http2_keep_alive_interval": 10
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50052",
+        "advanced_http": {
+          "http2_keep_alive_interval": 10
+        }
+      }
     },
     "services": {
       "experimental_prometheus": {

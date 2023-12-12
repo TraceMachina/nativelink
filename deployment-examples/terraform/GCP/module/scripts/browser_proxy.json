@@ -40,7 +40,11 @@
   "servers": [{
     // Non-public apis. We re-export the CAS services so we don't need to go through
     // an external load balancer.
-    "listen_address": "0.0.0.0:50052",
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50052",
+      }
+    },
     "services": {
       "experimental_prometheus": {
         "path": "/metrics"

@@ -35,7 +35,14 @@ A very basic configuration that is a pure in-memory store is:
     }
   },
   "servers": [{
-    "listen_address": "0.0.0.0:50051",
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50051",
+        "advanced_http": {
+          "http2_keep_alive_interval": 10
+        }
+      }
+    },
     "services": {
       "cas": {
         "main": {

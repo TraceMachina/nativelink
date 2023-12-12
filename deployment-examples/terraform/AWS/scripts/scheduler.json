@@ -119,7 +119,11 @@
     }
   },
   "servers": [{
-    "listen_address": "0.0.0.0:50052",
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50052",
+      }
+    },
     "services": {
       "ac": {
         "main": {
@@ -141,7 +145,11 @@
       }
     }
   }, {
-    "listen_address": "0.0.0.0:50061",
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50061",
+      }
+    },
     "services": {
       "experimental_prometheus": {
         "path": "/metrics"

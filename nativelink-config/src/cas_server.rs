@@ -35,6 +35,7 @@ pub enum CompressionAlgorithm {
     /// No compression.
     #[default]
     none,
+
     /// Zlib compression.
     gzip,
 }
@@ -230,30 +231,71 @@ pub struct TlsConfig {
 /// specified.
 #[derive(Deserialize, Debug, Default)]
 pub struct HttpServerConfig {
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
-    pub http2_max_pending_accept_reset_streams: Option<u32>,
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
-    pub http2_initial_stream_window_size: Option<u32>,
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
-    pub http2_initial_connection_window_size: Option<u32>,
-    #[serde(default)]
-    pub http2_adaptive_window: Option<bool>,
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
-    pub http2_max_frame_size: Option<u32>,
-    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
-    pub http2_max_concurrent_streams: Option<u32>,
+    /// Interval to send keep-alive pings via HTTP2.
     /// Note: This is in seconds.
     #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
     pub http2_keep_alive_interval: Option<u32>,
+
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub experimental_http2_max_pending_accept_reset_streams: Option<u32>,
+
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub experimental_http2_initial_stream_window_size: Option<u32>,
+
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub experimental_http2_initial_connection_window_size: Option<u32>,
+
+    #[serde(default)]
+    pub experimental_http2_adaptive_window: Option<bool>,
+
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub experimental_http2_max_frame_size: Option<u32>,
+
+    #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
+    pub experimental_http2_max_concurrent_streams: Option<u32>,
+
     /// Note: This is in seconds.
     #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
-    pub http2_keep_alive_timeout: Option<u32>,
+    pub experimental_http2_keep_alive_timeout: Option<u32>,
+
     #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
-    pub http2_max_send_buf_size: Option<u32>,
+    pub experimental_http2_max_send_buf_size: Option<u32>,
+
     #[serde(default)]
-    pub http2_enable_connect_protocol: Option<bool>,
+    pub experimental_http2_enable_connect_protocol: Option<bool>,
+
     #[serde(default, deserialize_with = "convert_optinoal_numeric_with_shellexpand")]
-    pub http2_max_header_list_size: Option<u32>,
+    pub experimental_http2_max_header_list_size: Option<u32>,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Deserialize, Debug)]
+pub enum ListenerConfig {
+    /// Listener for HTTP/HTTPS/HTTP2 sockets.
+    http(HttpListener),
+}
+
+#[derive(Deserialize, Debug)]
+pub struct HttpListener {
+    /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
+    /// to all IPs.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub socket_address: String,
+
+    /// Data transport compression configuration to use for this service.
+    #[serde(default)]
+    pub compression: CompressionConfig,
+
+    /// Advanced Http server configuration.
+    #[serde(default)]
+    pub advanced_http: HttpServerConfig,
+
+    /// Tls Configuration for this server.
+    /// If not set, the server will not use TLS.
+    ///
+    /// Default: None
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -265,28 +307,11 @@ pub struct ServerConfig {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub name: String,
 
-    /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
-    /// to all IPs.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
-    pub listen_address: String,
-
-    /// Data transport compression configuration to use for this service.
-    #[serde(default)]
-    pub compression: CompressionConfig,
-
-    /// Advanced Http server configuration.
-    #[serde(default)]
-    pub advanced_http: HttpServerConfig,
+    /// Configuration
+    pub listener: ListenerConfig,
 
     /// Services to attach to server.
     pub services: Option<ServicesConfig>,
-
-    /// Tls Configuration for this server.
-    /// If not set, the server will not use TLS.
-    ///
-    /// Default: None
-    #[serde(default)]
-    pub tls: Option<TlsConfig>,
 }
 
 #[allow(non_camel_case_types)]
@@ -334,7 +359,7 @@ pub enum UploadCacheResultsStrategy {
 #[allow(non_camel_case_types)]
 #[derive(Clone, Deserialize, Debug)]
 pub enum EnvironmentSource {
-    /// The name of the property in the action to get the value from.
+    /// The name of the platform property in the action to get the value from.
     property(String),
 
     /// The raw value to set.
@@ -521,7 +546,12 @@ pub enum WorkerConfig {
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub enum ConfigDigestHashFunction {
+    /// Use the sha256 hash function.
+    /// <https://en.wikipedia.org/wiki/SHA-2>
     sha256,
+
+    /// Use the blake3 hash function.
+    /// <https://en.wikipedia.org/wiki/BLAKE_(hash_function)>
     blake3,
 }
 
@@ -571,7 +601,7 @@ pub struct GlobalConfig {
     /// Default hash function to use while uploading blobs to the CAS when not set
     /// by client.
     ///
-    /// Default: ConfigDigestHashFunction::Sha256
+    /// Default: ConfigDigestHashFunction::sha256
     pub default_digest_hash_function: Option<ConfigDigestHashFunction>,
 }
 

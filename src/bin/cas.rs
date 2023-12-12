@@ -26,7 +26,7 @@ use futures::FutureExt;
 use hyper::server::conn::Http;
 use hyper::{Response, StatusCode};
 use nativelink_config::cas_server::{
-    CasConfig, CompressionAlgorithm, ConfigDigestHashFunction, GlobalConfig, ServerConfig, WorkerConfig,
+    CasConfig, CompressionAlgorithm, ConfigDigestHashFunction, GlobalConfig, ListenerConfig, ServerConfig, WorkerConfig,
 };
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
 use nativelink_scheduler::worker::WorkerId;
@@ -189,6 +189,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
     for (server_cfg, connected_clients_mux) in servers_and_clients {
         let services = server_cfg.services.ok_or("'services' must be configured")?;
 
+        // Currently we only support http as our socket type.
+        let ListenerConfig::http(http_config) = server_cfg.listener;
+
         let tonic_services = TonicServer::builder()
             .add_optional_service(
                 services
@@ -196,11 +199,11 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     .map_or(Ok(None), |cfg| {
                         AcServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
-                            let send_algo = &server_cfg.compression.send_compression_algorithm;
+                            let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
-                            for encoding in server_cfg
+                            for encoding in http_config
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
@@ -220,11 +223,11 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     .map_or(Ok(None), |cfg| {
                         CasServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
-                            let send_algo = &server_cfg.compression.send_compression_algorithm;
+                            let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
-                            for encoding in server_cfg
+                            for encoding in http_config
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
@@ -244,11 +247,11 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     .map_or(Ok(None), |cfg| {
                         ExecutionServer::new(&cfg, &action_schedulers, &store_manager).map(|v| {
                             let mut service = v.into_service();
-                            let send_algo = &server_cfg.compression.send_compression_algorithm;
+                            let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
-                            for encoding in server_cfg
+                            for encoding in http_config
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
@@ -268,11 +271,11 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     .map_or(Ok(None), |cfg| {
                         ByteStreamServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
-                            let send_algo = &server_cfg.compression.send_compression_algorithm;
+                            let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
-                            for encoding in server_cfg
+                            for encoding in http_config
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
@@ -301,11 +304,11 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 .err_tip(|| "Could not create Capabilities service")?
                 .map(|v| {
                     let mut service = v.into_service();
-                    let send_algo = &server_cfg.compression.send_compression_algorithm;
+                    let send_algo = &http_config.compression.send_compression_algorithm;
                     if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                         service = service.send_compressed(encoding);
                     }
-                    for encoding in server_cfg
+                    for encoding in http_config
                         .compression
                         .accepted_compression_algorithms
                         .iter()
@@ -323,11 +326,11 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     .map_or(Ok(None), |cfg| {
                         WorkerApiServer::new(&cfg, &worker_schedulers).map(|v| {
                             let mut service = v.into_service();
-                            let send_algo = &server_cfg.compression.send_compression_algorithm;
+                            let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
                                 service = service.send_compressed(encoding);
                             }
-                            for encoding in server_cfg
+                            for encoding in http_config
                                 .compression
                                 .accepted_compression_algorithms
                                 .iter()
@@ -438,7 +441,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
         }
 
         // Configure our TLS acceptor if we have TLS configured.
-        let maybe_tls_acceptor = server_cfg.tls.map_or(Ok(None), |tls_config| {
+        let maybe_tls_acceptor = http_config.tls.map_or(Ok(None), |tls_config| {
             let mut cert_reader = std::io::BufReader::new(
                 std::fs::File::open(&tls_config.cert_file)
                     .err_tip(|| format!("Could not open cert file {}", tls_config.cert_file))?,
@@ -472,45 +475,47 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             Ok(Some(TlsAcceptor::from(Arc::new(config))))
         })?;
 
-        let socket_addr = server_cfg.listen_address.parse::<SocketAddr>()?;
+        let socket_addr = http_config.socket_address.parse::<SocketAddr>()?;
         let tcp_listener = TcpListener::bind(&socket_addr).await?;
         let mut http = Http::new();
-        let http_config = &server_cfg.advanced_http;
-        if let Some(value) = http_config.http2_max_pending_accept_reset_streams {
-            http.http2_max_pending_accept_reset_streams(
-                usize::try_from(value).err_tip(|| "Could not convert http2_max_pending_accept_reset_streams")?,
-            );
-        }
-        if let Some(value) = http_config.http2_initial_stream_window_size {
-            http.http2_initial_stream_window_size(value);
-        }
-        if let Some(value) = http_config.http2_initial_connection_window_size {
-            http.http2_initial_connection_window_size(value);
-        }
-        if let Some(value) = http_config.http2_adaptive_window {
-            http.http2_adaptive_window(value);
-        }
-        if let Some(value) = http_config.http2_max_frame_size {
-            http.http2_max_frame_size(value);
-        }
-        if let Some(value) = http_config.http2_max_concurrent_streams {
-            http.http2_max_concurrent_streams(value);
-        }
+        let http_config = &http_config.advanced_http;
         if let Some(value) = http_config.http2_keep_alive_interval {
             http.http2_keep_alive_interval(Duration::from_secs(u64::from(value)));
         }
-        if let Some(value) = http_config.http2_keep_alive_timeout {
+
+        if let Some(value) = http_config.experimental_http2_max_pending_accept_reset_streams {
+            http.http2_max_pending_accept_reset_streams(
+                usize::try_from(value)
+                    .err_tip(|| "Could not convert experimental_http2_max_pending_accept_reset_streams")?,
+            );
+        }
+        if let Some(value) = http_config.experimental_http2_initial_stream_window_size {
+            http.http2_initial_stream_window_size(value);
+        }
+        if let Some(value) = http_config.experimental_http2_initial_connection_window_size {
+            http.http2_initial_connection_window_size(value);
+        }
+        if let Some(value) = http_config.experimental_http2_adaptive_window {
+            http.http2_adaptive_window(value);
+        }
+        if let Some(value) = http_config.experimental_http2_max_frame_size {
+            http.http2_max_frame_size(value);
+        }
+        if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
+            http.http2_max_concurrent_streams(value);
+        }
+        if let Some(value) = http_config.experimental_http2_keep_alive_timeout {
             http.http2_keep_alive_timeout(Duration::from_secs(u64::from(value)));
         }
-        if let Some(value) = http_config.http2_max_send_buf_size {
+        if let Some(value) = http_config.experimental_http2_max_send_buf_size {
             http.http2_max_send_buf_size(
                 usize::try_from(value).err_tip(|| "Could not convert http2_max_send_buf_size")?,
             );
         }
-        if let Some(true) = http_config.http2_enable_connect_protocol {
+        if let Some(true) = http_config.experimental_http2_enable_connect_protocol {
             http.http2_enable_connect_protocol();
         }
-        if let Some(value) = http_config.http2_max_header_list_size {
+        if let Some(value) = http_config.experimental_http2_max_header_list_size {
             http.http2_max_header_list_size(value);
         }
 
