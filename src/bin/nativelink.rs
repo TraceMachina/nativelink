@@ -1,4 +1,4 @@
-// Copyright 2022 The Native Link Authors. All rights reserved.
+// Copyright 2024 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,13 +46,18 @@ use nativelink_util::metrics_utils::{
 };
 use nativelink_worker::local_worker::new_local_worker;
 use parking_lot::Mutex;
-use rustls_pemfile::{certs as extract_certs, pkcs8_private_keys};
+use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
 use scopeguard::guard;
 use tokio::net::TcpListener;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::task::spawn_blocking;
-use tokio_rustls::rustls::ServerConfig as TlsServerConfig;
+use tokio_rustls::rustls::RootCertStore;
+use tokio_rustls::rustls::{
+    pki_types::{CertificateDer, CertificateRevocationListDer},
+    server::WebPkiClientVerifier,
+    ServerConfig as TlsServerConfig,
+};
 use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
@@ -443,37 +448,72 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
 
         // Configure our TLS acceptor if we have TLS configured.
         let maybe_tls_acceptor = http_config.tls.map_or(Ok(None), |tls_config| {
-            let mut cert_reader = std::io::BufReader::new(
-                std::fs::File::open(&tls_config.cert_file)
-                    .err_tip(|| format!("Could not open cert file {}", tls_config.cert_file))?,
-            );
-            let mut certs = vec![];
-            for cert in extract_certs(&mut cert_reader) {
-                certs.push(cert.err_tip(|| format!("Could not extract certs from file {}", tls_config.cert_file))?);
+            fn read_cert(cert_file: &str) -> Result<Vec<CertificateDer<'static>>, Error> {
+                let mut cert_reader = std::io::BufReader::new(
+                    std::fs::File::open(cert_file).err_tip(|| format!("Could not open cert file {cert_file}"))?,
+                );
+                let certs = extract_certs(&mut cert_reader)
+                    .map(|certificate| certificate.map(CertificateDer::from))
+                    .collect::<Result<Vec<CertificateDer<'_>>, _>>()
+                    .err_tip(|| format!("Could not extract certs from file {cert_file}"))?;
+                Ok(certs)
             }
+            let certs = read_cert(&tls_config.cert_file)?;
             let mut key_reader = std::io::BufReader::new(
                 std::fs::File::open(&tls_config.key_file)
                     .err_tip(|| format!("Could not open key file {}", tls_config.key_file))?,
             );
-            let key = {
-                let keys = pkcs8_private_keys(&mut key_reader).collect::<Vec<_>>();
-                if keys.len() != 1 {
-                    return Err(Box::new(make_err!(
-                        Code::InvalidArgument,
-                        "Expected 1 key in file {}, found {} keys",
-                        tls_config.key_file,
-                        keys.len()
-                    )));
+            let key = match rustls_pemfile::read_one(&mut key_reader)
+                .err_tip(|| format!("Could not extract key(s) from file {}", tls_config.key_file))?
+            {
+                Some(rustls_pemfile::Item::Pkcs8Key(key)) => key.into(),
+                Some(rustls_pemfile::Item::Sec1Key(key)) => key.into(),
+                Some(rustls_pemfile::Item::Pkcs1Key(key)) => key.into(),
+                _ => {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "No keys found in file {}",
+                        tls_config.key_file
+                    ))
                 }
-                keys.into_iter()
-                    .next()
-                    .unwrap()
-                    .err_tip(|| format!("Could not extract key(s) from file {}", tls_config.key_file))?
+            };
+            if let Ok(Some(_)) = rustls_pemfile::read_one(&mut key_reader) {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Expected 1 key in file {}",
+                    tls_config.key_file
+                ));
+            }
+            let verifier = if let Some(client_ca_file) = &tls_config.client_ca_file {
+                let mut client_auth_roots = RootCertStore::empty();
+                for cert in read_cert(client_ca_file)?.into_iter() {
+                    client_auth_roots
+                        .add(cert)
+                        .map_err(|e| make_err!(Code::Internal, "Could not read client CA: {e:?}"))?;
+                }
+                let crls = if let Some(client_crl_file) = &tls_config.client_crl_file {
+                    let mut crl_reader = std::io::BufReader::new(
+                        std::fs::File::open(client_crl_file)
+                            .err_tip(|| format!("Could not open CRL file {client_crl_file}"))?,
+                    );
+                    extract_crls(&mut crl_reader)
+                        .map(|crl| crl.map(CertificateRevocationListDer::from))
+                        .collect::<Result<_, _>>()
+                        .err_tip(|| format!("Could not extract CRLs from file {client_crl_file}"))?
+                } else {
+                    Vec::new()
+                };
+                WebPkiClientVerifier::builder(Arc::new(client_auth_roots))
+                    .with_crls(crls)
+                    .build()
+                    .map_err(|e| make_err!(Code::Internal, "Could not create WebPkiClientVerifier: {e:?}"))?
+            } else {
+                WebPkiClientVerifier::no_client_auth()
             };
             let mut config = TlsServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(certs, key.into())
-                .map_err(|e| make_err!(Code::Internal, "Could not create TlsServerConfig : {:?}", e))?;
+                .with_client_cert_verifier(verifier)
+                .with_single_cert(certs, key)
+                .map_err(|e| make_err!(Code::Internal, "Could not create TlsServerConfig : {e:?}"))?;
 
             config.alpn_protocols.push("h2".into());
             Ok(Some(TlsAcceptor::from(Arc::new(config))))
