@@ -29,6 +29,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use nativelink_util::retry::{ExponentialBackoff, Retrier, RetryResult};
+use nativelink_util::tls_utils;
 use parking_lot::Mutex;
 use rand::rngs::OsRng;
 use rand::Rng;
@@ -70,14 +71,13 @@ impl GrpcScheduler {
         config: &nativelink_config::schedulers::GrpcScheduler,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
-        let endpoint = transport::Channel::balance_list(std::iter::once(
-            transport::Endpoint::new(config.endpoint.clone())
-                .err_tip(|| format!("Could not parse {} in GrpcScheduler", config.endpoint))?,
-        ));
-
+        let channel = transport::Channel::balance_list(std::iter::once(tls_utils::endpoint_from(
+            &config.endpoint,
+            tls_utils::load_client_config(&config.tls_config)?,
+        )?));
         Ok(Self {
-            capabilities_client: CapabilitiesClient::new(endpoint.clone()),
-            execution_client: ExecutionClient::new(endpoint),
+            capabilities_client: CapabilitiesClient::new(channel.clone()),
+            execution_client: ExecutionClient::new(channel),
             platform_property_managers: Mutex::new(HashMap::new()),
             jitter_fn,
             retry: config.retry.clone(),

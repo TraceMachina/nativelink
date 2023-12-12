@@ -37,6 +37,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::retry::{ExponentialBackoff, Retrier, RetryResult};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::tls_utils;
 use nativelink_util::write_request_stream_wrapper::WriteRequestStreamWrapper;
 use parking_lot::Mutex;
 use prost::Message;
@@ -86,19 +87,20 @@ impl GrpcStore {
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
         error_if!(config.endpoints.is_empty(), "Expected at least 1 endpoint in GrpcStore");
+        let tls_config = tls_utils::load_client_config(&config.tls_config)?;
         let mut endpoints = Vec::with_capacity(config.endpoints.len());
         for endpoint in &config.endpoints {
             // TODO(allada) This should be moved to be done in utils/serde_utils.rs like the others.
             // We currently don't have a way to handle those helpers with vectors.
             let endpoint = shellexpand::env(&endpoint)
-                .map_err(|e| make_input_err!("{}", e))
-                .err_tip(|| "Could expand endpoint in GrpcStore")?
+                .map_err(|e| make_input_err!("{e}"))
+                .err_tip(|| "Could not expand endpoint in GrpcStore")?
                 .to_string();
 
-            endpoints.push(
-                transport::Endpoint::new(endpoint.clone())
-                    .err_tip(|| format!("Could not connect to {} in GrpcStore", endpoint))?,
-            );
+            let endpoint = tls_utils::endpoint_from(&endpoint, tls_config.clone())
+                .map_err(|e| make_input_err!("Invalid URI for GrpcStore endpoint : {e:?}"))?;
+
+            endpoints.push(endpoint);
         }
 
         let conn = transport::Channel::balance_list(endpoints.into_iter());

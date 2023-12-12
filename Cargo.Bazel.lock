@@ -1,5 +1,5 @@
 {
-  "checksum": "a6b16863ad5d0a1a72b20d57a7b103696e736e78f865de8cee087e4876a07970",
+  "checksum": "af852655d9eacd497a80742a4a6e9066b95c0a236ee1b77f438a7a8d7fef1237",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -9090,6 +9090,10 @@
               "target": "tokio_util"
             },
             {
+              "id": "tonic 0.10.2",
+              "target": "tonic"
+            },
+            {
               "id": "tracing 0.1.40",
               "target": "tracing"
             }
@@ -15084,6 +15088,7 @@
         ],
         "crate_features": {
           "common": [
+            "default",
             "logging",
             "tls12"
           ],
@@ -15326,6 +15331,7 @@
             "default",
             "gzip",
             "prost",
+            "tls",
             "transport"
           ],
           "selects": {}
@@ -15385,8 +15391,20 @@
               "target": "prost"
             },
             {
+              "id": "rustls 0.21.10",
+              "target": "rustls"
+            },
+            {
+              "id": "rustls-pemfile 1.0.4",
+              "target": "rustls_pemfile"
+            },
+            {
               "id": "tokio 1.35.1",
               "target": "tokio"
+            },
+            {
+              "id": "tokio-rustls 0.24.1",
+              "target": "tokio_rustls"
             },
             {
               "id": "tokio-stream 0.1.14",
