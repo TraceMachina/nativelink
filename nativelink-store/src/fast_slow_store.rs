@@ -229,12 +229,10 @@ impl Store for FastSlowStore {
                     .err_tip(|| "Failed to read data data buffer from slow store")?;
                 if output_buf.is_empty() {
                     // Write out our EOF.
-                    // It is possible for the client to disconnect the stream because they got
-                    // all the data they wanted, which could lead to an error when writing this
-                    // EOF. If that was to happen, we could end up terminating this early and
-                    // the resulting upload to the fast store might fail.
-                    let (fast_res, slow_res) = join!(fast_tx.send_eof(), writer_pin.send_eof());
-                    return fast_res.merge(slow_res);
+                    // We are dropped as soon as we send_eof to writer_pin, so
+                    // we wait until we've finished all of our joins to do that.
+                    let fast_res = fast_tx.send_eof().await;
+                    return Ok::<_, Error>((fast_res, writer_pin));
                 }
 
                 let writer_fut = if let Some(range) =
@@ -256,8 +254,18 @@ impl Store for FastSlowStore {
         let fast_store_fut = fast_store.update(digest, fast_rx, UploadSizeInfo::ExactSize(sz));
 
         let (data_stream_res, slow_res, fast_res) = join!(data_stream_fut, slow_store_fut, fast_store_fut);
-        data_stream_res.merge(fast_res).merge(slow_res)?;
-        Ok(())
+        match data_stream_res {
+            Ok((fast_eof_res, mut writer_pin)) =>
+            // Sending the EOF will drop us almost immediately in bytestream_server
+            // so we perform it as the very last action in this method.
+            {
+                fast_eof_res
+                    .merge(fast_res)
+                    .merge(slow_res)
+                    .merge(writer_pin.send_eof().await)
+            }
+            Err(err) => fast_res.merge(slow_res).merge(Err(err)),
+        }
     }
 
     fn inner_store(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {

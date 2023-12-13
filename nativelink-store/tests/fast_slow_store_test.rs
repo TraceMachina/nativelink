@@ -69,6 +69,13 @@ async fn check_data<S: Store>(
 
 #[cfg(test)]
 mod fast_slow_store_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use error::{make_err, Code, ResultExt};
+    use nativelink_util::buf_channel::make_buf_channel_pair;
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -214,5 +221,138 @@ mod fast_slow_store_tests {
             let expected_results = Some(1..2);
             assert_eq!(test(received_range, send_range), expected_results);
         }
+    }
+
+    #[tokio::test]
+    async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
+        struct DropCheckStore {
+            drop_flag: Arc<AtomicBool>,
+            read_rx: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+            eof_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+            digest: Option<DigestInfo>,
+        }
+
+        #[async_trait]
+        impl Store for DropCheckStore {
+            async fn has_with_results(
+                self: Pin<&Self>,
+                digests: &[DigestInfo],
+                results: &mut [Option<usize>],
+            ) -> Result<(), Error> {
+                if let Some(has_digest) = self.digest {
+                    for (digest, result) in digests.iter().zip(results.iter_mut()) {
+                        if digest.hash_str() == has_digest.hash_str() {
+                            *result = Some(has_digest.size_bytes as usize);
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            async fn update(
+                self: Pin<&Self>,
+                _digest: DigestInfo,
+                mut reader: nativelink_util::buf_channel::DropCloserReadHalf,
+                _size_info: nativelink_util::store_trait::UploadSizeInfo,
+            ) -> Result<(), Error> {
+                // Gets called in the fast store and we don't need to do
+                // anything.  Should only complete when drain has finished.
+                reader.drain().await?;
+                let eof_tx = self.eof_tx.lock().unwrap().take();
+                if let Some(tx) = eof_tx {
+                    tx.send(()).map_err(|e| make_err!(Code::Internal, "{:?}", e))?;
+                }
+                let read_rx = self.read_rx.lock().unwrap().take();
+                if let Some(rx) = read_rx {
+                    rx.await.map_err(|e| make_err!(Code::Internal, "{:?}", e))?;
+                }
+                Ok(())
+            }
+
+            async fn get_part_ref(
+                self: Pin<&Self>,
+                digest: DigestInfo,
+                writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
+                offset: usize,
+                length: Option<usize>,
+            ) -> Result<(), Error> {
+                // Gets called in the slow store and we provide the data that's
+                // sent to the upstream and the fast store.
+                let bytes = length.unwrap_or(digest.size_bytes as usize) - offset;
+                let data = vec![0_u8; bytes];
+                writer.send(Bytes::copy_from_slice(&data)).await?;
+                writer.send_eof().await
+            }
+
+            fn inner_store(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+                self
+            }
+
+            fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
+                Box::new(self)
+            }
+
+            fn register_metrics(self: Arc<Self>, _registry: &mut nativelink_util::metrics_utils::Registry) {}
+        }
+
+        impl Drop for DropCheckStore {
+            fn drop(&mut self) {
+                self.drop_flag.store(true, Ordering::Release);
+            }
+        }
+
+        let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+        let (fast_store_read_tx, fast_store_read_rx) = tokio::sync::oneshot::channel();
+        let (fast_store_eof_tx, fast_store_eof_rx) = tokio::sync::oneshot::channel();
+        let fast_store_dropped = Arc::new(AtomicBool::new(false));
+        let fast_store: Arc<DropCheckStore> = Arc::new(DropCheckStore {
+            drop_flag: fast_store_dropped.clone(),
+            eof_tx: Mutex::new(Some(fast_store_eof_tx)),
+            read_rx: Mutex::new(Some(fast_store_read_rx)),
+            digest: None,
+        });
+        let slow_store_dropped = Arc::new(AtomicBool::new(false));
+        let slow_store: Arc<DropCheckStore> = Arc::new(DropCheckStore {
+            drop_flag: slow_store_dropped,
+            eof_tx: Mutex::new(None),
+            read_rx: Mutex::new(None),
+            digest: Some(digest),
+        });
+
+        let fast_slow_store = Arc::new(FastSlowStore::new(
+            &nativelink_config::stores::FastSlowStore {
+                fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+                slow: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+            },
+            fast_store,
+            slow_store,
+        ));
+
+        let (tx, mut rx) = make_buf_channel_pair();
+        let (get_res, read_res) = tokio::join!(
+            async move {
+                // Drop get_part_arc as soon as rx.drain() completes
+                tokio::select!(
+                    res = rx.drain() => res,
+                    res = fast_slow_store.get_part_arc(digest, tx, 0, Some(digest.size_bytes as usize)) => res,
+                )
+            },
+            async move {
+                fast_store_eof_rx
+                    .await
+                    .map_err(|e| make_err!(Code::Internal, "{:?}", e))?;
+                // Give a couple of cycles for dropping to occur if it's going to.
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+                if fast_store_dropped.load(Ordering::Acquire) {
+                    return Err(make_err!(Code::Internal, "Fast store was dropped!"));
+                }
+                fast_store_read_tx
+                    .send(())
+                    .map_err(|e| make_err!(Code::Internal, "{:?}", e))?;
+                Ok::<_, Error>(())
+            }
+        );
+        get_res.merge(read_res)
     }
 }
