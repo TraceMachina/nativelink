@@ -66,7 +66,7 @@ resource "google_compute_region_instance_template" "cas_instance_template" {
   name = "${var.project_prefix}-cas-instance-template"
 
   # Use a very small instance type for the CAS, since it's just a proxy to S3.
-  machine_type   = "e2-highcpu-8"
+  machine_type   = var.cas_machine_type
   can_ip_forward = false
 
   service_account {

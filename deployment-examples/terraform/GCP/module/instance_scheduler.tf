@@ -58,7 +58,7 @@ resource "google_compute_region_instance_template" "scheduler_instance_template"
 
   # The scheduler is a very light-weight service, it can often be a very small
   # instance type, but may need to scale up if it's a large cluster.
-  machine_type   = "e2-highcpu-4"
+  machine_type   = var.scheduler_machine_type
   can_ip_forward = false
 
   service_account {

@@ -60,7 +60,7 @@ resource "google_compute_region_instance_group_manager" "x86_cpu_worker_instance
 resource "google_compute_region_instance_template" "x86_cpu_worker_instance_template" {
   name = "${var.project_prefix}-x86-cpu-worker-instance-template"
 
-  machine_type   = "n2d-standard-8"
+  machine_type   = var.x86_cpu_worker_machine_type
   can_ip_forward = false
 
   scheduling {
