@@ -1,0 +1,17 @@
+module(
+    name = "nativelink",
+    version = "0.0.0",
+    compatibility_level = 0,
+)
+
+register_execution_platforms(
+    "@nativelink//local-remote-execution/generated/config:platform",
+)
+
+register_toolchains(
+    "@nativelink//local-remote-execution/generated/config:cc-toolchain",
+    "@nativelink//local-remote-execution/generated/java:all",
+)
+
+bazel_dep(name = "platforms", version = "0.0.8")
+bazel_dep(name = "rules_cc", version = "0.0.9")
