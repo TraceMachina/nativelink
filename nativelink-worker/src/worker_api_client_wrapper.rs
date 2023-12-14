@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use async_trait::async_trait;
-use proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
-use proto::com::github::trace_machina::nativelink::remote_execution::{
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
 use tonic::codec::Streaming;

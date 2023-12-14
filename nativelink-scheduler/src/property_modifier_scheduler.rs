@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use error::{Error, ResultExt};
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
+use nativelink_error::{Error, ResultExt};
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use parking_lot::Mutex;
 use tokio::sync::watch;

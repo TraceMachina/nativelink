@@ -17,16 +17,16 @@ use std::sync::Arc;
 use std::{iter, mem};
 
 use async_trait::async_trait;
-use error::{make_err, Code, Error, ResultExt};
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{select, FutureExt, TryFutureExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    ActionResult as ProtoActionResult, OutputDirectory as ProtoOutputDirectory, Tree as ProtoTree,
+};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use parking_lot::Mutex;
-use proto::build::bazel::remote::execution::v2::{
-    ActionResult as ProtoActionResult, OutputDirectory as ProtoOutputDirectory, Tree as ProtoTree,
-};
 use tokio::sync::Notify;
 use tracing::warn;
 

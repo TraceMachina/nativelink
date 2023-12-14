@@ -1,5 +1,5 @@
 [package]
-name = "error"
+name = "nativelink-error"
 version = "0.0.0"
 edition = "2021"
 autobins = false
@@ -8,7 +8,7 @@ autotests = false
 autobenches = false
 
 [dependencies]
-proto = { path = "../proto" }
+nativelink-proto = { path = "../nativelink-proto" }
 
 hex = "0.4.3"
 prost = "0.11.9"

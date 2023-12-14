@@ -15,9 +15,9 @@
 use std::sync::OnceLock;
 
 use blake3::Hasher as Blake3Hasher;
-use error::{make_err, make_input_err, Code, Error};
 use nativelink_config::cas_server::ConfigDigestHashFunction;
-use proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
+use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
 use sha2::{Digest, Sha256};
 
 use crate::common::DigestInfo;

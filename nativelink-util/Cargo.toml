@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
-error = { path = "../error" }
-proto = { path = "../proto" }
+nativelink-error = { path = "../nativelink-error" }
+nativelink-proto = { path = "../nativelink-proto" }
 
 async-lock = "2.8.0"
 async-trait = "0.1.74"

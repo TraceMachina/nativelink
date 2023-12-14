@@ -104,7 +104,7 @@ bazel --version
 ### Compile and Run NativeLink Server
 
 The following command will allow you to compile and run the NativeLink server for the first time.
-  
+
   ```shell
   apt install -y gcc g++ lld python3
   # Install cargo (if needed).
@@ -138,7 +138,7 @@ bazel test //... \
   --remote_executor=grpc://127.0.0.1:50051 \
   --remote_default_exec_properties=cpu_count=1
 
-  # This causes bazel to run the commands through an all-in-one `CAS`, `scheduler` 
+  # This causes bazel to run the commands through an all-in-one `CAS`, `scheduler`
   # and `worker`.
 ```
 <Note>If the NativeLink server was run in a docker container, the above command for starting the NativeLink client will need to be run in the same container as the server in order to connect.</Note>
@@ -217,10 +217,10 @@ cosign verify ghcr.io/tracemachina/nativelink:${PINNED_TAG} \
     --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
-<Tip> 
-  The images are reproducible on `X86_64-unknown-linux-gnu`. If you're on 
-  such a system you can produce a binary-identical image by building the 
-  `.#image` flake output locally. Make sure that your `git status` is 
-  completely clean and aligned with the commit you want to reproduce. 
-  Otherwise the image will be tainted with a `"dirty"` revision label. 
+<Tip>
+  The images are reproducible on `X86_64-unknown-linux-gnu`. If you're on
+  such a system you can produce a binary-identical image by building the
+  `.#image` flake output locally. Make sure that your `git status` is
+  completely clean and aligned with the commit you want to reproduce.
+  Otherwise the image will be tainted with a `"dirty"` revision label.
 </Tip>

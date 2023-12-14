@@ -1,5 +1,5 @@
 {
-  "checksum": "66ca4be4192533bc3436c8d35d31a23c0eb280f733b6ff3443df88fa1716ca78",
+  "checksum": "3bb0520455424fba3300e76f29bdfa19d2efbc683cdea8b36590799043b75b17",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -4773,56 +4773,6 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "error 0.0.0": {
-      "name": "error",
-      "version": "0.0.0",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "error",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "error",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "hex 0.4.3",
-              "target": "hex"
-            },
-            {
-              "id": "prost 0.11.9",
-              "target": "prost"
-            },
-            {
-              "id": "prost-types 0.11.9",
-              "target": "prost_types"
-            },
-            {
-              "id": "tokio 1.35.0",
-              "target": "tokio"
-            },
-            {
-              "id": "tonic 0.9.2",
-              "target": "tonic"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2021",
-        "version": "0.0.0"
-      },
-      "license": null
-    },
     "event-listener 2.5.3": {
       "name": "event-listener",
       "version": "2.5.3",
@@ -8073,6 +8023,111 @@
       },
       "license": null
     },
+    "nativelink-error 0.0.0": {
+      "name": "nativelink-error",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "nativelink_error",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "nativelink_error",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "hex 0.4.3",
+              "target": "hex"
+            },
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "prost-types 0.11.9",
+              "target": "prost_types"
+            },
+            {
+              "id": "tokio 1.35.0",
+              "target": "tokio"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.0.0"
+      },
+      "license": null
+    },
+    "nativelink-proto 0.0.0": {
+      "name": "nativelink-proto",
+      "version": "0.0.0",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "proto",
+            "crate_root": "genproto/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "proto",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "prost 0.11.9",
+              "target": "prost"
+            },
+            {
+              "id": "prost-types 0.11.9",
+              "target": "prost_types"
+            },
+            {
+              "id": "tonic 0.9.2",
+              "target": "tonic"
+            }
+          ],
+          "selects": {}
+        },
+        "deps_dev": {
+          "common": [
+            {
+              "id": "prost-build 0.11.9",
+              "target": "prost_build"
+            },
+            {
+              "id": "tonic-build 0.9.2",
+              "target": "tonic_build"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.0.0"
+      },
+      "license": null
+    },
     "nativelink-scheduler 0.0.0": {
       "name": "nativelink-scheduler",
       "version": "0.0.0",
@@ -10685,61 +10740,6 @@
         "version": "0.11.9"
       },
       "license": "Apache-2.0"
-    },
-    "proto 0.0.0": {
-      "name": "proto",
-      "version": "0.0.0",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "proto",
-            "crate_root": "genproto/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "proto",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "prost 0.11.9",
-              "target": "prost"
-            },
-            {
-              "id": "prost-types 0.11.9",
-              "target": "prost_types"
-            },
-            {
-              "id": "tonic 0.9.2",
-              "target": "tonic"
-            }
-          ],
-          "selects": {}
-        },
-        "deps_dev": {
-          "common": [
-            {
-              "id": "prost-build 0.11.9",
-              "target": "prost_build"
-            },
-            {
-              "id": "tonic-build 0.9.2",
-              "target": "tonic_build"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2021",
-        "version": "0.0.0"
-      },
-      "license": null
     },
     "quote 1.0.33": {
       "name": "quote",
@@ -17369,15 +17369,15 @@
   },
   "binary_crates": [],
   "workspace_members": {
-    "error 0.0.0": "error",
     "nativelink 0.0.0": "",
     "nativelink-config 0.0.0": "nativelink-config",
+    "nativelink-error 0.0.0": "nativelink-error",
+    "nativelink-proto 0.0.0": "nativelink-proto",
     "nativelink-scheduler 0.0.0": "nativelink-scheduler",
     "nativelink-service 0.0.0": "nativelink-service",
     "nativelink-store 0.0.0": "nativelink-store",
     "nativelink-util 0.0.0": "nativelink-util",
-    "nativelink-worker 0.0.0": "nativelink-worker",
-    "proto 0.0.0": "proto"
+    "nativelink-worker 0.0.0": "nativelink-worker"
   },
   "conditions": {
     "aarch64-apple-darwin": [

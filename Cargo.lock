@@ -956,18 +956,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "error"
-version = "0.0.0"
-dependencies = [
- "hex",
- "prost",
- "prost-types",
- "proto",
- "tokio",
- "tonic",
-]
-
-[[package]]
 name = "event-listener"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1550,10 +1538,11 @@ dependencies = [
  "async-lock",
  "axum",
  "clap",
- "error",
  "futures",
  "hyper",
  "nativelink-config",
+ "nativelink-error",
+ "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-service",
  "nativelink-store",
@@ -1561,7 +1550,6 @@ dependencies = [
  "nativelink-worker",
  "parking_lot",
  "prometheus-client",
- "proto",
  "rustls-pemfile",
  "scopeguard",
  "serde_json5",
@@ -1582,22 +1570,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "nativelink-error"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "nativelink-proto",
+ "prost",
+ "prost-types",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
+name = "nativelink-proto"
+version = "0.0.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "prost-types",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "nativelink-scheduler"
 version = "0.0.0"
 dependencies = [
  "async-trait",
  "blake3",
- "error",
  "futures",
  "hashbrown 0.14.3",
  "lru",
  "nativelink-config",
+ "nativelink-error",
+ "nativelink-proto",
  "nativelink-store",
  "nativelink-util",
  "parking_lot",
  "pretty_assertions",
  "prost",
- "proto",
  "rand",
  "scopeguard",
  "tokio",
@@ -1612,12 +1623,13 @@ name = "nativelink-service"
 version = "0.0.0"
 dependencies = [
  "bytes",
- "error",
  "futures",
  "hyper",
  "log",
  "maplit",
  "nativelink-config",
+ "nativelink-error",
+ "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-store",
  "nativelink-util",
@@ -1626,7 +1638,6 @@ dependencies = [
  "prometheus-client",
  "prost",
  "prost-types",
- "proto",
  "rand",
  "tokio",
  "tokio-stream",
@@ -1649,7 +1660,6 @@ dependencies = [
  "blake3",
  "byteorder",
  "bytes",
- "error",
  "filetime",
  "futures",
  "hex",
@@ -1659,12 +1669,13 @@ dependencies = [
  "lz4_flex",
  "memory-stats",
  "nativelink-config",
+ "nativelink-error",
+ "nativelink-proto",
  "nativelink-util",
  "once_cell",
  "parking_lot",
  "pretty_assertions",
  "prost",
- "proto",
  "rand",
  "serde",
  "sha2",
@@ -1685,7 +1696,6 @@ dependencies = [
  "async-trait",
  "blake3",
  "bytes",
- "error",
  "fixed-buffer",
  "futures",
  "hex",
@@ -1693,13 +1703,14 @@ dependencies = [
  "lru",
  "mock_instant",
  "nativelink-config",
+ "nativelink-error",
+ "nativelink-proto",
  "parking_lot",
  "pin-project-lite",
  "pretty_assertions",
  "prometheus-client",
  "prost",
  "prost-types",
- "proto",
  "rand",
  "serde",
  "sha2",
@@ -1715,13 +1726,14 @@ dependencies = [
  "async-lock",
  "async-trait",
  "bytes",
- "error",
  "filetime",
  "formatx",
  "futures",
  "hex",
  "hyper",
  "nativelink-config",
+ "nativelink-error",
+ "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-store",
  "nativelink-util",
@@ -1730,7 +1742,6 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "prost-types",
- "proto",
  "rand",
  "relative-path",
  "scopeguard",
@@ -2110,17 +2121,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "213622a1460818959ac1181aaeb2dc9c7f63df720db7d788b3e24eacd1983e13"
 dependencies = [
  "prost",
-]
-
-[[package]]
-name = "proto"
-version = "0.0.0"
-dependencies = [
- "prost",
- "prost-build",
- "prost-types",
- "tonic",
- "tonic-build",
 ]
 
 [[package]]

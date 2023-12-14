@@ -15,8 +15,8 @@
 use std::pin::Pin;
 
 use bytes::{BufMut, BytesMut};
-use error::{Error, ResultExt};
 use memory_stats::memory_stats;
+use nativelink_error::{Error, ResultExt};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
