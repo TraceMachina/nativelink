@@ -16,17 +16,17 @@ use std::convert::TryFrom;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::{make_err, Code, Error, ResultExt};
 use futures::poll;
 use futures::task::Poll;
 use hyper::body::Sender;
 use maplit::hashmap;
+use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_proto::google::bytestream::WriteResponse;
 use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::{encode_stream_proto, DigestInfo};
 use prometheus_client::registry::Registry;
-use proto::google::bytestream::WriteResponse;
 use tokio::task::{yield_now, JoinHandle};
 use tonic::{Request, Response};
 
@@ -62,11 +62,11 @@ fn make_bytestream_server(store_manager: &StoreManager) -> Result<ByteStreamServ
 
 #[cfg(test)]
 pub mod write_tests {
-    use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::google::bytestream::{
+    use nativelink_proto::google::bytestream::{
         byte_stream_server::ByteStream, // Needed to call .write().
         WriteRequest,
     };
+    use pretty_assertions::assert_eq; // Must be declared in every module.
     use tonic::{
         codec::Codec, // Needed for .decoder().
         codec::CompressionEncoding,
@@ -466,11 +466,11 @@ pub mod write_tests {
 
 #[cfg(test)]
 pub mod read_tests {
-    use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::google::bytestream::{
+    use nativelink_proto::google::bytestream::{
         byte_stream_server::ByteStream, // Needed to call .read().
         ReadRequest,
     };
+    use pretty_assertions::assert_eq; // Must be declared in every module.
     use tokio_stream::StreamExt;
 
     use super::*;
@@ -593,9 +593,9 @@ pub mod read_tests {
 
 #[cfg(test)]
 pub mod query_tests {
+    use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
+    use nativelink_proto::google::bytestream::{QueryWriteStatusRequest, QueryWriteStatusResponse, WriteRequest};
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::google::bytestream::byte_stream_server::ByteStream;
-    use proto::google::bytestream::{QueryWriteStatusRequest, QueryWriteStatusResponse, WriteRequest};
     use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
     use tonic::transport::Body;
     use tonic::Streaming;

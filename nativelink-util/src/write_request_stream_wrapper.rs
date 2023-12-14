@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use error::{error_if, Error, ResultExt};
 use futures::{Stream, StreamExt};
-use proto::google::bytestream::WriteRequest;
+use nativelink_error::{error_if, Error, ResultExt};
+use nativelink_proto::google::bytestream::WriteRequest;
 
 use crate::resource_info::ResourceInfo;
 

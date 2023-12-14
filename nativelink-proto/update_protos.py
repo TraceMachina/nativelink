@@ -18,10 +18,10 @@ import os
 import sys
 import shutil
 
-# Paths to "proto" directory in (a) the Bazel runfiles tree,
+# Paths to "nativelink-proto" directory in (a) the Bazel runfiles tree,
 # whence we can read data dependencies, and (b) the Git repository,
 # whither we can write output files.
-_BAZEL_DIR = os.path.join("proto")
+_BAZEL_DIR = os.path.join("nativelink-proto")
 _REPO_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "genproto")
 
 _RUST_LICENSE = """\

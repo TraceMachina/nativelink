@@ -20,11 +20,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use error::{make_err, make_input_err, Code, Error, ResultExt};
 use futures::future::{pending, BoxFuture};
 use futures::stream::unfold;
 use futures::{try_join, Future, Stream, TryFutureExt};
 use nativelink_config::cas_server::ByteStreamConfig;
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_proto::google::bytestream::byte_stream_server::{ByteStream, ByteStreamServer as Server};
+use nativelink_proto::google::bytestream::{
+    QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
+};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
@@ -33,10 +37,6 @@ use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use nativelink_util::write_request_stream_wrapper::WriteRequestStreamWrapper;
 use parking_lot::Mutex;
-use proto::google::bytestream::byte_stream_server::{ByteStream, ByteStreamServer as Server};
-use proto::google::bytestream::{
-    QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
-};
 use tokio::task::AbortHandle;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};

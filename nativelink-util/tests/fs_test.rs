@@ -17,7 +17,7 @@ use std::ffi::OsString;
 use std::io::SeekFrom;
 use std::str::from_utf8;
 
-use error::Error;
+use nativelink_error::Error;
 use nativelink_util::common::fs;
 use rand::{thread_rng, Rng};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};

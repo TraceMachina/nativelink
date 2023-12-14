@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};

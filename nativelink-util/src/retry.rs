@@ -16,9 +16,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use error::{make_err, Code, Error};
 use futures::future::Future;
 use futures::stream::StreamExt;
+use nativelink_error::{make_err, Code, Error};
 
 pub struct ExponentialBackoff {
     current: Duration,

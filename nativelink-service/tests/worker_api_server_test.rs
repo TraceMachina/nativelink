@@ -16,8 +16,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use error::{Error, ResultExt};
 use nativelink_config::cas_server::WorkerApiConfig;
+use nativelink_error::{Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile, OutputDirectory, OutputFile,
+    OutputSymlink,
+};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::WorkerApi;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    execute_result, update_for_worker, ExecuteResult, KeepAliveRequest, SupportedProperties,
+};
+use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::WorkerId;
@@ -27,15 +36,6 @@ use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStag
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;
-use proto::build::bazel::remote::execution::v2::{
-    ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile, OutputDirectory, OutputFile,
-    OutputSymlink,
-};
-use proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::WorkerApi;
-use proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, update_for_worker, ExecuteResult, KeepAliveRequest, SupportedProperties,
-};
-use proto::google::rpc::Status as ProtoStatus;
 use tokio_stream::StreamExt;
 use tonic::Request;
 

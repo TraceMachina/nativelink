@@ -19,16 +19,20 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::BytesMut;
-use error::{make_input_err, Code, Error, ResultExt};
 use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
+use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::{
+    ActionCache, ActionCacheServer as Server,
+};
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    ActionResult, GetActionResultRequest, UpdateActionResultRequest,
+};
 use nativelink_store::ac_utils::{get_and_decode_digest, ESTIMATED_DIGEST_SIZE};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::action_cache_server::{ActionCache, ActionCacheServer as Server};
-use proto::build::bazel::remote::execution::v2::{ActionResult, GetActionResultRequest, UpdateActionResultRequest};
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
