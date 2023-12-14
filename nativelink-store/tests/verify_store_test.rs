@@ -19,7 +19,7 @@ use futures::try_join;
 
 #[cfg(test)]
 mod verify_store_tests {
-    use error::{Error, ResultExt};
+    use nativelink_error::{Error, ResultExt};
     use nativelink_store::memory_store::MemoryStore;
     use nativelink_store::verify_store::VerifyStore;
     use nativelink_util::buf_channel::make_buf_channel_pair;

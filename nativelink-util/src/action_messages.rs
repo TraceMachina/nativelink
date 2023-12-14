@@ -21,18 +21,18 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use blake3::Hasher as Blake3Hasher;
-use error::{error_if, make_input_err, Error, ResultExt};
-use prost::bytes::Bytes;
-use prost::Message;
-use prost_types::Any;
-use proto::build::bazel::remote::execution::v2::{
+use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::{
     execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
     ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile, OutputSymlink,
     SymlinkNode,
 };
-use proto::google::longrunning::operation::Result as LongRunningResult;
-use proto::google::longrunning::Operation;
-use proto::google::rpc::Status;
+use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
+use nativelink_proto::google::longrunning::Operation;
+use nativelink_proto::google::rpc::Status;
+use prost::bytes::Bytes;
+use prost::Message;
+use prost_types::Any;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;

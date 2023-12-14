@@ -20,7 +20,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
-use error::{make_err, Code, Error, ResultExt};
 use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
 use futures::FutureExt;
 use hyper::server::conn::Http;
@@ -28,6 +27,7 @@ use hyper::{Response, StatusCode};
 use nativelink_config::cas_server::{
     CasConfig, CompressionAlgorithm, ConfigDigestHashFunction, GlobalConfig, ListenerConfig, ServerConfig, WorkerConfig,
 };
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
 use nativelink_scheduler::worker::WorkerId;
 use nativelink_service::ac_server::AcServer;

@@ -19,23 +19,23 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
-use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use futures::stream::{FuturesUnordered, Stream};
 use futures::TryStreamExt;
 use nativelink_config::cas_server::{CasStoreConfig, InstanceName};
-use nativelink_store::grpc_store::GrpcStore;
-use nativelink_store::store_manager::StoreManager;
-use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::Store;
-use proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
+use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
 };
-use proto::build::bazel::remote::execution::v2::{
+use nativelink_proto::build::bazel::remote::execution::v2::{
     batch_read_blobs_response, batch_update_blobs_response, compressor, BatchReadBlobsRequest, BatchReadBlobsResponse,
     BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
     GetTreeRequest, GetTreeResponse,
 };
-use proto::google::rpc::Status as GrpcStatus;
+use nativelink_proto::google::rpc::Status as GrpcStatus;
+use nativelink_store::grpc_store::GrpcStore;
+use nativelink_store::store_manager::StoreManager;
+use nativelink_util::common::DigestInfo;
+use nativelink_util::store_trait::Store;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
 

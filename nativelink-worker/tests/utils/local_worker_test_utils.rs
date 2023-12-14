@@ -17,15 +17,15 @@ use std::sync::Arc;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
-use error::Error;
 use hyper::body::Sender as HyperSender;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
+use nativelink_error::Error;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
+};
 use nativelink_util::common::JoinHandleDropGuard;
 use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
-use proto::com::github::trace_machina::nativelink::remote_execution::{
-    ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
-};
 use tokio::sync::mpsc;
 use tonic::Status;
 use tonic::{

@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use error::{make_input_err, Error};
+use nativelink_error::{make_input_err, Error};
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
