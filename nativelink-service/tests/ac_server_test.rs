@@ -16,8 +16,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use error::Error;
 use maplit::hashmap;
+use nativelink_error::Error;
+use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
+use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ActionResult, Digest};
 use nativelink_service::ac_server::AcServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -25,8 +27,6 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use prometheus_client::registry::Registry;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
-use proto::build::bazel::remote::execution::v2::{digest_function, ActionResult, Digest};
 use tonic::{Code, Request, Response, Status};
 
 const INSTANCE_NAME: &str = "foo_instance_name";
@@ -83,8 +83,8 @@ fn make_ac_server(store_manager: &StoreManager) -> Result<AcServer, Error> {
 
 #[cfg(test)]
 mod get_action_result {
+    use nativelink_proto::build::bazel::remote::execution::v2::GetActionResultRequest;
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::GetActionResultRequest;
 
     use super::*;
 
@@ -167,8 +167,8 @@ mod get_action_result {
 
 #[cfg(test)]
 mod update_action_result {
+    use nativelink_proto::build::bazel::remote::execution::v2::UpdateActionResultRequest;
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::UpdateActionResultRequest;
 
     use super::*;
 

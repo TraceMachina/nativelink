@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 #[cfg(test)]
 mod ref_store_tests {
-    use error::Error;
+    use nativelink_error::Error;
     use nativelink_store::memory_store::MemoryStore;
     use nativelink_store::size_partitioning_store::SizePartitioningStore;
     use nativelink_util::common::DigestInfo;

@@ -26,9 +26,18 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use error::{make_input_err, Code, Error, ResultExt};
 use futures::{FutureExt, TryFutureExt};
 use nativelink_config::cas_server::EnvironmentSource;
+use nativelink_error::{make_input_err, Code, Error, ResultExt};
+#[cfg_attr(target_family = "windows", allow(unused_imports))]
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    digest_function::Value as ProtoDigestFunction, platform::Property, Action, ActionResult as ProtoActionResult,
+    Command, Directory, DirectoryNode, ExecuteRequest, ExecuteResponse, FileNode, NodeProperties, Platform,
+    SymlinkNode, Tree,
+};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    HistoricalExecuteResponse, StartExecute,
+};
 use nativelink_store::ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -46,13 +55,6 @@ use nativelink_worker::running_actions_manager::{
 };
 use once_cell::sync::Lazy;
 use prost::Message;
-#[cfg_attr(target_family = "windows", allow(unused_imports))]
-use proto::build::bazel::remote::execution::v2::{
-    digest_function::Value as ProtoDigestFunction, platform::Property, Action, ActionResult as ProtoActionResult,
-    Command, Directory, DirectoryNode, ExecuteRequest, ExecuteResponse, FileNode, NodeProperties, Platform,
-    SymlinkNode, Tree,
-};
-use proto::com::github::trace_machina::nativelink::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use rand::{thread_rng, Rng};
 use tokio::sync::oneshot;
 

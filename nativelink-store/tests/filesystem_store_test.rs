@@ -27,11 +27,11 @@ use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
 use async_trait::async_trait;
-use error::{Code, Error, ResultExt};
 use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{poll, Future};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_store::filesystem_store::{
     digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
 };

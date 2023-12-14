@@ -18,11 +18,11 @@ use std::io::{BufRead, BufReader, Cursor};
 use std::process::Stdio;
 use std::str::from_utf8;
 
-use error::{make_err, make_input_err, Error, ResultExt};
 use futures::future::try_join_all;
 use nativelink_config::cas_server::WorkerProperty;
-use proto::build::bazel::remote::execution::v2::platform::Property;
-use proto::com::github::trace_machina::nativelink::remote_execution::SupportedProperties;
+use nativelink_error::{make_err, make_input_err, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::SupportedProperties;
 use tokio::process;
 use tracing::info;
 

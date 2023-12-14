@@ -15,10 +15,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::Error;
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
 use nativelink_config::stores::StoreConfig;
+use nativelink_error::Error;
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::store_trait::Store;
 

@@ -30,12 +30,19 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use error::{make_err, make_input_err, Code, Error, ResultExt};
 use filetime::{set_file_mtime, FileTime};
 use formatx::Template;
 use futures::future::{try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    Action, ActionResult as ProtoActionResult, Command as ProtoCommand, Directory as ProtoDirectory, Directory,
+    DirectoryNode, ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree, UpdateActionResultRequest,
+};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    HistoricalExecuteResponse, StartExecute,
+};
 use nativelink_store::ac_utils::{
     compute_buf_digest, compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_buf_to_store,
     upload_file_to_store, ESTIMATED_DIGEST_SIZE,
@@ -52,11 +59,6 @@ use nativelink_util::metrics_utils::{AsyncCounterWrapper, CollectorState, Counte
 use nativelink_util::store_trait::Store;
 use parking_lot::Mutex;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::{
-    Action, ActionResult as ProtoActionResult, Command as ProtoCommand, Directory as ProtoDirectory, Directory,
-    DirectoryNode, ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree, UpdateActionResultRequest,
-};
-use proto::com::github::trace_machina::nativelink::remote_execution::{HistoricalExecuteResponse, StartExecute};
 use relative_path::RelativePath;
 use scopeguard::{guard, ScopeGuard};
 use serde::Deserialize;
@@ -710,7 +712,7 @@ impl RunningActionImpl {
             let mut envs = command_proto.environment_variables.clone();
             if !envs.iter().any(|v| v.name.to_uppercase() == "SYSTEMROOT") {
                 envs.push(
-                    proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
+                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
                         name: "SystemRoot".to_string(),
                         value: "C:\\Windows".to_string(),
                     },
@@ -718,7 +720,7 @@ impl RunningActionImpl {
             }
             if !envs.iter().any(|v| v.name.to_uppercase() == "PATH") {
                 envs.push(
-                    proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
+                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
                         name: "PATH".to_string(),
                         value: "C:\\Windows\\System32".to_string(),
                     },

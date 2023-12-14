@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
+use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
 
 /// `PlatformProperties` helps manage the configuration of platform properties to
 /// keys and types. The scheduler uses these properties to decide what jobs
