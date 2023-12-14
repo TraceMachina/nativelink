@@ -22,21 +22,21 @@
 		<path fill-rule="evenodd" clip-rule="evenodd" fill="#7C54FF" d="M0.757,1.654h0.005c0.365,0,0.392,0.059,1.318,1.271
 			c0.991,1.297,1.261,1.583,2.156,1.583h0.535V0.886H4.014V3.74H4.008c-0.392,0-0.456-0.084-1.318-1.276
 			C1.773,1.199,1.509,0.886,0.534,0.886H0v3.622h0.757V1.654z"/>
-		<polygon fill-rule="evenodd" clip-rule="evenodd" fill="#7C54FF" points="12.012,4.508 11.153,4.508 11.153,1.479 9.464,1.479 
+		<polygon fill-rule="evenodd" clip-rule="evenodd" fill="#7C54FF" points="12.012,4.508 11.153,4.508 11.153,1.479 9.464,1.479
 			9.464,0.817 13.706,0.817 13.706,1.479 12.012,1.479 		"/>
 		<rect x="14.065" y="0.817" fill-rule="evenodd" clip-rule="evenodd" fill="#7C54FF" width="0.858" height="3.69"/>
 		<path fill-rule="evenodd" clip-rule="evenodd" fill="#7C54FF" d="M17.986,4.508h-0.57l-2.134-3.69h0.99l0.998,1.799
 			c0.158,0.286,0.305,0.564,0.438,0.833h0.011l0.465-0.801l0.976-1.831h0.964L17.986,4.508z"/>
-		<polygon fill-rule="evenodd" clip-rule="evenodd" fill="#7C54FF" points="20.48,1.479 20.48,0.817 24.325,0.817 24.325,1.479 
+		<polygon fill-rule="evenodd" clip-rule="evenodd" fill="#7C54FF" points="20.48,1.479 20.48,0.817 24.325,0.817 24.325,1.479
 			23.346,1.479 21.339,1.479 		"/>
-		<polygon fill-rule="evenodd" clip-rule="evenodd" fill="#7C54FF" points="24.362,4.508 20.48,4.508 20.48,2.263 21.339,2.263 
+		<polygon fill-rule="evenodd" clip-rule="evenodd" fill="#7C54FF" points="24.362,4.508 20.48,4.508 20.48,2.263 21.339,2.263
 			23.346,2.263 23.346,2.92 21.339,2.92 21.339,3.814 24.362,3.814 		"/>
-		<polygon fill-rule="evenodd" clip-rule="evenodd" points="28.18,4.508 24.685,4.508 24.685,0.817 25.15,0.817 25.15,4.095 
+		<polygon fill-rule="evenodd" clip-rule="evenodd" points="28.18,4.508 24.685,4.508 24.685,0.817 25.15,0.817 25.15,4.095
 			28.18,4.095 		"/>
 		<rect x="28.539" y="0.817" fill-rule="evenodd" clip-rule="evenodd" width="0.466" height="3.69"/>
 		<path fill-rule="evenodd" clip-rule="evenodd" d="M33.459,4.519h0.393V0.828h-0.474v3.065v0.142c-1.742,0-1.571-3.207-3.621-3.207
 			h-0.394v3.691h0.475V1.454V1.313C31.371,1.313,31.313,4.519,33.459,4.519z"/>
-		<polygon fill-rule="evenodd" clip-rule="evenodd" points="38.399,4.508 37.573,4.508 34.677,2.77 34.677,4.508 34.211,4.508 
+		<polygon fill-rule="evenodd" clip-rule="evenodd" points="38.399,4.508 37.573,4.508 34.677,2.77 34.677,4.508 34.211,4.508
 			34.211,0.817 34.677,0.817 34.677,2.415 37.33,0.817 38.124,0.817 35.175,2.586 		"/>
 		<path fill-rule="evenodd" clip-rule="evenodd" d="M6.96,4.508L7.565,5.76l0.604-1.252L7.846,4.262
 			C7.758,4.339,7.662,4.379,7.565,4.384C7.468,4.379,7.371,4.339,7.283,4.262L6.96,4.508z"/>

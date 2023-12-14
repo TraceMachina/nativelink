@@ -40,7 +40,7 @@ bazel --version
 ```
 
 ```shell Docker-ARM
-docker run -it --name=NL -v $(pwd):/native-link ubuntu:latest
+docker run -it --name=NL -v $(pwd):/nativelink ubuntu:latest
 
 # If above has already been run or trying to start in new terminal:
 docker exec -it NL bash
@@ -64,7 +64,7 @@ bazel --version
 ```
 
 ```shell Docker-x86
-docker run -it --name=NL -v $(pwd):/native-link ubuntu:latest
+docker run -it --name=NL -v $(pwd):/nativelink ubuntu:latest
 
 # If above has already been run or trying to start in new terminal:
 docker exec -it NL bash
@@ -104,7 +104,7 @@ bazel --version
 ### Compile and Run NativeLink Server
 
 The following command will allow you to compile and run the NativeLink server for the first time.
-  
+
   ```shell
   apt install -y gcc g++ lld python3
   # Install cargo (if needed).
@@ -113,17 +113,17 @@ The following command will allow you to compile and run the NativeLink server fo
 
   # Run with Cargo:
   # Unoptimized development build
-  cargo run --bin cas -- ./native-link-config/examples/basic_cas.json
+  cargo run --bin cas -- ./nativelink-config/examples/basic_cas.json
 
   # Optimized release build
-  cargo run --release --bin cas -- ./native-link-config/examples/basic_cas.json
+  cargo run --release --bin cas -- ./nativelink-config/examples/basic_cas.json
 
   # Run with Bazel:
   # Unoptimized development build on Unix.
-  bazel run cas -- ./native-link-config/examples/basic_cas.json
+  bazel run cas -- ./nativelink-config/examples/basic_cas.json
 
   # Optimized release build on Unix.
-  bazel run -c opt cas -- ./native-link-config/examples/basic_cas.json
+  bazel run -c opt cas -- ./nativelink-config/examples/basic_cas.json
   ```
 
 <Note>The `--release` flag causes link-time-optmization to be enabled, which can take a while to compile, but will result in a much faster binary.</Note>
@@ -138,7 +138,7 @@ bazel test //... \
   --remote_executor=grpc://127.0.0.1:50051 \
   --remote_default_exec_properties=cpu_count=1
 
-  # This causes bazel to run the commands through an all-in-one `CAS`, `scheduler` 
+  # This causes bazel to run the commands through an all-in-one `CAS`, `scheduler`
   # and `worker`.
 ```
 <Note>If the NativeLink server was run in a docker container, the above command for starting the NativeLink client will need to be run in the same container as the server in order to connect.</Note>
@@ -217,10 +217,10 @@ cosign verify ghcr.io/tracemachina/nativelink:${PINNED_TAG} \
     --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
-<Tip> 
-  The images are reproducible on `X86_64-unknown-linux-gnu`. If you're on 
-  such a system you can produce a binary-identical image by building the 
-  `.#image` flake output locally. Make sure that your `git status` is 
-  completely clean and aligned with the commit you want to reproduce. 
-  Otherwise the image will be tainted with a `"dirty"` revision label. 
+<Tip>
+  The images are reproducible on `X86_64-unknown-linux-gnu`. If you're on
+  such a system you can produce a binary-identical image by building the
+  `.#image` flake output locally. Make sure that your `git status` is
+  completely clean and aligned with the commit you want to reproduce.
+  Otherwise the image will be tainted with a `"dirty"` revision label.
 </Tip>
