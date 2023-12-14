@@ -1,7 +1,7 @@
 { pkgs, ... }:
 let
 
-excludes = ["^gencargo/" "^proto/genproto"];
+excludes = ["^gencargo/" "^nativelink-proto/genproto"];
 
 in
 {

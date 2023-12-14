@@ -29,8 +29,13 @@ mod utils {
     pub(crate) mod mock_running_actions_manager;
 }
 
-use error::{make_err, make_input_err, Code, Error};
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
+use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    execute_result, ConnectionResult, ExecuteResult, StartExecute, SupportedProperties, UpdateForWorker,
+};
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
@@ -40,11 +45,6 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_worker::local_worker::new_local_worker;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::platform::Property;
-use proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
-use proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ConnectionResult, ExecuteResult, StartExecute, SupportedProperties, UpdateForWorker,
-};
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncWriteExt;
 use tonic::Response;

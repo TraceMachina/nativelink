@@ -4,10 +4,10 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-error = { path = "../error" }
+nativelink-error = { path = "../nativelink-error" }
 nativelink-config = { path = "../nativelink-config" }
 nativelink-util = { path = "../nativelink-util" }
-proto = { path = "../proto" }
+nativelink-proto = { path = "../nativelink-proto" }
 
 # TODO(aaronmondal): This should not be a dependency. Move the corresponding
 #                    files somewhere else.

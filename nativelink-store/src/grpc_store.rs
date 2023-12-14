@@ -19,9 +19,20 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
-use error::{error_if, make_input_err, Error, ResultExt};
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{future, Future, Stream, TryStreamExt};
+use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
+use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    digest_function, ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetActionResultRequest,
+    GetTreeRequest, GetTreeResponse, UpdateActionResultRequest,
+};
+use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
+use nativelink_proto::google::bytestream::{
+    QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
+};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::retry::{ExponentialBackoff, Retrier, RetryResult};
@@ -29,17 +40,6 @@ use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use nativelink_util::write_request_stream_wrapper::WriteRequestStreamWrapper;
 use parking_lot::Mutex;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
-use proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
-use proto::build::bazel::remote::execution::v2::{
-    digest_function, ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
-    BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetActionResultRequest,
-    GetTreeRequest, GetTreeResponse, UpdateActionResultRequest,
-};
-use proto::google::bytestream::byte_stream_client::ByteStreamClient;
-use proto::google::bytestream::{
-    QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
-};
 use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::time::sleep;

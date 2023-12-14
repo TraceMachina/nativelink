@@ -22,9 +22,9 @@ mod utils {
     pub(crate) mod scheduler_utils;
 }
 
-use error::Error;
 use futures::join;
 use nativelink_config::schedulers::{PlatformPropertyAddition, PropertyModification, PropertyType};
+use nativelink_error::Error;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;

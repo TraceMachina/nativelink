@@ -15,16 +15,16 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::Error;
 use maplit::hashmap;
+use nativelink_error::Error;
+use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
+use nativelink_proto::build::bazel::remote::execution::v2::{compressor, digest_function, Digest};
+use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_service::cas_server::CasServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use prometheus_client::registry::Registry;
-use proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
-use proto::build::bazel::remote::execution::v2::{compressor, digest_function, Digest};
-use proto::google::rpc::Status as GrpcStatus;
 use tonic::Request;
 
 const INSTANCE_NAME: &str = "foo_instance_name";
@@ -60,8 +60,8 @@ fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
 
 #[cfg(test)]
 mod find_missing_blobs {
+    use nativelink_proto::build::bazel::remote::execution::v2::FindMissingBlobsRequest;
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::FindMissingBlobsRequest;
 
     use super::*;
 
@@ -158,10 +158,10 @@ mod find_missing_blobs {
 
 #[cfg(test)]
 mod batch_update_blobs {
-    use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::{
+    use nativelink_proto::build::bazel::remote::execution::v2::{
         batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
     };
+    use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use super::*;
 
@@ -225,10 +225,10 @@ mod batch_update_blobs {
 
 #[cfg(test)]
 mod batch_read_blobs {
-    use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::{
+    use nativelink_proto::build::bazel::remote::execution::v2::{
         batch_read_blobs_response, BatchReadBlobsRequest, BatchReadBlobsResponse,
     };
+    use pretty_assertions::assert_eq; // Must be declared in every module.
     use tonic::Code;
 
     use super::*;
@@ -321,11 +321,11 @@ mod batch_read_blobs {
 
 #[cfg(test)]
 mod end_to_end {
-    use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::{
+    use nativelink_proto::build::bazel::remote::execution::v2::{
         batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
         FindMissingBlobsRequest,
     };
+    use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use super::*;
 

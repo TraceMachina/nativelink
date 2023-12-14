@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use error::Error;
+use nativelink_error::Error;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use nativelink_util::metrics_utils::Registry;
 use tokio::sync::watch;

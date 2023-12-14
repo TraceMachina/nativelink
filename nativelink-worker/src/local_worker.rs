@@ -19,11 +19,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use error::{make_err, make_input_err, Code, Error, ResultExt};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{select, Future, FutureExt, StreamExt, TryFutureExt};
 use nativelink_config::cas_server::LocalWorkerConfig;
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    execute_result, ExecuteResult, KeepAliveRequest, UpdateForWorker,
+};
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage};
 use nativelink_util::common::fs;
@@ -32,11 +37,6 @@ use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
 };
 use nativelink_util::store_trait::Store;
-use proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
-use proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
-use proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteResult, KeepAliveRequest, UpdateForWorker,
-};
 use tokio::process;
 use tokio::sync::mpsc;
 use tokio::time::sleep;

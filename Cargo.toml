@@ -19,8 +19,8 @@ opt-level = 3
 name = "cas"
 
 [dependencies]
-error = { path = "error" }
-proto = { path = "proto" }
+nativelink-error = { path = "nativelink-error" }
+nativelink-proto = { path = "nativelink-proto" }
 nativelink-config = { path = "nativelink-config" }
 nativelink-scheduler = { path = "nativelink-scheduler" }
 nativelink-service = { path = "nativelink-service" }

@@ -31,9 +31,9 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//error",
         "//nativelink-config",
-        "//proto",
+        "//nativelink-error",
+        "//nativelink-proto",
         "@crate_index//:async-lock",
         "@crate_index//:blake3",
         "@crate_index//:bytes",
@@ -74,8 +74,8 @@ rust_test_suite(
     ],
     deps = [
         ":nativelink-util",
-        "//error",
         "//nativelink-config",
+        "//nativelink-error",
         "@crate_index//:bytes",
         "@crate_index//:futures",
         "@crate_index//:hex",

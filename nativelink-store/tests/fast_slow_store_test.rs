@@ -15,7 +15,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::Error;
+use nativelink_error::Error;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
@@ -74,7 +74,7 @@ mod fast_slow_store_tests {
 
     use async_trait::async_trait;
     use bytes::Bytes;
-    use error::{make_err, Code, ResultExt};
+    use nativelink_error::{make_err, Code, ResultExt};
     use nativelink_util::buf_channel::make_buf_channel_pair;
     use pretty_assertions::assert_eq;
 
