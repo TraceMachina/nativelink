@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use bytes::Bytes;
-use error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use tokio::try_join;
 

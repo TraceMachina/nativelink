@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use nativelink_config::cas_server::WorkerApiConfig;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
@@ -27,15 +27,15 @@ use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStag
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;
-use proto::build::bazel::remote::execution::v2::{
+use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile, OutputDirectory, OutputFile,
     OutputSymlink,
 };
-use proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::WorkerApi;
-use proto::com::github::trace_machina::nativelink::remote_execution::{
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::WorkerApi;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     execute_result, update_for_worker, ExecuteResult, KeepAliveRequest, SupportedProperties,
 };
-use proto::google::rpc::Status as ProtoStatus;
+use nativelink_proto::google::rpc::Status as ProtoStatus;
 use tokio_stream::StreamExt;
 use tonic::Request;
 
@@ -106,7 +106,7 @@ pub mod connect_worker_tests {
     use super::*;
 
     #[tokio::test]
-    pub async fn connect_worker_adds_worker_to_scheduler_test() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn connect_worker_adds_worker_to_scheduler_test() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
         let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
@@ -123,7 +123,7 @@ pub mod keep_alive_tests {
     use super::*;
 
     #[tokio::test]
-    pub async fn server_times_out_workers_test() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn server_times_out_workers_test() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
         let mut now_timestamp = BASE_NOW_S;
@@ -146,7 +146,7 @@ pub mod keep_alive_tests {
     }
 
     #[tokio::test]
-    pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let now_timestamp = Arc::new(Mutex::new(BASE_NOW_S));
         let now_timestamp_clone = now_timestamp.clone();
         let add_and_return_timestamp = move |add_amount: u64| -> u64 {
@@ -189,7 +189,7 @@ pub mod keep_alive_tests {
     }
 
     #[tokio::test]
-    pub async fn worker_receives_keep_alive_request_test() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn worker_receives_keep_alive_request_test() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let mut test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
         // Send keep alive to client.
@@ -223,7 +223,7 @@ pub mod going_away_tests {
     use super::*;
 
     #[tokio::test]
-    pub async fn going_away_removes_worker_test() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn going_away_removes_worker_test() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
         let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
@@ -249,7 +249,7 @@ pub mod execution_response_tests {
     }
 
     #[tokio::test]
-    pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execution_response_success_test() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
         const SALT: u64 = 5;

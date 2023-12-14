@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime};
 use async_lock::RwLock;
 use async_trait::async_trait;
 use bytes::BytesMut;
-use error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};

@@ -17,7 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use error::Error;
+use nativelink_error::Error;
 use futures::stream::StreamExt;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
@@ -25,7 +25,7 @@ use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionResu
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use parking_lot::{Mutex, MutexGuard};
-use proto::build::bazel::remote::execution::v2::{
+use nativelink_proto::build::bazel::remote::execution::v2::{
     digest_function, ActionResult as ProtoActionResult, GetActionResultRequest,
 };
 use scopeguard::guard;

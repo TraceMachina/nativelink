@@ -15,7 +15,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::Error;
+use nativelink_error::Error;
 use nativelink_config::stores::MemoryStore as MemoryStoreConfig;
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::completeness_checking_store::CompletenessCheckingStore;
@@ -23,7 +23,7 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc::Blake3;
 use nativelink_util::store_trait::Store;
-use proto::build::bazel::remote::execution::v2::{
+use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, Directory, DirectoryNode, FileNode, OutputDirectory, OutputFile, Tree,
 };
 

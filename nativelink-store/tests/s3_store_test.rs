@@ -20,7 +20,7 @@ use aws_sdk_s3::config::{Builder, Region};
 use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
 use bytes::Bytes;
-use error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use futures::join;
 use http::header;
 use http::status::StatusCode;

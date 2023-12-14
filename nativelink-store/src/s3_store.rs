@@ -30,7 +30,7 @@ use aws_sdk_s3::primitives::{ByteStream, SdkBody};
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
 use aws_sdk_s3::Client;
 use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
-use error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{try_join, FutureExt, StreamExt, TryStreamExt};
 use hyper::client::connect::HttpConnector;

@@ -16,7 +16,7 @@ use std::convert::TryFrom;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use futures::poll;
 use futures::task::Poll;
 use hyper::body::Sender;
@@ -26,7 +26,7 @@ use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::{encode_stream_proto, DigestInfo};
 use prometheus_client::registry::Registry;
-use proto::google::bytestream::WriteResponse;
+use nativelink_proto::google::bytestream::WriteResponse;
 use tokio::task::{yield_now, JoinHandle};
 use tonic::{Request, Response};
 
@@ -63,7 +63,7 @@ fn make_bytestream_server(store_manager: &StoreManager) -> Result<ByteStreamServ
 #[cfg(test)]
 pub mod write_tests {
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::google::bytestream::{
+    use nativelink_proto::google::bytestream::{
         byte_stream_server::ByteStream, // Needed to call .write().
         WriteRequest,
     };
@@ -78,7 +78,7 @@ pub mod write_tests {
     use super::*;
 
     #[tokio::test]
-    pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -162,7 +162,7 @@ pub mod write_tests {
     }
 
     #[tokio::test]
-    pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn resume_write_success() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -250,7 +250,7 @@ pub mod write_tests {
     }
 
     #[tokio::test]
-    pub async fn ensure_write_is_not_done_until_write_request_is_set() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn ensure_write_is_not_done_until_write_request_is_set() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -335,7 +335,7 @@ pub mod write_tests {
     }
 
     #[tokio::test]
-    pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
 
@@ -405,7 +405,7 @@ pub mod write_tests {
     }
 
     #[tokio::test]
-    pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -467,7 +467,7 @@ pub mod write_tests {
 #[cfg(test)]
 pub mod read_tests {
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::google::bytestream::{
+    use nativelink_proto::google::bytestream::{
         byte_stream_server::ByteStream, // Needed to call .read().
         ReadRequest,
     };
@@ -476,7 +476,7 @@ pub mod read_tests {
     use super::*;
 
     #[tokio::test]
-    pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -510,7 +510,7 @@ pub mod read_tests {
     }
 
     #[tokio::test]
-    pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -594,8 +594,8 @@ pub mod read_tests {
 #[cfg(test)]
 pub mod query_tests {
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::google::bytestream::byte_stream_server::ByteStream;
-    use proto::google::bytestream::{QueryWriteStatusRequest, QueryWriteStatusResponse, WriteRequest};
+    use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
+    use nativelink_proto::google::bytestream::{QueryWriteStatusRequest, QueryWriteStatusResponse, WriteRequest};
     use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
     use tonic::transport::Body;
     use tonic::Streaming;
@@ -603,7 +603,7 @@ pub mod query_tests {
     use super::*;
 
     #[tokio::test]
-    pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = Arc::new(make_bytestream_server(store_manager.as_ref())?);
 

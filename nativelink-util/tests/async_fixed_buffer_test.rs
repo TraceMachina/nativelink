@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::task::Poll;
 
-use error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use futures::{pin_mut, poll};
 use nativelink_util::async_fixed_buffer::AsyncFixedBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

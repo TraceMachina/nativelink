@@ -17,7 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use futures::stream::unfold;
 use futures::Stream;
 use nativelink_config::cas_server::WorkerApiConfig;
@@ -26,10 +26,10 @@ use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::ActionInfoHashKey;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::platform_properties::PlatformProperties;
-use proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::{
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::{
     WorkerApi, WorkerApiServer as Server,
 };
-use proto::com::github::trace_machina::nativelink::remote_execution::{
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     execute_result, ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
 use tokio::sync::mpsc;

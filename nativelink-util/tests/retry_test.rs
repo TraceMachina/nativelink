@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
-use error::{make_err, Code, Error};
+use nativelink_error::{make_err, Code, Error};
 use futures::future::ready;
 use futures::stream::repeat_with;
 use nativelink_util::retry::{Retrier, RetryResult};

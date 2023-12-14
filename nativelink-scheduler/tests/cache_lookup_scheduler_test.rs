@@ -22,7 +22,7 @@ mod utils {
     pub(crate) mod scheduler_utils;
 }
 
-use error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use futures::join;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
@@ -32,7 +32,7 @@ use nativelink_util::action_messages::{ActionInfoHashKey, ActionResult, ActionSt
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
+use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
 use tokio::sync::watch;
 use tokio::{self};
 use tokio_stream::wrappers::WatchStream;

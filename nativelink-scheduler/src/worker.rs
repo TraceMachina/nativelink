@@ -17,11 +17,11 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::ActionInfo;
 use nativelink_util::metrics_utils::{CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent};
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
-use proto::com::github::trace_machina::nativelink::remote_execution::{
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use tokio::sync::mpsc::UnboundedSender;

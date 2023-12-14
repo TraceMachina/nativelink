@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_util::action_messages::{
     ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath,
@@ -31,8 +31,8 @@ use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::{Worker, WorkerId};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::common::DigestInfo;
-use proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
-use proto::com::github::trace_machina::nativelink::remote_execution::{
+use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use tokio::sync::{mpsc, watch};
@@ -488,7 +488,7 @@ mod scheduler_tests {
         }
 
         // Our first worker should have no updates over this test.
-        assert_eq!(rx_from_worker1.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        assert_eq!(rx_from_worker1.try_recv(), Err(mpsc::nativelink_error::TryRecvError::Empty));
 
         Ok(())
     }

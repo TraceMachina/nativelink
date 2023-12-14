@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bincode::config::{FixintEncoding, WithOtherIntEncoding};
 use bincode::{self, DefaultOptions, Options};
-use error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
 use nativelink_util::common::DigestInfo;

@@ -62,7 +62,7 @@ mod fastcdc_tests {
     }
 
     #[tokio::test]
-    async fn test_sekien_16k_chunks() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_sekien_16k_chunks() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let contents = include_bytes!("data/SekienAkashita.jpg");
         let mut cursor = Cursor::new(&contents);
         let mut frame_reader = FramedRead::new(&mut cursor, FastCDC::new(8192, 16384, 32768));

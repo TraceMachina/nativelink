@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
-use error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
 use futures::FutureExt;
 use hyper::server::conn::Http;
@@ -82,7 +82,7 @@ struct Args {
     config_file: String,
 }
 
-async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), Box<dyn std::error::Error>> {
+async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), Box<dyn std::nativelink_error::Error>> {
     let mut root_metrics_registry = <Registry>::with_prefix("nativelink");
 
     let store_manager = Arc::new(StoreManager::new());
@@ -354,7 +354,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             .route_service("/status", axum::routing::get(move || async move { "Ok".to_string() }));
 
         if let Some(prometheus_cfg) = services.experimental_prometheus {
-            fn error_to_response<E: std::error::Error>(e: E) -> Response<String> {
+            fn error_to_response<E: std::nativelink_error::Error>(e: E) -> Response<String> {
                 let mut response = Response::new(format!("Error: {e:?}"));
                 *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                 response
@@ -643,7 +643,7 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
     unreachable!("None of the futures should resolve in main()");
 }
 
-async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
+async fn get_config() -> Result<CasConfig, Box<dyn std::nativelink_error::Error>> {
     let args = Args::parse();
     let json_contents = String::from_utf8(
         std::fs::read(&args.config_file).err_tip(|| format!("Could not open config file {}", args.config_file))?,
@@ -651,7 +651,7 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
     Ok(serde_json5::from_str(&json_contents)?)
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::nativelink_error::Error>> {
     tracing_subscriber::fmt()
         .pretty()
         .with_thread_ids(true)

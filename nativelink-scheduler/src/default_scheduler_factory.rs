@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use nativelink_config::schedulers::SchedulerConfig;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::metrics_utils::Registry;

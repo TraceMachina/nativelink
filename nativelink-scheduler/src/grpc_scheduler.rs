@@ -18,18 +18,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use futures::stream::unfold;
 use futures::TryFutureExt;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
 use nativelink_util::retry::{ExponentialBackoff, Retrier, RetryResult};
 use parking_lot::Mutex;
-use proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
-use proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
-use proto::build::bazel::remote::execution::v2::{
+use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
+use nativelink_proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
+use nativelink_proto::build::bazel::remote::execution::v2::{
     digest_function, ExecuteRequest, ExecutionPolicy, GetCapabilitiesRequest, WaitExecutionRequest,
 };
-use proto::google::longrunning::Operation;
+use nativelink_proto::google::longrunning::Operation;
 use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::select;

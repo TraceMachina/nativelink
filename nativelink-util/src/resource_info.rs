@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 
 const ERROR_MSG: &str = concat!(
     "Expected resource_name to be of pattern ",

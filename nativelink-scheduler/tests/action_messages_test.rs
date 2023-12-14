@@ -16,16 +16,16 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use error::Error;
+use nativelink_error::Error;
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;
-use proto::build::bazel::remote::execution::v2::ExecuteResponse;
-use proto::google::longrunning::{operation, Operation};
-use proto::google::rpc::Status;
+use nativelink_proto::build::bazel::remote::execution::v2::ExecuteResponse;
+use nativelink_proto::google::longrunning::{operation, Operation};
+use nativelink_proto::google::rpc::Status;
 
 const NOW_TIME: u64 = 10000;
 

@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::task::Poll;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use futures::task::Context;
 use futures::{Future, Stream};
 use tokio::sync::{mpsc, oneshot};

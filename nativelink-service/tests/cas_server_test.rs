@@ -15,16 +15,16 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::Error;
+use nativelink_error::Error;
 use maplit::hashmap;
 use nativelink_service::cas_server::CasServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use prometheus_client::registry::Registry;
-use proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
-use proto::build::bazel::remote::execution::v2::{compressor, digest_function, Digest};
-use proto::google::rpc::Status as GrpcStatus;
+use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
+use nativelink_proto::build::bazel::remote::execution::v2::{compressor, digest_function, Digest};
+use nativelink_proto::google::rpc::Status as GrpcStatus;
 use tonic::Request;
 
 const INSTANCE_NAME: &str = "foo_instance_name";
@@ -61,12 +61,12 @@ fn make_cas_server(store_manager: &StoreManager) -> Result<CasServer, Error> {
 #[cfg(test)]
 mod find_missing_blobs {
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::FindMissingBlobsRequest;
+    use nativelink_proto::build::bazel::remote::execution::v2::FindMissingBlobsRequest;
 
     use super::*;
 
     #[tokio::test]
-    async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
+    async fn empty_store() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
 
@@ -87,7 +87,7 @@ mod find_missing_blobs {
     }
 
     #[tokio::test]
-    async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
+    async fn store_one_item_existence() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -115,7 +115,7 @@ mod find_missing_blobs {
     }
 
     #[tokio::test]
-    async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Error>> {
+    async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -159,14 +159,14 @@ mod find_missing_blobs {
 #[cfg(test)]
 mod batch_update_blobs {
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::{
+    use nativelink_proto::build::bazel::remote::execution::v2::{
         batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
     };
 
     use super::*;
 
     #[tokio::test]
-    async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
+    async fn update_existing_item() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -226,7 +226,7 @@ mod batch_update_blobs {
 #[cfg(test)]
 mod batch_read_blobs {
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::{
+    use nativelink_proto::build::bazel::remote::execution::v2::{
         batch_read_blobs_response, BatchReadBlobsRequest, BatchReadBlobsResponse,
     };
     use tonic::Code;
@@ -234,7 +234,7 @@ mod batch_read_blobs {
     use super::*;
 
     #[tokio::test]
-    async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dyn std::error::Error>> {
+    async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -322,7 +322,7 @@ mod batch_read_blobs {
 #[cfg(test)]
 mod end_to_end {
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::{
+    use nativelink_proto::build::bazel::remote::execution::v2::{
         batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
         FindMissingBlobsRequest,
     };
@@ -330,7 +330,7 @@ mod end_to_end {
     use super::*;
 
     #[tokio::test]
-    async fn batch_update_blobs_two_items_existence_with_third_missing() -> Result<(), Box<dyn std::error::Error>> {
+    async fn batch_update_blobs_two_items_existence_with_third_missing() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
 

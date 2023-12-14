@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use error::Error;
+use nativelink_error::Error;
 use maplit::hashmap;
 use nativelink_service::ac_server::AcServer;
 use nativelink_store::default_store_factory::store_factory;
@@ -25,8 +25,8 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use prometheus_client::registry::Registry;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
-use proto::build::bazel::remote::execution::v2::{digest_function, ActionResult, Digest};
+use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
+use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ActionResult, Digest};
 use tonic::{Code, Request, Response, Status};
 
 const INSTANCE_NAME: &str = "foo_instance_name";
@@ -38,7 +38,7 @@ async fn insert_into_store<T: Message>(
     hash: &str,
     action_size: i64,
     action_result: &T,
-) -> Result<i64, Box<dyn std::error::Error>> {
+) -> Result<i64, Box<dyn std::nativelink_error::Error>> {
     let mut store_data = BytesMut::new();
     action_result.encode(&mut store_data)?;
     let data_len = store_data.len();
@@ -84,7 +84,7 @@ fn make_ac_server(store_manager: &StoreManager) -> Result<AcServer, Error> {
 #[cfg(test)]
 mod get_action_result {
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::GetActionResultRequest;
+    use nativelink_proto::build::bazel::remote::execution::v2::GetActionResultRequest;
 
     use super::*;
 
@@ -105,7 +105,7 @@ mod get_action_result {
     }
 
     #[tokio::test]
-    async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
+    async fn empty_store() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
 
@@ -121,7 +121,7 @@ mod get_action_result {
     }
 
     #[tokio::test]
-    async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
+    async fn has_single_item() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
         let ac_store_owned = store_manager.get_store("main_ac").unwrap();
@@ -141,7 +141,7 @@ mod get_action_result {
     }
 
     #[tokio::test]
-    async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
+    async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
         let ac_store_owned = store_manager.get_store("main_ac").unwrap();
@@ -168,11 +168,11 @@ mod get_action_result {
 #[cfg(test)]
 mod update_action_result {
     use pretty_assertions::assert_eq; // Must be declared in every module.
-    use proto::build::bazel::remote::execution::v2::UpdateActionResultRequest;
+    use nativelink_proto::build::bazel::remote::execution::v2::UpdateActionResultRequest;
 
     use super::*;
 
-    fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Box<dyn std::error::Error>> {
+    fn get_encoded_proto_size<T: Message>(proto: &T) -> Result<usize, Box<dyn std::nativelink_error::Error>> {
         let mut store_data = Vec::new();
         proto.encode(&mut store_data)?;
         Ok(store_data.len())
@@ -195,7 +195,7 @@ mod update_action_result {
     }
 
     #[tokio::test]
-    async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
+    async fn one_item_update_test() -> Result<(), Box<dyn std::nativelink_error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
         let ac_store_owned = store_manager.get_store("main_ac").unwrap();

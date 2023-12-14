@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use futures::{join, try_join};
 use serde::{Deserialize, Serialize};
 

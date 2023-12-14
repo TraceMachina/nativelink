@@ -16,12 +16,12 @@ use std::sync::Arc;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
-use error::{make_input_err, Error};
+use nativelink_error::{make_input_err, Error};
 use nativelink_util::action_messages::ActionResult;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_worker::running_actions_manager::{Metrics, RunningAction, RunningActionsManager};
-use proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use tokio::sync::mpsc;
 
 #[derive(Debug)]

@@ -22,10 +22,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{BufMut, Bytes, BytesMut};
-use error::{make_input_err, Error, ResultExt};
+use nativelink_error::{make_input_err, Error, ResultExt};
 use hex::FromHex;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::Digest;
+use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use serde::{Deserialize, Serialize};
 use tokio::task::{JoinError, JoinHandle};
 
@@ -217,7 +217,7 @@ impl<K: std::cmp::Eq + std::hash::Hash, T> HashMapExt<K, T> for HashMap<K, T> {
 }
 
 // Utility to encode our proto into GRPC stream format.
-pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::error::Error>> {
+pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::nativelink_error::Error>> {
     let mut buf = BytesMut::new();
     // See below comment on spec.
     use std::mem::size_of;

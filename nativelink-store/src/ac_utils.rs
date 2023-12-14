@@ -21,7 +21,7 @@ use std::default::Default;
 use std::pin::Pin;
 
 use bytes::{Bytes, BytesMut};
-use error::{Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt};
 use futures::future::join;
 use futures::{Future, FutureExt, TryFutureExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserWriteHalf};

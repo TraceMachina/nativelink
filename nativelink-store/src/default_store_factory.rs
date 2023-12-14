@@ -15,7 +15,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::Error;
+use nativelink_error::Error;
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
 use nativelink_config::stores::StoreConfig;

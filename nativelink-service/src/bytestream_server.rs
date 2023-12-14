@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use futures::future::{pending, BoxFuture};
 use futures::stream::unfold;
 use futures::{try_join, Future, Stream, TryFutureExt};
@@ -33,8 +33,8 @@ use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use nativelink_util::write_request_stream_wrapper::WriteRequestStreamWrapper;
 use parking_lot::Mutex;
-use proto::google::bytestream::byte_stream_server::{ByteStream, ByteStreamServer as Server};
-use proto::google::bytestream::{
+use nativelink_proto::google::bytestream::byte_stream_server::{ByteStream, ByteStreamServer as Server};
+use nativelink_proto::google::bytestream::{
     QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
 };
 use tokio::task::AbortHandle;
