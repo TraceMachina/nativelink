@@ -22,10 +22,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{BufMut, Bytes, BytesMut};
-use error::{make_input_err, Error, ResultExt};
 use hex::FromHex;
+use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
-use proto::build::bazel::remote::execution::v2::Digest;
 use serde::{Deserialize, Serialize};
 use tokio::task::{JoinError, JoinHandle};
 

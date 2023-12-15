@@ -19,7 +19,7 @@ use std::str::from_utf8;
 use std::sync::Arc;
 
 use bincode::{DefaultOptions, Options};
-use error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_store::compression_store::{
     CompressionStore, Footer, Lz4Config, SliceIndex, CURRENT_STREAM_FORMAT_VERSION, DEFAULT_BLOCK_SIZE,
     FOOTER_FRAME_TYPE,

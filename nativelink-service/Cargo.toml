@@ -4,8 +4,8 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-proto = { path = "../proto" }
-error = { path = "../error" }
+nativelink-proto = { path = "../nativelink-proto" }
+nativelink-error = { path = "../nativelink-error" }
 nativelink-config = { path = "../nativelink-config" }
 nativelink-util = { path = "../nativelink-util" }
 nativelink-store = { path = "../nativelink-store" }

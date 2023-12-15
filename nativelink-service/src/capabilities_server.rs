@@ -15,19 +15,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use error::{Error, ResultExt};
 use nativelink_config::cas_server::{CapabilitiesConfig, InstanceName};
-use nativelink_scheduler::action_scheduler::ActionScheduler;
-use nativelink_util::digest_hasher::default_digest_hasher_func;
-use proto::build::bazel::remote::execution::v2::capabilities_server::{Capabilities, CapabilitiesServer as Server};
-use proto::build::bazel::remote::execution::v2::digest_function::Value as DigestFunction;
-use proto::build::bazel::remote::execution::v2::priority_capabilities::PriorityRange;
-use proto::build::bazel::remote::execution::v2::symlink_absolute_path_strategy::Value as SymlinkAbsolutePathStrategy;
-use proto::build::bazel::remote::execution::v2::{
+use nativelink_error::{Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
+    Capabilities, CapabilitiesServer as Server,
+};
+use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value as DigestFunction;
+use nativelink_proto::build::bazel::remote::execution::v2::priority_capabilities::PriorityRange;
+use nativelink_proto::build::bazel::remote::execution::v2::symlink_absolute_path_strategy::Value as SymlinkAbsolutePathStrategy;
+use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities, GetCapabilitiesRequest,
     PriorityCapabilities, ServerCapabilities,
 };
-use proto::build::bazel::semver::SemVer;
+use nativelink_proto::build::bazel::semver::SemVer;
+use nativelink_scheduler::action_scheduler::ActionScheduler;
+use nativelink_util::digest_hasher::default_digest_hasher_func;
 use tonic::{Request, Response, Status};
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;

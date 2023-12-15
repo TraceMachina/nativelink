@@ -16,7 +16,6 @@
 // This file is auto-generated. To update it, run:
 // `bazel run proto:update_protos`
 
-
 pub mod build {
   pub mod bazel {
     pub mod remote {
@@ -56,4 +55,3 @@ pub mod google {
     include!("google.rpc.pb.rs");
   }
 }
-

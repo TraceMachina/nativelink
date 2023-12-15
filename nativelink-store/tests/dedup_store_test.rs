@@ -15,7 +15,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::{Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_store::dedup_store::DedupStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;

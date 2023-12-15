@@ -17,7 +17,7 @@ use std::ffi::OsString;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use nativelink_store::ac_utils::upload_file_to_store;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::{fs, DigestInfo};

@@ -14,8 +14,8 @@
 
 use std::collections::HashMap;
 
-use error::{make_input_err, Code, Error, ResultExt};
 use nativelink_config::schedulers::PropertyType;
+use nativelink_error::{make_input_err, Code, Error, ResultExt};
 use nativelink_util::platform_properties::PlatformPropertyValue;
 
 /// Helps manage known properties and conversion into `PlatformPropertyValue`.

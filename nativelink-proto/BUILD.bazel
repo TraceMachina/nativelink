@@ -70,7 +70,7 @@ genrule(
 )
 
 rust_library(
-    name = "proto",
+    name = "nativelink-proto",
     srcs = glob(["genproto/*.rs"]),
     tags = ["no-rustfmt"],
     visibility = ["//visibility:public"],

@@ -18,9 +18,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use error::Error;
 use mock_instant::{Instant as MockInstant, MockClock};
 use nativelink_config::stores::EvictionPolicy;
+use nativelink_error::Error;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, InstantWrapper, LenEntry};
 
