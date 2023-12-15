@@ -401,7 +401,7 @@ pub mod worker_api_server {
     #[async_trait]
     pub trait WorkerApi: Send + Sync + 'static {
         /// Server streaming response type for the ConnectWorker method.
-        type ConnectWorkerStream: futures_core::Stream<
+        type ConnectWorkerStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::UpdateForWorker, tonic::Status>,
             >
             + Send
@@ -552,7 +552,7 @@ pub mod worker_api_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).connect_worker(request).await
+                                <T as WorkerApi>::connect_worker(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -597,7 +597,9 @@ pub mod worker_api_server {
                             request: tonic::Request<super::KeepAliveRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).keep_alive(request).await };
+                            let fut = async move {
+                                <T as WorkerApi>::keep_alive(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -641,7 +643,9 @@ pub mod worker_api_server {
                             request: tonic::Request<super::GoingAwayRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).going_away(request).await };
+                            let fut = async move {
+                                <T as WorkerApi>::going_away(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -684,7 +688,7 @@ pub mod worker_api_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).execution_response(request).await
+                                <T as WorkerApi>::execution_response(&inner, request).await
                             };
                             Box::pin(fut)
                         }
