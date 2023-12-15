@@ -915,7 +915,7 @@ impl TryFrom<Operation> for ActionState {
             .try_into()
             .err_tip(|| "Could not convert Digest to DigestInfo")?;
 
-        let stage = match execution_stage::Value::from_i32(metadata.stage)
+        let stage = match execution_stage::Value::try_from(metadata.stage)
             .err_tip(|| format!("Could not convert {} to execution_stage::Value", metadata.stage))?
         {
             execution_stage::Value::Unknown => ActionStage::Unknown,

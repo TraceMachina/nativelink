@@ -341,7 +341,7 @@ pub mod byte_stream_server {
     #[async_trait]
     pub trait ByteStream: Send + Sync + 'static {
         /// Server streaming response type for the Read method.
-        type ReadStream: futures_core::Stream<
+        type ReadStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::ReadResponse, tonic::Status>,
             >
             + Send
@@ -521,7 +521,9 @@ pub mod byte_stream_server {
                             request: tonic::Request<super::ReadRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).read(request).await };
+                            let fut = async move {
+                                <T as ByteStream>::read(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -567,7 +569,9 @@ pub mod byte_stream_server {
                             >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).write(request).await };
+                            let fut = async move {
+                                <T as ByteStream>::write(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -612,7 +616,7 @@ pub mod byte_stream_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).query_write_status(request).await
+                                <T as ByteStream>::query_write_status(&inner, request).await
                             };
                             Box::pin(fut)
                         }

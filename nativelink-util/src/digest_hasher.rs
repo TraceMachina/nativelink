@@ -44,10 +44,11 @@ pub enum DigestHasherFunc {
 }
 
 impl DigestHasherFunc {
-    pub fn proto_digest_func(&self) -> ProtoDigestFunction {
+    #[must_use]
+    pub const fn proto_digest_func(&self) -> ProtoDigestFunction {
         match self {
-            DigestHasherFunc::Sha256 => ProtoDigestFunction::Sha256,
-            DigestHasherFunc::Blake3 => ProtoDigestFunction::Blake3,
+            Self::Sha256 => ProtoDigestFunction::Sha256,
+            Self::Blake3 => ProtoDigestFunction::Blake3,
         }
     }
 }
@@ -55,8 +56,8 @@ impl DigestHasherFunc {
 impl From<ConfigDigestHashFunction> for DigestHasherFunc {
     fn from(value: ConfigDigestHashFunction) -> Self {
         match value {
-            ConfigDigestHashFunction::sha256 => DigestHasherFunc::Sha256,
-            ConfigDigestHashFunction::blake3 => DigestHasherFunc::Blake3,
+            ConfigDigestHashFunction::sha256 => Self::Sha256,
+            ConfigDigestHashFunction::blake3 => Self::Blake3,
         }
     }
 }
@@ -66,8 +67,8 @@ impl TryFrom<ProtoDigestFunction> for DigestHasherFunc {
 
     fn try_from(value: ProtoDigestFunction) -> Result<Self, Self::Error> {
         match value {
-            ProtoDigestFunction::Sha256 => Ok(DigestHasherFunc::Sha256),
-            ProtoDigestFunction::Blake3 => Ok(DigestHasherFunc::Blake3),
+            ProtoDigestFunction::Sha256 => Ok(Self::Sha256),
+            ProtoDigestFunction::Blake3 => Ok(Self::Blake3),
             v => Err(make_input_err!("Unknown or unsupported digest function {v:?}")),
         }
     }
@@ -77,11 +78,11 @@ impl TryFrom<i32> for DigestHasherFunc {
     type Error = Error;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match ProtoDigestFunction::from_i32(value) {
+        match ProtoDigestFunction::try_from(value) {
             // Note: Unknown represents 0, which means non-set, so use default.
-            Some(ProtoDigestFunction::Unknown) => Ok(default_digest_hasher_func()),
-            Some(ProtoDigestFunction::Sha256) => Ok(DigestHasherFunc::Sha256),
-            Some(ProtoDigestFunction::Blake3) => Ok(DigestHasherFunc::Blake3),
+            Ok(ProtoDigestFunction::Unknown) => Ok(default_digest_hasher_func()),
+            Ok(ProtoDigestFunction::Sha256) => Ok(Self::Sha256),
+            Ok(ProtoDigestFunction::Blake3) => Ok(Self::Blake3),
             value => Err(make_input_err!(
                 "Unknown or unsupported digest function: {:?}",
                 value.map(|v| v.as_str_name())
@@ -93,8 +94,8 @@ impl TryFrom<i32> for DigestHasherFunc {
 impl From<DigestHasherFunc> for DigestHasher {
     fn from(value: DigestHasherFunc) -> Self {
         match value {
-            DigestHasherFunc::Sha256 => DigestHasher::Sha256(Sha256::new()),
-            DigestHasherFunc::Blake3 => DigestHasher::Blake3(Box::new(Blake3Hasher::new())),
+            DigestHasherFunc::Sha256 => Self::Sha256(Sha256::new()),
+            DigestHasherFunc::Blake3 => Self::Blake3(Box::new(Blake3Hasher::new())),
         }
     }
 }
@@ -110,8 +111,8 @@ impl DigestHasher {
     #[inline]
     pub fn update(&mut self, input: &[u8]) {
         match self {
-            DigestHasher::Sha256(h) => sha2::digest::Update::update(h, input),
-            DigestHasher::Blake3(h) => {
+            Self::Sha256(h) => sha2::digest::Update::update(h, input),
+            Self::Blake3(h) => {
                 Blake3Hasher::update(h, input);
             }
         }
@@ -121,8 +122,8 @@ impl DigestHasher {
     #[inline]
     pub fn finalize_digest(&mut self, size: impl Into<i64>) -> DigestInfo {
         let hash = match self {
-            DigestHasher::Sha256(h) => h.finalize_reset().into(),
-            DigestHasher::Blake3(h) => h.finalize().into(),
+            Self::Sha256(h) => h.finalize_reset().into(),
+            Self::Blake3(h) => h.finalize().into(),
         };
         DigestInfo::new(hash, size.into())
     }

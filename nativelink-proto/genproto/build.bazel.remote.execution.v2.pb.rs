@@ -23,12 +23,12 @@
 /// rather than needing to run afresh.
 ///
 /// When a server completes execution of an
-/// \[Action][build.bazel.remote.execution.v2.Action\], it MAY choose to
-/// cache the \[result][build.bazel.remote.execution.v2.ActionResult\] in
-/// the \[ActionCache][build.bazel.remote.execution.v2.ActionCache\] unless
+/// [Action][build.bazel.remote.execution.v2.Action], it MAY choose to
+/// cache the [result][build.bazel.remote.execution.v2.ActionResult] in
+/// the [ActionCache][build.bazel.remote.execution.v2.ActionCache] unless
 /// `do_not_cache` is `true`. Clients SHOULD expect the server to do so. By
 /// default, future calls to
-/// \[Execute][build.bazel.remote.execution.v2.Execution.Execute\] the same
+/// [Execute][build.bazel.remote.execution.v2.Execution.Execute] the same
 /// `Action` will also serve their results from the cache. Clients must take care
 /// to understand the caching behaviour. Ideally, all `Action`s will be
 /// reproducible so that serving a result from cache is always desirable and
@@ -36,18 +36,18 @@
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Action {
-    /// The digest of the \[Command][build.bazel.remote.execution.v2.Command\]
+    /// The digest of the [Command][build.bazel.remote.execution.v2.Command]
     /// to run, which MUST be present in the
-    /// \[ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage\].
+    /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "1")]
     pub command_digest: ::core::option::Option<Digest>,
     /// The digest of the root
-    /// \[Directory][build.bazel.remote.execution.v2.Directory\] for the input
+    /// [Directory][build.bazel.remote.execution.v2.Directory] for the input
     /// files. The files in the directory tree are available in the correct
     /// location on the build machine before the command is executed. The root
     /// directory, as well as every subdirectory and content blob referred to, MUST
     /// be in the
-    /// \[ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage\].
+    /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "2")]
     pub input_root_digest: ::core::option::Option<Digest>,
     /// A timeout after which the execution should be killed. If the timeout is
@@ -66,7 +66,7 @@ pub struct Action {
     /// live migration of virtual machines, emulation overhead).
     ///
     /// The timeout is a part of the
-    /// \[Action][build.bazel.remote.execution.v2.Action\] message, and
+    /// [Action][build.bazel.remote.execution.v2.Action] message, and
     /// therefore two `Actions` with different timeouts are different, even if they
     /// are otherwise identical. This is because, if they were not, running an
     /// `Action` with a lower timeout than is required might result in a cache hit
@@ -94,13 +94,13 @@ pub struct Action {
     /// such worker will have the same result.  A detailed lexicon for this can be
     /// found in the accompanying platform.md.
     /// New in version 2.2: clients SHOULD set these platform properties as well
-    /// as those in the \[Command][build.bazel.remote.execution.v2.Command\]. Servers
+    /// as those in the [Command][build.bazel.remote.execution.v2.Command]. Servers
     /// SHOULD prefer those set here.
     #[prost(message, optional, tag = "10")]
     pub platform: ::core::option::Option<Platform>,
 }
 /// A `Command` is the actual command executed by a worker running an
-/// \[Action][build.bazel.remote.execution.v2.Action\] and specifications of its
+/// [Action][build.bazel.remote.execution.v2.Action] and specifications of its
 /// environment.
 ///
 /// Except as otherwise required, the environment (such as which system
@@ -131,7 +131,7 @@ pub struct Command {
     /// overridden using this field. Additional variables can also be specified.
     ///
     /// In order to ensure that equivalent
-    /// \[Command][build.bazel.remote.execution.v2.Command\]s always hash to the same
+    /// [Command][build.bazel.remote.execution.v2.Command]s always hash to the same
     /// value, the environment variables MUST be lexicographically sorted by name.
     /// Sorting of strings is done by code point, equivalently, by the UTF-8 bytes.
     #[prost(message, repeated, tag = "2")]
@@ -160,14 +160,14 @@ pub struct Command {
     ///
     /// DEPRECATED since v2.1: Use `output_paths` instead.
     ///
-    /// [ deprecated = true ];
+    /// \[ deprecated = true \];
     #[prost(string, repeated, tag = "3")]
     pub output_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// A list of the output directories that the client expects to retrieve from
     /// the action. Only the listed directories will be returned (an entire
     /// directory structure will be returned as a
-    /// \[Tree][build.bazel.remote.execution.v2.Tree\] message digest, see
-    /// \[OutputDirectory][build.bazel.remote.execution.v2.OutputDirectory\]), as
+    /// [Tree][build.bazel.remote.execution.v2.Tree] message digest, see
+    /// [OutputDirectory][build.bazel.remote.execution.v2.OutputDirectory]), as
     /// well as files listed in `output_files`. Other files or directories that
     /// may be created during command execution are discarded.
     ///
@@ -193,7 +193,7 @@ pub struct Command {
     ///
     /// DEPRECATED since 2.1: Use `output_paths` instead.
     ///
-    /// [ deprecated = true ];
+    /// \[ deprecated = true \];
     #[prost(string, repeated, tag = "4")]
     pub output_directories: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// A list of the output paths that the client expects to retrieve from the
@@ -201,10 +201,10 @@ pub struct Command {
     /// The type of the output (file or directory) is not specified, and will be
     /// determined by the server after action execution. If the resulting path is
     /// a file, it will be returned in an
-    /// \[OutputFile][build.bazel.remote.execution.v2.OutputFile\] typed field.
+    /// [OutputFile][build.bazel.remote.execution.v2.OutputFile] typed field.
     /// If the path is a directory, the entire directory structure will be returned
-    /// as a \[Tree][build.bazel.remote.execution.v2.Tree\] message digest, see
-    /// \[OutputDirectory][build.bazel.remote.execution.v2.OutputDirectory\]
+    /// as a [Tree][build.bazel.remote.execution.v2.Tree] message digest, see
+    /// [OutputDirectory][build.bazel.remote.execution.v2.OutputDirectory]
     /// Other files or directories that may be created during command execution
     /// are discarded.
     ///
@@ -233,9 +233,9 @@ pub struct Command {
     /// accompanying platform.md.
     /// DEPRECATED as of v2.2: platform properties are now specified directly in
     /// the action. See documentation note in the
-    /// \[Action][build.bazel.remote.execution.v2.Action\] for migration.
+    /// [Action][build.bazel.remote.execution.v2.Action] for migration.
     ///
-    /// [ deprecated = true ];
+    /// \[ deprecated = true \];
     #[prost(message, optional, tag = "5")]
     pub platform: ::core::option::Option<Platform>,
     /// The working directory, relative to the input root, for the command to run
@@ -245,8 +245,8 @@ pub struct Command {
     pub working_directory: ::prost::alloc::string::String,
     /// A list of keys for node properties the client expects to retrieve for
     /// output files and directories. Keys are either names of string-based
-    /// \[NodeProperty][build.bazel.remote.execution.v2.NodeProperty\] or
-    /// names of fields in \[NodeProperties][build.bazel.remote.execution.v2.NodeProperties\].
+    /// [NodeProperty][build.bazel.remote.execution.v2.NodeProperty] or
+    /// names of fields in [NodeProperties][build.bazel.remote.execution.v2.NodeProperties].
     /// In order to ensure that equivalent `Action`s always hash to the same
     /// value, the node properties MUST be lexicographically sorted by name.
     /// Sorting of strings is done by code point, equivalently, by the UTF-8 bytes.
@@ -274,7 +274,7 @@ pub mod command {
 }
 /// A `Platform` is a set of requirements, such as hardware, operating system, or
 /// compiler toolchain, for an
-/// \[Action][build.bazel.remote.execution.v2.Action\]'s execution
+/// [Action][build.bazel.remote.execution.v2.Action]'s execution
 /// environment. A `Platform` is represented as a series of key-value pairs
 /// representing the properties that are required of the platform.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -292,7 +292,7 @@ pub mod platform {
     /// A single property for the environment. The server is responsible for
     /// specifying the property `name`s that it accepts. If an unknown `name` is
     /// provided in the requirements for an
-    /// \[Action][build.bazel.remote.execution.v2.Action\], the server SHOULD
+    /// [Action][build.bazel.remote.execution.v2.Action], the server SHOULD
     /// reject the execution request. If permitted by the server, the same `name`
     /// may occur multiple times.
     ///
@@ -323,9 +323,9 @@ pub mod platform {
     }
 }
 /// A `Directory` represents a directory node in a file tree, containing zero or
-/// more children \[FileNodes][build.bazel.remote.execution.v2.FileNode\],
-/// \[DirectoryNodes][build.bazel.remote.execution.v2.DirectoryNode\] and
-/// \[SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode\].
+/// more children [FileNodes][build.bazel.remote.execution.v2.FileNode],
+/// [DirectoryNodes][build.bazel.remote.execution.v2.DirectoryNode] and
+/// [SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode].
 /// Each `Node` contains its name in the directory, either the digest of its
 /// content (either a file blob or a `Directory` proto) or a symlink target, as
 /// well as possibly some metadata about the file or directory.
@@ -345,7 +345,7 @@ pub mod platform {
 /// * The files, directories and symlinks in the directory must each be sorted
 ///    in lexicographical order by path. The path strings must be sorted by code
 ///    point, equivalently, by UTF-8 bytes.
-/// * The \[NodeProperties][build.bazel.remote.execution.v2.NodeProperty\] of files,
+/// * The [NodeProperties][build.bazel.remote.execution.v2.NodeProperty] of files,
 ///    directories, and symlinks must be sorted in lexicographical order by
 ///    property name.
 ///
@@ -413,9 +413,9 @@ pub struct Directory {
     #[prost(message, optional, tag = "5")]
     pub node_properties: ::core::option::Option<NodeProperties>,
 }
-/// A single property for \[FileNodes][build.bazel.remote.execution.v2.FileNode\],
-/// \[DirectoryNodes][build.bazel.remote.execution.v2.DirectoryNode\], and
-/// \[SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode\]. The server is
+/// A single property for [FileNodes][build.bazel.remote.execution.v2.FileNode],
+/// [DirectoryNodes][build.bazel.remote.execution.v2.DirectoryNode], and
+/// [SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode]. The server is
 /// responsible for specifying the property `name`s that it accepts. If
 /// permitted by the server, the same `name` may occur multiple times.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -428,16 +428,16 @@ pub struct NodeProperty {
     #[prost(string, tag = "2")]
     pub value: ::prost::alloc::string::String,
 }
-/// Node properties for \[FileNodes][build.bazel.remote.execution.v2.FileNode\],
-/// \[DirectoryNodes][build.bazel.remote.execution.v2.DirectoryNode\], and
-/// \[SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode\]. The server is
+/// Node properties for [FileNodes][build.bazel.remote.execution.v2.FileNode],
+/// [DirectoryNodes][build.bazel.remote.execution.v2.DirectoryNode], and
+/// [SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode]. The server is
 /// responsible for specifying the properties that it accepts.
 ///
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeProperties {
     /// A list of string-based
-    /// \[NodeProperties][build.bazel.remote.execution.v2.NodeProperty\].
+    /// [NodeProperties][build.bazel.remote.execution.v2.NodeProperty].
     #[prost(message, repeated, tag = "1")]
     pub properties: ::prost::alloc::vec::Vec<NodeProperty>,
     /// The file's last modification timestamp.
@@ -464,7 +464,7 @@ pub struct FileNode {
     pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// A `DirectoryNode` represents a child of a
-/// \[Directory][build.bazel.remote.execution.v2.Directory\] which is itself
+/// [Directory][build.bazel.remote.execution.v2.Directory] which is itself
 /// a `Directory` and its associated metadata.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -473,8 +473,8 @@ pub struct DirectoryNode {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     /// The digest of the
-    /// \[Directory][build.bazel.remote.execution.v2.Directory\] object
-    /// represented. See \[Digest][build.bazel.remote.execution.v2.Digest\]
+    /// [Directory][build.bazel.remote.execution.v2.Directory] object
+    /// represented. See [Digest][build.bazel.remote.execution.v2.Digest]
     /// for information about how to take the digest of a proto message.
     #[prost(message, optional, tag = "2")]
     pub digest: ::core::option::Option<Digest>,
@@ -489,7 +489,7 @@ pub struct SymlinkNode {
     /// The target path of the symlink. The path separator is a forward slash `/`.
     /// The target path can be relative to the parent directory of the symlink or
     /// it can be an absolute path starting with `/`. Support for absolute paths
-    /// can be checked using the \[Capabilities][build.bazel.remote.execution.v2.Capabilities\]
+    /// can be checked using the [Capabilities][build.bazel.remote.execution.v2.Capabilities]
     /// API. `..` components are allowed anywhere in the target path as logical
     /// canonicalization may lead to different behavior in the presence of
     /// directory symlinks (e.g. `foo/../bar` may not be the same as `bar`).
@@ -586,7 +586,7 @@ pub struct ExecutedActionMetadata {
     ///
     /// The method of timekeeping used to compute the virtual execution duration
     /// MUST be consistent with what is used to enforce the
-    /// \[Action][[build.bazel.remote.execution.v2.Action\]'s `timeout`. There is no
+    /// [Action][\[build.bazel.remote.execution.v2.Action\]'s `timeout`. There is no
     /// relationship between the virtual execution duration and the values of
     /// `execution_start_timestamp` and `execution_completed_timestamp`.
     #[prost(message, optional, tag = "12")]
@@ -606,7 +606,7 @@ pub struct ExecutedActionMetadata {
     pub auxiliary_metadata: ::prost::alloc::vec::Vec<::prost_types::Any>,
 }
 /// An ActionResult represents the result of an
-/// \[Action][build.bazel.remote.execution.v2.Action\] being run.
+/// [Action][build.bazel.remote.execution.v2.Action] being run.
 ///
 /// It is advised that at least one field (for example
 /// `ActionResult.execution_metadata.Worker`) have a non-default value, to
@@ -631,7 +631,7 @@ pub struct ActionResult {
     /// The output files of the action that are symbolic links to other files. Those
     /// may be links to other output files, or input files, or even absolute paths
     /// outside of the working directory, if the server supports
-    /// \[SymlinkAbsolutePathStrategy.ALLOWED][build.bazel.remote.execution.v2.CacheCapabilities.SymlinkAbsolutePathStrategy\].
+    /// [SymlinkAbsolutePathStrategy.ALLOWED][build.bazel.remote.execution.v2.CacheCapabilities.SymlinkAbsolutePathStrategy].
     /// For each output file requested in the `output_files` or `output_paths`
     /// field of the Action, if the corresponding file existed after
     /// the action completed, a single entry will be present either in this field,
@@ -647,7 +647,7 @@ pub struct ActionResult {
     /// DEPRECATED as of v2.1. Servers that wish to be compatible with v2.0 API
     /// should still populate this field in addition to `output_symlinks`.
     ///
-    /// [ deprecated = true ];
+    /// \[ deprecated = true \];
     #[prost(message, repeated, tag = "10")]
     pub output_file_symlinks: ::prost::alloc::vec::Vec<OutputSymlink>,
     /// New in v2.1: this field will only be populated if the command
@@ -656,7 +656,7 @@ pub struct ActionResult {
     /// The output paths of the action that are symbolic links to other paths. Those
     /// may be links to other outputs, or inputs, or even absolute paths
     /// outside of the working directory, if the server supports
-    /// \[SymlinkAbsolutePathStrategy.ALLOWED][build.bazel.remote.execution.v2.CacheCapabilities.SymlinkAbsolutePathStrategy\].
+    /// [SymlinkAbsolutePathStrategy.ALLOWED][build.bazel.remote.execution.v2.CacheCapabilities.SymlinkAbsolutePathStrategy].
     /// A single entry for each output requested in `output_paths`
     /// field of the Action, if the corresponding path existed after
     /// the action completed and was a symbolic link.
@@ -670,7 +670,7 @@ pub struct ActionResult {
     /// in the `output_directories` or `output_paths` field of the Action, if the
     /// corresponding directory existed after the action completed, a single entry
     /// will be present in the output list, which will contain the digest of a
-    /// \[Tree][build.bazel.remote.execution.v2.Tree\] message containing the
+    /// [Tree][build.bazel.remote.execution.v2.Tree] message containing the
     /// directory tree, and the path equal exactly to the corresponding Action
     /// output_directories member.
     ///
@@ -734,7 +734,7 @@ pub struct ActionResult {
     /// directories. Those may be links to other output directories, or input
     /// directories, or even absolute paths outside of the working directory,
     /// if the server supports
-    /// \[SymlinkAbsolutePathStrategy.ALLOWED][build.bazel.remote.execution.v2.CacheCapabilities.SymlinkAbsolutePathStrategy\].
+    /// [SymlinkAbsolutePathStrategy.ALLOWED][build.bazel.remote.execution.v2.CacheCapabilities.SymlinkAbsolutePathStrategy].
     /// For each output directory requested in the `output_directories` field of
     /// the Action, if the directory existed after the action completed, a
     /// single entry will be present either in this field, or in the
@@ -749,7 +749,7 @@ pub struct ActionResult {
     /// DEPRECATED as of v2.1. Servers that wish to be compatible with v2.0 API
     /// should still populate this field in addition to `output_symlinks`.
     ///
-    /// [ deprecated = true ];
+    /// \[ deprecated = true \];
     #[prost(message, repeated, tag = "11")]
     pub output_directory_symlinks: ::prost::alloc::vec::Vec<OutputSymlink>,
     /// The exit code of the command.
@@ -757,7 +757,7 @@ pub struct ActionResult {
     pub exit_code: i32,
     /// The standard output buffer of the action. The server SHOULD NOT inline
     /// stdout unless requested by the client in the
-    /// \[GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest\]
+    /// [GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest]
     /// message. The server MAY omit inlining, even if requested, and MUST do so if inlining
     /// would cause the response to exceed message size limits.
     /// Clients SHOULD NOT populate this field when uploading to the cache.
@@ -765,12 +765,12 @@ pub struct ActionResult {
     pub stdout_raw: ::prost::bytes::Bytes,
     /// The digest for a blob containing the standard output of the action, which
     /// can be retrieved from the
-    /// \[ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage\].
+    /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "6")]
     pub stdout_digest: ::core::option::Option<Digest>,
     /// The standard error buffer of the action. The server SHOULD NOT inline
     /// stderr unless requested by the client in the
-    /// \[GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest\]
+    /// [GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest]
     /// message. The server MAY omit inlining, even if requested, and MUST do so if inlining
     /// would cause the response to exceed message size limits.
     /// Clients SHOULD NOT populate this field when uploading to the cache.
@@ -778,7 +778,7 @@ pub struct ActionResult {
     pub stderr_raw: ::prost::bytes::Bytes,
     /// The digest for a blob containing the standard error of the action, which
     /// can be retrieved from the
-    /// \[ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage\].
+    /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "8")]
     pub stderr_digest: ::core::option::Option<Digest>,
     /// The details of the execution that originally produced this result.
@@ -786,7 +786,7 @@ pub struct ActionResult {
     pub execution_metadata: ::core::option::Option<ExecutedActionMetadata>,
 }
 /// An `OutputFile` is similar to a
-/// \[FileNode][build.bazel.remote.execution.v2.FileNode\], but it is used as an
+/// [FileNode][build.bazel.remote.execution.v2.FileNode], but it is used as an
 /// output in an `ActionResult`. It allows a full file path rather than
 /// only a name.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -805,7 +805,7 @@ pub struct OutputFile {
     pub is_executable: bool,
     /// The contents of the file if inlining was requested. The server SHOULD NOT inline
     /// file contents unless requested by the client in the
-    /// \[GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest\]
+    /// [GetActionResultRequest][build.bazel.remote.execution.v2.GetActionResultRequest]
     /// message. The server MAY omit inlining, even if requested, and MUST do so if inlining
     /// would cause the response to exceed message size limits.
     /// Clients SHOULD NOT populate this field when uploading to the cache.
@@ -815,7 +815,7 @@ pub struct OutputFile {
     pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// A `Tree` contains all the
-/// \[Directory][build.bazel.remote.execution.v2.Directory\] protos in a
+/// [Directory][build.bazel.remote.execution.v2.Directory] protos in a
 /// single directory Merkle tree, compressed into one message.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -845,7 +845,7 @@ pub struct OutputDirectory {
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
     /// The digest of the encoded
-    /// \[Tree][build.bazel.remote.execution.v2.Tree\] proto containing the
+    /// [Tree][build.bazel.remote.execution.v2.Tree] proto containing the
     /// directory's contents.
     #[prost(message, optional, tag = "3")]
     pub tree_digest: ::core::option::Option<Digest>,
@@ -888,7 +888,7 @@ pub struct OutputDirectory {
     pub is_topologically_sorted: bool,
 }
 /// An `OutputSymlink` is similar to a
-/// \[Symlink][build.bazel.remote.execution.v2.SymlinkNode\], but it is used as an
+/// [Symlink][build.bazel.remote.execution.v2.SymlinkNode], but it is used as an
 /// output in an `ActionResult`.
 ///
 /// `OutputSymlink` is binary-compatible with `SymlinkNode`.
@@ -903,7 +903,7 @@ pub struct OutputSymlink {
     /// The target path of the symlink. The path separator is a forward slash `/`.
     /// The target path can be relative to the parent directory of the symlink or
     /// it can be an absolute path starting with `/`. Support for absolute paths
-    /// can be checked using the \[Capabilities][build.bazel.remote.execution.v2.Capabilities\]
+    /// can be checked using the [Capabilities][build.bazel.remote.execution.v2.Capabilities]
     /// API. `..` components are allowed anywhere in the target path.
     #[prost(string, tag = "2")]
     pub target: ::prost::alloc::string::String,
@@ -943,7 +943,7 @@ pub struct ResultsCachePolicy {
     pub priority: i32,
 }
 /// A request message for
-/// \[Execution.Execute][build.bazel.remote.execution.v2.Execution.Execute\].
+/// [Execution.Execute][build.bazel.remote.execution.v2.Execution.Execute].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteRequest {
@@ -955,7 +955,7 @@ pub struct ExecuteRequest {
     #[prost(string, tag = "1")]
     pub instance_name: ::prost::alloc::string::String,
     /// If true, the action will be executed even if its result is already
-    /// present in the \[ActionCache][build.bazel.remote.execution.v2.ActionCache\].
+    /// present in the [ActionCache][build.bazel.remote.execution.v2.ActionCache].
     /// The execution is still allowed to be merged with other in-flight executions
     /// of the same action, however - semantically, the service MUST only guarantee
     /// that the results of an execution with this field set were not visible
@@ -969,7 +969,7 @@ pub struct ExecuteRequest {
     /// If false, the result may be served from the action cache.
     #[prost(bool, tag = "3")]
     pub skip_cache_lookup: bool,
-    /// The digest of the \[Action][build.bazel.remote.execution.v2.Action\] to
+    /// The digest of the [Action][build.bazel.remote.execution.v2.Action] to
     /// execute.
     #[prost(message, optional, tag = "6")]
     pub action_digest: ::core::option::Option<Digest>,
@@ -1008,10 +1008,10 @@ pub struct LogFile {
     pub human_readable: bool,
 }
 /// The response message for
-/// \[Execution.Execute][build.bazel.remote.execution.v2.Execution.Execute\],
+/// [Execution.Execute][build.bazel.remote.execution.v2.Execution.Execute],
 /// which will be contained in the [response
-/// field]\[google.longrunning.Operation.response\] of the
-/// \[Operation][google.longrunning.Operation\].
+/// field][google.longrunning.Operation.response] of the
+/// [Operation][google.longrunning.Operation].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteResponse {
@@ -1062,8 +1062,8 @@ pub struct ExecuteResponse {
 ///
 /// If and only if the remote execution system reports that an operation
 /// has reached the COMPLETED stage, it MUST set the [done
-/// field]\[google.longrunning.Operation.done\] of the
-/// \[Operation][google.longrunning.Operation\] and terminate the stream.
+/// field][google.longrunning.Operation.done] of the
+/// [Operation][google.longrunning.Operation] and terminate the stream.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionStage {}
@@ -1121,27 +1121,27 @@ pub mod execution_stage {
     }
 }
 /// Metadata about an ongoing
-/// \[execution][build.bazel.remote.execution.v2.Execution.Execute\], which
+/// [execution][build.bazel.remote.execution.v2.Execution.Execute], which
 /// will be contained in the [metadata
-/// field]\[google.longrunning.Operation.response\] of the
-/// \[Operation][google.longrunning.Operation\].
+/// field][google.longrunning.Operation.response] of the
+/// [Operation][google.longrunning.Operation].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteOperationMetadata {
     /// The current stage of execution.
     #[prost(enumeration = "execution_stage::Value", tag = "1")]
     pub stage: i32,
-    /// The digest of the \[Action][build.bazel.remote.execution.v2.Action\]
+    /// The digest of the [Action][build.bazel.remote.execution.v2.Action]
     /// being executed.
     #[prost(message, optional, tag = "2")]
     pub action_digest: ::core::option::Option<Digest>,
     /// If set, the client can use this resource name with
-    /// \[ByteStream.Read][google.bytestream.ByteStream.Read\] to stream the
+    /// [ByteStream.Read][google.bytestream.ByteStream.Read] to stream the
     /// standard output from the endpoint hosting streamed responses.
     #[prost(string, tag = "3")]
     pub stdout_stream_name: ::prost::alloc::string::String,
     /// If set, the client can use this resource name with
-    /// \[ByteStream.Read][google.bytestream.ByteStream.Read\] to stream the
+    /// [ByteStream.Read][google.bytestream.ByteStream.Read] to stream the
     /// standard error from the endpoint hosting streamed responses.
     #[prost(string, tag = "4")]
     pub stderr_stream_name: ::prost::alloc::string::String,
@@ -1151,17 +1151,17 @@ pub struct ExecuteOperationMetadata {
     pub partial_execution_metadata: ::core::option::Option<ExecutedActionMetadata>,
 }
 /// A request message for
-/// \[WaitExecution][build.bazel.remote.execution.v2.Execution.WaitExecution\].
+/// [WaitExecution][build.bazel.remote.execution.v2.Execution.WaitExecution].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WaitExecutionRequest {
-    /// The name of the \[Operation][google.longrunning.Operation\]
-    /// returned by \[Execute][build.bazel.remote.execution.v2.Execution.Execute\].
+    /// The name of the [Operation][google.longrunning.Operation]
+    /// returned by [Execute][build.bazel.remote.execution.v2.Execution.Execute].
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
 /// A request message for
-/// \[ActionCache.GetActionResult][build.bazel.remote.execution.v2.ActionCache.GetActionResult\].
+/// [ActionCache.GetActionResult][build.bazel.remote.execution.v2.ActionCache.GetActionResult].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetActionResultRequest {
@@ -1172,22 +1172,22 @@ pub struct GetActionResultRequest {
     /// omitted.
     #[prost(string, tag = "1")]
     pub instance_name: ::prost::alloc::string::String,
-    /// The digest of the \[Action][build.bazel.remote.execution.v2.Action\]
+    /// The digest of the [Action][build.bazel.remote.execution.v2.Action]
     /// whose result is requested.
     #[prost(message, optional, tag = "2")]
     pub action_digest: ::core::option::Option<Digest>,
     /// A hint to the server to request inlining stdout in the
-    /// \[ActionResult][build.bazel.remote.execution.v2.ActionResult\] message.
+    /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] message.
     #[prost(bool, tag = "3")]
     pub inline_stdout: bool,
     /// A hint to the server to request inlining stderr in the
-    /// \[ActionResult][build.bazel.remote.execution.v2.ActionResult\] message.
+    /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] message.
     #[prost(bool, tag = "4")]
     pub inline_stderr: bool,
     /// A hint to the server to inline the contents of the listed output files.
     /// Each path needs to exactly match one file path in either `output_paths` or
     /// `output_files` (DEPRECATED since v2.1) in the
-    /// \[Command][build.bazel.remote.execution.v2.Command\] message.
+    /// [Command][build.bazel.remote.execution.v2.Command] message.
     #[prost(string, repeated, tag = "5")]
     pub inline_output_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// The digest function that was used to compute the action digest.
@@ -1201,7 +1201,7 @@ pub struct GetActionResultRequest {
     pub digest_function: i32,
 }
 /// A request message for
-/// \[ActionCache.UpdateActionResult][build.bazel.remote.execution.v2.ActionCache.UpdateActionResult\].
+/// [ActionCache.UpdateActionResult][build.bazel.remote.execution.v2.ActionCache.UpdateActionResult].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateActionResultRequest {
@@ -1212,11 +1212,11 @@ pub struct UpdateActionResultRequest {
     /// omitted.
     #[prost(string, tag = "1")]
     pub instance_name: ::prost::alloc::string::String,
-    /// The digest of the \[Action][build.bazel.remote.execution.v2.Action\]
+    /// The digest of the [Action][build.bazel.remote.execution.v2.Action]
     /// whose result is being uploaded.
     #[prost(message, optional, tag = "2")]
     pub action_digest: ::core::option::Option<Digest>,
-    /// The \[ActionResult][build.bazel.remote.execution.v2.ActionResult\]
+    /// The [ActionResult][build.bazel.remote.execution.v2.ActionResult]
     /// to store in the cache.
     #[prost(message, optional, tag = "3")]
     pub action_result: ::core::option::Option<ActionResult>,
@@ -1236,7 +1236,7 @@ pub struct UpdateActionResultRequest {
     pub digest_function: i32,
 }
 /// A request message for
-/// \[ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs\].
+/// [ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FindMissingBlobsRequest {
@@ -1262,7 +1262,7 @@ pub struct FindMissingBlobsRequest {
     pub digest_function: i32,
 }
 /// A response message for
-/// \[ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs\].
+/// [ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FindMissingBlobsResponse {
@@ -1271,7 +1271,7 @@ pub struct FindMissingBlobsResponse {
     pub missing_blob_digests: ::prost::alloc::vec::Vec<Digest>,
 }
 /// A request message for
-/// \[ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs\].
+/// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchUpdateBlobsRequest {
@@ -1311,14 +1311,14 @@ pub mod batch_update_blobs_request {
         pub data: ::prost::bytes::Bytes,
         /// The format of `data`. Must be `IDENTITY`/unspecified, or one of the
         /// compressors advertised by the
-        /// \[CacheCapabilities.supported_batch_compressors][build.bazel.remote.execution.v2.CacheCapabilities.supported_batch_compressors\]
+        /// [CacheCapabilities.supported_batch_compressors][build.bazel.remote.execution.v2.CacheCapabilities.supported_batch_compressors]
         /// field.
         #[prost(enumeration = "super::compressor::Value", tag = "3")]
         pub compressor: i32,
     }
 }
 /// A response message for
-/// \[ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs\].
+/// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchUpdateBlobsResponse {
@@ -1343,7 +1343,7 @@ pub mod batch_update_blobs_response {
     }
 }
 /// A request message for
-/// \[ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs\].
+/// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchReadBlobsRequest {
@@ -1373,7 +1373,7 @@ pub struct BatchReadBlobsRequest {
     pub digest_function: i32,
 }
 /// A response message for
-/// \[ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs\].
+/// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchReadBlobsResponse {
@@ -1405,7 +1405,7 @@ pub mod batch_read_blobs_response {
     }
 }
 /// A request message for
-/// \[ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree\].
+/// [ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetTreeRequest {
@@ -1417,9 +1417,9 @@ pub struct GetTreeRequest {
     #[prost(string, tag = "1")]
     pub instance_name: ::prost::alloc::string::String,
     /// The digest of the root, which must be an encoded
-    /// \[Directory][build.bazel.remote.execution.v2.Directory\] message
+    /// [Directory][build.bazel.remote.execution.v2.Directory] message
     /// stored in the
-    /// \[ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage\].
+    /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage].
     #[prost(message, optional, tag = "2")]
     pub root_digest: ::core::option::Option<Digest>,
     /// A maximum page size to request. If present, the server will request no more
@@ -1429,7 +1429,7 @@ pub struct GetTreeRequest {
     #[prost(int32, tag = "3")]
     pub page_size: i32,
     /// A page token, which must be a value received in a previous
-    /// \[GetTreeResponse][build.bazel.remote.execution.v2.GetTreeResponse\].
+    /// [GetTreeResponse][build.bazel.remote.execution.v2.GetTreeResponse].
     /// If present, the server will use that token as an offset, returning only
     /// that page and the ones that succeed it.
     #[prost(string, tag = "4")]
@@ -1446,7 +1446,7 @@ pub struct GetTreeRequest {
     pub digest_function: i32,
 }
 /// A response message for
-/// \[ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree\].
+/// [ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetTreeResponse {
@@ -1455,13 +1455,13 @@ pub struct GetTreeResponse {
     pub directories: ::prost::alloc::vec::Vec<Directory>,
     /// If present, signifies that there are more results which the client can
     /// retrieve by passing this as the page_token in a subsequent
-    /// \[request][build.bazel.remote.execution.v2.GetTreeRequest\].
+    /// [request][build.bazel.remote.execution.v2.GetTreeRequest].
     /// If empty, signifies that this is the last page of results.
     #[prost(string, tag = "2")]
     pub next_page_token: ::prost::alloc::string::String,
 }
 /// A request message for
-/// \[Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities\].
+/// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetCapabilitiesRequest {
@@ -1474,7 +1474,7 @@ pub struct GetCapabilitiesRequest {
     pub instance_name: ::prost::alloc::string::String,
 }
 /// A response message for
-/// \[Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities\].
+/// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerCapabilities {
@@ -1639,8 +1639,8 @@ pub struct ActionCacheUpdateCapabilities {
     pub update_enabled: bool,
 }
 /// Allowed values for priority in
-/// \[ResultsCachePolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy\] and
-/// \[ExecutionPolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy\]
+/// [ResultsCachePolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy] and
+/// [ExecutionPolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy]
 /// Used for querying both cache and execution valid priority ranges.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1810,7 +1810,7 @@ pub struct CacheCapabilities {
     #[prost(enumeration = "compressor::Value", repeated, tag = "6")]
     pub supported_compressors: ::prost::alloc::vec::Vec<i32>,
     /// Compressors supported for inlined data in
-    /// \[BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs\]
+    /// [BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs]
     /// requests.
     #[prost(enumeration = "compressor::Value", repeated, tag = "7")]
     pub supported_batch_update_compressors: ::prost::alloc::vec::Vec<i32>,
@@ -2915,7 +2915,7 @@ pub mod execution_server {
     #[async_trait]
     pub trait Execution: Send + Sync + 'static {
         /// Server streaming response type for the Execute method.
-        type ExecuteStream: futures_core::Stream<
+        type ExecuteStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<
                     super::super::super::super::super::super::google::longrunning::Operation,
                     tonic::Status,
@@ -3001,7 +3001,7 @@ pub mod execution_server {
             request: tonic::Request<super::ExecuteRequest>,
         ) -> std::result::Result<tonic::Response<Self::ExecuteStream>, tonic::Status>;
         /// Server streaming response type for the WaitExecution method.
-        type WaitExecutionStream: futures_core::Stream<
+        type WaitExecutionStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<
                     super::super::super::super::super::super::google::longrunning::Operation,
                     tonic::Status,
@@ -3136,7 +3136,9 @@ pub mod execution_server {
                             request: tonic::Request<super::ExecuteRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).execute(request).await };
+                            let fut = async move {
+                                <T as Execution>::execute(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -3182,7 +3184,7 @@ pub mod execution_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).wait_execution(request).await
+                                <T as Execution>::wait_execution(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -3411,7 +3413,7 @@ pub mod action_cache_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).get_action_result(request).await
+                                <T as ActionCache>::get_action_result(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -3457,7 +3459,8 @@ pub mod action_cache_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).update_action_result(request).await
+                                <T as ActionCache>::update_action_result(&inner, request)
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -3608,7 +3611,7 @@ pub mod content_addressable_storage_server {
             tonic::Status,
         >;
         /// Server streaming response type for the GetTree method.
-        type GetTreeStream: futures_core::Stream<
+        type GetTreeStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::GetTreeResponse, tonic::Status>,
             >
             + Send
@@ -3882,7 +3885,11 @@ pub mod content_addressable_storage_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).find_missing_blobs(request).await
+                                <T as ContentAddressableStorage>::find_missing_blobs(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -3928,7 +3935,11 @@ pub mod content_addressable_storage_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).batch_update_blobs(request).await
+                                <T as ContentAddressableStorage>::batch_update_blobs(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -3974,7 +3985,11 @@ pub mod content_addressable_storage_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).batch_read_blobs(request).await
+                                <T as ContentAddressableStorage>::batch_read_blobs(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -4020,7 +4035,10 @@ pub mod content_addressable_storage_server {
                             request: tonic::Request<super::GetTreeRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).get_tree(request).await };
+                            let fut = async move {
+                                <T as ContentAddressableStorage>::get_tree(&inner, request)
+                                    .await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -4217,7 +4235,7 @@ pub mod capabilities_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                (*inner).get_capabilities(request).await
+                                <T as Capabilities>::get_capabilities(&inner, request).await
                             };
                             Box::pin(fut)
                         }

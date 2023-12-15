@@ -13,7 +13,7 @@
 // limitations under the License.
 
 /// Defines the HTTP configuration for an API service. It contains a list of
-/// \[HttpRule][google.api.HttpRule\], each specifying the mapping of an RPC method
+/// [HttpRule][google.api.HttpRule], each specifying the mapping of an RPC method
 /// to one or more HTTP REST API methods.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -40,7 +40,7 @@ pub struct Http {
 /// APIs](<https://github.com/googleapis/googleapis>),
 /// [Cloud Endpoints](<https://cloud.google.com/endpoints>), [gRPC
 /// Gateway](<https://github.com/grpc-ecosystem/grpc-gateway>),
-/// and \[Envoy\](<https://github.com/envoyproxy/envoy>) proxy support this feature
+/// and [Envoy](<https://github.com/envoyproxy/envoy>) proxy support this feature
 /// and use it for large scale production services.
 ///
 /// `HttpRule` defines the schema of the gRPC/REST mapping. The mapping specifies
@@ -201,23 +201,23 @@ pub struct Http {
 /// 1. Leaf request fields (recursive expansion nested messages in the request
 ///     message) are classified into three categories:
 ///     - Fields referred by the path template. They are passed via the URL path.
-///     - Fields referred by the \[HttpRule.body][google.api.HttpRule.body\]. They are passed via the HTTP
+///     - Fields referred by the [HttpRule.body][google.api.HttpRule.body]. They are passed via the HTTP
 ///       request body.
 ///     - All other fields are passed via the URL query parameters, and the
 ///       parameter name is the field path in the request message. A repeated
 ///       field can be represented as multiple query parameters under the same
 ///       name.
-///   2. If \[HttpRule.body][google.api.HttpRule.body\] is "*", there is no URL query parameter, all fields
+///   2. If [HttpRule.body][google.api.HttpRule.body] is "*", there is no URL query parameter, all fields
 ///      are passed via URL path and HTTP request body.
-///   3. If \[HttpRule.body][google.api.HttpRule.body\] is omitted, there is no HTTP request body, all
+///   3. If [HttpRule.body][google.api.HttpRule.body] is omitted, there is no HTTP request body, all
 ///      fields are passed via URL path and URL query parameters.
 ///
 /// ### Path template syntax
 ///
-///      Template = "/" Segments [ Verb ] ;
+///      Template = "/" Segments \[ Verb \] ;
 ///      Segments = Segment { "/" Segment } ;
 ///      Segment  = "*" | "**" | LITERAL | Variable ;
-///      Variable = "{" FieldPath [ "=" Segments ] "}" ;
+///      Variable = "{" FieldPath \[ "=" Segments \] "}" ;
 ///      FieldPath = IDENT { "." IDENT } ;
 ///      Verb     = ":" LITERAL ;
 ///
@@ -306,7 +306,7 @@ pub struct Http {
 pub struct HttpRule {
     /// Selects a method to which this rule applies.
     ///
-    /// Refer to \[selector][google.api.DocumentationRule.selector\] for syntax details.
+    /// Refer to [selector][google.api.DocumentationRule.selector] for syntax details.
     #[prost(string, tag = "1")]
     pub selector: ::prost::alloc::string::String,
     /// The name of the request field whose value is mapped to the HTTP request
