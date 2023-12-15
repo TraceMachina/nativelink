@@ -1,0 +1,43 @@
+---
+name: "CodeQL"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    # Non-peak hour 1:21 AM on Saturdays.
+    - cron: '21 1 * * 6'
+
+permissions: read-all
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ['ubuntu-22.04']
+    timeout-minutes: 360
+    permissions:
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'javascript-typescript', 'python' ]
+
+    steps:
+    - name: Checkout
+      uses: >- # v4.1.1
+        actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+    - name: Initialize CodeQL
+      uses: >- # v3.22.11
+        github/codeql-action/init@b374143c1149a9115d881581d29b8390bbcbb59c
+      with:
+        languages: ${{ matrix.language }}
+
+    - name: Perform CodeQL Analysis
+      uses: >- # v3.22.11
+        github/codeql-action/analyze@b374143c1149a9115d881581d29b8390bbcbb59c
+      with:
+        category: "/language:${{matrix.language}}"
