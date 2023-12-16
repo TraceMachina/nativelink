@@ -241,6 +241,16 @@ const DEFAULT_OPEN_FILE_PERMITS: usize = 10;
 static TOTAL_FILE_SEMAPHORES: AtomicUsize = AtomicUsize::new(DEFAULT_OPEN_FILE_PERMITS);
 pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FILE_PERMITS);
 
+/// Acquire a permit from the open file semaphore and call a raw function.
+#[inline]
+pub async fn call_with_permit<R>(func: impl FnOnce() -> Result<R, Error>) -> Result<R, Error> {
+    let _permit = OPEN_FILE_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
+    (func)()
+}
+
 pub fn set_open_file_limit(limit: usize) {
     let current_total = TOTAL_FILE_SEMAPHORES.load(Ordering::Acquire);
     if limit < current_total {

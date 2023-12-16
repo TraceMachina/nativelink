@@ -437,25 +437,27 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
 
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     shared_context: Arc<SharedContext>,
-    evicting_map: EvictingMap<Arc<Fe>, SystemTime>,
+    evicting_map: Arc<EvictingMap<Arc<Fe>, SystemTime>>,
     read_buffer_size: usize,
     sleep_fn: fn(Duration) -> Sleep,
+    rename_fn: fn(&OsString, &OsString) -> Result<(), std::io::Error>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
     pub async fn new(config: &nativelink_config::stores::FilesystemStore) -> Result<Self, Error> {
-        Self::new_with_timeout(config, sleep).await
+        Self::new_with_timeout_and_rename_fn(config, sleep, |from, to| std::fs::rename(from, to)).await
     }
 
-    pub async fn new_with_timeout(
+    pub async fn new_with_timeout_and_rename_fn(
         config: &nativelink_config::stores::FilesystemStore,
         sleep_fn: fn(Duration) -> Sleep,
+        rename_fn: fn(&OsString, &OsString) -> Result<(), std::io::Error>,
     ) -> Result<Self, Error> {
         let now = SystemTime::now();
 
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        let evicting_map = EvictingMap::new(eviction_policy, now);
+        let evicting_map = Arc::new(EvictingMap::new(eviction_policy, now));
 
         fs::create_dir_all(&config.temp_path)
             .await
@@ -469,7 +471,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             temp_path: config.temp_path.clone(),
             content_path: config.content_path.clone(),
         });
-        add_files_to_cache(&evicting_map, &now, &shared_context).await?;
+        add_files_to_cache(evicting_map.as_ref(), &now, &shared_context).await?;
         prune_temp_path(&shared_context.temp_path).await?;
 
         let read_buffer_size = if config.read_buffer_size == 0 {
@@ -482,6 +484,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             evicting_map,
             read_buffer_size,
             sleep_fn,
+            rename_fn,
         };
         Ok(store)
     }
@@ -561,7 +564,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // 5. Move the file into place. Since we hold a write lock still anyone that gets our new
         //    FileEntry (which has not yet been placed on disk) will not be able to read the file's
         //    contents until we relese the lock.
-        {
+        let evicting_map = self.evicting_map.clone();
+        let rename_fn = self.rename_fn;
+
+        // We need to guarantee that this will get to the end even if the parent future is dropped.
+        // See: https://github.com/TraceMachina/nativelink/issues/495
+        tokio::spawn(async move {
             let mut encoded_file_path = entry.get_encoded_file_path().write().await;
             let final_path = get_file_path_raw(
                 &PathType::Content,
@@ -569,24 +577,30 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 &final_digest,
             );
 
-            self.evicting_map.insert(final_digest, entry.clone()).await;
+            evicting_map.insert(final_digest, entry.clone()).await;
 
-            let result = fs::rename(encoded_file_path.get_file_path(), &final_path)
-                .await
-                .err_tip(|| format!("Failed to rename temp file to final path {:?}", final_path));
+            let from_path = encoded_file_path.get_file_path();
+            // Internally tokio spawns fs commands onto a blocking thread anyways.
+            // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
+            // an open-file permit (ensure we don't open too many files at once).
+            let result = fs::call_with_permit(|| {
+                (rename_fn)(&from_path, &final_path)
+                    .err_tip(|| format!("Failed to rename temp file to final path {final_path:?}"))
+            })
+            .await;
 
             // In the event our move from temp file to final file fails we need to ensure we remove
             // the entry from our map.
             // Remember: At this point it is possible for another thread to have a reference to
             // `entry`, so we can't delete the file, only drop() should ever delete files.
             if let Err(err) = result {
-                warn!("{}", err);
+                warn!("Error while renaming file: {err} - {from_path:?} -> {final_path:?}");
                 // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
                 // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
                 drop(encoded_file_path);
                 // It is possible that the item in our map is no longer the item we inserted,
                 // So, we need to conditionally remove it only if the pointers are the same.
-                self.evicting_map
+                evicting_map
                     .remove_if(&final_digest, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
                     .await;
                 return Err(err);
@@ -594,7 +608,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             encoded_file_path.path_type = PathType::Content;
             encoded_file_path.digest = final_digest;
             Ok(())
-        }
+        })
+        .await
+        .err_tip(|| "Failed to create spawn in filesystem store update_file")?
     }
 }
 
@@ -756,6 +772,6 @@ impl<Fe: FileEntry> MetricsComponent for FilesystemStore<Fe> {
             &self.shared_context.content_path,
             "Path to the configured content path",
         );
-        c.publish("evicting_map", &self.evicting_map, "");
+        c.publish("evicting_map", self.evicting_map.as_ref(), "");
     }
 }

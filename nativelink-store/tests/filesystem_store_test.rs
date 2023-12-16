@@ -21,7 +21,7 @@ use std::ops::DerefMut;
 use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -31,7 +31,7 @@ use bytes::Bytes;
 use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
 use futures::task::Poll;
-use futures::{poll, Future};
+use futures::{poll, Future, FutureExt};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_store::filesystem_store::{
     digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
@@ -876,7 +876,7 @@ mod filesystem_store_tests {
         let temp_path = make_temp_path("temp_path");
 
         let store = Arc::new(
-            FilesystemStore::<FileEntryImpl>::new_with_timeout(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
                 &nativelink_config::stores::FilesystemStore {
                     content_path: content_path.clone(),
                     temp_path: temp_path.clone(),
@@ -884,6 +884,7 @@ mod filesystem_store_tests {
                     ..Default::default()
                 },
                 |_| sleep(Duration::ZERO),
+                |from, to| std::fs::rename(from, to),
             )
             .await?,
         );
@@ -922,7 +923,7 @@ mod filesystem_store_tests {
         let temp_path = make_temp_path("temp_path");
 
         let store = Arc::new(
-            FilesystemStore::<FileEntryImpl>::new_with_timeout(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
                 &nativelink_config::stores::FilesystemStore {
                     content_path: content_path.clone(),
                     temp_path: temp_path.clone(),
@@ -930,6 +931,7 @@ mod filesystem_store_tests {
                     ..Default::default()
                 },
                 |_| sleep(Duration::ZERO),
+                |from, to| std::fs::rename(from, to),
             )
             .await?,
         );
@@ -964,7 +966,7 @@ mod filesystem_store_tests {
         let temp_path = make_temp_path("temp_path");
 
         let store = Arc::new(
-            FilesystemStore::<FileEntryImpl>::new_with_timeout(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
                 &nativelink_config::stores::FilesystemStore {
                     content_path: content_path.clone(),
                     temp_path: temp_path.clone(),
@@ -972,6 +974,7 @@ mod filesystem_store_tests {
                     ..Default::default()
                 },
                 |_| sleep(Duration::ZERO),
+                |from, to| std::fs::rename(from, to),
             )
             .await?,
         );
@@ -1013,6 +1016,92 @@ mod filesystem_store_tests {
             Ok(())
         })
         .await?;
+
+        Ok(())
+    }
+
+    /// Regression test for: https://github.com/TraceMachina/nativelink/issues/495.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn update_file_future_drops_before_rename() -> Result<(), Error> {
+        let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+
+        // Mutex can be used to signal to the rename function to pause execution.
+        static RENAME_REQUEST_PAUSE_MUX: Mutex<()> = Mutex::new(());
+        // Boolean used to know if the rename function is currently paused.
+        static RENAME_IS_PAUSED: AtomicBool = AtomicBool::new(false);
+
+        let content_path = make_temp_path("content_path");
+        let store = Arc::pin(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: make_temp_path("temp_path"),
+                    eviction_policy: None,
+                    ..Default::default()
+                },
+                |_| sleep(Duration::ZERO),
+                |_, _| {
+                    // If someone locked our mutex, it means we need to pause, so we
+                    // simply request a lock on the same mutex.
+                    if RENAME_REQUEST_PAUSE_MUX.try_lock().is_err() {
+                        RENAME_IS_PAUSED.store(true, Ordering::Release);
+                        let _lock = RENAME_REQUEST_PAUSE_MUX.lock();
+                        RENAME_IS_PAUSED.store(false, Ordering::Release);
+                    }
+                    Ok(())
+                },
+            )
+            .await?,
+        );
+
+        // Populate our first store entry.
+        let first_file_entry = {
+            store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
+            store.get_file_entry_for_digest(&digest).await?
+        };
+
+        // 1. Request the next rename function to block.
+        // 2. Request to replace our data.
+        // 3. When we are certain that our rename function is paused, drop
+        //    the replace/update future.
+        // 4. Then drop the lock.
+        {
+            let rename_pause_request_lock = RENAME_REQUEST_PAUSE_MUX.lock();
+            let mut update_fut = store.as_ref().update_oneshot(digest, VALUE2.into()).boxed();
+
+            loop {
+                // Try to advance our update future.
+                assert_eq!(poll!(&mut update_fut), Poll::Pending);
+
+                // Once we are sure the rename fuction is paused break.
+                if RENAME_IS_PAUSED.load(Ordering::Acquire) {
+                    break;
+                }
+                // Give a little time for background/kernel threads to run.
+                sleep(Duration::from_millis(1)).await;
+            }
+            // Writing these out explicitly so users know this is what we are testing.
+            // Note: The order they are dropped matters.
+            drop(update_fut);
+            drop(rename_pause_request_lock);
+        }
+        // Grab the newly inserted item in our store.
+        let new_file_entry = store.get_file_entry_for_digest(&digest).await?;
+        assert!(
+            !Arc::ptr_eq(&first_file_entry, &new_file_entry),
+            "Expected file entries to not be the same"
+        );
+
+        // Ensure the entry we inserted was properly flagged as moved (from temp -> content dir).
+        new_file_entry
+            .get_file_path_locked(move |file_path| async move {
+                assert_eq!(
+                    file_path,
+                    OsString::from(format!("{}/{}-{}", content_path, digest.hash_str(), digest.size_bytes))
+                );
+                Ok(())
+            })
+            .await?;
 
         Ok(())
     }
