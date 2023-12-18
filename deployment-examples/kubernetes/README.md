@@ -3,8 +3,8 @@
 This deployment sets up a 3-container deployment with separate CAS, scheduler
 and worker. Don't use this example deployment in production. It's insecure.
 
-In this example we're using `kind` to set up the cluster and `cilium` with
-`metallb` to provide a `LoadBalancer` and `GatewayController`.
+In this example we're using `kind` to set up the cluster `cilium` to provide a
+`LoadBalancer` and `GatewayController`.
 
 First set up a local development cluster:
 
@@ -41,8 +41,8 @@ echo "Scheduler IP: $SCHEDULER"
 
 # Prints something like:
 #
-# Cache IP: 172.20.255.200
-# Scheduler IP: 172.20.255.201
+# Cache IP: 172.20.255.4
+# Scheduler IP: 172.20.255.5
 ```
 
 You can now pass these IPs to your bazel invocation to use the remote cache and
@@ -65,8 +65,8 @@ bazel test \
 > # .bazelrc.user
 > build --config=lre
 > build --remote_instance_name=main
-> build --remote_cache=grpc://172.20.255.200:50051
-> build --remote_executor=grpc://172.20.255.201:50052
+> build --remote_cache=grpc://172.20.255.4:50051
+> build --remote_executor=grpc://172.20.255.5:50052
 > ```
 
 When you're done testing, delete the cluster:
