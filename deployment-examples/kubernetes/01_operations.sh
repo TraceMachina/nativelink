@@ -3,7 +3,11 @@
 # TODO(aaronmondal): Add Grafana, OpenTelemetry and the various other standard
 #                    deployments one would expect in a cluster.
 
-kubectl apply -f gateway.yaml
+set -xeuo pipefail
+
+SRC_ROOT=$(git rev-parse --show-toplevel)
+
+kubectl apply -f ${SRC_ROOT}/deployment-examples/kubernetes/gateway.yaml
 
 IMAGE_TAG=$(nix eval .#image.imageTag --raw)
 
