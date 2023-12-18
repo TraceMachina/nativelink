@@ -27,6 +27,7 @@ use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
 use async_trait::async_trait;
+use bytes::Bytes;
 use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
 use futures::task::Poll;
@@ -41,6 +42,7 @@ use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use once_cell::sync::Lazy;
 use rand::{thread_rng, Rng};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Barrier;
 use tokio::time::sleep;
@@ -906,6 +908,113 @@ mod filesystem_store_tests {
             .err_tip(|| "Error reading bytes")?;
 
         assert_eq!(&file_data, large_value.as_bytes(), "Expected file content to match");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_part_is_zero_digest() -> Result<(), Error> {
+        let digest = DigestInfo {
+            packed_hash: Sha256::new().finalize().into(),
+            size_bytes: 0,
+        };
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+
+        let store = Arc::new(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    read_buffer_size: 1,
+                    ..Default::default()
+                },
+                |_| sleep(Duration::ZERO),
+            )
+            .await?,
+        );
+
+        let store_clone = store.clone();
+        let (mut writer, mut reader) = make_buf_channel_pair();
+
+        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
+            let _ = Pin::new(store_clone.as_ref())
+                .get_part_ref(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part_ref");
+        }));
+
+        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+            .await
+            .err_tip(|| "Error reading bytes")?;
+
+        let empty_bytes = Bytes::new();
+        assert_eq!(&file_data, &empty_bytes, "Expected file content to match");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn has_with_results_on_zero_digests() -> Result<(), Error> {
+        let digest = DigestInfo {
+            packed_hash: Sha256::new().finalize().into(),
+            size_bytes: 0,
+        };
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+
+        let store = Arc::new(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    read_buffer_size: 1,
+                    ..Default::default()
+                },
+                |_| sleep(Duration::ZERO),
+            )
+            .await?,
+        );
+
+        let mut digests = vec![digest];
+        let mut results = vec![None];
+        let _ = Pin::new(store.as_ref())
+            .has_with_results(&mut digests, &mut results)
+            .await
+            .err_tip(|| "Failed to get_part_ref");
+        assert_eq!(results, vec!(Some(0)));
+
+        async fn wait_for_empty_content_file<Fut: Future<Output = Result<(), Error>>, F: Fn() -> Fut>(
+            content_path: &str,
+            digest: DigestInfo,
+            yield_fn: F,
+        ) -> Result<(), Error> {
+            loop {
+                yield_fn().await?;
+
+                let empty_digest_file_name =
+                    OsString::from(format!("{}/{}-{}", content_path, digest.hash_str(), digest.size_bytes));
+
+                let file_metadata = fs::metadata(empty_digest_file_name)
+                    .await
+                    .err_tip(|| "Failed to open content file")?;
+
+                // Test that the empty digest file is created and contains an empty length.
+                if file_metadata.is_file() && file_metadata.len() == 0 {
+                    println!("{}", file_metadata.is_file());
+                    return Ok(());
+                }
+            }
+            // Unreachable.
+        }
+
+        wait_for_empty_content_file(&content_path, digest, || {
+            async move {
+                tokio::task::yield_now().await;
+                Ok(())
+            }
+        })
+        .await?;
 
         Ok(())
     }

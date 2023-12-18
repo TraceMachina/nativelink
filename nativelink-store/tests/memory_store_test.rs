@@ -13,13 +13,17 @@
 // limitations under the License.
 
 use std::pin::Pin;
+use std::sync::Arc;
 
+use bytes::Bytes;
 use bytes::{BufMut, BytesMut};
 use memory_stats::memory_stats;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::common::DigestInfo;
+use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
+use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
 use nativelink_util::store_trait::Store;
+use sha2::{Digest, Sha256};
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 const VALID_HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
@@ -31,6 +35,7 @@ const INVALID_HASH: &str = "g111111111111111111111111111111111111111111111111111
 
 #[cfg(test)]
 mod memory_store_tests {
+
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -207,6 +212,56 @@ mod memory_store_tests {
             // With an empty store .get() should fail too.
             get_should_fail(store, VALID_HASH1, 1).await;
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_part_is_zero_digest() -> Result<(), Error> {
+        let digest = DigestInfo {
+            packed_hash: Sha256::new().finalize().into(),
+            size_bytes: 0,
+        };
+
+        let store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let store_clone = store.clone();
+        let (mut writer, mut reader) = make_buf_channel_pair();
+
+        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
+            let _ = Pin::new(store_clone.as_ref())
+                .get_part_ref(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part_ref");
+        }));
+
+        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+            .await
+            .err_tip(|| "Error reading bytes")?;
+
+        let empty_bytes = Bytes::new();
+        assert_eq!(&file_data, &empty_bytes, "Expected file content to match");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn has_with_results_on_zero_digests() -> Result<(), Error> {
+        let digest = DigestInfo {
+            packed_hash: Sha256::new().finalize().into(),
+            size_bytes: 0,
+        };
+        let mut digests = vec![digest];
+        let mut results = vec![None];
+
+        let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+        let store = Pin::new(&store_owned);
+
+        let _ = store
+            .as_ref()
+            .has_with_results(&mut digests, &mut results)
+            .await
+            .err_tip(|| "Failed to get_part_ref");
+        assert_eq!(results, vec!(Some(0)));
+
         Ok(())
     }
 }
