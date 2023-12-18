@@ -14,7 +14,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::convert::AsRef;
+// use std::convert::AsRef;
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +27,9 @@ use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 
+// TODO (marcussorealheis): I'm not sure if the constant should be set at the module level or the struct level.
+const SIZE: usize = 1024;
+
 pin_project! {
     /// This library was significantly inspired by:
     /// https://docs.rs/fixed-buffer-tokio/0.1.1/fixed_buffer_tokio/
@@ -35,8 +38,8 @@ pin_project! {
     /// with a fixed buffer as an intermediary. In addition it gives the ability
     /// to call `get_closer()` which if awaited will close the writer stream.
     /// Finally, this struct can also deal with EOF in a more natural manner.
-    pub struct AsyncFixedBuf<T> {
-        inner: FixedBuf<T>,
+    pub struct AsyncFixedBuf {
+        inner: FixedBuf<SIZE>,
         waker: Arc<Mutex<Option<Waker>>>,
         did_shutdown: Arc<AtomicBool>,
         received_eof: AtomicBool,
@@ -54,15 +57,15 @@ fn park(waker: &mut Option<Waker>, cx: &Context<'_>) {
     *waker = Some(cx.waker().clone());
 }
 
-impl<T> AsyncFixedBuf<T> {
+impl AsyncFixedBuf {
     /// Creates a new FixedBuf and wraps it in an AsyncFixedBuf.
     ///
     /// See
     /// [`FixedBuf::new`](https://docs.rs/fixed-buffer/latest/fixed_buffer/struct.FixedBuf.html#method.new)
     /// for details.
-    pub fn new(mem: T) -> Self {
+    pub fn new() -> Self {
         AsyncFixedBuf {
-            inner: FixedBuf::new(mem),
+            inner: FixedBuf::new(),
             waker: Arc::new(Mutex::new(None)),
             did_shutdown: Arc::new(AtomicBool::new(false)),
             received_eof: AtomicBool::new(false),
@@ -83,8 +86,8 @@ impl<T> AsyncFixedBuf<T> {
     }
 }
 
-impl<T: AsMut<[u8]> + AsRef<[u8]> + Unpin> AsyncFixedBuf<T> {
-    pub fn split_into_reader_writer(mut self) -> (DropCloserReadHalf<T>, DropCloserWriteHalf<T>) {
+impl AsyncFixedBuf {
+    pub fn split_into_reader_writer(mut self) -> (DropCloserReadHalf, DropCloserWriteHalf) {
         let did_shutdown_r = self.did_shutdown.clone();
         let did_shutdown_w = self.did_shutdown.clone();
         let closer_r = self.get_closer();
@@ -105,7 +108,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]> + Unpin> AsyncFixedBuf<T> {
     }
 }
 
-impl<T: AsRef<[u8]> + Unpin> AsyncRead for AsyncFixedBuf<T> {
+impl AsyncRead for AsyncFixedBuf {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -139,7 +142,7 @@ impl<T: AsRef<[u8]> + Unpin> AsyncRead for AsyncFixedBuf<T> {
     }
 }
 
-impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
+impl AsyncWrite for AsyncFixedBuf {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
         let me = self.project();
         let mut waker = me.waker.lock();
@@ -158,34 +161,19 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
             wake(&mut waker);
             return Poll::Ready(Ok(0));
         }
-        match me.inner.writable() {
-            Some(writable_slice) => {
-                let write_amt = buf.len().min(writable_slice.len());
-                if write_amt > 0 {
-                    writable_slice[..write_amt].clone_from_slice(&buf[..write_amt]);
-                    me.inner.wrote(write_amt);
-                }
-                wake(&mut waker);
-                Poll::Ready(Ok(write_amt))
-            }
-            None => {
-                // Sometimes it is more efficient to recover some more space for the writer to use. Since
-                // this is not a ring buffer we need to re-arrange the data every once in a while.
-                // TODO(blaise.bruer) A ringbuffer implementation would likely be quite a lot more efficient.
-                if (me.inner.len() as f32) / (me.inner.capacity() as f32) < 0.25 {
-                    me.inner.shift();
-                    // After `shift()` is called there's a good chance that we can now write to this buffer.
-                    // So we call our waker immediately then return pending. This is a special case and
-                    // we don't need to let the reader know yet as the next call to write will do the proper
-                    // thing.
-                    // NOTE: There's an extremely small chance that the above logic could cause an infinite loop.
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
+        let writable_slice = me.inner.writable();
+        if !writable_slice.is_empty() {
+            let write_amt = buf.len().min(writable_slice.len());
+            writable_slice[..write_amt].clone_from_slice(&buf[..write_amt]);
+            me.inner.wrote(write_amt);
+            wake(&mut waker);
+            Poll::Ready(Ok(write_amt))
+        } else {
+            // TODO (marcussorealheis): This is a placeholder for handling the no-space-left scenario.
+            // There is an is_empty in the new FixedBuf, and I need to think on best approach for full.
 
-                park(&mut waker, cx);
-                Poll::Pending
-            }
+            park(&mut waker, cx);
+            Poll::Pending
         }
     }
 
@@ -210,14 +198,14 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for AsyncFixedBuf<T> {
 }
 
 pin_project! {
-    pub struct DropCloserReadHalf<T> {
+    pub struct DropCloserReadHalf {
         #[pin]
-        inner: ReadHalf<AsyncFixedBuf<T>>,
+        inner: ReadHalf<AsyncFixedBuf>,
         did_shutdown: Arc<AtomicBool>,
         close_fut: Option<Pin<Box<dyn Future<Output = ()> + Sync + Send>>>,
     }
 
-    impl<T> PinnedDrop for DropCloserReadHalf<T> {
+    impl PinnedDrop for DropCloserReadHalf {
         fn drop(mut this: Pin<&mut Self>) {
             if !this.did_shutdown.load(Ordering::Relaxed) {
                 let close_fut = this.close_fut.take().unwrap();
@@ -227,7 +215,7 @@ pin_project! {
     }
 }
 
-impl<T: AsRef<[u8]> + Unpin> AsyncRead for DropCloserReadHalf<T> {
+impl AsyncRead for DropCloserReadHalf {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -239,14 +227,14 @@ impl<T: AsRef<[u8]> + Unpin> AsyncRead for DropCloserReadHalf<T> {
 }
 
 pin_project! {
-    pub struct DropCloserWriteHalf<T> {
+    pub struct DropCloserWriteHalf {
         #[pin]
-        inner: WriteHalf<AsyncFixedBuf<T>>,
+        inner: WriteHalf<AsyncFixedBuf>,
         did_shutdown: Arc<AtomicBool>,
         close_fut: Option<Pin<Box<dyn Future<Output = ()> + Sync + Send>>>,
     }
 
-    impl<T> PinnedDrop for DropCloserWriteHalf<T> {
+    impl PinnedDrop for DropCloserWriteHalf {
         fn drop(mut this: Pin<&mut Self>) {
             if !this.did_shutdown.load(Ordering::Relaxed) {
                 let close_fut = this.close_fut.take().unwrap();
@@ -256,7 +244,7 @@ pin_project! {
     }
 }
 
-impl<T: AsMut<[u8]> + AsRef<[u8]>> AsyncWrite for DropCloserWriteHalf<T> {
+impl AsyncWrite for DropCloserWriteHalf {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
         let me = self.project();
         me.inner.poll_write(cx, buf)
