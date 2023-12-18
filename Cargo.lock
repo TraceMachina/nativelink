@@ -1719,6 +1719,7 @@ dependencies = [
  "nativelink-error",
  "nativelink-proto",
  "parking_lot",
+ "pin-project",
  "pin-project-lite",
  "pretty_assertions",
  "prometheus-client",

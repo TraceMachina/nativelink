@@ -23,26 +23,25 @@ use std::task::{Context, Poll, Waker};
 use fixed_buffer::FixedBuf;
 use futures::Future;
 use parking_lot::Mutex;
-use pin_project_lite::pin_project;
+use pin_project::{pin_project, pinned_drop};
 use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 
 // TODO (marcussorealheis): I'm not sure if the constant should be set at the module level or the struct level.
-const SIZE: usize = 4092;
+const DEFAULT_SIZE: usize = 4092;
 
-pin_project! {
-    /// This library was significantly inspired by:
-    /// https://docs.rs/fixed-buffer-tokio/0.1.1/fixed_buffer_tokio/
-    ///
-    /// This struct will buffer the data between an `AsyncRead` and `AsyncWrite`
-    /// with a fixed buffer as an intermediary. In addition it gives the ability
-    /// to call `get_closer()` which if awaited will close the writer stream.
-    /// Finally, this struct can also deal with EOF in a more natural manner.
-    pub struct AsyncFixedBuf {
-        inner: FixedBuf<SIZE>,
-        waker: Arc<Mutex<Option<Waker>>>,
-        did_shutdown: Arc<AtomicBool>,
-        received_eof: AtomicBool,
-    }
+/// This library was significantly inspired by:
+/// https://docs.rs/fixed-buffer-tokio/0.1.1/fixed_buffer_tokio/
+///
+/// This struct will buffer the data between an `AsyncRead` and `AsyncWrite`
+/// with a fixed buffer as an intermediary. In addition it gives the ability
+/// to call `get_closer()` which if awaited will close the writer stream.
+/// Finally, this struct can also deal with EOF in a more natural manner.
+#[pin_project]
+pub struct AsyncFixedBuf<const SIZE: usize = DEFAULT_SIZE> {
+    inner: FixedBuf<SIZE>,
+    waker: Arc<Mutex<Option<Waker>>>,
+    did_shutdown: Arc<AtomicBool>,
+    received_eof: AtomicBool,
 }
 
 fn wake(waker: &mut Option<Waker>) {
@@ -56,7 +55,7 @@ fn park(waker: &mut Option<Waker>, cx: &Context<'_>) {
     *waker = Some(cx.waker().clone());
 }
 
-impl AsyncFixedBuf {
+impl <const SIZE: usize> AsyncFixedBuf<SIZE> {
     /// Creates a new FixedBuf and wraps it in an AsyncFixedBuf.
     ///
     /// See
@@ -87,8 +86,8 @@ impl AsyncFixedBuf {
     }
 }
 
-impl AsyncFixedBuf {
-    pub fn split_into_reader_writer(mut self) -> (DropCloserReadHalf, DropCloserWriteHalf) {
+impl <const SIZE: usize> AsyncFixedBuf<SIZE> {
+    pub fn split_into_reader_writer(mut self) -> (DropCloserReadHalf <SIZE>, DropCloserWriteHalf <SIZE>) {
         let did_shutdown_r = self.did_shutdown.clone();
         let did_shutdown_w = self.did_shutdown.clone();
         let closer_r = self.get_closer();
@@ -109,7 +108,7 @@ impl AsyncFixedBuf {
     }
 }
 
-impl AsyncRead for AsyncFixedBuf {
+impl <const SIZE: usize> AsyncRead for AsyncFixedBuf<SIZE> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -143,7 +142,7 @@ impl AsyncRead for AsyncFixedBuf {
     }
 }
 
-impl AsyncWrite for AsyncFixedBuf {
+impl <const SIZE: usize> AsyncWrite for AsyncFixedBuf<SIZE> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
         let me = self.project();
         let mut waker = me.waker.lock();
@@ -171,7 +170,6 @@ impl AsyncWrite for AsyncFixedBuf {
             Poll::Ready(Ok(write_amt))
         } else {
             // TODO (marcussorealheis): This is a placeholder for handling the no-space-left scenario.
-            // There is an is_empty in the new FixedBuf, and we need to revisit best approach for full.
             park(&mut waker, cx);
             Poll::Pending
         }
@@ -197,25 +195,25 @@ impl AsyncWrite for AsyncFixedBuf {
     }
 }
 
-pin_project! {
-    pub struct DropCloserReadHalf {
-        #[pin]
-        inner: ReadHalf<AsyncFixedBuf>,
-        did_shutdown: Arc<AtomicBool>,
-        close_fut: Option<Pin<Box<dyn Future<Output = ()> + Sync + Send>>>,
-    }
+#[pin_project(PinnedDrop)]
+pub struct DropCloserReadHalf<const SIZE: usize> {
+    #[pin]
+    inner: ReadHalf<AsyncFixedBuf<SIZE>>,
+    did_shutdown: Arc<AtomicBool>,
+    close_fut: Option<Pin<Box<dyn Future<Output = ()> + Sync + Send>>>,
+}
 
-    impl PinnedDrop for DropCloserReadHalf {
-        fn drop(mut this: Pin<&mut Self>) {
-            if !this.did_shutdown.load(Ordering::Relaxed) {
-                let close_fut = this.close_fut.take().unwrap();
-                tokio::spawn(close_fut);
-            }
+#[pinned_drop]
+impl <const SIZE: usize>PinnedDrop for DropCloserReadHalf<SIZE> {
+    fn drop(mut self: Pin<&mut Self>) {
+        if !self.did_shutdown.load(Ordering::Relaxed) {
+            let close_fut = self.close_fut.take().unwrap();
+            tokio::spawn(close_fut);
         }
     }
 }
 
-impl AsyncRead for DropCloserReadHalf {
+impl <const SIZE: usize>AsyncRead for DropCloserReadHalf<SIZE> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -226,25 +224,25 @@ impl AsyncRead for DropCloserReadHalf {
     }
 }
 
-pin_project! {
-    pub struct DropCloserWriteHalf {
-        #[pin]
-        inner: WriteHalf<AsyncFixedBuf>,
-        did_shutdown: Arc<AtomicBool>,
-        close_fut: Option<Pin<Box<dyn Future<Output = ()> + Sync + Send>>>,
-    }
+#[pin_project(PinnedDrop)]
+pub struct DropCloserWriteHalf<const SIZE: usize> {
+    #[pin]
+    inner: WriteHalf<AsyncFixedBuf<SIZE>>,
+    did_shutdown: Arc<AtomicBool>,
+    close_fut: Option<Pin<Box<dyn Future<Output = ()> + Sync + Send>>>,
+}
 
-    impl PinnedDrop for DropCloserWriteHalf {
-        fn drop(mut this: Pin<&mut Self>) {
-            if !this.did_shutdown.load(Ordering::Relaxed) {
-                let close_fut = this.close_fut.take().unwrap();
-                tokio::spawn(close_fut);
-            }
+#[pinned_drop]
+impl <const SIZE: usize>PinnedDrop for DropCloserWriteHalf<SIZE> {
+    fn drop(mut self: Pin<&mut Self>) {
+        if !self.did_shutdown.load(Ordering::Relaxed) {
+            let close_fut = self.close_fut.take().unwrap();
+            tokio::spawn(close_fut);
         }
     }
 }
 
-impl AsyncWrite for DropCloserWriteHalf {
+impl <const SIZE: usize>AsyncWrite for DropCloserWriteHalf<SIZE> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
         let me = self.project();
         me.inner.poll_write(cx, buf)

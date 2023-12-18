@@ -28,7 +28,7 @@ mod async_fixed_buffer_tests {
 
     #[tokio::test]
     async fn ensure_cross_thread_support() -> Result<(), Error> {
-        let raw_fixed_buffer = AsyncFixedBuf::new();
+        let raw_fixed_buffer = AsyncFixedBuf::<32>::new();
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
         const WRITE_SIZE: usize = 50;
@@ -99,7 +99,7 @@ mod async_fixed_buffer_tests {
     // In early development a bug was found where if a future was dropped the subsequent future
     // would would never complete.
     async fn check_dropped_futures() -> Result<(), Error> {
-        let raw_fixed_buffer = AsyncFixedBuf::new();
+        let raw_fixed_buffer = AsyncFixedBuf::<32>::new();
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
         tx.write_all(&[255u8; 5]).await?;
@@ -136,7 +136,7 @@ mod async_fixed_buffer_tests {
 
     #[tokio::test]
     async fn get_closer_closes_read_stream_early() -> Result<(), Error> {
-        let mut raw_fixed_buffer = AsyncFixedBuf::new();
+        let mut raw_fixed_buffer = AsyncFixedBuf::<32>::new();
         let stream_closer_fut = raw_fixed_buffer.get_closer();
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
@@ -157,7 +157,7 @@ mod async_fixed_buffer_tests {
 
     #[tokio::test]
     async fn get_closer_closes_write_stream_early() -> Result<(), Error> {
-        let mut raw_fixed_buffer = AsyncFixedBuf::new();
+        let mut raw_fixed_buffer = AsyncFixedBuf::<4>::new();
         let stream_closer_fut = raw_fixed_buffer.get_closer();
         let (_, mut tx) = tokio::io::split(raw_fixed_buffer);
 
@@ -176,7 +176,7 @@ mod async_fixed_buffer_tests {
 
     #[tokio::test]
     async fn send_eof_closes_stream() -> Result<(), Error> {
-        let raw_fixed_buffer = AsyncFixedBuf::new();
+        let raw_fixed_buffer = AsyncFixedBuf::<32>::new();
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
         let write_buffer = [0u8; 2];
@@ -197,7 +197,7 @@ mod async_fixed_buffer_tests {
 
     #[tokio::test]
     async fn flush_smoke_test() -> Result<(), Error> {
-        let raw_fixed_buffer = AsyncFixedBuf::new();
+        let raw_fixed_buffer = AsyncFixedBuf::<32>::new();
         let (mut rx, mut tx) = tokio::io::split(raw_fixed_buffer);
 
         let write_fut = async move {

@@ -1,5 +1,5 @@
 {
-  "checksum": "b319e00c141671d933448ce183dda12011ed0908078a72bde77c9b6602d5dcc0",
+  "checksum": "cbf63194f57a615197f3bf6f650e0884c78da2eb660b2967453a3a86c987db6d",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -8610,6 +8610,10 @@
             {
               "id": "parking_lot 0.12.1",
               "target": "parking_lot"
+            },
+            {
+              "id": "pin-project 1.1.3",
+              "target": "pin_project"
             },
             {
               "id": "pin-project-lite 0.2.13",
