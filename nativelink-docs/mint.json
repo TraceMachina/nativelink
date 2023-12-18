@@ -50,5 +50,10 @@
     "github": "https://github.com/TraceMachina/nativelink",
     "website": "https://tracemachina.com/",
     "twitter": "https://twitter.com/tracemachina"
+  },
+  "analytics": {
+    "ga4": {
+        "measurementId": "G-LCQD1ZQL3Q"
+    }
   }
 }
