@@ -10,7 +10,6 @@ rust_library(
     name = "nativelink-util",
     srcs = [
         "src/action_messages.rs",
-        "src/async_fixed_buffer.rs",
         "src/buf_channel.rs",
         "src/common.rs",
         "src/digest_hasher.rs",
@@ -37,7 +36,6 @@ rust_library(
         "@crate_index//:async-lock",
         "@crate_index//:blake3",
         "@crate_index//:bytes",
-        "@crate_index//:fixed-buffer",
         "@crate_index//:futures",
         "@crate_index//:hex",
         "@crate_index//:log",
@@ -58,7 +56,6 @@ rust_library(
 rust_test_suite(
     name = "integration",
     srcs = [
-        "tests/async_fixed_buffer_test.rs",
         "tests/buf_channel_test.rs",
         "tests/evicting_map_test.rs",
         "tests/fastcdc_test.rs",
