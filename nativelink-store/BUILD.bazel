@@ -10,6 +10,7 @@ rust_library(
     name = "nativelink-store",
     srcs = [
         "src/ac_utils.rs",
+        "src/cas_utils.rs",
         "src/completeness_checking_store.rs",
         "src/compression_store.rs",
         "src/dedup_store.rs",
@@ -106,6 +107,7 @@ rust_test_suite(
         "@crate_index//:once_cell",
         "@crate_index//:pretty_assertions",
         "@crate_index//:rand",
+        "@crate_index//:sha2",
         "@crate_index//:tokio",
         "@crate_index//:tokio-stream",
     ],

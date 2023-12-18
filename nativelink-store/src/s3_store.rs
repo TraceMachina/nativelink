@@ -49,6 +49,8 @@ use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
+use crate::cas_utils::is_zero_digest;
+
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
 const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
@@ -244,6 +246,11 @@ impl Store for S3Store {
             .iter()
             .zip(results.iter_mut())
             .map(|(digest, result)| async move {
+                // We need to do a special pass to ensure our zero digest exist.
+                if is_zero_digest(digest) {
+                    *result = Some(0);
+                    return Ok::<_, Error>(());
+                }
                 *result = self.has(digest).await?;
                 Ok::<_, Error>(())
             })
@@ -432,6 +439,14 @@ impl Store for S3Store {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        if is_zero_digest(&digest) {
+            writer
+                .send_eof()
+                .await
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+            return Ok(());
+        }
+
         let s3_path = &self.make_s3_path(&digest);
         let end_read_byte = length
             .map_or(Some(None), |length| Some(offset.checked_add(length)))

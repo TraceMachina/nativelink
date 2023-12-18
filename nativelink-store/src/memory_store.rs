@@ -26,6 +26,8 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 
+use crate::cas_utils::is_zero_digest;
+
 #[derive(Clone)]
 pub struct BytesWrapper(Bytes);
 
@@ -73,6 +75,12 @@ impl Store for MemoryStore {
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         self.evicting_map.sizes_for_keys(digests, results).await;
+        // We need to do a special pass to ensure our zero digest exist.
+        digests.iter().zip(results.iter_mut()).for_each(|(digest, result)| {
+            if is_zero_digest(digest) {
+                *result = Some(0);
+            }
+        });
         Ok(())
     }
 
@@ -110,6 +118,14 @@ impl Store for MemoryStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        if is_zero_digest(&digest) {
+            writer
+                .send_eof()
+                .await
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+            return Ok(());
+        }
+
         let value = self
             .evicting_map
             .get(&digest)

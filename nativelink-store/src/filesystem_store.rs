@@ -24,9 +24,9 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
-use futures::{Future, TryFutureExt};
+use futures::{join, Future, TryFutureExt};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
-use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
@@ -36,6 +36,8 @@ use tokio::task::spawn_blocking;
 use tokio::time::{sleep, timeout, Sleep};
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{error, info, warn};
+
+use crate::cas_utils::is_zero_digest;
 
 // Default size to allocate memory of the buffer when reading files.
 const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
@@ -604,6 +606,22 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         self.evicting_map.sizes_for_keys(digests, results).await;
+        // We need to do a special pass to ensure our zero files exist.
+        // If our results failed and the result was a zero file, we need to
+        // create the file by spec.
+        for (digest, result) in digests.iter().zip(results.iter_mut()) {
+            if result.is_some() || !is_zero_digest(digest) {
+                continue;
+            }
+            let (mut tx, rx) = make_buf_channel_pair();
+            let update_fut = self.update(*digest, rx, UploadSizeInfo::ExactSize(0));
+            let (update_result, send_eof_result) = join!(update_fut, tx.send_eof());
+            update_result
+                .err_tip(|| format!("Failed to create zero file for digest {digest:?}"))
+                .merge(send_eof_result.err_tip(|| "Failed to send zero file EOF in filesystem store has"))?;
+
+            *result = Some(0);
+        }
         Ok(())
     }
 
@@ -635,6 +653,17 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        if is_zero_digest(&digest) {
+            self.has(digest)
+                .await
+                .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
+            writer
+                .send_eof()
+                .await
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+            return Ok(());
+        }
+
         let entry = self
             .evicting_map
             .get(&digest)
