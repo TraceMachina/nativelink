@@ -26,8 +26,10 @@ use http::status::StatusCode;
 use hyper::Body;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::s3_store::S3Store;
-use nativelink_util::common::DigestInfo;
+use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
+use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
 use nativelink_util::store_trait::Store;
+use sha2::{Digest, Sha256};
 
 // TODO(aaronmondal): Figure out how to test the connector retry mechanism.
 
@@ -520,6 +522,81 @@ mod s3_store_tests {
         );
 
         mock_client.assert_requests_match(&[]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_part_is_zero_digest() -> Result<(), Error> {
+        let digest = DigestInfo {
+            packed_hash: Sha256::new().finalize().into(),
+            size_bytes: 0,
+        };
+
+        let mock_client = StaticReplayClient::new(vec![]);
+        let test_config = Builder::new()
+            .region(Region::from_static(REGION))
+            .http_client(mock_client)
+            .build();
+        let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+        let store = Arc::new(S3Store::new_with_client_and_jitter(
+            &nativelink_config::stores::S3Store {
+                bucket: BUCKET_NAME.to_string(),
+                ..Default::default()
+            },
+            s3_client,
+            Arc::new(move |_delay| Duration::from_secs(0)),
+        )?);
+        let store_clone = store.clone();
+        let (mut writer, mut reader) = make_buf_channel_pair();
+
+        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
+            let _ = Pin::new(store_clone.as_ref())
+                .get_part_ref(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part_ref");
+        }));
+
+        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+            .await
+            .err_tip(|| "Error reading bytes")?;
+
+        let empty_bytes = Bytes::new();
+        assert_eq!(&file_data, &empty_bytes, "Expected file content to match");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn has_with_results_on_zero_digests() -> Result<(), Error> {
+        let digest = DigestInfo {
+            packed_hash: Sha256::new().finalize().into(),
+            size_bytes: 0,
+        };
+        let mut digests = vec![digest];
+        let mut results = vec![None];
+
+        let mock_client = StaticReplayClient::new(vec![]);
+        let test_config = Builder::new()
+            .region(Region::from_static(REGION))
+            .http_client(mock_client)
+            .build();
+        let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+        let store_owned = S3Store::new_with_client_and_jitter(
+            &nativelink_config::stores::S3Store {
+                bucket: BUCKET_NAME.to_string(),
+                ..Default::default()
+            },
+            s3_client,
+            Arc::new(move |_delay| Duration::from_secs(0)),
+        )?;
+        let store = Pin::new(&store_owned);
+
+        let _ = store
+            .as_ref()
+            .has_with_results(&mut digests, &mut results)
+            .await
+            .err_tip(|| "Failed to get_part_ref");
+        assert_eq!(results, vec!(Some(0)));
+
         Ok(())
     }
 }
