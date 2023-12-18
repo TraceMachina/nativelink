@@ -1,0 +1,36 @@
+load("@bazel_binaries//:defs.bzl", "bazel_binaries")
+load(
+    "@rules_bazel_integration_test//bazel_integration_test:defs.bzl",
+    "integration_test_utils",
+    "script_test",
+)
+
+SIMPLE_TESTS = [
+    "simple_cache_test",
+    "simple_remote_execution_test",
+    # "simple_prometheus_test", TODO(aaronmondal): Broken.
+    "simple_tls_test",
+]
+
+[
+    script_test(
+        name = "{}".format(testname),
+        timeout = "moderate",
+        srcs = ["{}.sh".format(testname)],
+        bazel_binaries = bazel_binaries,
+        bazel_version = bazel_binaries.versions.current,
+        deps = [
+            "//deployment-examples/kubernetes:bazel_k8s_prelude",
+            "//tools:integration_test_utils",
+            "@bazel_tools//tools/bash/runfiles",
+        ],
+    )
+    for testname in SIMPLE_TESTS
+]
+
+test_suite(
+    name = "integration_tests",
+    # This tag causes the target to be ignored during `bazel test //...`.
+    tags = integration_test_utils.DEFAULT_INTEGRATION_TEST_TAGS,
+    tests = [":{}".format(testname) for testname in SIMPLE_TESTS],
+)

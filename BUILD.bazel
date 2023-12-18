@@ -50,3 +50,13 @@ sh_test(
     name = "dummy_test",
     srcs = [":dummy_test_sh"],
 )
+
+sh_library(
+    name = "current_tag",
+    srcs = ["@nativelink-current-tag//:bin/nativelink-current-tag"],
+    target_compatible_with = select({
+        "@rules_nixpkgs_core//constraints:support_nix": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    visibility = ["//visibility:public"],
+)

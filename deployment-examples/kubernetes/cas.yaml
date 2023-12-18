@@ -38,6 +38,22 @@ spec:
         - name: tls-volume
           secret:
             secretName: tls-secret
+# TODO(aaronmondal): These should be different ports in a single nativlink-cas
+#                    service. But that's bugged, so we use multiple services:
+#                    https://github.com/cilium/cilium/issues/29099
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nativelink-insecure-cas
+spec:
+  selector:
+    app: nativelink-cas
+  ports:
+    - name: http
+      protocol: TCP
+      port: 50051
+      targetPort: 50051
 ---
 apiVersion: v1
 kind: Service
@@ -47,15 +63,20 @@ spec:
   selector:
     app: nativelink-cas
   ports:
-    - name: http
-      protocol: TCP
-      port: 50051
-      targetPort: 50051
-    - name: metrics
-      protocol: TCP
-      port: 50061
-      targetPort: 50061
     - name: https
       protocol: TCP
       port: 50071
       targetPort: 50071
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nativelink-prometheus
+spec:
+  selector:
+    app: nativelink-cas
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 50061
+      targetPort: 50061

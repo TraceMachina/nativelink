@@ -15,18 +15,44 @@
 
 # This is a sanity check test to ensure we are caching test results.
 
-if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
-  echo "This script should be run under run_integration_tests.sh"
-  exit 1
-fi
+# --- begin runfiles.bash initialization v3 ---
+# Copy-pasted from the Bazel Bash runfiles library v3.
+set -uo pipefail; set +e; f=bazel_tools/tools/bash/runfiles/runfiles.bash
+source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null || \
+  source "$(grep -sm1 "^$f " "${RUNFILES_MANIFEST_FILE:-/dev/null}" | cut -f2- -d' ')" 2>/dev/null || \
+  source "$0.runfiles/$f" 2>/dev/null || \
+  source "$(grep -sm1 "^$f " "$0.runfiles_manifest" | cut -f2- -d' ')" 2>/dev/null || \
+  source "$(grep -sm1 "^$f " "$0.exe.runfiles_manifest" | cut -f2- -d' ')" 2>/dev/null || \
+  { echo>&2 "ERROR: cannot find $f"; exit 1; }; f=; set -e
+# --- end runfiles.bash initialization v3 ---
 
-set -euo pipefail
+set -xeuo pipefail
+
+source "$(rlocation nativelink/deployment-examples/kubernetes/bazel_k8s_prelude.sh)"
+source "$(rlocation nativelink/tools/integration_test_utils.sh)"
+
+BAZEL_CACHE_DIR=$(temporary_cache)/bazel
+CACHE_IP=$(kubernetes_insecure_cache_ip)
+SCHEDULER_IP=$(kubernetes_scheduler_ip)
+PROMETHEUS_IP=$(kubernetes_prometheus_ip)
 
 # Run bazel to populate some of the metrics.
-bazel --output_base="$BAZEL_CACHE_DIR" test --config self_test //:dummy_test
+"${BIT_BAZEL_BINARY:-}" \
+    --output_base="$BAZEL_CACHE_DIR" \
+    build \
+    --config=lre \
+    --remote_instance_name=main \
+    --remote_cache=grpc://"$CACHE_IP":50051 \
+    --remote_executor=grpc://"$SCHEDULER_IP":50052 \
+    //local-remote-execution/examples:hello_lre
 
 # Our service may take a few seconds to get started, so retry a few times.
-all_contents="$(curl --retry 5 --retry-delay 0 --retry-max-time 30 http://127.0.0.1:50061/metrics)"
+all_contents=$(curl \
+    --retry 5 \
+    --retry-delay 0 \
+    --retry-max-time 30 \
+    http://"$PROMETHEUS_IP":50061/metrics
+)
 
 echo "$all_contents"
 
@@ -40,7 +66,7 @@ echo 'Checking: nativelink_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000
 grep -q 'nativelink_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents"
 
 # Ensure our store metrics are only published once.
-count=$(grep 'nativelink_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents" | wc -l)
+count=$(grep -c 'nativelink_stores_AC_MAIN_STORE_evicting_map_max_bytes 500000000' <<< "$all_contents")
 if [[ $count -ne 1 ]]; then
   echo "Expected to find 1 instance of CAS_MAIN_STORE, but found $count"
   exit 1

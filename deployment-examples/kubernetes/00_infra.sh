@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # This script sets up a local development cluster. It's roughly equivalent to
 # a managed K8s setup.
 

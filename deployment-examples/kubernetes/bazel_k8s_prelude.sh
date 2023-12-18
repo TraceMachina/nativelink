@@ -1,5 +1,5 @@
-#!/bin/bash
-# Copyright 2023 The Native Link Authors. All rights reserved.
+#!/usr/bin/env bash
+# Copyright 2022 The Native Link Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,26 +24,30 @@ source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null || \
   { echo>&2 "ERROR: cannot find $f"; exit 1; }; f=; set -e
 # --- end runfiles.bash initialization v3 ---
 
-set -xeuo pipefail
+NATIVELINK_TAG=$(cat "$(rlocation nativelink-current-tag/bin/nativelink-current-tag)")
+KUSTOMIZE_DIR=$(rlocation nativelink/deployment-examples/kubernetes)
 
-source "$(rlocation nativelink/deployment-examples/kubernetes/bazel_k8s_prelude.sh)"
-source "$(rlocation nativelink/tools/integration_test_utils.sh)"
+remove_resources() {
+    kubectl kustomize \
+        --load-restrictor LoadRestrictionsNone \
+        "$KUSTOMIZE_DIR" \
+        | kubectl delete -f - \
+        || echo "Resource cleanup failed. Manually verify your cluster." >&2
+}
 
-CACHE_IP=$(kubernetes_cache_ip)
+trap remove_resources EXIT
 
-# TODO(aaronmondal): This doesn't validat any certificates such as the one used
-#                    when deploying nativelink. It just checks that we have
-#                    *some* form of TLS encryption. Properly set up certificates
-#                    so that we can use the command below instead:
-#
-# RESULTS=$(curl --cacert mycert.crt https://"$CACHE_IP":50071/status 2>&1)
-RESULTS="$(curl --retry 5 --insecure https://"$CACHE_IP":50071/status 2>&1)"
+sed "s/__NATIVELINK_TOOLCHAIN_TAG__/${NATIVELINK_TAG}/g" \
+  "$KUSTOMIZE_DIR/worker.json.template" \
+  > "$KUSTOMIZE_DIR/worker.json"
 
-echo "Results from curl: $RESULTS"
+kubectl kustomize \
+    --load-restrictor LoadRestrictionsNone \
+    "$KUSTOMIZE_DIR" \
+    | kubectl apply -f -
 
-if echo "$RESULTS" | grep -q "Ok"; then
-  echo "Curl returned 'Ok' status via TLS"
-else
-  echo "Expected curl to be able to get 'Ok' status via TLS"
-  exit 1
-fi
+kubectl rollout status deploy/nativelink-cas
+kubectl rollout status deploy/nativelink-scheduler
+kubectl rollout status deploy/nativelink-worker
+
+# Application code will run here.

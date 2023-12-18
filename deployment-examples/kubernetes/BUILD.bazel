@@ -1,0 +1,35 @@
+sh_library(
+    name = "kustomization",
+    srcs = [
+        "cas.json",
+        "cas.yaml",
+        "example-do-not-use-in-prod-key.pem",
+        "example-do-not-use-in-prod-rootca.crt",
+        "kustomization.yaml",
+        "routes.yaml",
+        "scheduler.json",
+        "scheduler.yaml",
+        "worker.json.template",
+        "worker.yaml",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# This target is used by end-to-end tests running under k8s. To deploy a test
+# envirionment, make sure to have a k8s cluster running before invoking the test
+# and add this to the testscript:
+#
+#     source $(rlocation nativelink/deployment-examples/kubernetes/k8s)
+#
+sh_library(
+    name = "bazel_k8s_prelude",
+    srcs = ["bazel_k8s_prelude.sh"],
+    data = [
+        ":kustomization",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@bazel_tools//tools/bash/runfiles",
+        "@nativelink//:current_tag",
+    ],
+)

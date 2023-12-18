@@ -1,0 +1,55 @@
+---
+name: Integration tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  remote:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [large-ubuntu-22.04]
+    name: Integration tests / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Install Nix
+        uses: >- #v7
+          DeterminateSystems/nix-installer-action@5620eb4af6b562c53e4d4628c0b6e4f9d9ae8612
+
+      - name: Cache Nix derivations
+        uses: >- # Custom commit, last pinned at 2023-11-17.
+          DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+
+      - name: Start Kubernetes cluster
+        run: >
+          nix develop --impure --command
+          bash -c "./deployment-examples/kubernetes/00_infra.sh \
+            && ./deployment-examples/kubernetes/01_operations.sh"
+
+      - name: Run warmup tests (intentionally fail)
+        continue-on-error: true
+        run: |
+          nix develop --impure --command
+          bash -c "bazel test integration_tests \
+            --platforms=@rules_nixpkgs_core//platforms:host"
+
+      - name: Clean outer directories
+        run: >
+          nix develop --impure --command
+          bash -c "bazel clean"
+
+      - name: Run integration tests
+        run: >
+          nix develop --impure --command
+          bash -c "bazel test integration_tests \
+            --platforms=@rules_nixpkgs_core//platforms:host"
