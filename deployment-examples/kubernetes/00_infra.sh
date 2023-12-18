@@ -6,6 +6,8 @@
 #
 # See https://kind.sigs.k8s.io/docs/user/local-registry/.
 
+set -xeuo pipefail
+
 reg_name='kind-registry'
 reg_port='5001'
 if [ "$(docker inspect -f '{{.State.Running}}' "${reg_name}" 2>/dev/null || true)" != 'true' ]; then
@@ -52,6 +54,7 @@ fi
 # Advertise the registry location.
 
 cat <<EOF | kubectl apply -f -
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -77,50 +80,41 @@ kubectl wait --for condition=Established crd/referencegrants.gateway.networking.
 # Start cilium.
 
 helm repo add cilium https://helm.cilium.io
-
+helm repo update cilium
 helm upgrade \
     --install cilium cilium/cilium \
-    --version 1.15.0-pre.3 \
+    --version 1.14.5 \
     --namespace kube-system \
     --set k8sServiceHost=kind-control-plane \
     --set k8sServicePort=6443 \
     --set kubeProxyReplacement=strict \
     --set gatewayAPI.enabled=true \
+    --set l2announcements.enabled=true \
     --wait
 
-# Set up MetalLB. Kind's nodes are containers running on the local docker
-# network. We reuse that network for LB-IPAM so that LoadBalancers are available
-# via "real" local IPs.
+# Kind's nodes are containers running on the local docker network. We reuse that
+# network for LB-IPAM so that LoadBalancers are available via "real" local IPs.
 
 KIND_NET_CIDR=$(docker network inspect kind -f '{{(index .IPAM.Config 0).Subnet}}')
-METALLB_IP_START=$(echo ${KIND_NET_CIDR} | sed "s@0.0/16@255.200@")
-METALLB_IP_END=$(echo ${KIND_NET_CIDR} | sed "s@0.0/16@255.250@")
-METALLB_IP_RANGE="${METALLB_IP_START}-${METALLB_IP_END}"
-
-helm install --namespace metallb-system --create-namespace \
-  --repo https://metallb.github.io/metallb metallb metallb \
-  --version 0.13.12 \
-  --wait
+CILIUM_IP_CIDR=$(echo ${KIND_NET_CIDR} | sed "s@0.0/16@255.0/28@")
 
 cat <<EOF | kubectl apply -f -
 ---
-apiVersion: metallb.io/v1beta1
-kind: L2Advertisement
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
 metadata:
-  name: l2-ip
-  namespace: metallb-system
+  name: l2-announcements
 spec:
-  ipAddressPools:
-    - default-pool
+  externalIPs: true
+  loadBalancerIPs: true
 ---
-apiVersion: metallb.io/v1beta1
-kind: IPAddressPool
+apiVersion: cilium.io/v2alpha1
+kind: CiliumLoadBalancerIPPool
 metadata:
   name: default-pool
-  namespace: metallb-system
 spec:
-  addresses:
-    - ${METALLB_IP_RANGE}
+  cidrs:
+    - cidr: ${CILIUM_IP_CIDR}
 EOF
 
 # At this point we have a similar setup to the one that we'd get with a cloud
