@@ -62,12 +62,14 @@ impl AsyncFixedBuf {
     /// See
     /// [`FixedBuf::new`](https://docs.rs/fixed-buffer/latest/fixed_buffer/struct.FixedBuf.html#method.new)
     /// for details.
-    pub fn new() -> Self {
-        AsyncFixedBuf {
-            inner: FixedBuf::new(),
-            waker: Arc::new(Mutex::new(None)),
-            did_shutdown: Arc::new(AtomicBool::new(false)),
-            received_eof: AtomicBool::new(false),
+    /// // inner: FixedBuf::new(),
+    // waker: Arc::new(Mutex::new(None)),
+    // did_shutdown: Arc::new(AtomicBool::new(false)),
+    // received_eof: AtomicBool::new(false),
+        impl Default for AsyncFixedBuf {
+            fn default() -> Self {
+                Self::new()
+            }
         }
     }
 
