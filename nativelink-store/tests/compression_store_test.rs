@@ -19,17 +19,19 @@ use std::str::from_utf8;
 use std::sync::Arc;
 
 use bincode::{DefaultOptions, Options};
+use bytes::Bytes;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_store::compression_store::{
     CompressionStore, Footer, Lz4Config, SliceIndex, CURRENT_STREAM_FORMAT_VERSION, DEFAULT_BLOCK_SIZE,
     FOOTER_FRAME_TYPE,
 };
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::DigestInfo;
+use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
+use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
 /// Utility function that will build a Footer object from the input.
@@ -436,6 +438,52 @@ mod compression_store_tests {
             },
             "Expected footers to match"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_part_is_zero_digest() -> Result<(), Error> {
+        let digest = DigestInfo {
+            packed_hash: Sha256::new().finalize().into(),
+            size_bytes: 0,
+        };
+
+        const BLOCK_SIZE: u32 = 32 * 1024;
+        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let store_owned = CompressionStore::new(
+            nativelink_config::stores::CompressionStore {
+                backend: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
+                compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
+                    nativelink_config::stores::Lz4Config {
+                        block_size: BLOCK_SIZE,
+                        ..Default::default()
+                    },
+                ),
+            },
+            inner_store.clone(),
+        )
+        .err_tip(|| "Failed to create compression store")?;
+        let store = Pin::new(Arc::new(store_owned));
+
+        let (mut writer, mut reader) = make_buf_channel_pair();
+
+        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
+            let _ = store
+                .as_ref()
+                .get_part_ref(digest, &mut writer, 0, None)
+                .await
+                .err_tip(|| "Failed to get_part_ref");
+        }));
+
+        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+            .await
+            .err_tip(|| "Error reading bytes")?;
+
+        let empty_bytes = Bytes::new();
+        assert_eq!(&file_data, &empty_bytes, "Expected file content to match");
 
         Ok(())
     }
