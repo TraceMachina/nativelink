@@ -56,6 +56,14 @@ various Cloud CLIs for you:
     @rules_rust//:rustfmt
   ```
 
+  For Windows Powershell;
+
+  ```powershell
+  bazel run `
+    --@rules_rust//:rustfmt.toml=//:.rustfmt.toml `
+    @rules_rust//:rustfmt
+  ```
+
 ## Updating Rust dependencies
 
 After modifying the corresponding `Cargo.toml` file in either the top level or

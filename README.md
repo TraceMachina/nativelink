@@ -131,6 +131,16 @@ bazel test //... \
   --remote_default_exec_properties=cpu_count=1
 ```
 
+For Windows Powershell;
+
+```powershell
+bazel test //... `
+  --remote_instance_name=main `
+  --remote_cache=grpc://127.0.0.1:50051 `
+  --remote_executor=grpc://127.0.0.1:50051 `
+  --remote_default_exec_properties=cpu_count=1
+```
+
 This causes bazel to run the commands through an all-in-one `CAS`, `scheduler`
 and `worker`.
 
