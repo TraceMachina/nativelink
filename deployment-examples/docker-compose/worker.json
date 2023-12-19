@@ -49,6 +49,12 @@
       "platform_properties": {
         "cpu_count": {
           "query_cmd": "nproc"
+        },
+        "OSFamily": {
+          "values": [""]
+        },
+        "container-image": {
+          "values": [""]
         }
       }
     }

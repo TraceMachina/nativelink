@@ -105,6 +105,12 @@
         },
         "kernel_version": {
           "query_cmd": "uname -r"
+        },
+        "OSFamily": {
+          "values": [""]
+        },
+        "container-image": {
+          "values": [""]
         }
       }
     }
