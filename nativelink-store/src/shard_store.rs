@@ -46,6 +46,10 @@ impl ShardStore {
             .stores
             .iter()
             .map(|shard_config| (u32::MAX as u64 * shard_config.weight.unwrap_or(1) as u64 / total_weight) as u32)
+            .scan(0, |state, weight| {
+                *state += weight;
+                Some(*state)
+            })
             .collect();
         // Our last item should always be the max.
         *weights.last_mut().unwrap() = u32::MAX;
@@ -61,6 +65,7 @@ impl ShardStore {
         //     array length. They optimize especially well when the optimizer can easily determine
         //     the slice length, e.g. <[u8; 4]>::try_from(&slice[4..8]).unwrap(). Array implements
         //     TryFrom returning.
+        let size_bytes = digest.size_bytes.to_le_bytes();
         let key: u32 = 0
             .bitxor(u32::from_le_bytes(digest.packed_hash[0..4].try_into().unwrap()))
             .bitxor(u32::from_le_bytes(digest.packed_hash[4..8].try_into().unwrap()))
@@ -69,7 +74,9 @@ impl ShardStore {
             .bitxor(u32::from_le_bytes(digest.packed_hash[16..20].try_into().unwrap()))
             .bitxor(u32::from_le_bytes(digest.packed_hash[20..24].try_into().unwrap()))
             .bitxor(u32::from_le_bytes(digest.packed_hash[24..28].try_into().unwrap()))
-            .bitxor(u32::from_le_bytes(digest.packed_hash[28..32].try_into().unwrap()));
+            .bitxor(u32::from_le_bytes(digest.packed_hash[28..32].try_into().unwrap()))
+            .bitxor(u32::from_le_bytes(size_bytes[0..4].try_into().unwrap()))
+            .bitxor(u32::from_le_bytes(size_bytes[4..8].try_into().unwrap()));
         self.weights_and_stores
             .binary_search_by_key(&key, |(weight, _)| *weight)
             .unwrap_or_else(|index| index)

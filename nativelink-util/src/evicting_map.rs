@@ -165,6 +165,12 @@ where
         }
     }
 
+    /// Returns the number of key-value pairs that are currently in the the cache.
+    /// Function is not for production code paths.
+    pub async fn len_for_test(&self) -> usize {
+        self.state.lock().await.lru.len()
+    }
+
     pub async fn build_lru_index(&self) -> SerializedLRU {
         let state = self.state.lock().await;
         let mut serialized_lru = SerializedLRU {
