@@ -14,10 +14,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04]
+        os: [large-ubuntu-22.04]
         sanitizer: [asan]
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: large-ubuntu-22.04
     steps:
       - uses: >- # v4.1.1
           actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
