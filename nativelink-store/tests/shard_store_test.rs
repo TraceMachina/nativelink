@@ -19,19 +19,27 @@ use nativelink_error::Error;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::shard_store::ShardStore;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::Store;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
-fn make_stores(weights: &[u32]) -> (Arc<ShardStore>, Vec<Arc<dyn Store>>) {
+fn make_stores(weights: &[u32]) -> (Arc<ShardStore>, Vec<Arc<MemoryStore>>) {
     let memory_store_config = nativelink_config::stores::MemoryStore::default();
     let store_config = nativelink_config::stores::StoreConfig::memory(memory_store_config.clone());
     let stores: Vec<_> = weights
         .iter()
-        .map(|_| -> Arc<dyn Store> { Arc::new(MemoryStore::new(&memory_store_config)) })
+        .map(|_| Arc::new(MemoryStore::new(&memory_store_config)))
         .collect();
+    let stores_dyn: Vec<_> = stores
+        .clone()
+        .iter()
+        .cloned()
+        .map(|x| -> Arc<dyn Store> { x })
+        .collect();
+
     let shard_store = Arc::new(
         ShardStore::new(
             &nativelink_config::stores::ShardStore {
@@ -43,7 +51,7 @@ fn make_stores(weights: &[u32]) -> (Arc<ShardStore>, Vec<Arc<dyn Store>>) {
                     })
                     .collect(),
             },
-            stores.clone(),
+            stores_dyn.clone(),
         )
         .unwrap(),
     );
@@ -57,8 +65,43 @@ fn make_random_data(sz: usize) -> Vec<u8> {
     value
 }
 
+async fn verify_weights(
+    weights: &[u32],
+    expected_hits: &[usize],
+    rounds: u64,
+    print_results: bool,
+) -> Result<(), Error> {
+    let (shard_store, stores) = make_stores(weights);
+    let shard_store = Pin::new(shard_store.as_ref());
+    let stores: Vec<_> = stores.iter().map(|store| Pin::new(store.as_ref())).collect();
+    let data = make_random_data(MEGABYTE_SZ);
+
+    for counter in 0..rounds {
+        let hasher = &mut DigestHasher::from(DigestHasherFunc::Blake3);
+        hasher.update(&counter.to_le_bytes());
+        let digest = hasher.finalize_digest(counter as i64);
+        shard_store.update_oneshot(digest, data.clone().into()).await?;
+    }
+
+    let stores_and_hits: Vec<(&Pin<&MemoryStore>, &usize)> = stores.iter().zip(expected_hits.iter()).collect();
+
+    for (store, expected_hit) in stores_and_hits {
+        let total_hits = store.len_for_test().await;
+        if print_results {
+            println!("expected_hit: {expected_hit} - total_hits: {total_hits}");
+        } else {
+            assert_eq!(
+                expected_hit, &total_hits,
+                "expected_hit: {expected_hit} != total_hits: {total_hits}"
+            )
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod shard_store_tests {
+
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -241,5 +284,30 @@ mod shard_store_tests {
         assert_eq!(stores[0].has(digest1).await, Ok(Some(MEGABYTE_SZ)));
         assert_eq!(stores[1].has(digest1).await, Ok(None));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn verify_weights_even_weights() -> Result<(), Error> {
+        verify_weights(&[1, 1, 1, 1, 1, 1], &[188, 168, 158, 175, 147, 164], 1000, false).await
+    }
+
+    #[tokio::test]
+    async fn verify_weights_mid_right_bias() -> Result<(), Error> {
+        verify_weights(&[1, 1, 1, 100, 1, 1], &[5, 13, 12, 956, 4, 10], 1000, false).await
+    }
+
+    #[tokio::test]
+    async fn verify_weights_mid_left_bias() -> Result<(), Error> {
+        verify_weights(&[1, 1, 100, 1, 1, 1], &[5, 13, 962, 6, 4, 10], 1000, false).await
+    }
+
+    #[tokio::test]
+    async fn verify_weights_left_bias() -> Result<(), Error> {
+        verify_weights(&[100, 1, 1, 1, 1, 1], &[961, 11, 8, 6, 4, 10], 1000, false).await
+    }
+
+    #[tokio::test]
+    async fn verify_weights_right_bias() -> Result<(), Error> {
+        verify_weights(&[1, 1, 1, 1, 1, 100], &[5, 13, 12, 5, 11, 954], 1000, false).await
     }
 }
