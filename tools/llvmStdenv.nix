@@ -1,7 +1,24 @@
-{ pkgs, ... }:
+{ pkgs, isDarwin ? false, ... }:
 
 let
 llvmPackages = pkgs.llvmPackages_16;
+
+toolchain = if isDarwin then (
+  pkgs.overrideCC (
+    llvmPackages.libcxxStdenv.override {
+      targetPlatform.useLLVM = true;
+    }
+  )
+  llvmPackages.clangUseLLVM
+) else (pkgs.useMoldLinker (
+  pkgs.overrideCC (
+    llvmPackages.libcxxStdenv.override {
+      targetPlatform.useLLVM = true;
+    }
+  )
+  llvmPackages.clangUseLLVM
+));
+
 in
 
 # This toolchain uses Clang as compiler, Mold as linker, libc++ as C++ standard
@@ -31,11 +48,4 @@ in
 # compatibility, reduced closure size, and static-linking-friendly licensing.
 # This requires building the llvm project with the correct multistage
 # bootstrapping process.
-pkgs.useMoldLinker (
-  pkgs.overrideCC (
-    llvmPackages.libcxxStdenv.override {
-      targetPlatform.useLLVM = true;
-    }
-  )
-  llvmPackages.clangUseLLVM
-)
+toolchain

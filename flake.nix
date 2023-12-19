@@ -30,10 +30,10 @@
 
           maybeDarwinDeps = pkgs.lib.optionals isDarwin [
               pkgs.darwin.apple_sdk.frameworks.Security
-              pkgs.libiconv
+              pkgs.darwin.libiconv
           ];
 
-          customStdenv = import ./tools/llvmStdenv.nix { inherit pkgs; };
+          customStdenv = import ./tools/llvmStdenv.nix { inherit pkgs isDarwin; };
 
           # TODO(aaronmondal): This doesn't work with rules_rust yet.
           # Tracked in https://github.com/TraceMachina/nativelink/issues/477.
@@ -54,11 +54,10 @@
           commonArgs = {
             inherit src;
             strictDeps = true;
-            buildInputs = [ ];
+            buildInputs = maybeDarwinDeps;
             nativeBuildInputs = [
-              pkgs.autoPatchelfHook
               pkgs.cacert
-            ] ++ maybeDarwinDeps;
+            ] ++ maybeDarwinDeps ++ pkgs.lib.optionals (!isDarwin) [ pkgs.autoPatchelfHook ];
             stdenv = customStdenv;
           };
 
