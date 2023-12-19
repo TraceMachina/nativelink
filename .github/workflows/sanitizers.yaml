@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04]
+        os: [large-ubuntu-22.04]
         sanitizer: [asan]
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
