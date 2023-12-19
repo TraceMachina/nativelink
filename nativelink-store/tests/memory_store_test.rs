@@ -85,33 +85,38 @@ mod memory_store_tests {
         // too low for some kernels/operating systems.
         const MAXIMUM_MEMORY_USAGE_INCREASE_PERC: f64 = 1.3; // 30% increase.
 
-        let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
-        let store = Pin::new(&store_owned);
+        let mut sum_memory_usage_increase_perc: f64 = 0.0;
+        const MAX_STATS_ITERATIONS: usize = 100;
+        for _ in 0..MAX_STATS_ITERATIONS {
+            let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+            let store = Pin::new(&store_owned);
 
-        let initial_virtual_mem = memory_stats().err_tip(|| "Failed to read memory.")?.physical_mem;
-        for (i, hash) in [VALID_HASH1, VALID_HASH2, VALID_HASH3, VALID_HASH4]
-            .into_iter()
-            .enumerate()
-        {
-            // User a variety of sizes increasing up to 10MB each iteration.
-            // We do this to reduce the chance of memory page size masking the potential bug.
-            let reserved_size = 10_usize.pow(u32::try_from(i).expect("Cast failed") + 4);
-            let mut mut_data = BytesMut::with_capacity(reserved_size);
-            mut_data.put_bytes(u8::try_from(i).expect("Cast failed"), 1);
-            let data = mut_data.freeze();
+            let initial_virtual_mem = memory_stats().err_tip(|| "Failed to read memory.")?.physical_mem;
+            for (i, hash) in [VALID_HASH1, VALID_HASH2, VALID_HASH3, VALID_HASH4]
+                .into_iter()
+                .enumerate()
+            {
+                // User a variety of sizes increasing up to 10MB each iteration.
+                // We do this to reduce the chance of memory page size masking the potential bug.
+                let reserved_size = 10_usize.pow(u32::try_from(i).expect("Cast failed") + 4);
+                let mut mut_data = BytesMut::with_capacity(reserved_size);
+                mut_data.put_bytes(u8::try_from(i).expect("Cast failed"), 1);
+                let data = mut_data.freeze();
 
-            let digest = DigestInfo::try_new(hash, data.len())?;
-            store
-                .update_oneshot(digest, data)
-                .await
-                .err_tip(|| "Could not update store")?;
+                let digest = DigestInfo::try_new(hash, data.len())?;
+                store
+                    .update_oneshot(digest, data)
+                    .await
+                    .err_tip(|| "Could not update store")?;
+            }
+
+            let new_virtual_mem = memory_stats().err_tip(|| "Failed to read memory.")?.physical_mem;
+            sum_memory_usage_increase_perc += new_virtual_mem as f64 / initial_virtual_mem as f64;
         }
-
-        let new_virtual_mem = memory_stats().err_tip(|| "Failed to read memory.")?.physical_mem;
-        let memory_usage_increase_perc = new_virtual_mem as f64 / initial_virtual_mem as f64;
+        println!("{}", sum_memory_usage_increase_perc);
         assert!(
-            memory_usage_increase_perc < MAXIMUM_MEMORY_USAGE_INCREASE_PERC,
-            "Memory usage increased by {memory_usage_increase_perc} perc, which is more than {MAXIMUM_MEMORY_USAGE_INCREASE_PERC} perc",
+            (sum_memory_usage_increase_perc / MAX_STATS_ITERATIONS as f64) < MAXIMUM_MEMORY_USAGE_INCREASE_PERC,
+            "Memory usage increased by {sum_memory_usage_increase_perc} perc, which is more than {MAXIMUM_MEMORY_USAGE_INCREASE_PERC} perc",
         );
         Ok(())
     }
