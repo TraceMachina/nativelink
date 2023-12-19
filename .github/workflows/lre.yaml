@@ -16,7 +16,7 @@ jobs:
       matrix:
         os: [ubuntu-22.04]
     name: Local / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: large-ubuntu-22.04
     steps:
 
       - name: Checkout
@@ -45,7 +45,7 @@ jobs:
       matrix:
         os: [ubuntu-22.04]
     name: Remote / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: large-ubuntu-22.04
     steps:
       - name: Checkout
         uses: >- # v4.1.1
