@@ -1,5 +1,5 @@
 {
-  "checksum": "14bfd27a9d317e755c58a6a58324e2750a3feff8ede3679b55a98d58e18d15ff",
+  "checksum": "4713a1db33dd4fe9d0ac6b04224ae7194875376f75cc07fa869941b19c394adc",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -8570,14 +8570,6 @@
             {
               "id": "parking_lot 0.12.1",
               "target": "parking_lot"
-            },
-            {
-              "id": "pin-project 1.1.3",
-              "target": "pin_project"
-            },
-            {
-              "id": "pin-project-lite 0.2.13",
-              "target": "pin_project_lite"
             },
             {
               "id": "prometheus-client 0.21.2",
