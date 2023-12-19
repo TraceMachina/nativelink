@@ -1,6 +1,7 @@
 # Native Link
 
-[![CI](https://github.com/tracemachina/nativelink/workflows/CI/badge.svg)](https://github.com/tracemachina/nativelink/actions/workflows/main.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
+[![OpenSSF Best Practices](https://bestpractices.coreinfrastructure.org/projects/8050/badge)](https://bestpractices.coreinfrastructure.org/projects/8050)
 
 Native link is an extremely (blazingly?) fast and efficient build cache and
 remote executor for systems that communicate using the [Remote execution
