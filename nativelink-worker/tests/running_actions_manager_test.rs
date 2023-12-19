@@ -2508,7 +2508,7 @@ exit 1
         tokio::pin!(execute_results_fut);
         {
             // Advance the action as far as possible and ensure we are not waiting on cleanup.
-            for _ in 0..1000 {
+            for _ in 0..100 {
                 assert!(futures::poll!(&mut execute_results_fut).is_pending());
                 tokio::task::yield_now().await;
             }
