@@ -1,5 +1,5 @@
 {
-  "checksum": "b319e00c141671d933448ce183dda12011ed0908078a72bde77c9b6602d5dcc0",
+  "checksum": "3a52ed2cf52062a855e4ac995a13c29a1953003a1b9e7428d1b3c681f4123dbc",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -5092,42 +5092,6 @@
       },
       "license": "MIT/Apache-2.0"
     },
-    "fixed-buffer 0.5.0": {
-      "name": "fixed-buffer",
-      "version": "0.5.0",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/fixed-buffer/0.5.0/download",
-          "sha256": "198db63f1bc84e9eb75f37c9cf696641103fd1cccd85fc555948f65826837d71"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "fixed_buffer",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "fixed_buffer",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "default"
-          ],
-          "selects": {}
-        },
-        "edition": "2021",
-        "version": "0.5.0"
-      },
-      "license": "Apache-2.0"
-    },
     "fixedbitset 0.4.2": {
       "name": "fixedbitset",
       "version": "0.4.2",
@@ -8586,10 +8550,6 @@
             {
               "id": "bytes 1.5.0",
               "target": "bytes"
-            },
-            {
-              "id": "fixed-buffer 0.5.0",
-              "target": "fixed_buffer"
             },
             {
               "id": "futures 0.3.29",
