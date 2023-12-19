@@ -17,7 +17,7 @@
                   }
                 },
                 "slow": {
-                  "s3_store": {
+                  "experimental_s3_store": {
                     "region": "eu-north-1",
                     "bucket": "crossplane-bucket-af79aeca9",
                     "key_prefix": "test-prefix-index/",
@@ -49,7 +49,7 @@
                       }
                     },
                     "slow": {
-                      "s3_store": {
+                      "experimental_s3_store": {
                         "region": "eu-north-1",
                         "bucket": "crossplane-bucket-af79aeca9",
                         "key_prefix": "test-prefix-dedup-cas/",
@@ -90,7 +90,7 @@
           }
         },
         "slow": {
-          "s3_store": {
+          "experimental_s3_store": {
             "region": "eu-north-1",
             "bucket": "crossplane-bucket-af79aeca9",
             "key_prefix": "test-prefix-ac/",

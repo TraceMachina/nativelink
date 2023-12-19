@@ -12,7 +12,7 @@
               }
             },
             "slow": {
-              "s3_store": {
+              "experimental_s3_store": {
                 "region": "${NATIVELINK_AC_S3_BUCKET_REGION:-}",
                 "bucket": "${NATIVELINK_AC_S3_BUCKET:-}",
                 "retry": {
@@ -52,7 +52,7 @@
                   }
                 },
                 "slow": {
-                  "s3_store": {
+                  "experimental_s3_store": {
                     "region": "${NATIVELINK_CAS_S3_BUCKET_REGION:-}",
                     "bucket": "${NATIVELINK_CAS_S3_BUCKET:-}",
                     "retry": {

@@ -10,7 +10,7 @@
           // a 5k requests/s per path limit. To get around this we just need to create
           // enough shards and point them to the same bucket/path but with some key
           // to distinguish each shard based on the key.
-          "s3_store": {
+          "experimental_s3_store": {
             "region": "${NATIVELINK_AWS_REGION:-us-east-1}",
             "bucket": "${NATIVELINK_AWS_S3_CAS_BUCKET:-not_set}",
             "key_prefix": "ac/",
@@ -42,7 +42,7 @@
               // a 5k requests/s per path limit. To get around this we just need to create
               // enough shards and point them to the same bucket/path but with some key
               // to distinguish each shard based on the key.
-              "s3_store": {
+              "experimental_s3_store": {
                 "region": "${NATIVELINK_AWS_REGION:-us-east-1}",
                 "bucket": "${NATIVELINK_AWS_S3_CAS_BUCKET:-not_set}",
                 "key_prefix": "cas-index/",
@@ -64,7 +64,7 @@
                   // a 5k requests/s per path limit. To get around this we just need to create
                   // enough shards and point them to the same bucket/path but with some key
                   // to distinguish each shard based on the key.
-                  "s3_store": {
+                  "experimental_s3_store": {
                     "region": "${NATIVELINK_AWS_REGION:-us-east-1}",
                     "bucket": "${NATIVELINK_AWS_S3_CAS_BUCKET:-not_set}",
                     "key_prefix": "cas/",

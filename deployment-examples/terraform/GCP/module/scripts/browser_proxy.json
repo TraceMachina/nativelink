@@ -3,7 +3,7 @@
     "AC_STORE": {
       "compression": {
         "backend": {
-          "s3_store": {
+          "experimental_s3_store": {
             "region": "${NATIVELINK_AC_S3_BUCKET_REGION:-}",
             "bucket": "${NATIVELINK_AC_S3_BUCKET:-}",
             "retry": {
@@ -21,7 +21,7 @@
     "CAS_STORE": {
       "compression": {
         "backend": {
-          "s3_store": {
+          "experimental_s3_store": {
             "region": "${NATIVELINK_CAS_S3_BUCKET_REGION:-}",
             "bucket": "${NATIVELINK_CAS_S3_BUCKET:-}",
             "retry": {

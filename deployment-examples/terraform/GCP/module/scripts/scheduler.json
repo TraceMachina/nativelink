@@ -12,7 +12,7 @@
         "slow": {
           "compression": {
             "backend": {
-              "s3_store": {
+              "experimental_s3_store": {
                 "region": "${nativelink_AC_S3_BUCKET_REGION:-}",
                 "bucket": "${nativelink_AC_S3_BUCKET:-}",
                 "retry": {
@@ -52,7 +52,7 @@
             "slow": {
               "compression": {
                 "backend": {
-                  "s3_store": {
+                  "experimental_s3_store": {
                     "region": "${nativelink_CAS_S3_BUCKET_REGION:-}",
                     "bucket": "${nativelink_CAS_S3_BUCKET:-}",
                     "retry": {

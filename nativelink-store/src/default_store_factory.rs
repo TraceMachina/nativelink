@@ -48,7 +48,7 @@ pub fn store_factory<'a>(
     Box::pin(async move {
         let store: Arc<dyn Store> = match backend {
             StoreConfig::memory(config) => Arc::new(MemoryStore::new(config)),
-            StoreConfig::s3_store(config) => Arc::new(S3Store::new(config).await?),
+            StoreConfig::experimental_s3_store(config) => Arc::new(S3Store::new(config).await?),
             StoreConfig::verify(config) => Arc::new(VerifyStore::new(
                 config,
                 store_factory(&config.backend, store_manager, None).await?,

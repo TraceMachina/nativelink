@@ -32,7 +32,7 @@ pub enum StoreConfig {
     ///
     /// This configuration will never delete files, so you are
     /// responsible for purging old files in other ways.
-    s3_store(S3Store),
+    experimental_s3_store(S3Store),
 
     /// Verify store is used to apply verifications to an underlying
     /// store implementation. It is strongly encouraged to validate
