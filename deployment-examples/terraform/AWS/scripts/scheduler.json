@@ -114,6 +114,7 @@
           "cpu_arch": "exact",
           "memory_kb": "minimum",
           "kernel_version": "exact",
+          "OSFamily": "exact"
         }
       }
     }

@@ -80,7 +80,8 @@
     "MAIN_SCHEDULER": {
       "simple": {
         "supported_platform_properties": {
-          "cpu_count": "minimum"
+          "cpu_count": "minimum",
+          "OSFamily": "exact"
         }
       }
     }
