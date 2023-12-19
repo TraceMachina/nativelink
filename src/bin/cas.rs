@@ -665,7 +665,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cfg = futures::executor::block_on(get_config())?;
 
-    let mut metrics_enabled = {
+    let ( mut metrics_enabled, max_blocking_threads) = {
         // Note: If the default changes make sure you update the documentation in
         // `config/cas_server.rs`.
         const DEFAULT_MAX_OPEN_FILES: usize = 512;
@@ -700,7 +700,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .default_digest_hash_function
                 .unwrap_or(ConfigDigestHashFunction::sha256),
         ))?;
-        !global_cfg.disable_metrics
+        (!global_cfg.disable_metrics, global_cfg.max_open_files * 10)
     };
     // Override metrics enabled if the environment variable is set.
     if std::env::var(METRICS_DISABLE_ENV).is_ok() {
@@ -708,6 +708,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let server_start_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        // Todo (marcussorealheis): prevent deadlocks by assigning max blocking threads number of open files * ten
+        .max_blocking_threads(max_blocking_threads)
         .enable_all()
         .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
         .build()?;
