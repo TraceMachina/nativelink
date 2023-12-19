@@ -124,12 +124,12 @@ resource "aws_instance" "build_nativelink_instance" {
         sudo docker rm $(sudo docker ps -a -q) &&
         sudo docker rmi $(sudo docker images -q) &&
         `` &&
-        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/scheduler.json /root/scheduler.json &&
-        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/cas.json /root/cas.json &&
-        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/worker.json /root/worker.json &&
-        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/start_nativelink.sh /root/start_nativelink.sh &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/experimental_AWS/scripts/scheduler.json /root/scheduler.json &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/experimental_AWS/scripts/cas.json /root/cas.json &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/experimental_AWS/scripts/worker.json /root/worker.json &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/experimental_AWS/scripts/start_nativelink.sh /root/start_nativelink.sh &&
         sudo chmod +x /root/start_nativelink.sh &&
-        sudo mv /tmp/nativelink/deployment-examples/terraform/AWS/scripts/nativelink.service /etc/systemd/system/nativelink.service &&
+        sudo mv /tmp/nativelink/deployment-examples/terraform/experimental_AWS/scripts/nativelink.service /etc/systemd/system/nativelink.service &&
         sudo systemctl enable nativelink &&
         sync
       EOT
