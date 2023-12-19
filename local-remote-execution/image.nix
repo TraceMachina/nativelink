@@ -6,21 +6,10 @@ let
     inherit pkgs;
     stdenv = customStdenv;
   };
-in
 
-# TODO(aaronmondal): Bazel and a few other tools in this container are only
-#                    required to generate the toolchains but are not needed
-#                    during runtime. Split this image into a generator image and
-#                    a toolchain container and write a new rbe_configs_gen tool.
-#                    This will enable endless optimization and customization
-#                    opportunities for custom toolchain containers.
-pkgs.dockerTools.streamLayeredImage {
-  name = "nativelink-toolchain";
-
-  contents = [
-    # The worker.
-    nativelink
-
+  # These dependencies are needed to generate the toolchain configurations but
+  # aren't required during remote execution.
+  autogenDeps = [
     # Required to generate toolchain configs.
     pkgs.bazel
 
@@ -43,6 +32,7 @@ pkgs.dockerTools.streamLayeredImage {
     pkgs.llvmPackages_16.libunwind
   ];
 
+  # Always required in images that use Bazel.
   extraCommands = ''
     mkdir -m 0777 tmp
 
@@ -51,6 +41,8 @@ pkgs.dockerTools.streamLayeredImage {
     ln -s /bin/env usr/bin/env
   '';
 
+  # This config is shared between toolchain autogen images and the final
+  # toolchain image.
   config = {
     WorkingDir = "/home/bazelbuild";
     Env = [
@@ -91,4 +83,26 @@ pkgs.dockerTools.streamLayeredImage {
       ]}"
     ];
   };
+
+  autogenContainer = pkgs.dockerTools.streamLayeredImage {
+    name = "nativelink-autogen";
+
+    inherit extraCommands config;
+
+    contents = autogenDeps;
+  };
+
+in
+
+pkgs.dockerTools.streamLayeredImage {
+  name = "nativelink-toolchain";
+
+  # Override the toolchain container tag with the one from the autogen
+  # container. This way the nativelink doesn't influence this tag and and
+  # changes to its codebase don't invalidate existing toolchain containers.
+  tag = autogenContainer.imageTag;
+
+  inherit extraCommands config;
+
+  contents = autogenDeps ++ [ nativelink ];
 }
