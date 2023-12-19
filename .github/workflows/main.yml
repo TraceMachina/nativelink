@@ -50,6 +50,11 @@ jobs:
         cd ../../ && \
         docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
           bazel clean && \
+          bazel build //... \
+          --remote_instance_name=main \
+          --remote_cache=grpc://127.0.0.1:50051 \
+          --remote_executor=grpc://127.0.0.1:50052 \
+          --remote_default_exec_properties=cpu_count=1 && \
           bazel test //... \
           --remote_instance_name=main \
           --remote_cache=grpc://127.0.0.1:50051 \
@@ -58,6 +63,11 @@ jobs:
         ' && \
         docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
           bazel clean && \
+          bazel build //... \
+          --remote_instance_name=main \
+          --remote_cache=grpc://127.0.0.1:50051 \
+          --remote_executor=grpc://127.0.0.1:50052 \
+          --remote_default_exec_properties=cpu_count=1 && \
           bazel test //... \
           --remote_instance_name=main \
           --remote_cache=grpc://127.0.0.1:50051 \

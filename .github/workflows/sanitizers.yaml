@@ -33,5 +33,5 @@ jobs:
           key: ${{ matrix.os }}-bazel-${{ matrix.sanitizer }}
 
       - name: Run Bazel tests
-        run: bazel test --config=${{ matrix.sanitizer }} //...
+        run: bazel build --config=${{ matrix.sanitizer }} //... && bazel test --config=${{ matrix.sanitizer }} //...
         shell: bash

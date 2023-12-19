@@ -41,7 +41,7 @@ jobs:
       - name: Invoke Bazel build in Nix shell
         run: >
           nix develop --impure --command
-          bash -c "bazel test ... --verbose_failures"
+          bash -c "bazel build ... --verbose_failures && bazel test ... --verbose_failures"
 
   nix-cargo:
     strategy:
@@ -66,4 +66,4 @@ jobs:
       - name: Invoke Cargo build in Nix shell
         run: >
           nix develop --impure --command
-          bash -c "cargo test --all"
+          bash -c "cargo test --tests --all && cargo test --all"
