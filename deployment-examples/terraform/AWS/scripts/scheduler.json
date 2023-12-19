@@ -114,6 +114,8 @@
           "cpu_arch": "exact",
           "memory_kb": "minimum",
           "kernel_version": "exact",
+          "OSFamily": "priority",
+          "container-image": "priority"
         }
       }
     }
