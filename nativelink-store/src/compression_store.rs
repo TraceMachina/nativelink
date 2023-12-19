@@ -29,6 +29,8 @@ use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 
+use crate::cas_utils::is_zero_digest;
+
 // In the event the bytestream format changes this number should be incremented to prevent
 // backwards compatibility issues.
 pub const CURRENT_STREAM_FORMAT_VERSION: u8 = 1;
@@ -368,6 +370,14 @@ impl Store for CompressionStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        if is_zero_digest(&digest) {
+            writer
+                .send_eof()
+                .await
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+            return Ok(());
+        }
+
         let offset = offset as u64;
         let (tx, mut rx) = make_buf_channel_pair();
 
