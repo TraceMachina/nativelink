@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [large-ubuntu-20.04, large-ubuntu-22.04, large-windows-2022]
-        toolchain: [stable, beta]
+        toolchain: [stable]
     name: ${{ matrix.os }} / ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
     steps:
