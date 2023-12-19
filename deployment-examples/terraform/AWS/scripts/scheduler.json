@@ -111,9 +111,11 @@
       "simple": {
         "supported_platform_properties": {
           "cpu_count": "minimum",
-          "cpu_arch": "exact",
+          "cpu_arch": "priority",
           "memory_kb": "minimum",
-          "kernel_version": "exact",
+          "kernel_version": "priority",
+          "OSFamily": "priority",
+          "container-image": "priority"
         }
       }
     }
