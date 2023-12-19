@@ -707,7 +707,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics_enabled = false;
     }
     let server_start_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let max_open_files = if let Some(global_cfg) = &cfg.global {
+        global_cfg.max_open_files
+    } else {
+        512
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .max_blocking_threads(max_open_files * 10)
         .enable_all()
         .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
         .build()?;
