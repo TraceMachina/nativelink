@@ -12,7 +12,7 @@ permissions: read-all
 jobs:
   analysis:
     name: Scorecard analysis
-    runs-on: ubuntu-22.04
+    runs-on: my-runner-group
     permissions:
       security-events: write
       id-token: write

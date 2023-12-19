@@ -10,7 +10,7 @@ on:
 jobs:
   docker-compose-compiles-nativelink:
     # The type of runner that the job will run on.
-    runs-on: ubuntu-22.04
+    runs-on: my-runner-group
     strategy:
       matrix:
         # Which OS versions we will test on.
@@ -66,7 +66,7 @@ jobs:
         ' 2>&1 | ( ! grep '         PASSED in ' ) # If we get PASSED without (cache) it means there's a cache issue.
 
   integration-tests:
-    runs-on: ubuntu-22.04
+    runs-on: my-runner-group
     strategy:
       matrix:
         # Which OS versions we will test on.

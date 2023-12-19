@@ -16,7 +16,7 @@ jobs:
       matrix:
         os: [ubuntu-20.04, ubuntu-22.04]
     name: Bazel Dev / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: my-runner-group
     steps:
 
       - name: Checkout
@@ -49,7 +49,7 @@ jobs:
       matrix:
         os: [ubuntu-20.04, ubuntu-22.04]
     name: Cargo Dev / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: my-runner-group
     steps:
       - name: Checkout
         uses: >- # v4.1.1

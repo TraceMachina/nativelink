@@ -12,7 +12,7 @@ permissions: read-all
 
 jobs:
   pre-commit-checks:
-    runs-on: ubuntu-22.04
+    runs-on: my-runner-group
     steps:
       - name: Checkout
         uses: >- # v3.5.3

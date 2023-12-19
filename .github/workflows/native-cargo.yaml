@@ -14,10 +14,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, ubuntu-22.04, windows-2022]
+        os: [ubuntu-20.04, ubuntu-22.04]
         toolchain: [stable, beta]
     name: ${{ matrix.os }} / ${{ matrix.toolchain }}
-    runs-on: ${{ matrix.os }}
+    runs-on: my-runner-group
     steps:
 
       - name: Checkout
