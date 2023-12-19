@@ -1024,12 +1024,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fixed-buffer"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "198db63f1bc84e9eb75f37c9cf696641103fd1cccd85fc555948f65826837d71"
-
-[[package]]
 name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1709,7 +1703,6 @@ dependencies = [
  "async-trait",
  "blake3",
  "bytes",
- "fixed-buffer",
  "futures",
  "hex",
  "log",
