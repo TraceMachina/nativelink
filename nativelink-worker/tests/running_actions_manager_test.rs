@@ -1376,6 +1376,9 @@ exit 0
             test_wrapper_script
         };
 
+        // TODO(#527) Sleep to reduce flakey chances.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_work_directory: root_work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
@@ -1504,6 +1507,9 @@ exit 0
 
             test_wrapper_script
         };
+
+        // TODO(#527) Sleep to reduce flakey chances.
+        tokio::time::sleep(Duration::from_millis(250)).await;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_work_directory: root_work_directory.clone(),
@@ -1645,6 +1651,9 @@ exit 1
 
             test_wrapper_script
         };
+
+        // TODO(#527) Sleep to reduce flakey chances.
+        tokio::time::sleep(Duration::from_millis(250)).await;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_work_directory: root_work_directory.clone(),

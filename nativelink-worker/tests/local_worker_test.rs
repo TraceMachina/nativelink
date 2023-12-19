@@ -496,6 +496,8 @@ mod local_worker_tests {
             drop(file);
             precondition_script
         };
+        // TODO(#527) Sleep to reduce flakey chances.
+        tokio::time::sleep(Duration::from_millis(250)).await;
         let local_worker_config = LocalWorkerConfig {
             experimental_precondition_script: Some(precondition_script),
             ..Default::default()
