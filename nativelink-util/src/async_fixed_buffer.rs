@@ -37,7 +37,7 @@ const DEFAULT_SIZE: usize = 4092;
 /// to call `get_closer()` which if awaited will close the writer stream.
 /// Finally, this struct can also deal with EOF in a more natural manner.
 #[pin_project]
-pub struct AsyncFixedBuf<const SIZE: usize = > {
+pub struct AsyncFixedBuf<const SIZE: usize = DEFAULT_SIZE> {
     inner: FixedBuf<SIZE>,
     waker: Arc<Mutex<Option<Waker>>>,
     did_shutdown: Arc<AtomicBool>,
@@ -61,12 +61,14 @@ impl <const SIZE: usize> AsyncFixedBuf<SIZE> {
     /// See
     /// [`FixedBuf::new`](https://docs.rs/fixed-buffer/latest/fixed_buffer/struct.FixedBuf.html#method.new)
     /// for details.
-    pub fn new() -> Self {
-        AsyncFixedBuf {
-            inner: FixedBuf::new(),
-            waker: Arc::new(Mutex::new(None)),
-            did_shutdown: Arc::new(AtomicBool::new(false)),
-            received_eof: AtomicBool::new(false),
+    /// // inner: FixedBuf::new(),
+    // waker: Arc::new(Mutex::new(None)),
+    // did_shutdown: Arc::new(AtomicBool::new(false)),
+    // received_eof: AtomicBool::new(false),
+        impl Default for AsyncFixedBuf {
+            fn default() -> Self {
+                Self::new()
+            }
         }
     }
 
@@ -82,7 +84,6 @@ impl <const SIZE: usize> AsyncFixedBuf<SIZE> {
             wake(waker.lock().deref_mut());
         })
     }
-}
 
 impl <const SIZE: usize> AsyncFixedBuf<SIZE> {
     pub fn split_into_reader_writer(mut self) -> (DropCloserReadHalf <SIZE>, DropCloserWriteHalf <SIZE>) {
