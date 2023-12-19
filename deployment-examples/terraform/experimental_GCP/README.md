@@ -38,7 +38,7 @@ is Active before moving onto running the dev plan.
 PROJECT_ID=example-sandbox
 DNS_ZONE=example-sandbox.example.com
 
-cd deployment-examples/terraform/GCP/deployments/global
+cd deployment-examples/terraform/experimental_GCP/deployments/global
 terraform init
 terraform apply -var gcp_project_id=$PROJECT_ID -var gcp_dns_zone=$DNS_ZONE
 # Print google name servers, ex: ns-cloud-XX.googledomains.com.
@@ -51,14 +51,14 @@ Setup and deploy the `native-link` servers and dependencies. The general
 configuration is laid out similar to
 [Native Link AWS Terraform Diagram](https://user-images.githubusercontent.com/1831202/176286845-ff683266-3f23-489c-b58a-3eda49e484be.png)
 from
-[AWS deployment example](https://github.com/TraceMachina/native-link/blob/main/deployment-examples/terraform/AWS/README.md).
+[AWS deployment example](https://github.com/TraceMachina/native-link/blob/main/deployment-examples/terraform/experimental_AWS/README.md).
 Deployment has additional flags in `variables.tf` for controlling machine
 type, prefixing resource name space for multiple deployments and other
 template parameters.
 
 ```sh
 PROJECT_ID=example-sandbox
-cd deployment-examples/terraform/GCP/deployments/dev
+cd deployment-examples/terraform/experimental_GCP/deployments/dev
 terraform init
 terraform apply -var gcp_project_id=$PROJECT_ID
 ```

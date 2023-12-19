@@ -110,7 +110,7 @@ resource "google_compute_instance" "build_instance" {
         cargo build --release --bin cas &&
         sudo mv /tmp/nativelink/target/release/cas /usr/local/bin/nativelink &&
         `` &&
-        cd /tmp/nativelink/deployment-examples/terraform/GCP/module/scripts &&
+        cd /tmp/nativelink/deployment-examples/terraform/experimental_GCP/module/scripts &&
         sudo mv ./bb_browser_config.json    /root/bb_browser_config.json &&
         sudo mv ./browser_proxy.json        /root/browser_proxy.json &&
         sudo mv ./scheduler.json            /root/scheduler.json &&
