@@ -1,5 +1,5 @@
 {
-  "checksum": "75e17a48bb804daea590c791ef2e51877a64c4e134d5e83d810b4f746946c927",
+  "checksum": "3a52ed2cf52062a855e4ac995a13c29a1953003a1b9e7428d1b3c681f4123dbc",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -982,7 +982,7 @@
               "target": "http"
             },
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper"
             },
             {
@@ -2139,7 +2139,7 @@
               "target": "serde_json"
             },
             {
-              "id": "thiserror 1.0.50",
+              "id": "thiserror 1.0.51",
               "target": "thiserror"
             }
           ],
@@ -2268,7 +2268,7 @@
               "alias": "http_body_0_4"
             },
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper",
               "alias": "hyper_0_14"
             },
@@ -2708,7 +2708,7 @@
               "target": "http_body"
             },
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper"
             },
             {
@@ -5092,36 +5092,6 @@
       },
       "license": "MIT/Apache-2.0"
     },
-    "fixed-buffer 0.2.3": {
-      "name": "fixed-buffer",
-      "version": "0.2.3",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/fixed-buffer/0.2.3/download",
-          "sha256": "ee27d08e4f11444330d000b8620aec3eae623d5bedd3667f65a2ee871e93dfdb"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "fixed_buffer",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "fixed_buffer",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "edition": "2018",
-        "version": "0.2.3"
-      },
-      "license": "Apache-2.0"
-    },
     "fixedbitset 0.4.2": {
       "name": "fixedbitset",
       "version": "0.4.2",
@@ -6398,13 +6368,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "home 0.5.5": {
+    "home 0.5.9": {
       "name": "home",
-      "version": "0.5.5",
+      "version": "0.5.9",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/home/0.5.5/download",
-          "sha256": "5444c27eef6923071f7ebcc33e3444508466a76f7a2b93da00ed6e19f30c1ddb"
+          "url": "https://crates.io/api/v1/crates/home/0.5.9/download",
+          "sha256": "e3d1354bf6b7235cb4a0576c2619fd4ed18183f689b12b006a0ee7329eeff9a5"
         }
       },
       "targets": [
@@ -6428,14 +6398,14 @@
           "selects": {
             "cfg(windows)": [
               {
-                "id": "windows-sys 0.48.0",
+                "id": "windows-sys 0.52.0",
                 "target": "windows_sys"
               }
             ]
           }
         },
-        "edition": "2018",
-        "version": "0.5.5"
+        "edition": "2021",
+        "version": "0.5.9"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -6623,13 +6593,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "hyper 0.14.27": {
+    "hyper 0.14.28": {
       "name": "hyper",
-      "version": "0.14.27",
+      "version": "0.14.28",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/hyper/0.14.27/download",
-          "sha256": "ffb1cfd654a8219eaef89881fdb3bb3b1cdc5fa75ded05d6933b2b382e395468"
+          "url": "https://crates.io/api/v1/crates/hyper/0.14.28/download",
+          "sha256": "bf96e135eb83a2a8ddf766e426a841d8ddd7449d5f00d34ea02b41d2f19eef80"
         }
       },
       "targets": [
@@ -6711,7 +6681,7 @@
               "target": "pin_project_lite"
             },
             {
-              "id": "socket2 0.4.10",
+              "id": "socket2 0.5.5",
               "target": "socket2"
             },
             {
@@ -6734,7 +6704,7 @@
           "selects": {}
         },
         "edition": "2018",
-        "version": "0.14.27"
+        "version": "0.14.28"
       },
       "license": "MIT"
     },
@@ -6791,7 +6761,7 @@
               "target": "http"
             },
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper"
             },
             {
@@ -6854,7 +6824,7 @@
         "deps": {
           "common": [
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper"
             },
             {
@@ -7184,33 +7154,16 @@
           "**"
         ],
         "crate_features": {
-          "common": [],
+          "common": [
+            "default",
+            "std"
+          ],
           "selects": {
             "aarch64-apple-darwin": [
-              "default",
-              "extra_traits",
-              "std"
-            ],
-            "aarch64-unknown-linux-gnu": [
-              "default",
-              "std"
-            ],
-            "arm-unknown-linux-gnueabi": [
-              "default",
-              "std"
-            ],
-            "armv7-unknown-linux-gnueabi": [
-              "default",
-              "std"
+              "extra_traits"
             ],
             "x86_64-apple-darwin": [
-              "default",
-              "extra_traits",
-              "std"
-            ],
-            "x86_64-unknown-linux-gnu": [
-              "default",
-              "std"
+              "extra_traits"
             ]
           }
         },
@@ -7999,7 +7952,7 @@
               "target": "futures"
             },
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper"
             },
             {
@@ -8369,7 +8322,7 @@
         "deps_dev": {
           "common": [
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper"
             },
             {
@@ -8463,7 +8416,7 @@
               "target": "hex"
             },
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper"
             },
             {
@@ -8597,10 +8550,6 @@
             {
               "id": "bytes 1.5.0",
               "target": "bytes"
-            },
-            {
-              "id": "fixed-buffer 0.2.3",
-              "target": "fixed_buffer"
             },
             {
               "id": "futures 0.3.29",
@@ -8792,7 +8741,7 @@
         "deps_dev": {
           "common": [
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper"
             },
             {
@@ -9609,7 +9558,7 @@
               "target": "memchr"
             },
             {
-              "id": "thiserror 1.0.50",
+              "id": "thiserror 1.0.51",
               "target": "thiserror"
             },
             {
@@ -11090,7 +11039,7 @@
               "target": "libredox"
             },
             {
-              "id": "thiserror 1.0.50",
+              "id": "thiserror 1.0.51",
               "target": "thiserror"
             }
           ],
@@ -13259,59 +13208,6 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "socket2 0.4.10": {
-      "name": "socket2",
-      "version": "0.4.10",
-      "repository": {
-        "Http": {
-          "url": "https://crates.io/api/v1/crates/socket2/0.4.10/download",
-          "sha256": "9f7916fc008ca5542385b89a3d3ce689953c143e9304a9bf8beec1de48994c0d"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "socket2",
-            "crate_root": "src/lib.rs",
-            "srcs": [
-              "**/*.rs"
-            ]
-          }
-        }
-      ],
-      "library_target_name": "socket2",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "all"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [],
-          "selects": {
-            "cfg(unix)": [
-              {
-                "id": "libc 0.2.151",
-                "target": "libc"
-              }
-            ],
-            "cfg(windows)": [
-              {
-                "id": "winapi 0.3.9",
-                "target": "winapi"
-              }
-            ]
-          }
-        },
-        "edition": "2018",
-        "version": "0.4.10"
-      },
-      "license": "MIT OR Apache-2.0"
-    },
     "socket2 0.5.5": {
       "name": "socket2",
       "version": "0.5.5",
@@ -13780,13 +13676,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "thiserror 1.0.50": {
+    "thiserror 1.0.51": {
       "name": "thiserror",
-      "version": "1.0.50",
+      "version": "1.0.51",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/thiserror/1.0.50/download",
-          "sha256": "f9a7210f5c9a7156bb50aa36aed4c95afb51df0df00713949448cf9e97d382d2"
+          "url": "https://crates.io/api/v1/crates/thiserror/1.0.51/download",
+          "sha256": "f11c217e1416d6f036b870f14e0413d480dbf28edbee1f877abaf0206af43bb7"
         }
       },
       "targets": [
@@ -13817,7 +13713,7 @@
         "deps": {
           "common": [
             {
-              "id": "thiserror 1.0.50",
+              "id": "thiserror 1.0.51",
               "target": "build_script_build"
             }
           ],
@@ -13827,13 +13723,13 @@
         "proc_macro_deps": {
           "common": [
             {
-              "id": "thiserror-impl 1.0.50",
+              "id": "thiserror-impl 1.0.51",
               "target": "thiserror_impl"
             }
           ],
           "selects": {}
         },
-        "version": "1.0.50"
+        "version": "1.0.51"
       },
       "build_script_attrs": {
         "data_glob": [
@@ -13842,13 +13738,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "thiserror-impl 1.0.50": {
+    "thiserror-impl 1.0.51": {
       "name": "thiserror-impl",
-      "version": "1.0.50",
+      "version": "1.0.51",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/thiserror-impl/1.0.50/download",
-          "sha256": "266b2e40bc00e5a6c09c3584011e08b06f123c00362c92b975ba9843aaaa14b8"
+          "url": "https://crates.io/api/v1/crates/thiserror-impl/1.0.51/download",
+          "sha256": "01742297787513b79cf8e29d1056ede1313e2420b7b3b15d0a768b4921f549df"
         }
       },
       "targets": [
@@ -13885,7 +13781,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "1.0.50"
+        "version": "1.0.51"
       },
       "license": "MIT OR Apache-2.0"
     },
@@ -14606,7 +14502,7 @@
               "target": "http_body"
             },
             {
-              "id": "hyper 0.14.27",
+              "id": "hyper 0.14.28",
               "target": "hyper"
             },
             {
@@ -16007,7 +15903,7 @@
           "selects": {
             "cfg(any(windows, unix, target_os = \"redox\"))": [
               {
-                "id": "home 0.5.5",
+                "id": "home 0.5.9",
                 "target": "home"
               }
             ],
@@ -16067,9 +15963,7 @@
             "minwindef",
             "processenv",
             "processthreadsapi",
-            "psapi",
-            "ws2ipdef",
-            "ws2tcpip"
+            "psapi"
           ],
           "selects": {}
         },
@@ -16315,10 +16209,13 @@
             "Win32_Storage",
             "Win32_Storage_FileSystem",
             "Win32_System",
+            "Win32_System_Com",
             "Win32_System_Console",
             "Win32_System_Diagnostics",
             "Win32_System_Diagnostics_Debug",
             "Win32_System_Threading",
+            "Win32_UI",
+            "Win32_UI_Shell",
             "default"
           ],
           "selects": {}

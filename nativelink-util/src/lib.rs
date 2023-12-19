@@ -13,7 +13,6 @@
 // limitations under the License.
 
 pub mod action_messages;
-pub mod async_fixed_buffer;
 pub mod buf_channel;
 pub mod common;
 pub mod digest_hasher;
