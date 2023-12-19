@@ -665,7 +665,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cfg = futures::executor::block_on(get_config())?;
 
-    let ( mut metrics_enabled, max_blocking_threads) = {
+    let (mut metrics_enabled, max_blocking_threads) = {
         // Note: If the default changes make sure you update the documentation in
         // `config/cas_server.rs`.
         const DEFAULT_MAX_OPEN_FILES: usize = 512;
