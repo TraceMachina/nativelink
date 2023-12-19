@@ -15,7 +15,7 @@ permissions: read-all
 jobs:
   analyze:
     name: Analyze
-    runs-on: ['ubuntu-22.04']
+    runs-on: large-ubuntu-22.04
     timeout-minutes: 360
     permissions:
       security-events: write

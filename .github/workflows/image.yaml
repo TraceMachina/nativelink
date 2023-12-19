@@ -12,7 +12,7 @@ permissions: read-all
 
 jobs:
   publish-image:
-    runs-on: ubuntu-22.04
+    runs-on: large-ubuntu-22.04
     permissions:
       packages: write
       id-token: write
