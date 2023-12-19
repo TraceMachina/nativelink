@@ -62,6 +62,12 @@ impl MemoryStore {
         }
     }
 
+    /// Returns the number of key-value pairs that are currently in the the cache.
+    /// Function is not for production code paths.
+    pub async fn len_for_test(&self) -> usize {
+        self.evicting_map.len_for_test().await
+    }
+
     pub async fn remove_entry(&self, digest: &DigestInfo) -> bool {
         self.evicting_map.remove(digest).await
     }
