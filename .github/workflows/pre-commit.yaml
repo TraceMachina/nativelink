@@ -12,7 +12,7 @@ permissions: read-all
 
 jobs:
   pre-commit-checks:
-    runs-on: large-ubuntu-22.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: >- # v3.5.3
