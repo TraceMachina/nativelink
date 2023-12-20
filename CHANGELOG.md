@@ -2,13 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.0] - 2023-12-19
+## [0.1.0] - 2023-12-20
 
 
 
 ### ⛰️  Features
 
-- Add Git-Cliff Changelog - ([2d47507](https://github.com/TraceMachina/nativelink/commit/2d47507dbcc43178aa87bab6906116de289a3e50))
+- Add renovate.json ([#487](https://github.com/TraceMachina/nativelink/issues/487)) - ([933963f](https://github.com/TraceMachina/nativelink/commit/933963f1b207f7d1b4f4cdb0b1ae620de8533336))
+- Add OSFamily and container-image platform props ([#512](https://github.com/TraceMachina/nativelink/issues/512)) - ([b6b8252](https://github.com/TraceMachina/nativelink/commit/b6b82528e6db077a1159a6b8472a08cd9537dbe3))
+- Add fancy badges ([#521](https://github.com/TraceMachina/nativelink/issues/521)) - ([e122042](https://github.com/TraceMachina/nativelink/commit/e122042d5e38ddebfebb888114092a1227dc8a27))
+- Add Git-Cliff Changelog ([#515](https://github.com/TraceMachina/nativelink/issues/515)) - ([8197bb9](https://github.com/TraceMachina/nativelink/commit/8197bb9712a4e470e0cb07a7a460e98054ce5307))
 - Integrate google analytics ([#503](https://github.com/TraceMachina/nativelink/issues/503)) - ([ef74f9c](https://github.com/TraceMachina/nativelink/commit/ef74f9c0ca746283a38312f8b0bf5ec9f74d163b))
 - Add OpenSSF scorecard action ([#486](https://github.com/TraceMachina/nativelink/issues/486)) - ([4d9d897](https://github.com/TraceMachina/nativelink/commit/4d9d8973313c07e22984622e6bbc1947d2ba7785))
 - Add Completeness Checking Store ([#404](https://github.com/TraceMachina/nativelink/issues/404)) - ([d264624](https://github.com/TraceMachina/nativelink/commit/d26462407cdc04b5a4eb4dc4d46b298db996c43f))
@@ -105,6 +108,9 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Bug Fixes
 
+- Fix ensure_full_copy_of_bytes_is_made_test flaky test ([#528](https://github.com/TraceMachina/nativelink/issues/528)) - ([14fdf4f](https://github.com/TraceMachina/nativelink/commit/14fdf4f318240aa735bd0f33fa6d1496513f56ff))
+- Remove Fixed-Buffer Dependency ([#509](https://github.com/TraceMachina/nativelink/issues/509)) - ([5a6b182](https://github.com/TraceMachina/nativelink/commit/5a6b182c13e006119d858b5fab759d17938b0c65))
+- Fix rustfmt after 6d07a86 ([#520](https://github.com/TraceMachina/nativelink/issues/520)) - ([cfdf7e8](https://github.com/TraceMachina/nativelink/commit/cfdf7e8a1ee173e5b303cf0d61b1d4adf08d38bd))
 - Fix pre-commit hooks after 378b806 ([#482](https://github.com/TraceMachina/nativelink/issues/482)) - ([f2bd770](https://github.com/TraceMachina/nativelink/commit/f2bd7704334577da35aa795f81770186873789a6))
 - Update nightly Rust toolchain for Bazel ([#456](https://github.com/TraceMachina/nativelink/issues/456)) - ([5acfa25](https://github.com/TraceMachina/nativelink/commit/5acfa255703abe2134820881aabeece0efb4edda))
 - Fixes error forwarding to client for failed command executions ([#432](https://github.com/TraceMachina/nativelink/issues/432)) - ([0c225da](https://github.com/TraceMachina/nativelink/commit/0c225da70bd4ad23ed359e1b86efe2009af3df55))
@@ -179,6 +185,8 @@ All notable changes to this project will be documented in this file.
 
 ### 🛠️ Refactor
 
+- MacOS enable flake nix builds ([#529](https://github.com/TraceMachina/nativelink/issues/529)) - ([e1d35d6](https://github.com/TraceMachina/nativelink/commit/e1d35d661801d70c41babf48f9a0a10a8fe975a7))
+- Update native-cargo.yaml Runner Group ([#511](https://github.com/TraceMachina/nativelink/issues/511)) - ([e1843f1](https://github.com/TraceMachina/nativelink/commit/e1843f17c3f957fb8542b6ffcc6784ee2b417ad1))
 - Migrate L2 announcements and LB-IPAM to cilium ([#505](https://github.com/TraceMachina/nativelink/issues/505)) - ([df6f5b9](https://github.com/TraceMachina/nativelink/commit/df6f5b94fcc111c66b1f36e7626fd0c7326bcb57))
 - Update protobuf dependencies ([#493](https://github.com/TraceMachina/nativelink/issues/493)) - ([3dacdad](https://github.com/TraceMachina/nativelink/commit/3dacdad203c4c2f238e74d6e5beb7401fb312c55))
 - Update protos after 1aadd42 ([#489](https://github.com/TraceMachina/nativelink/issues/489)) - ([9c6efe0](https://github.com/TraceMachina/nativelink/commit/9c6efe04acb79e6c75d2d58065d2a8914e3efcc9))
@@ -266,6 +274,8 @@ All notable changes to this project will be documented in this file.
 
 ### 🧪 Testing
 
+- Add small sleep in some tests to reduce flakes in CI ([#526](https://github.com/TraceMachina/nativelink/issues/526)) - ([fd4e6a3](https://github.com/TraceMachina/nativelink/commit/fd4e6a34a95245ce64abba82ed5f9ae42727ebc5))
+- Mark nix-cargo and bazel tests as large ci instances ([#524](https://github.com/TraceMachina/nativelink/issues/524)) - ([a18d2d2](https://github.com/TraceMachina/nativelink/commit/a18d2d2a9e1a1d1ca5f77c305e948d62e7c4a2e1))
 - Add Kubernetes example ([#479](https://github.com/TraceMachina/nativelink/issues/479)) - ([e1c495f](https://github.com/TraceMachina/nativelink/commit/e1c495fa68b5d85872c98f9231689da4581161b1))
 - Avoid writer EOF until fast store complete ([#480](https://github.com/TraceMachina/nativelink/issues/480)) - ([2de8867](https://github.com/TraceMachina/nativelink/commit/2de88676b73116748aac9409d8ca3426d9ab0773))
 - Introduce Local Remote Execution ([#471](https://github.com/TraceMachina/nativelink/issues/471)) - ([449376b](https://github.com/TraceMachina/nativelink/commit/449376b3adb740b65bea661976071629fbd6dcfd))
@@ -316,6 +326,14 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
+- Release nativelink 0.1.0 - ([9d91a88](https://github.com/TraceMachina/nativelink/commit/9d91a8887bb879be4002412ac0db437cbba96a31))
+- MacOS use non darwin iconv ([#534](https://github.com/TraceMachina/nativelink/issues/534)) - ([2e4a131](https://github.com/TraceMachina/nativelink/commit/2e4a131fb246d16c9d3082b6f231eaad1a85e357))
+- Mark GCP & AWS terraform experimental ([#522](https://github.com/TraceMachina/nativelink/issues/522)) - ([910ad03](https://github.com/TraceMachina/nativelink/commit/910ad035ce59d8ba5335c46057fd55ab651fabb0))
+- Decouple toolchain generation and execution hashes ([#523](https://github.com/TraceMachina/nativelink/issues/523)) - ([0be8a3a](https://github.com/TraceMachina/nativelink/commit/0be8a3a0950fc6e5810dcb2d83ab348c741134e7))
+- Support empty digests in stores ([#507](https://github.com/TraceMachina/nativelink/issues/507)) - ([41a85fb](https://github.com/TraceMachina/nativelink/commit/41a85fb0dfbb0c3f34846ae58fa5110da9fe18c2))
+- Increase the Max Blocking Threads ([#510](https://github.com/TraceMachina/nativelink/issues/510)) - ([6d07a86](https://github.com/TraceMachina/nativelink/commit/6d07a86820fe11b5f4a43ee589a6333aea555419))
+- Scale back a few CI runs ([#516](https://github.com/TraceMachina/nativelink/issues/516)) - ([245d9bb](https://github.com/TraceMachina/nativelink/commit/245d9bbdbcdb411077467e14166e01f6e6dfb905))
+- Remove beta toolchain from native Cargo builds ([#514](https://github.com/TraceMachina/nativelink/issues/514)) - ([334e738](https://github.com/TraceMachina/nativelink/commit/334e738a078cfa2aadba3d90c93da7f954d3921e))
 - Bump trivially bumpable deps ([#488](https://github.com/TraceMachina/nativelink/issues/488)) - ([96302cb](https://github.com/TraceMachina/nativelink/commit/96302cbeab6c59966d3dfd3b99fa0933752d1018))
 - Temporarily disable caching in image action ([#466](https://github.com/TraceMachina/nativelink/issues/466)) - ([a22150d](https://github.com/TraceMachina/nativelink/commit/a22150d00864fee7a7d4818a5448319ed936665c))
 - Remove caching from native cargo action ([#458](https://github.com/TraceMachina/nativelink/issues/458)) - ([4eab282](https://github.com/TraceMachina/nativelink/commit/4eab2822113b1c405a3d0fae3b736e232f78aab1))
@@ -432,6 +450,7 @@ All notable changes to this project will be documented in this file.
 
 ### ❌️  Breaking Changes
 
+- [Breaking] Mark S3 store experimental - ([05a6dd7](https://github.com/TraceMachina/nativelink/commit/05a6dd79635a98411d90505ff500694092c2f927))
 - [Breaking] Rename entrypoint_cmd->entrypoint and precondition_script ([#475](https://github.com/TraceMachina/nativelink/issues/475)) - ([dbe61d2](https://github.com/TraceMachina/nativelink/commit/dbe61d281520d20dba477ddb430139338afabde6))
 - [Breaking] Mark prometheus config as experimental ([#473](https://github.com/TraceMachina/nativelink/issues/473)) - ([931e721](https://github.com/TraceMachina/nativelink/commit/931e72156879f3bba38b888c20ad55b9584991e5))
 - [Breaking] Standardize configurations so they are all lower case ([#461](https://github.com/TraceMachina/nativelink/issues/461)) - ([3329d7c](https://github.com/TraceMachina/nativelink/commit/3329d7cd8adf206c4a4d84cd801f4d13c8bb6052))
