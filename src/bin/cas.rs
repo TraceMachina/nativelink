@@ -45,13 +45,13 @@ use nativelink_util::metrics_utils::{
 };
 use nativelink_worker::local_worker::new_local_worker;
 use parking_lot::Mutex;
-use rustls_pemfile::{certs, pkcs8_private_keys};
+use rustls_pemfile::{certs as extract_certs, pkcs8_private_keys};
 use scopeguard::guard;
 use tokio::net::TcpListener;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::task::spawn_blocking;
-use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig as TlsServerConfig};
+use tokio_rustls::rustls::ServerConfig as TlsServerConfig;
 use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
@@ -446,29 +446,32 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 std::fs::File::open(&tls_config.cert_file)
                     .err_tip(|| format!("Could not open cert file {}", tls_config.cert_file))?,
             );
-            let certs = certs(&mut cert_reader)
-                .err_tip(|| format!("Could not extract certs from file {}", tls_config.cert_file))?
-                .into_iter()
-                .map(Certificate)
-                .collect();
+            let mut certs = vec![];
+            for cert in extract_certs(&mut cert_reader) {
+                certs.push(cert.err_tip(|| format!("Could not extract certs from file {}", tls_config.cert_file))?);
+            }
             let mut key_reader = std::io::BufReader::new(
                 std::fs::File::open(&tls_config.key_file)
                     .err_tip(|| format!("Could not open key file {}", tls_config.key_file))?,
             );
-            let keys = pkcs8_private_keys(&mut key_reader)
-                .err_tip(|| format!("Could not extract key(s) from file {}", tls_config.key_file))?;
-            if keys.len() != 1 {
-                return Err(Box::new(make_err!(
-                    Code::InvalidArgument,
-                    "Expected 1 key in file {}, found {} keys",
-                    tls_config.key_file,
-                    keys.len()
-                )));
-            }
+            let key = {
+                let keys = pkcs8_private_keys(&mut key_reader).collect::<Vec<_>>();
+                if keys.len() != 1 {
+                    return Err(Box::new(make_err!(
+                        Code::InvalidArgument,
+                        "Expected 1 key in file {}, found {} keys",
+                        tls_config.key_file,
+                        keys.len()
+                    )));
+                }
+                keys.into_iter()
+                    .next()
+                    .unwrap()
+                    .err_tip(|| format!("Could not extract key(s) from file {}", tls_config.key_file))?
+            };
             let mut config = TlsServerConfig::builder()
-                .with_safe_defaults()
                 .with_no_client_auth()
-                .with_single_cert(certs, PrivateKey(keys.into_iter().next().unwrap()))
+                .with_single_cert(certs, key.into())
                 .map_err(|e| make_err!(Code::Internal, "Could not create TlsServerConfig : {:?}", e))?;
 
             config.alpn_protocols.push("h2".into());

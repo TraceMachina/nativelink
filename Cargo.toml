@@ -35,11 +35,11 @@ futures = "0.3.29"
 hyper = { version = "0.14.27" }
 parking_lot = "0.12.1"
 prometheus-client = "0.21.2"
-rustls-pemfile = "1.0.4"
+rustls-pemfile = "2.0.0"
 scopeguard = "1.2.0"
 serde_json5 = "0.1.0"
 tokio = { version = "1.35.0", features = ["rt-multi-thread", "signal"] }
-tokio-rustls = "0.24.1"
+tokio-rustls = "0.25.0"
 tonic = { version = "0.10.2", features = ["gzip"] }
 tower = "0.4.13"
 tracing = "0.1.40"
