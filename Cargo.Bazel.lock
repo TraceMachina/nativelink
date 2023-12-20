@@ -1,5 +1,5 @@
 {
-  "checksum": "ce765802469bb915a59874ca092755075fe0d4dd85555be1b7fa504074568962",
+  "checksum": "1c7910a42fe467fecbece0d296b19911037ed919e5cb526b08c7297a08338585",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -7981,7 +7981,7 @@
               "target": "prometheus_client"
             },
             {
-              "id": "rustls-pemfile 1.0.4",
+              "id": "rustls-pemfile 2.0.0",
               "target": "rustls_pemfile"
             },
             {
@@ -7997,7 +7997,7 @@
               "target": "tokio"
             },
             {
-              "id": "tokio-rustls 0.24.1",
+              "id": "tokio-rustls 0.25.0",
               "target": "tokio_rustls"
             },
             {
@@ -11858,6 +11858,102 @@
       },
       "license": "Apache-2.0 OR ISC OR MIT"
     },
+    "rustls 0.22.1": {
+      "name": "rustls",
+      "version": "0.22.1",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/rustls/0.22.1/download",
+          "sha256": "fe6b63262c9fcac8659abfaa96cac103d28166d3ff3eaf8f412e19f3ae9e5a48"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "rustls",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "rustls",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "log",
+            "logging",
+            "ring",
+            "tls12"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "log 0.4.20",
+              "target": "log"
+            },
+            {
+              "id": "ring 0.17.7",
+              "target": "ring"
+            },
+            {
+              "id": "rustls 0.22.1",
+              "target": "build_script_build"
+            },
+            {
+              "id": "rustls-pki-types 1.0.1",
+              "target": "rustls_pki_types",
+              "alias": "pki_types"
+            },
+            {
+              "id": "rustls-webpki 0.102.0",
+              "target": "webpki"
+            },
+            {
+              "id": "subtle 2.5.0",
+              "target": "subtle"
+            },
+            {
+              "id": "zeroize 1.7.0",
+              "target": "zeroize"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.22.1"
+      },
+      "build_script_attrs": {
+        "data_glob": [
+          "**"
+        ],
+        "link_deps": {
+          "common": [
+            {
+              "id": "ring 0.17.7",
+              "target": "ring"
+            }
+          ],
+          "selects": {}
+        }
+      },
+      "license": "Apache-2.0 OR ISC OR MIT"
+    },
     "rustls-native-certs 0.6.3": {
       "name": "rustls-native-certs",
       "version": "0.6.3",
@@ -11955,6 +12051,95 @@
       },
       "license": "Apache-2.0 OR ISC OR MIT"
     },
+    "rustls-pemfile 2.0.0": {
+      "name": "rustls-pemfile",
+      "version": "2.0.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/rustls-pemfile/2.0.0/download",
+          "sha256": "35e4980fa29e4c4b212ffb3db068a564cbf560e51d3944b7c88bd8bf5bec64f4"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "rustls_pemfile",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "rustls_pemfile",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "default",
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "base64 0.21.5",
+              "target": "base64"
+            },
+            {
+              "id": "rustls-pki-types 1.0.1",
+              "target": "rustls_pki_types",
+              "alias": "pki_types"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "2.0.0"
+      },
+      "license": "Apache-2.0 OR ISC OR MIT"
+    },
+    "rustls-pki-types 1.0.1": {
+      "name": "rustls-pki-types",
+      "version": "1.0.1",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/rustls-pki-types/1.0.1/download",
+          "sha256": "e7673e0aa20ee4937c6aacfc12bb8341cfbf054cdd21df6bec5fd0629fe9339b"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "rustls_pki_types",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "rustls_pki_types",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "alloc",
+            "default",
+            "std"
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "1.0.1"
+      },
+      "license": "MIT OR Apache-2.0"
+    },
     "rustls-webpki 0.101.7": {
       "name": "rustls-webpki",
       "version": "0.101.7",
@@ -12003,6 +12188,62 @@
         },
         "edition": "2021",
         "version": "0.101.7"
+      },
+      "license": "ISC"
+    },
+    "rustls-webpki 0.102.0": {
+      "name": "rustls-webpki",
+      "version": "0.102.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/rustls-webpki/0.102.0/download",
+          "sha256": "de2635c8bc2b88d367767c5de8ea1d8db9af3f6219eba28442242d9ab81d1b89"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "webpki",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "webpki",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "alloc",
+            "ring",
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "ring 0.17.7",
+              "target": "ring"
+            },
+            {
+              "id": "rustls-pki-types 1.0.1",
+              "target": "rustls_pki_types",
+              "alias": "pki_types"
+            },
+            {
+              "id": "untrusted 0.9.0",
+              "target": "untrusted"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.102.0"
       },
       "license": "ISC"
     },
@@ -14286,7 +14527,6 @@
         ],
         "crate_features": {
           "common": [
-            "default",
             "logging",
             "tls12"
           ],
@@ -14307,6 +14547,63 @@
         },
         "edition": "2018",
         "version": "0.24.1"
+      },
+      "license": "MIT/Apache-2.0"
+    },
+    "tokio-rustls 0.25.0": {
+      "name": "tokio-rustls",
+      "version": "0.25.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/tokio-rustls/0.25.0/download",
+          "sha256": "775e0c0f0adb3a2f22a00c4745d728b479985fc15ee7ca6a2608388c5569860f"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "tokio_rustls",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "tokio_rustls",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "default",
+            "logging",
+            "ring",
+            "tls12"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "rustls 0.22.1",
+              "target": "rustls"
+            },
+            {
+              "id": "rustls-pki-types 1.0.1",
+              "target": "rustls_pki_types",
+              "alias": "pki_types"
+            },
+            {
+              "id": "tokio 1.35.0",
+              "target": "tokio"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.25.0"
       },
       "license": "MIT/Apache-2.0"
     },
@@ -17552,7 +17849,7 @@
     "prost-types 0.12.3",
     "rand 0.8.5",
     "relative-path 1.9.0",
-    "rustls-pemfile 1.0.4",
+    "rustls-pemfile 2.0.0",
     "scopeguard 1.2.0",
     "serde 1.0.193",
     "serde_json5 0.1.0",
@@ -17560,7 +17857,7 @@
     "shellexpand 3.1.0",
     "shlex 1.2.0",
     "tokio 1.35.0",
-    "tokio-rustls 0.24.1",
+    "tokio-rustls 0.25.0",
     "tokio-stream 0.1.14",
     "tokio-util 0.7.10",
     "tonic 0.10.2",
