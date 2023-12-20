@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # This script configures a cluster with a few standard deployments.
 
 # TODO(aaronmondal): Add Grafana, OpenTelemetry and the various other standard
@@ -7,11 +8,11 @@ set -xeuo pipefail
 
 SRC_ROOT=$(git rev-parse --show-toplevel)
 
-kubectl apply -f ${SRC_ROOT}/deployment-examples/kubernetes/gateway.yaml
+kubectl apply -f "$SRC_ROOT"/deployment-examples/kubernetes/gateway.yaml
 
 IMAGE_TAG=$(nix eval .#image.imageTag --raw)
 
-$(nix build .#image --print-build-logs --verbose) \
+nix build .#image --print-build-logs --verbose \
     && ./result \
     | skopeo \
       copy \
@@ -21,9 +22,9 @@ $(nix build .#image --print-build-logs --verbose) \
 
 IMAGE_TAG=$(nix eval .#lre.imageTag --raw)
 
-echo $IMAGE_TAG
+echo "$IMAGE_TAG"
 
-$(nix build .#lre --print-build-logs --verbose) \
+nix build .#lre --print-build-logs --verbose \
     && ./result \
     | skopeo \
       copy \

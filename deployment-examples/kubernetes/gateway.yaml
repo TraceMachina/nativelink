@@ -4,15 +4,39 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
+  name: insecure-cache
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: insecure-cache
+      protocol: HTTP
+      port: 50051
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
   name: cache
 spec:
   gatewayClassName: cilium
   listeners:
     - name: cache
-      protocol: HTTP
-      port: 50051
+      protocol: TLS
+      port: 50071
+      tls:
+        mode: Passthrough
 ---
-apiVersion: gateway.networking.k8s.io/v1beta1
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: prometheus
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: prometheus
+      protocol: HTTP
+      port: 50061
+---
+apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: scheduler

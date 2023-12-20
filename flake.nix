@@ -84,7 +84,7 @@
               program = "${nativelink}/bin/cas";
             };
           };
-          packages = {
+          packages = rec {
             inherit publish-ghcr local-image-test;
             default = nativelink;
             lre = import ./local-remote-execution/image.nix { inherit pkgs nativelink; };
@@ -107,6 +107,12 @@
                 };
               };
             };
+            # This "package" contains just the tag of the "image" package. This
+            # allows us to import the derivation hash into bazel integration
+            # test scripts.
+            currentTag = pkgs.writeScriptBin "nativelink-current-tag" ''
+              ${lre.imageTag}
+            '';
           };
           checks = {
             # TODO(aaronmondal): Fix the tests.
@@ -133,6 +139,9 @@
               pkgs.kubectl
               pkgs.kubernetes-helm
               pkgs.cilium-cli
+              pkgs.jq
+              pkgs.curl
+              pkgs.kind
 
               # Additional tools from within our development environment.
               local-image-test

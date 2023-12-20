@@ -70,7 +70,7 @@ jobs:
       - name: Get gateway IPs
         id: gateway-ips
         run: |
-          echo "cache_ip=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
+          echo "cache_ip=$(kubectl get gtw insecure-cache -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
           echo "scheduler_ip=$(kubectl get gtw scheduler -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
 
       - name: Print cluster state
