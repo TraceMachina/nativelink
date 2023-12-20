@@ -1,5 +1,5 @@
 {
-  "checksum": "1c6574498fa35bd010af58efd597d0645a840c1f0090e8345ab3d72595e39406",
+  "checksum": "f8b57d3fc2bfb8efad955545d5d0a41982fc11aae00c639c7072333c785eb4e8",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -6456,6 +6456,60 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "http 1.0.0": {
+      "name": "http",
+      "version": "1.0.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/http/1.0.0/download",
+          "sha256": "b32afd38673a8016f7c9ae69e5af41a58f81b1d31689040f2f1959594ce194ea"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "http",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "http",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "default",
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "bytes 1.5.0",
+              "target": "bytes"
+            },
+            {
+              "id": "fnv 1.0.7",
+              "target": "fnv"
+            },
+            {
+              "id": "itoa 1.0.10",
+              "target": "itoa"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "1.0.0"
+      },
+      "license": "MIT OR Apache-2.0"
+    },
     "http-body 0.4.6": {
       "name": "http-body",
       "version": "0.4.6",
@@ -8502,7 +8556,7 @@
               "target": "aws_smithy_types"
             },
             {
-              "id": "http 0.2.11",
+              "id": "http 1.0.0",
               "target": "http"
             },
             {
@@ -17868,7 +17922,7 @@
   ],
   "direct_dev_deps": [
     "aws-smithy-types 0.57.2",
-    "http 0.2.11",
+    "http 1.0.0",
     "maplit 1.0.2",
     "memory-stats 1.1.0",
     "mock_instant 0.3.1",
