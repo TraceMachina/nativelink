@@ -28,7 +28,7 @@ nativelink-store = { path = "nativelink-store" }
 nativelink-util = { path = "nativelink-util" }
 nativelink-worker = { path = "nativelink-worker" }
 
-async-lock = "2.8.0"
+async-lock = "3.2.0"
 axum = "0.6.20"
 clap = { version = "4.4.11", features = ["derive"] }
 futures = "0.3.29"
@@ -38,7 +38,7 @@ prometheus-client = "0.21.2"
 rustls-pemfile = "1.0.4"
 scopeguard = "1.2.0"
 serde_json5 = "0.1.0"
-tokio = { version = "1.35.0", features = ["rt-multi-thread", "signal"] }
+tokio = { version = "1.35.1", features = ["rt-multi-thread", "signal"] }
 tokio-rustls = "0.24.1"
 tonic = { version = "0.10.2", features = ["gzip"] }
 tower = "0.4.13"

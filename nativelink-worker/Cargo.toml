@@ -14,7 +14,7 @@ nativelink-store = { path = "../nativelink-store" }
 #                    functionality out of the schedulers.
 nativelink-scheduler = { path = "../nativelink-scheduler" }
 
-async-lock = "2.8.0"
+async-lock = "3.2.0"
 async-trait = "0.1.74"
 bytes = "1.5.0"
 filetime = "0.2.23"
@@ -28,7 +28,7 @@ scopeguard = "1.2.0"
 serde = "1.0.193"
 serde_json5 = "0.1.0"
 shlex = "1.2.0"
-tokio = { version = "1.35.0", features = ["sync", "rt", "process"] }
+tokio = { version = "1.35.1", features = ["sync", "rt", "process"] }
 tokio-stream = { version = "0.1.14", features = ["fs"] }
 tonic = { version = "0.10.2", features = ["gzip"] }
 tracing = "0.1.40"
