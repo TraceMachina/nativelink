@@ -1,5 +1,4 @@
-{ pkgs, ... }:
-
+{pkgs, ...}:
 pkgs.buildGoModule rec {
   pname = "bazel-toolchains";
   version = "5.1.2";
@@ -21,6 +20,6 @@ pkgs.buildGoModule rec {
     description = "Generate Bazel toolchain configs for remote execution.";
     homepage = "https://github.com/bazelbuild/bazel-toolchains";
     license = licenses.asl20;
-    maintainers = [ maintainers.aaronmondal ];
+    maintainers = [maintainers.aaronmondal];
   };
 }

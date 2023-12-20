@@ -1,7 +1,9 @@
-{ pkgs, nativelink, ... }:
-
-let
-  customStdenv = import ../tools/llvmStdenv.nix { inherit pkgs; };
+{
+  pkgs,
+  nativelink,
+  ...
+}: let
+  customStdenv = import ../tools/llvmStdenv.nix {inherit pkgs;};
   customClang = pkgs.callPackage ../tools/customClang.nix {
     inherit pkgs;
     stdenv = customStdenv;
@@ -49,14 +51,15 @@ let
       # Add all tooling here so that the generated toolchains use `/nix/store/*`
       # paths instead of `/bin` or `/usr/bin`. This way we're guaranteed to use
       # binary identical toolchains during local and remote execution.
-      ("PATH=" + (pkgs.lib.strings.concatStringsSep ":" [
-        "${customStdenv.cc.bintools}/bin"
-        "${customClang}/bin"
-        "${customStdenv}/bin"
-        "${pkgs.coreutils}/bin"
-        "${pkgs.findutils}/bin"
-        "${pkgs.gnutar}/bin"
-      ]))
+      ("PATH="
+        + (pkgs.lib.strings.concatStringsSep ":" [
+          "${customStdenv.cc.bintools}/bin"
+          "${customClang}/bin"
+          "${customStdenv}/bin"
+          "${pkgs.coreutils}/bin"
+          "${pkgs.findutils}/bin"
+          "${pkgs.gnutar}/bin"
+        ]))
       "JAVA_HOME=${pkgs.jdk11_headless}/lib/openjdk"
 
       "CC=${customClang}/bin/customClang"
@@ -74,11 +77,12 @@ let
         "-L${pkgs.llvmPackages_17.libcxxabi}/lib"
         "-L${pkgs.llvmPackages_17.libunwind}/lib"
         "-lc++"
-        ("-Wl," +
-        "-rpath,${pkgs.llvmPackages_17.libcxx}/lib," +
-        "-rpath,${pkgs.llvmPackages_17.libcxxabi}/lib," +
-        "-rpath,${pkgs.llvmPackages_17.libunwind}/lib," +
-        "-rpath,${pkgs.glibc}/lib"
+        (
+          "-Wl,"
+          + "-rpath,${pkgs.llvmPackages_17.libcxx}/lib,"
+          + "-rpath,${pkgs.llvmPackages_17.libcxxabi}/lib,"
+          + "-rpath,${pkgs.llvmPackages_17.libunwind}/lib,"
+          + "-rpath,${pkgs.glibc}/lib"
         )
       ]}"
     ];
@@ -91,18 +95,16 @@ let
 
     contents = autogenDeps;
   };
-
 in
+  pkgs.dockerTools.streamLayeredImage {
+    name = "nativelink-toolchain";
 
-pkgs.dockerTools.streamLayeredImage {
-  name = "nativelink-toolchain";
+    # Override the toolchain container tag with the one from the autogen
+    # container. This way the nativelink doesn't influence this tag and and
+    # changes to its codebase don't invalidate existing toolchain containers.
+    tag = autogenContainer.imageTag;
 
-  # Override the toolchain container tag with the one from the autogen
-  # container. This way the nativelink doesn't influence this tag and and
-  # changes to its codebase don't invalidate existing toolchain containers.
-  tag = autogenContainer.imageTag;
+    inherit extraCommands config;
 
-  inherit extraCommands config;
-
-  contents = autogenDeps ++ [ nativelink ];
-}
+    contents = autogenDeps ++ [nativelink];
+  }
