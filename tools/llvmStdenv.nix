@@ -1,7 +1,7 @@
 { pkgs, isDarwin ? false, ... }:
 
 let
-llvmPackages = pkgs.llvmPackages_16;
+llvmPackages = pkgs.llvmPackages_17;
 
 toolchain = if isDarwin then (
   pkgs.overrideCC (

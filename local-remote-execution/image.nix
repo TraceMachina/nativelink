@@ -29,7 +29,7 @@ let
 
     customStdenv.cc.bintools
 
-    pkgs.llvmPackages_16.libunwind
+    pkgs.llvmPackages_17.libunwind
   ];
 
   # Always required in images that use Bazel.
@@ -70,14 +70,14 @@ let
       #                    would be nicer to handle this as part of the nix
       #                    stdenv instead.
       "BAZEL_LINKOPTS=${pkgs.lib.concatStringsSep ":" [
-        "-L${pkgs.llvmPackages_16.libcxx}/lib"
-        "-L${pkgs.llvmPackages_16.libcxxabi}/lib"
-        "-L${pkgs.llvmPackages_16.libunwind}/lib"
+        "-L${pkgs.llvmPackages_17.libcxx}/lib"
+        "-L${pkgs.llvmPackages_17.libcxxabi}/lib"
+        "-L${pkgs.llvmPackages_17.libunwind}/lib"
         "-lc++"
         ("-Wl," +
-        "-rpath,${pkgs.llvmPackages_16.libcxx}/lib," +
-        "-rpath,${pkgs.llvmPackages_16.libcxxabi}/lib," +
-        "-rpath,${pkgs.llvmPackages_16.libunwind}/lib," +
+        "-rpath,${pkgs.llvmPackages_17.libcxx}/lib," +
+        "-rpath,${pkgs.llvmPackages_17.libcxxabi}/lib," +
+        "-rpath,${pkgs.llvmPackages_17.libunwind}/lib," +
         "-rpath,${pkgs.glibc}/lib"
         )
       ]}"
