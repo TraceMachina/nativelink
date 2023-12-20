@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "shellexpand",
@@ -1578,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "hex",
  "nativelink-proto",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -1601,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1627,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "futures",
@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1727,7 +1727,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-lock",
  "async-trait",
