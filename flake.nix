@@ -30,7 +30,7 @@
 
           maybeDarwinDeps = pkgs.lib.optionals isDarwin [
               pkgs.darwin.apple_sdk.frameworks.Security
-              pkgs.darwin.libiconv
+              pkgs.libiconv
           ];
 
           customStdenv = import ./tools/llvmStdenv.nix { inherit pkgs isDarwin; };
