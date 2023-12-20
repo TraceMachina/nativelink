@@ -28,5 +28,6 @@ rust_doc(
 
 rust_doc_test(
     name = "doc_test",
+    timeout = "short",
     crate = ":nativelink-config",
 )

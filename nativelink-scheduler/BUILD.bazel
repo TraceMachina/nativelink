@@ -48,6 +48,7 @@ rust_library(
 
 rust_test_suite(
     name = "integration",
+    timeout = "short",
     srcs = [
         "tests/action_messages_test.rs",
         "tests/cache_lookup_scheduler_test.rs",
@@ -83,5 +84,6 @@ rust_doc(
 
 rust_doc_test(
     name = "doc_test",
+    timeout = "short",
     crate = ":nativelink-scheduler",
 )

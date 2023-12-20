@@ -69,6 +69,7 @@ rust_library(
 
 rust_test_suite(
     name = "integration",
+    timeout = "short",
     srcs = [
         "tests/ac_utils_test.rs",
         "tests/completeness_checking_store_test.rs",
@@ -120,5 +121,6 @@ rust_doc(
 
 rust_doc_test(
     name = "doc_test",
+    timeout = "short",
     crate = ":nativelink-store",
 )

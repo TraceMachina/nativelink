@@ -48,6 +48,7 @@ rust_library(
 
 rust_test_suite(
     name = "integration",
+    timeout = "short",
     srcs = [
         "tests/local_worker_test.rs",
         "tests/running_actions_manager_test.rs",
@@ -87,5 +88,6 @@ rust_doc(
 
 rust_doc_test(
     name = "doc_test",
+    timeout = "short",
     crate = ":nativelink-worker",
 )

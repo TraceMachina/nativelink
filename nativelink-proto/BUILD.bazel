@@ -94,6 +94,7 @@ py_binary(
 # Test to ensure the proto files are in sync with the checked in files.
 py_test(
     name = "update_protos_test",
+    timeout = "short",
     srcs = ["update_protos.py"],
     args = ["--check"] + PROTO_NAMES,
     data = glob(["genproto/*.rs"]) + [

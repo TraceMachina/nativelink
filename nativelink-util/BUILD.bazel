@@ -55,6 +55,7 @@ rust_library(
 
 rust_test_suite(
     name = "integration",
+    timeout = "short",
     srcs = [
         "tests/buf_channel_test.rs",
         "tests/evicting_map_test.rs",
@@ -92,5 +93,6 @@ rust_doc(
 
 rust_doc_test(
     name = "doc_test",
+    timeout = "short",
     crate = ":nativelink-util",
 )

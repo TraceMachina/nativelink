@@ -48,5 +48,6 @@ genrule(
 
 sh_test(
     name = "dummy_test",
+    timeout = "short",
     srcs = [":dummy_test_sh"],
 )
