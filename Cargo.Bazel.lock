@@ -1,5 +1,5 @@
 {
-  "checksum": "1c6574498fa35bd010af58efd597d0645a840c1f0090e8345ab3d72595e39406",
+  "checksum": "0be5c6bdda6a845c2a3f88a87531d6fbf7945f34dd6b57472f3447776367ef3c",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -642,13 +642,13 @@
       },
       "license": "MIT"
     },
-    "async-lock 2.8.0": {
+    "async-lock 3.2.0": {
       "name": "async-lock",
-      "version": "2.8.0",
+      "version": "3.2.0",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/async-lock/2.8.0/download",
-          "sha256": "287272293e9d8c41773cec55e365490fe034813a2f172f502d6ddcf75b2f582b"
+          "url": "https://crates.io/api/v1/crates/async-lock/3.2.0/download",
+          "sha256": "7125e42787d53db9dd54261812ef17e937c95a51e4d291373b670342fa44310c"
         }
       },
       "targets": [
@@ -667,17 +667,32 @@
         "compile_data_glob": [
           "**"
         ],
+        "crate_features": {
+          "common": [
+            "default",
+            "std"
+          ],
+          "selects": {}
+        },
         "deps": {
           "common": [
             {
-              "id": "event-listener 2.5.3",
+              "id": "event-listener 4.0.1",
               "target": "event_listener"
+            },
+            {
+              "id": "event-listener-strategy 0.4.0",
+              "target": "event_listener_strategy"
+            },
+            {
+              "id": "pin-project-lite 0.2.13",
+              "target": "pin_project_lite"
             }
           ],
           "selects": {}
         },
         "edition": "2018",
-        "version": "2.8.0"
+        "version": "3.2.0"
       },
       "license": "Apache-2.0 OR MIT"
     },
@@ -3822,6 +3837,51 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "concurrent-queue 2.4.0": {
+      "name": "concurrent-queue",
+      "version": "2.4.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/concurrent-queue/2.4.0/download",
+          "sha256": "d16048cd947b08fa32c24458a22f5dc5e835264f689f4f5653210c69fd107363"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "concurrent_queue",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "concurrent_queue",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "crossbeam-utils 0.8.17",
+              "target": "crossbeam_utils"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "2.4.0"
+      },
+      "license": "Apache-2.0 OR MIT"
+    },
     "const-oid 0.9.6": {
       "name": "const-oid",
       "version": "0.9.6",
@@ -4146,6 +4206,63 @@
         },
         "edition": "2015",
         "version": "1.3.2"
+      },
+      "build_script_attrs": {
+        "data_glob": [
+          "**"
+        ]
+      },
+      "license": "MIT OR Apache-2.0"
+    },
+    "crossbeam-utils 0.8.17": {
+      "name": "crossbeam-utils",
+      "version": "0.8.17",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/crossbeam-utils/0.8.17/download",
+          "sha256": "c06d96137f14f244c37f989d9fff8f95e6c18b918e71f36638f8c49112e4c78f"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "crossbeam_utils",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "crossbeam_utils",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "cfg-if 1.0.0",
+              "target": "cfg_if"
+            },
+            {
+              "id": "crossbeam-utils 0.8.17",
+              "target": "build_script_build"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "0.8.17"
       },
       "build_script_attrs": {
         "data_glob": [
@@ -4872,13 +4989,13 @@
       },
       "license": "MIT OR Apache-2.0"
     },
-    "event-listener 2.5.3": {
+    "event-listener 4.0.1": {
       "name": "event-listener",
-      "version": "2.5.3",
+      "version": "4.0.1",
       "repository": {
         "Http": {
-          "url": "https://crates.io/api/v1/crates/event-listener/2.5.3/download",
-          "sha256": "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
+          "url": "https://crates.io/api/v1/crates/event-listener/4.0.1/download",
+          "sha256": "84f2cdcf274580f2d63697192d744727b3198894b1bf02923643bf59e2c26712"
         }
       },
       "targets": [
@@ -4897,8 +5014,84 @@
         "compile_data_glob": [
           "**"
         ],
+        "crate_features": {
+          "common": [
+            "parking",
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "concurrent-queue 2.4.0",
+              "target": "concurrent_queue"
+            },
+            {
+              "id": "pin-project-lite 0.2.13",
+              "target": "pin_project_lite"
+            }
+          ],
+          "selects": {
+            "cfg(not(target_family = \"wasm\"))": [
+              {
+                "id": "parking 2.2.0",
+                "target": "parking"
+              }
+            ]
+          }
+        },
+        "edition": "2021",
+        "version": "4.0.1"
+      },
+      "license": "Apache-2.0 OR MIT"
+    },
+    "event-listener-strategy 0.4.0": {
+      "name": "event-listener-strategy",
+      "version": "0.4.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/event-listener-strategy/0.4.0/download",
+          "sha256": "958e4d70b6d5e81971bebec42271ec641e7ff4e170a6fa605f2b8a8b65cb97d3"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "event_listener_strategy",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "event_listener_strategy",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "event-listener 4.0.1",
+              "target": "event_listener"
+            },
+            {
+              "id": "pin-project-lite 0.2.13",
+              "target": "pin_project_lite"
+            }
+          ],
+          "selects": {}
+        },
         "edition": "2018",
-        "version": "2.5.3"
+        "version": "0.4.0"
       },
       "license": "Apache-2.0 OR MIT"
     },
@@ -7953,7 +8146,7 @@
         "deps": {
           "common": [
             {
-              "id": "async-lock 2.8.0",
+              "id": "async-lock 3.2.0",
               "target": "async_lock"
             },
             {
@@ -8389,7 +8582,7 @@
         "deps": {
           "common": [
             {
-              "id": "async-lock 2.8.0",
+              "id": "async-lock 3.2.0",
               "target": "async_lock"
             },
             {
@@ -8557,7 +8750,7 @@
         "deps": {
           "common": [
             {
-              "id": "async-lock 2.8.0",
+              "id": "async-lock 3.2.0",
               "target": "async_lock"
             },
             {
@@ -8681,7 +8874,7 @@
         "deps": {
           "common": [
             {
-              "id": "async-lock 2.8.0",
+              "id": "async-lock 3.2.0",
               "target": "async_lock"
             },
             {
@@ -9365,6 +9558,36 @@
         },
         "edition": "2021",
         "version": "0.11.1"
+      },
+      "license": "Apache-2.0 OR MIT"
+    },
+    "parking 2.2.0": {
+      "name": "parking",
+      "version": "2.2.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/parking/2.2.0/download",
+          "sha256": "bb813b8af86854136c6922af0598d719255ecb2179515e6e7730d468f05c9cae"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "parking",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "parking",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2018",
+        "version": "2.2.0"
       },
       "license": "Apache-2.0 OR MIT"
     },
@@ -17821,7 +18044,7 @@
     ]
   },
   "direct_deps": [
-    "async-lock 2.8.0",
+    "async-lock 3.2.0",
     "async-trait 0.1.74",
     "aws-config 0.57.2",
     "aws-sdk-s3 0.35.0",
