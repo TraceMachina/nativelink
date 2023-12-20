@@ -16,7 +16,7 @@ jobs:
         # Which OS versions we will test on.
         os_version: [ 20.04, 22.04 ]
     steps:
-    - uses: actions/checkout@v3.6.0
+    - uses: actions/checkout@v4.1.1
       with:
         fetch-depth: 0
 
@@ -72,7 +72,7 @@ jobs:
         # Which OS versions we will test on.
         os_version: [ 20.04, 22.04 ]
     steps:
-    - uses: actions/checkout@v3.6.0
+    - uses: actions/checkout@v4.1.1
       with:
         fetch-depth: 0
 
