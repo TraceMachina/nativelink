@@ -24,7 +24,7 @@ tracing = "0.1.40"
 uuid = { version = "1.6.1", features = ["v4"] }
 
 [dev-dependencies]
-hyper = "0.14.27"
+hyper = "1.1.0"
 maplit = "1.0.2"
 pretty_assertions = "1.4.0"
 prometheus-client = "0.21.2"
