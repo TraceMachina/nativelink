@@ -23,7 +23,7 @@ lru = "0.12.1"
 parking_lot = "0.12.1"
 rand = "0.8.5"
 scopeguard = "1.2.0"
-tokio = { version = "1.35.0", features = ["sync", "rt", "parking_lot"] }
+tokio = { version = "1.35.1", features = ["sync", "rt", "parking_lot"] }
 tokio-stream = { version = "0.1.14", features = ["sync"] }
 tonic = { version = "0.10.2", features = ["gzip"] }
 tracing = "0.1.40"
