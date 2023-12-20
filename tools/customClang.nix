@@ -1,5 +1,7 @@
-{ pkgs, stdenv }:
-
+{
+  pkgs,
+  stdenv,
+}:
 # Bazel expects a single frontend for both C and C++. That works for GCC but
 # not for clang. This wrapper selects `clang` or `clang++` depending on file
 # ending.
