@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0](https://github.com/TraceMachina/nativelink/compare/v0.1.0..v0.2.0) - 2023-12-21
+
+
+
+### ⛰️  Features
+
+- Add Nix formatters and linters to pre-commit hooks ([#561](https://github.com/TraceMachina/nativelink/issues/561)) - ([d823964](https://github.com/TraceMachina/nativelink/commit/d8239640a9fa26c932a4c234ee2d263837159388))
+
+### 🐛 Bug Fixes
+
+- Fix kill_all_waits_for_all_tasks_to_finish test stuck on windows ([#525](https://github.com/TraceMachina/nativelink/issues/525)) - ([143a5a1](https://github.com/TraceMachina/nativelink/commit/143a5a178028c3d94e4623a67eef8a2d58e7cca7))
+- Fix missing timeouts in tests ([#553](https://github.com/TraceMachina/nativelink/issues/553)) - ([c54c51c](https://github.com/TraceMachina/nativelink/commit/c54c51cf91847e48e84cf75a69a2531fc4478776))
+
+### 🛠️ Refactor
+
+- Update Rust crate async-lock to v3 ([#548](https://github.com/TraceMachina/nativelink/issues/548)) - ([6c555bb](https://github.com/TraceMachina/nativelink/commit/6c555bb4e777af1563219102a34571ce02178c89))
+- Update OSSF domain ([#558](https://github.com/TraceMachina/nativelink/issues/558)) - ([82603d2](https://github.com/TraceMachina/nativelink/commit/82603d23f01df3cd26bf8005001df35de6f050b7))
+- Update actions/checkout action to v4 ([#556](https://github.com/TraceMachina/nativelink/issues/556)) - ([0d18d36](https://github.com/TraceMachina/nativelink/commit/0d18d36c572db73db00c6e4b22d436d7bc5983af))
+- Update actions/checkout action to v3.6.0 ([#541](https://github.com/TraceMachina/nativelink/issues/541)) - ([5dce4ce](https://github.com/TraceMachina/nativelink/commit/5dce4ce6f08562a47d8fc0c3d1c2f57d06550ad8))
+- Update dependency rules_python to v0.27.1 ([#546](https://github.com/TraceMachina/nativelink/issues/546)) - ([6ef8b6c](https://github.com/TraceMachina/nativelink/commit/6ef8b6cb233acf33de475f9f61129bfe6d90c571))
+- Update dependency rules_rust to v0.34.1 ([#547](https://github.com/TraceMachina/nativelink/issues/547)) - ([637f283](https://github.com/TraceMachina/nativelink/commit/637f2834138f86be45c12cf46623de539148fe24))
+- Update dependency @google-cloud/compute to v4.1.0 ([#544](https://github.com/TraceMachina/nativelink/issues/544)) - ([dbac23a](https://github.com/TraceMachina/nativelink/commit/dbac23afa27f55c662f8a1d0539cc8fc82717afe))
+
+### ⬆️ Bumps & Version Updates
+
+- Update LLVM and rust toolchains ([#557](https://github.com/TraceMachina/nativelink/issues/557)) - ([1726a1a](https://github.com/TraceMachina/nativelink/commit/1726a1af0e3e3fd61373b1c791a5993f94590024))
+- Update Rust crate tokio to 1.35.1 ([#535](https://github.com/TraceMachina/nativelink/issues/535)) - ([c6f8b8a](https://github.com/TraceMachina/nativelink/commit/c6f8b8ab58e3fbef77a1b4db68b1955557444fd0))
+- Update Rust crate tokio-rustls to 0.25.0 & rustls-pemfile to 2.0.0 ([#540](https://github.com/TraceMachina/nativelink/issues/540)) - ([cb76d18](https://github.com/TraceMachina/nativelink/commit/cb76d189d3187a043aed4e29962f6fa1c97616b1))
+
+### ⚙️ Miscellaneous
+
+- Publish SemVer-tagged images on tag pushes to main ([#569](https://github.com/TraceMachina/nativelink/issues/569)) - ([758c5d7](https://github.com/TraceMachina/nativelink/commit/758c5d7268a2cacf7dc3ae11f2b0f83007d6b6bb))
+- S3 Store credential provider ([#494](https://github.com/TraceMachina/nativelink/issues/494)) - ([1039ea0](https://github.com/TraceMachina/nativelink/commit/1039ea044ddeacc21361841751eb7ba29651178c))
+- Reorder README for Simplicity ([#563](https://github.com/TraceMachina/nativelink/issues/563)) - ([b12dfb8](https://github.com/TraceMachina/nativelink/commit/b12dfb843a0702f42f888d4babfb4f909ba8381f))
+- fix a typo ([#560](https://github.com/TraceMachina/nativelink/issues/560)) - ([ff6d097](https://github.com/TraceMachina/nativelink/commit/ff6d0975666588d1373bcc6e315f24c4a30a0786))
+- Remove many of the large-* images in CI ([#552](https://github.com/TraceMachina/nativelink/issues/552)) - ([de0ae1e](https://github.com/TraceMachina/nativelink/commit/de0ae1eaa92155ab45b69cf61fa48c221ee78a42))
+
+### ❌️  Breaking Changes
+
+- [Breaking] Rename cas executable to nativelink ([#573](https://github.com/TraceMachina/nativelink/issues/573)) - ([ddf1d74](https://github.com/TraceMachina/nativelink/commit/ddf1d74ba952a825e88bc68ed1efd67c6386d190))
+
 ## [0.1.0] - 2023-12-20
 
 
@@ -185,6 +226,8 @@ All notable changes to this project will be documented in this file.
 
 ### 🛠️ Refactor
 
+- Update dependency mintlify to v4.0.80 ([#536](https://github.com/TraceMachina/nativelink/issues/536)) - ([7564e5e](https://github.com/TraceMachina/nativelink/commit/7564e5e15e39cdf20f5f868a883af8a0ff7b566c))
+- Update Rust crate http to ^0.2.11 ([#530](https://github.com/TraceMachina/nativelink/issues/530)) - ([ca146ac](https://github.com/TraceMachina/nativelink/commit/ca146ac97a3a22213af4358e0c2d1ebe8fbee6f9))
 - MacOS enable flake nix builds ([#529](https://github.com/TraceMachina/nativelink/issues/529)) - ([e1d35d6](https://github.com/TraceMachina/nativelink/commit/e1d35d661801d70c41babf48f9a0a10a8fe975a7))
 - Update native-cargo.yaml Runner Group ([#511](https://github.com/TraceMachina/nativelink/issues/511)) - ([e1843f1](https://github.com/TraceMachina/nativelink/commit/e1843f17c3f957fb8542b6ffcc6784ee2b417ad1))
 - Migrate L2 announcements and LB-IPAM to cilium ([#505](https://github.com/TraceMachina/nativelink/issues/505)) - ([df6f5b9](https://github.com/TraceMachina/nativelink/commit/df6f5b94fcc111c66b1f36e7626fd0c7326bcb57))
@@ -326,7 +369,7 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release nativelink 0.1.0 - ([9d91a88](https://github.com/TraceMachina/nativelink/commit/9d91a8887bb879be4002412ac0db437cbba96a31))
+- Release nativelink 0.1.0 ([#533](https://github.com/TraceMachina/nativelink/issues/533)) - ([395674f](https://github.com/TraceMachina/nativelink/commit/395674f2b888cf825035bf0f34d34005ea73de07))
 - MacOS use non darwin iconv ([#534](https://github.com/TraceMachina/nativelink/issues/534)) - ([2e4a131](https://github.com/TraceMachina/nativelink/commit/2e4a131fb246d16c9d3082b6f231eaad1a85e357))
 - Mark GCP & AWS terraform experimental ([#522](https://github.com/TraceMachina/nativelink/issues/522)) - ([910ad03](https://github.com/TraceMachina/nativelink/commit/910ad035ce59d8ba5335c46057fd55ab651fabb0))
 - Decouple toolchain generation and execution hashes ([#523](https://github.com/TraceMachina/nativelink/issues/523)) - ([0be8a3a](https://github.com/TraceMachina/nativelink/commit/0be8a3a0950fc6e5810dcb2d83ab348c741134e7))
