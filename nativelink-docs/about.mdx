@@ -1,0 +1,56 @@
+---
+title: About
+description: 'What is NativeLink?'
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-dark.png"
+  alt="Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.png"
+  alt="Hero Dark"
+/>
+
+Native link is an extremely (blazingly?) fast and efficient build cache and
+remote executor for systems that communicate using the [Remote execution
+protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)
+such as [Bazel](https://bazel.build), [Buck2](https://buck2.build),
+[Goma](https://chromium.googlesource.com/infra/goma/client/) and
+[Reclient](https://github.com/bazelbuild/reclient).
+
+Supports Unix-based operating systems and Windows.
+
+**🎯 Goals**
+<Steps>
+  <Step title="Stability">
+    Things should work out of the box as expected.
+  </Step>
+  <Step title="Efficiency">
+    Don't waste time on inefficiencies &amp; low resource usage.
+  </Step>
+  <Step title="User First">
+    Design choices should be optimized for what users want.
+  </Step>
+</Steps>
+
+**🏺 History**
+
+This project was first created due to frustration with similar projects not 
+working or being extremely inefficient. Rust was chosen as the language to 
+write it in because at the time Rust was going through a revolution in the 
+new-ish feature async-await. This made making multi-threading extremely 
+simple when paired with a runtime like tokio while still giving all the 
+lifetime and other protections that Rust gives. This pretty much guarantees 
+that we will never have crashes due to race conditions. This kind of project 
+seemed perfect, since there is so much asynchronous activity happening and 
+running them on different threads is most preferable. Other languages like 
+Go are good candidates, but other similar projects rely heavily on channels 
+and mutex locks which are cumbersome and have to be carefully designed by 
+the developer. Rust doesn't have these issues, since the compiler will 
+always tell you when the code you are writing might introduce undefined 
+behavior. The last major reason is because Rust is extremely fast, +/- a 
+few percent of C++ and has no garbage collection (like C++, but unlike Java, 
+Go, or Typescript).
