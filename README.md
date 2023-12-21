@@ -1,3 +1,5 @@
+⚠️ This software is very early and still in an alpha state with many quirks. If you use our ambitious project and please share feedback.
+
 # Native Link
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
@@ -10,7 +12,59 @@ protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote
 
 Supports Unix-based operating systems and Windows.
 
-## ❄️ Installing with Nix
+## Download Native Link
+
+### 🦀 Installing with Cargo
+
+```bash
+cargo install --git https://github.com/TraceMachina/nativelink
+```
+
+### ⚙️ Configuration
+
+The `cas` executable reads a JSON file as it's only parameter, `--config`. See [nativelink-config](./nativelink-config/examples/basic_cas.json)
+for more details and examples.
+
+To grab the example in your current working directory, run:
+
+```bash
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
+```
+
+### Start Native Link
+
+```bash
+cas -basic_cas.json
+```
+
+## 🧪 Evaluating Native Link
+
+Once you've built Native Link and have an instance running with the
+`basic_cas.json` configuration, launch a separate terminal session and run the
+following command to connect the running server launched above to Bazel or
+another RBE client:
+
+```sh
+bazel test //... \
+  --remote_instance_name=main \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1
+```
+
+For Windows Powershell;
+
+```powershell
+bazel test //... `
+  --remote_instance_name=main `
+  --remote_cache=grpc://127.0.0.1:50051 `
+  --remote_executor=grpc://127.0.0.1:50051 `
+  --remote_default_exec_properties=cpu_count=1
+```
+This causes Bazel to run the commands through an all-in-one `CAS`, `scheduler`
+and `worker`.
+
+## ❄️ Installing with Nix (Optional)
 
 **Installation requirements:**
 
@@ -31,44 +85,10 @@ For use in production pin the executable to a specific revision:
 nix run github:TraceMachina/nativelink/<revision> ./basic_cas.json
 ```
 
-## 📦 Using the OCI image
+## 📦 Working with Docker/Containers
 
-See the published [OCI images](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
-for pull commands.
+The canonical container workflow is still being developed and should be released soon. For diehard Docker users, check out [deployment-examples/docker-compose](./deployment-examples/docker-compose/README.md).
 
-Images are tagged by nix derivation hash. The most recently pushed image
-corresponds to the `main` branch. Images are signed by the GitHub action that
-produced the image. Note that the [OCI workflow](https://github.com/TraceMachina/nativelink/actions/workflows/image.yaml)
-might take a few minutes to publish the latest image.
-
-```sh
-# Get the tag for the latest commit
-export LATEST=$(nix eval github:TraceMachina/nativelink#image.imageTag --raw)
-
-# Verify the signature
-cosign verify ghcr.io/tracemachina/nativelink:${LATEST} \
-    --certificate-identity=https://github.com/TraceMachina/nativelink/.github/workflows/image.yaml@refs/heads/main \
-    --certificate-oidc-issuer=https://token.actions.githubusercontent.com
-```
-
-For use in production pin the image to a specific revision:
-
-```sh
-# Get the tag for a specific commit
-export PINNED_TAG=$(nix eval github:TraceMachina/nativelink/<revision>#image.imageTag --raw)
-
-# Verify the signature
-cosign verify ghcr.io/tracemachina/nativelink:${PINNED_TAG} \
-    --certificate-identity=https://github.com/TraceMachina/nativelink/.github/workflows/image.yaml@refs/heads/main \
-    --certificate-oidc-issuer=https://token.actions.githubusercontent.com
-```
-
-> [!TIP]
-> The images are reproducible on `X86_64-unknown-linux-gnu`. If you're on such a
-> system you can produce a binary-identical image by building the `.#image`
-> flake output locally. Make sure that your `git status` is completely clean and
-> aligned with the commit you want to reproduce. Otherwise the image will be
-> tainted with a `"dirty"` revision label.
 
 ## 🌱 Building with Bazel
 
@@ -116,39 +136,6 @@ cargo run --bin cas -- ./nativelink-config/examples/basic_cas.json
 # Optimized release build
 cargo run --release --bin cas -- ./nativelink-config/examples/basic_cas.json
 ```
-
-## 🧪 Evaluating Native Link
-
-Once you've built Native Link and have an instance running with the
-`basic_cas.json` configuration, launch a separate terminal session and run the
-following command to connect the running server launched above to Bazel or
-another RBE client:
-
-```sh
-bazel test //... \
-  --remote_instance_name=main \
-  --remote_cache=grpc://127.0.0.1:50051 \
-  --remote_executor=grpc://127.0.0.1:50051 \
-  --remote_default_exec_properties=cpu_count=1
-```
-
-For Windows Powershell;
-
-```powershell
-bazel test //... `
-  --remote_instance_name=main `
-  --remote_cache=grpc://127.0.0.1:50051 `
-  --remote_executor=grpc://127.0.0.1:50051 `
-  --remote_default_exec_properties=cpu_count=1
-```
-
-This causes bazel to run the commands through an all-in-one `CAS`, `scheduler`
-and `worker`.
-
-## ⚙️ Configuration
-
-The `cas` executable reads a JSON file as it's only parameter. See [nativelink-config](./nativelink-config)
-for more details and examples.
 
 ## 🚀 Example Deployments
 
