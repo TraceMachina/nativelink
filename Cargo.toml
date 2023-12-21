@@ -16,7 +16,7 @@ lto = true
 opt-level = 3
 
 [[bin]]
-name = "cas"
+name = "nativelink"
 
 [dependencies]
 nativelink-error = { path = "nativelink-error" }

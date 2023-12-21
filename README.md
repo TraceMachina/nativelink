@@ -25,7 +25,8 @@ cargo install --git https://github.com/TraceMachina/nativelink
 
 ### ⚙️ Configuration
 
-The `cas` executable reads a JSON file as it's only parameter, `--config`. See [nativelink-config](./nativelink-config/examples/basic_cas.json)
+The `nativelink` executable reads a JSON file as it's only parameter,
+`--config`. See [nativelink-config](./nativelink-config/examples/basic_cas.json)
 for more details and examples.
 
 To grab the example in your current working directory, run:
@@ -37,7 +38,7 @@ curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelin
 ### Start Native Link
 
 ```bash
-cas basic_cas.json
+nativelink basic_cas.json
 ```
 
 ## 🧪 Evaluating Native Link
@@ -103,21 +104,21 @@ nix run github:TraceMachina/nativelink/<revision> ./basic_cas.json
 > This build supports Nix/direnv which provides Bazel but no C++ toolchain
 > (yet).
 
-The following commands place an executable in `./bazel-bin/cas/cas` and start
-the service:
+The following commands places an executable in `./bazel-bin/nativelink` and
+starts the service:
 
 ```sh
 # Unoptimized development build on Unix
-bazel run cas -- ./nativelink-config/examples/basic_cas.json
+bazel run nativelink -- ./nativelink-config/examples/basic_cas.json
 
 # Optimized release build on Unix
-bazel run -c opt cas -- ./nativelink-config/examples/basic_cas.json
+bazel run -c opt nativelink -- ./nativelink-config/examples/basic_cas.json
 
 # Unoptimized development build on Windows
-bazel run --config=windows cas -- ./nativelink-config/examples/basic_cas.json
+bazel run --config=windows nativelink -- ./nativelink-config/examples/basic_cas.json
 
 # Optimized release build on Windows
-bazel run --config=windows -c opt cas -- ./nativelink-config/examples/basic_cas.json
+bazel run --config=windows -c opt nativelink -- ./nativelink-config/examples/basic_cas.json
 ```
 
 ## 🦀 Building with Cargo
@@ -133,10 +134,10 @@ bazel run --config=windows -c opt cas -- ./nativelink-config/examples/basic_cas.
 
 ```bash
 # Unoptimized development build
-cargo run --bin cas -- ./nativelink-config/examples/basic_cas.json
+cargo run --bin nativelink -- ./nativelink-config/examples/basic_cas.json
 
 # Optimized release build
-cargo run --release --bin cas -- ./nativelink-config/examples/basic_cas.json
+cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.json
 ```
 
 ## 🚀 Example Deployments
