@@ -1,5 +1,5 @@
 {
-  "checksum": "668f99242a0de85cd44405f6f026db36e97a04f938f4be4b54e160f75801dd2a",
+  "checksum": "ef3f549949ae55d037c220df63e888a71b7c95ca1b5b2a606be479d11e0bfbb2",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -8133,9 +8133,9 @@
       },
       "license": "MIT/Apache-2.0"
     },
-    "nativelink 0.0.0": {
+    "nativelink 0.2.0": {
       "name": "nativelink",
-      "version": "0.0.0",
+      "version": "0.2.0",
       "repository": null,
       "targets": [],
       "library_target_name": null,
@@ -8213,13 +8213,13 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.0.0"
+        "version": "0.2.0"
       },
       "license": null
     },
-    "nativelink-config 0.1.0": {
+    "nativelink-config 0.2.0": {
       "name": "nativelink-config",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repository": null,
       "targets": [
         {
@@ -8251,13 +8251,13 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": null
     },
-    "nativelink-error 0.1.0": {
+    "nativelink-error 0.2.0": {
       "name": "nativelink-error",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repository": null,
       "targets": [
         {
@@ -8301,13 +8301,13 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": null
     },
-    "nativelink-proto 0.1.0": {
+    "nativelink-proto 0.2.0": {
       "name": "nativelink-proto",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repository": null,
       "targets": [
         {
@@ -8356,13 +8356,13 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": null
     },
-    "nativelink-scheduler 0.1.0": {
+    "nativelink-scheduler 0.2.0": {
       "name": "nativelink-scheduler",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repository": null,
       "targets": [
         {
@@ -8456,13 +8456,13 @@
           ],
           "selects": {}
         },
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": null
     },
-    "nativelink-service 0.1.0": {
+    "nativelink-service 0.2.0": {
       "name": "nativelink-service",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repository": null,
       "targets": [
         {
@@ -8555,13 +8555,13 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": null
     },
-    "nativelink-store 0.1.0": {
+    "nativelink-store 0.2.0": {
       "name": "nativelink-store",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repository": null,
       "targets": [
         {
@@ -8723,13 +8723,13 @@
           ],
           "selects": {}
         },
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": null
     },
-    "nativelink-util 0.1.0": {
+    "nativelink-util 0.2.0": {
       "name": "nativelink-util",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repository": null,
       "targets": [
         {
@@ -8847,13 +8847,13 @@
           ],
           "selects": {}
         },
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": null
     },
-    "nativelink-worker 0.1.0": {
+    "nativelink-worker 0.2.0": {
       "name": "nativelink-worker",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "repository": null,
       "targets": [
         {
@@ -8983,7 +8983,7 @@
           ],
           "selects": {}
         },
-        "version": "0.1.0"
+        "version": "0.2.0"
       },
       "license": null
     },
@@ -17859,15 +17859,15 @@
   },
   "binary_crates": [],
   "workspace_members": {
-    "nativelink 0.0.0": "",
-    "nativelink-config 0.1.0": "nativelink-config",
-    "nativelink-error 0.1.0": "nativelink-error",
-    "nativelink-proto 0.1.0": "nativelink-proto",
-    "nativelink-scheduler 0.1.0": "nativelink-scheduler",
-    "nativelink-service 0.1.0": "nativelink-service",
-    "nativelink-store 0.1.0": "nativelink-store",
-    "nativelink-util 0.1.0": "nativelink-util",
-    "nativelink-worker 0.1.0": "nativelink-worker"
+    "nativelink 0.2.0": "",
+    "nativelink-config 0.2.0": "nativelink-config",
+    "nativelink-error 0.2.0": "nativelink-error",
+    "nativelink-proto 0.2.0": "nativelink-proto",
+    "nativelink-scheduler 0.2.0": "nativelink-scheduler",
+    "nativelink-service 0.2.0": "nativelink-service",
+    "nativelink-store 0.2.0": "nativelink-store",
+    "nativelink-util 0.2.0": "nativelink-util",
+    "nativelink-worker 0.2.0": "nativelink-worker"
   },
   "conditions": {
     "aarch64-apple-darwin": [
