@@ -1,0 +1,44 @@
+---
+name: Create SemVer-tagged OCI image
+on:
+  push:
+    tags:
+      - '*'
+
+permissions: read-all
+
+jobs:
+  publish-image:
+    runs-on: large-ubuntu-22.04
+    permissions:
+      packages: write
+      id-token: write
+    steps:
+
+      - name: Checkout
+        uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Install Nix
+        uses: >- # v7
+          DeterminateSystems/nix-installer-action@5620eb4af6b562c53e4d4628c0b6e4f9d9ae8612
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # - name: Cache Nix derivations TODO(aaronmondal): revisit this bit when there are less flakes or it is more understood
+        # uses: >- # Custom commit, last pinned at 2023-11-17.
+          # DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+
+      - name: Test image
+        run: |
+          nix run .#local-image-test
+
+      - name: Upload image
+        run: |
+          nix run .#publish-ghcr ${{github.ref_name}}
+        env:
+          GHCR_REGISTRY: ghcr.io
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_IMAGE_NAME: ${{ github.repository }}
+        if: github.ref == 'refs/heads/main'
