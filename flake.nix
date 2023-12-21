@@ -92,7 +92,7 @@
         apps = {
           default = {
             type = "app";
-            program = "${nativelink}/bin/cas";
+            program = "${nativelink}/bin/nativelink";
           };
         };
         packages = {
@@ -106,7 +106,7 @@
               pkgs.dockerTools.caCertificates
             ];
             config = {
-              Entrypoint = ["/bin/cas"];
+              Entrypoint = ["/bin/nativelink"];
               Labels = {
                 "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
                 "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";

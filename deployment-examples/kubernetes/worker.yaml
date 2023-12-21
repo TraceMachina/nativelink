@@ -27,7 +27,7 @@ spec:
             - name: worker-config
               mountPath: /worker.json
               subPath: worker.json
-          command: ["/bin/cas"]
+          command: ["/bin/nativelink"]
           args: ["/worker.json"]
       volumes:
         - name: worker-config

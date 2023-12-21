@@ -107,8 +107,8 @@ resource "google_compute_instance" "build_instance" {
         cd /tmp/nativelink &&
         tar xvf /tmp/file.tar.gz &&
         . ~/.cargo/env &&
-        cargo build --release --bin cas &&
-        sudo mv /tmp/nativelink/target/release/cas /usr/local/bin/nativelink &&
+        cargo build --release --bin nativelink &&
+        sudo mv /tmp/nativelink/target/release/nativelink /usr/local/bin/nativelink &&
         `` &&
         cd /tmp/nativelink/deployment-examples/terraform/experimental_GCP/module/scripts &&
         sudo mv ./bb_browser_config.json    /root/bb_browser_config.json &&
