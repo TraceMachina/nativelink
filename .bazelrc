@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+startup --digest_function=blake3
+
 # Use the earliest supported C++ version for protoc.
 build --cxxopt=-std=c++14 --host_cxxopt=-std=c++14
 
