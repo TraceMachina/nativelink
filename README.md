@@ -1,4 +1,4 @@
-⚠️ This software is very early in development and still in an alpha state with many quirks. If you use our ambitious project and please share feedback.
+⚠️ This software is very early in development and still in an alpha state with many quirks. If you use our ambitious project please share feedback.
 
 # Native Link
 
@@ -20,7 +20,7 @@ Below, you will find a few different options for getting started with Native Lin
 ### 🦀 Installing with Cargo
 
 ```bash
-cargo install --git https://github.com/TraceMachina/nativelink
+cargo install --git https://github.com/TraceMachina/nativelink --tag v0.1.1
 ```
 
 ### ⚙️ Configuration
