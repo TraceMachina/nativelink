@@ -18,6 +18,9 @@ opt-level = 3
 [[bin]]
 name = "cas"
 
+[features]
+enable_tokio_console = []
+
 [dependencies]
 nativelink-error = { path = "nativelink-error" }
 nativelink-proto = { path = "nativelink-proto" }
@@ -44,3 +47,4 @@ tonic = { version = "0.10.2", features = ["gzip"] }
 tower = "0.4.13"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+console-subscriber = { version = "0.2.0" }
