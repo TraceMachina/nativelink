@@ -22,6 +22,7 @@ use std::time::Duration;
 use std::{cmp, env};
 
 use async_trait::async_trait;
+use aws_config::default_provider::credentials;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
@@ -152,7 +153,9 @@ impl S3Store {
         });
         let s3_client = {
             let http_client = HyperClientBuilder::new().build(TlsConnector::new(config, jitter_fn.clone()));
+            let credential_provider = credentials::default_provider().await;
             let mut config_builder = aws_config::from_env()
+                .credentials_provider(credential_provider)
                 .region(Region::new(Cow::Owned(config.region.clone())))
                 .http_client(http_client);
             // TODO(allada) When aws-sdk supports this env variable we should be able
