@@ -13,7 +13,9 @@ pkgs.writeShellScriptBin "publish-ghcr" ''
   # nothing would still lead to a new hash. Instead we use the
   # derivation hash as the tag so that the tag is reused if the image
   # didn't change.
-  IMAGE_TAG=$(nix eval .#image.imageTag --raw)
+  #
+  # If a positional argument is passed it overrides the tag value.
+  IMAGE_TAG=''${1:-$(nix eval .#image.imageTag --raw)}
 
   TAGGED_IMAGE=''${GHCR_REGISTRY}/''${GHCR_IMAGE_NAME,,}:''${IMAGE_TAG}
 
