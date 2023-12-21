@@ -8,9 +8,9 @@ exports_files(
 )
 
 rust_binary(
-    name = "cas",
+    name = "nativelink",
     srcs = [
-        "src/bin/cas.rs",
+        "src/bin/nativelink.rs",
     ],
     deps = [
         "//nativelink-config",
