@@ -10,7 +10,59 @@ protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote
 
 Supports Unix-based operating systems and Windows.
 
-## ❄️ Installing with Nix
+## Download Native Link
+
+### 🦀 Cargo
+
+```bash
+cargo install --git https://github.com/TraceMachina/nativelink --tag v0.1.0
+```
+
+### ⚙️ Configuration
+
+The `cas` executable reads a JSON file as it's only parameter, `--config`. See [nativelink-config](./nativelink-config/examples/basic_cas.json)
+for more details and examples.
+
+To grab the example in your current working directory, run:
+
+```bash
+wget https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json
+```
+
+### Start Native Link
+
+```bash
+cas --config=basic_cas.json
+```
+
+## 🧪 Evaluating Native Link
+
+Once you've built Native Link and have an instance running with the
+`basic_cas.json` configuration, launch a separate terminal session and run the
+following command to connect the running server launched above to Bazel or
+another RBE client:
+
+```sh
+bazel test //... \
+  --remote_instance_name=main \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1
+```
+
+For Windows Powershell;
+
+```powershell
+bazel test //... `
+  --remote_instance_name=main `
+  --remote_cache=grpc://127.0.0.1:50051 `
+  --remote_executor=grpc://127.0.0.1:50051 `
+  --remote_default_exec_properties=cpu_count=1
+```
+This causes Bazel to run the commands through an all-in-one `CAS`, `scheduler`
+and `worker`.
+
+## ❄️ Installing with Nix (Optional)
 
 **Installation requirements:**
 
@@ -31,7 +83,7 @@ For use in production pin the executable to a specific revision:
 nix run github:TraceMachina/nativelink/<revision> ./basic_cas.json
 ```
 
-## 📦 Using the OCI image
+## 📦 Using the Docker image
 
 See the published [OCI images](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
 for pull commands.
@@ -116,39 +168,6 @@ cargo run --bin cas -- ./nativelink-config/examples/basic_cas.json
 # Optimized release build
 cargo run --release --bin cas -- ./nativelink-config/examples/basic_cas.json
 ```
-
-## 🧪 Evaluating Native Link
-
-Once you've built Native Link and have an instance running with the
-`basic_cas.json` configuration, launch a separate terminal session and run the
-following command to connect the running server launched above to Bazel or
-another RBE client:
-
-```sh
-bazel test //... \
-  --remote_instance_name=main \
-  --remote_cache=grpc://127.0.0.1:50051 \
-  --remote_executor=grpc://127.0.0.1:50051 \
-  --remote_default_exec_properties=cpu_count=1
-```
-
-For Windows Powershell;
-
-```powershell
-bazel test //... `
-  --remote_instance_name=main `
-  --remote_cache=grpc://127.0.0.1:50051 `
-  --remote_executor=grpc://127.0.0.1:50051 `
-  --remote_default_exec_properties=cpu_count=1
-```
-
-This causes bazel to run the commands through an all-in-one `CAS`, `scheduler`
-and `worker`.
-
-## ⚙️ Configuration
-
-The `cas` executable reads a JSON file as it's only parameter. See [nativelink-config](./nativelink-config)
-for more details and examples.
 
 ## 🚀 Example Deployments
 
