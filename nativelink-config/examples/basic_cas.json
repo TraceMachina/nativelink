@@ -51,6 +51,8 @@
           "cpu_arch": "exact",
           "cpu_model": "exact",
           "kernel_version": "exact",
+          "OSFamily": "priority",
+          "container-image": "priority",
           // Example of how to set which docker images are available and set
           // them in the platform properties.
           // "docker_image": "priority",
@@ -80,6 +82,12 @@
         },
         "cpu_arch": {
           "values": ["x86_64"],
+        },
+        "OSFamily": {
+          "values": [""]
+        },
+        "container-image": {
+          "values": [""]
         },
         // Example of how to set which docker images are available and set
         // them in the platform properties.
