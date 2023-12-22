@@ -1,5 +1,5 @@
 {
-  "checksum": "ef3f549949ae55d037c220df63e888a71b7c95ca1b5b2a606be479d11e0bfbb2",
+  "checksum": "8f6491fcc1a17bb1daf3b2d072422da79fa60abd79cf9dd97260fbe70348cad2",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -3882,6 +3882,173 @@
       },
       "license": "Apache-2.0 OR MIT"
     },
+    "console-api 0.6.0": {
+      "name": "console-api",
+      "version": "0.6.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/console-api/0.6.0/download",
+          "sha256": "fd326812b3fd01da5bb1af7d340d0d555fd3d4b641e7f1dfcf5962a902952787"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "console_api",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "console_api",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "transport"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "futures-core 0.3.29",
+              "target": "futures_core"
+            },
+            {
+              "id": "prost 0.12.3",
+              "target": "prost"
+            },
+            {
+              "id": "prost-types 0.12.3",
+              "target": "prost_types"
+            },
+            {
+              "id": "tonic 0.10.2",
+              "target": "tonic"
+            },
+            {
+              "id": "tracing-core 0.1.32",
+              "target": "tracing_core"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.6.0"
+      },
+      "license": "MIT"
+    },
+    "console-subscriber 0.2.0": {
+      "name": "console-subscriber",
+      "version": "0.2.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/console-subscriber/0.2.0/download",
+          "sha256": "7481d4c57092cd1c19dd541b92bdce883de840df30aa5d03fd48a3935c01842e"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "console_subscriber",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "console_subscriber",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "default",
+            "env-filter"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "console-api 0.6.0",
+              "target": "console_api"
+            },
+            {
+              "id": "crossbeam-channel 0.5.9",
+              "target": "crossbeam_channel"
+            },
+            {
+              "id": "crossbeam-utils 0.8.17",
+              "target": "crossbeam_utils"
+            },
+            {
+              "id": "futures-task 0.3.29",
+              "target": "futures_task"
+            },
+            {
+              "id": "hdrhistogram 7.5.4",
+              "target": "hdrhistogram"
+            },
+            {
+              "id": "humantime 2.1.0",
+              "target": "humantime"
+            },
+            {
+              "id": "prost-types 0.12.3",
+              "target": "prost_types"
+            },
+            {
+              "id": "serde 1.0.193",
+              "target": "serde"
+            },
+            {
+              "id": "serde_json 1.0.108",
+              "target": "serde_json"
+            },
+            {
+              "id": "thread_local 1.1.7",
+              "target": "thread_local"
+            },
+            {
+              "id": "tokio 1.35.1",
+              "target": "tokio"
+            },
+            {
+              "id": "tokio-stream 0.1.14",
+              "target": "tokio_stream"
+            },
+            {
+              "id": "tonic 0.10.2",
+              "target": "tonic"
+            },
+            {
+              "id": "tracing 0.1.40",
+              "target": "tracing"
+            },
+            {
+              "id": "tracing-core 0.1.32",
+              "target": "tracing_core"
+            },
+            {
+              "id": "tracing-subscriber 0.3.18",
+              "target": "tracing_subscriber"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2021",
+        "version": "0.2.0"
+      },
+      "license": "MIT"
+    },
     "const-oid 0.9.6": {
       "name": "const-oid",
       "version": "0.9.6",
@@ -4214,6 +4381,57 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "crossbeam-channel 0.5.9": {
+      "name": "crossbeam-channel",
+      "version": "0.5.9",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/crossbeam-channel/0.5.9/download",
+          "sha256": "14c3242926edf34aec4ac3a77108ad4854bffaa2e4ddc1824124ce59231302d5"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "crossbeam_channel",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "crossbeam_channel",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "crossbeam-utils",
+            "default",
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "cfg-if 1.0.0",
+              "target": "cfg_if"
+            },
+            {
+              "id": "crossbeam-utils 0.8.17",
+              "target": "crossbeam_utils"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "0.5.9"
+      },
+      "license": "MIT OR Apache-2.0"
+    },
     "crossbeam-utils 0.8.17": {
       "name": "crossbeam-utils",
       "version": "0.8.17",
@@ -4248,6 +4466,13 @@
         "compile_data_glob": [
           "**"
         ],
+        "crate_features": {
+          "common": [
+            "default",
+            "std"
+          ],
+          "selects": {}
+        },
         "deps": {
           "common": [
             {
@@ -6412,6 +6637,70 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "hdrhistogram 7.5.4": {
+      "name": "hdrhistogram",
+      "version": "7.5.4",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/hdrhistogram/7.5.4/download",
+          "sha256": "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "hdrhistogram",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "hdrhistogram",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "base64",
+            "flate2",
+            "nom",
+            "serialization"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "base64 0.21.5",
+              "target": "base64"
+            },
+            {
+              "id": "byteorder 1.5.0",
+              "target": "byteorder"
+            },
+            {
+              "id": "flate2 1.0.28",
+              "target": "flate2"
+            },
+            {
+              "id": "nom 7.1.3",
+              "target": "nom"
+            },
+            {
+              "id": "num-traits 0.2.17",
+              "target": "num_traits"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "7.5.4"
+      },
+      "license": "MIT/Apache-2.0"
+    },
     "heck 0.4.1": {
       "name": "heck",
       "version": "0.4.1",
@@ -6785,6 +7074,36 @@
         "version": "1.0.3"
       },
       "license": "MIT OR Apache-2.0"
+    },
+    "humantime 2.1.0": {
+      "name": "humantime",
+      "version": "2.1.0",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/humantime/2.1.0/download",
+          "sha256": "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humantime",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "humantime",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2018",
+        "version": "2.1.0"
+      },
+      "license": "MIT/Apache-2.0"
     },
     "hyper 0.14.28": {
       "name": "hyper",
@@ -7957,6 +8276,42 @@
       },
       "license": "MIT OR Apache-2.0"
     },
+    "minimal-lexical 0.2.1": {
+      "name": "minimal-lexical",
+      "version": "0.2.1",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/minimal-lexical/0.2.1/download",
+          "sha256": "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "minimal_lexical",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "minimal_lexical",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "std"
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "0.2.1"
+      },
+      "license": "MIT/Apache-2.0"
+    },
     "miniz_oxide 0.7.1": {
       "name": "miniz_oxide",
       "version": "0.7.1",
@@ -8156,6 +8511,10 @@
             {
               "id": "clap 4.4.11",
               "target": "clap"
+            },
+            {
+              "id": "console-subscriber 0.2.0",
+              "target": "console_subscriber"
             },
             {
               "id": "futures 0.3.29",
@@ -8987,6 +9346,57 @@
       },
       "license": null
     },
+    "nom 7.1.3": {
+      "name": "nom",
+      "version": "7.1.3",
+      "repository": {
+        "Http": {
+          "url": "https://crates.io/api/v1/crates/nom/7.1.3/download",
+          "sha256": "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "nom",
+            "crate_root": "src/lib.rs",
+            "srcs": [
+              "**/*.rs"
+            ]
+          }
+        }
+      ],
+      "library_target_name": "nom",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "alloc",
+            "default",
+            "std"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "memchr 2.6.4",
+              "target": "memchr"
+            },
+            {
+              "id": "minimal-lexical 0.2.1",
+              "target": "minimal_lexical"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "7.1.3"
+      },
+      "license": "MIT"
+    },
     "nu-ansi-term 0.46.0": {
       "name": "nu-ansi-term",
       "version": "0.46.0",
@@ -9220,6 +9630,7 @@
         ],
         "crate_features": {
           "common": [
+            "default",
             "i128",
             "std"
           ],
@@ -14557,7 +14968,8 @@
             "socket2",
             "sync",
             "time",
-            "tokio-macros"
+            "tokio-macros",
+            "tracing"
           ],
           "selects": {
             "x86_64-pc-windows-msvc": [
@@ -14599,6 +15011,12 @@
               {
                 "id": "backtrace 0.3.69",
                 "target": "backtrace"
+              }
+            ],
+            "cfg(tokio_unstable)": [
+              {
+                "id": "tracing 0.1.40",
+                "target": "tracing"
               }
             ],
             "cfg(unix)": [
@@ -14859,6 +15277,7 @@
           "common": [
             "default",
             "fs",
+            "net",
             "sync",
             "time",
             "tokio-util"
@@ -18018,6 +18437,7 @@
       "x86_64-pc-windows-msvc"
     ],
     "cfg(tokio_taskdump)": [],
+    "cfg(tokio_unstable)": [],
     "cfg(tracing_unstable)": [],
     "cfg(unix)": [
       "aarch64-apple-darwin",
@@ -18055,6 +18475,7 @@
     "byteorder 1.5.0",
     "bytes 1.5.0",
     "clap 4.4.11",
+    "console-subscriber 0.2.0",
     "filetime 0.2.23",
     "formatx 0.2.2",
     "futures 0.3.29",
