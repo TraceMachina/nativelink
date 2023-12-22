@@ -655,16 +655,31 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .pretty()
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::WARN.into())
-                .from_env_lossy(),
-        )
-        .init();
+    use tracing_subscriber::prelude::*;
+
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::WARN.into())
+        .from_env_lossy();
+
+    if cfg!(feature = "enable_tokio_console") {
+        tracing_subscriber::registry()
+            .with(console_subscriber::spawn())
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .pretty()
+                    .with_thread_ids(true)
+                    .with_thread_names(true)
+                    .with_filter(env_filter),
+            )
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .pretty()
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .with_env_filter(env_filter)
+            .init();
+    }
 
     let mut cfg = futures::executor::block_on(get_config())?;
 

@@ -13,6 +13,9 @@ opt-level = 3
 [[bin]]
 name = "nativelink"
 
+[features]
+enable_tokio_console = []
+
 [dependencies]
 nativelink-error = { path = "nativelink-error" }
 nativelink-proto = { path = "nativelink-proto" }
@@ -26,6 +29,7 @@ nativelink-worker = { path = "nativelink-worker" }
 async-lock = "3.2.0"
 axum = "0.6.20"
 clap = { version = "4.4.11", features = ["derive"] }
+console-subscriber = { version = "0.2.0" }
 futures = "0.3.29"
 hyper = { version = "0.14.27" }
 parking_lot = "0.12.1"
