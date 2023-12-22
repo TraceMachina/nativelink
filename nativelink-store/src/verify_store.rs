@@ -20,9 +20,9 @@ use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::{default_digest_hasher_func, DigestHasher};
 use nativelink_util::metrics_utils::{Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
-use sha2::{Digest, Sha256};
 
 pub struct VerifyStore {
     inner_store: Arc<dyn Store>,
@@ -54,7 +54,7 @@ impl VerifyStore {
         mut tx: DropCloserWriteHalf,
         mut rx: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-        mut maybe_hasher: Option<([u8; 32], Sha256)>,
+        mut maybe_hasher: Option<([u8; 32], DigestHasher)>,
     ) -> Result<(), Error> {
         let mut sum_size: u64 = 0;
         loop {
@@ -76,9 +76,9 @@ impl VerifyStore {
                         ));
                     }
                 }
-                if let Some((original_hash, hasher)) = maybe_hasher {
-                    let hash_result: [u8; 32] = hasher.finalize().into();
-                    if original_hash != hash_result {
+                if let Some((original_hash, hasher)) = maybe_hasher.as_mut() {
+                    let hash_result: [u8; 32] = hasher.finalize_digest(i64::try_from(sum_size)?).packed_hash;
+                    if *original_hash != hash_result {
                         self.hash_verification_failures.inc();
                         return Err(make_input_err!(
                             "Hashes do not match, got: {} but digest hash was {}",
@@ -137,7 +137,7 @@ impl Store for VerifyStore {
 
         let mut hasher = None;
         if self.verify_hash {
-            hasher = Some((digest.packed_hash, Sha256::new()));
+            hasher = Some((digest.packed_hash, DigestHasher::from(default_digest_hasher_func())));
         }
 
         let (tx, rx) = make_buf_channel_pair();
