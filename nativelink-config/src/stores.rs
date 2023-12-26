@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cas_server::ConfigDigestHashFunction;
 use crate::serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
 
 /// Name of the store. This type will be used when referencing a store
@@ -335,6 +336,11 @@ pub struct VerifyStore {
     /// This should be set to false for AC, but true for CAS stores.
     #[serde(default)]
     pub verify_hash: bool,
+
+    /// Digest hash function to use for hashing contents in the verify store
+    ///
+    /// Default: ConfigDigestHashFunction::sha256
+    pub digest_hash_function: Option<ConfigDigestHashFunction>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::schedulers::SchedulerConfig;
 use crate::serde_utils::{
@@ -544,7 +544,7 @@ pub enum WorkerConfig {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum ConfigDigestHashFunction {
     /// Use the sha256 hash function.
     /// <https://en.wikipedia.org/wiki/SHA-2>
