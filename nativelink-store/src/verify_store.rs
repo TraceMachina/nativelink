@@ -17,17 +17,18 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
-use sha2::{Digest, Sha256};
 
 pub struct VerifyStore {
     inner_store: Arc<dyn Store>,
     verify_size: bool,
-    verify_hash: bool,
+    hash_verification_function: Option<ConfigDigestHashFunction>,
 
     // Metrics.
     size_verification_failures: CounterWithTime,
@@ -39,7 +40,7 @@ impl VerifyStore {
         VerifyStore {
             inner_store,
             verify_size: config.verify_size,
-            verify_hash: config.verify_hash,
+            hash_verification_function: config.hash_verification_function,
             size_verification_failures: CounterWithTime::default(),
             hash_verification_failures: CounterWithTime::default(),
         }
@@ -54,7 +55,8 @@ impl VerifyStore {
         mut tx: DropCloserWriteHalf,
         mut rx: DropCloserReadHalf,
         size_info: UploadSizeInfo,
-        mut maybe_hasher: Option<([u8; 32], Sha256)>,
+        original_hash: [u8; 32],
+        mut maybe_hasher: Option<DigestHasher>,
     ) -> Result<(), Error> {
         let mut sum_size: u64 = 0;
         loop {
@@ -76,8 +78,9 @@ impl VerifyStore {
                         ));
                     }
                 }
-                if let Some((original_hash, hasher)) = maybe_hasher {
-                    let hash_result: [u8; 32] = hasher.finalize().into();
+                if let Some(hasher) = maybe_hasher.as_mut() {
+                    // We are passing -1 here because we just need to get the hashing result not the size.
+                    let hash_result: [u8; 32] = hasher.finalize_digest(-1).packed_hash;
                     if original_hash != hash_result {
                         self.hash_verification_failures.inc();
                         return Err(make_input_err!(
@@ -94,7 +97,7 @@ impl VerifyStore {
             // This will allows us to hash while sending data to another thread.
             let write_future = tx.send(chunk.clone());
 
-            if let Some((_, hasher)) = maybe_hasher.as_mut() {
+            if let Some(hasher) = maybe_hasher.as_mut() {
                 hasher.update(chunk.as_ref());
             }
 
@@ -136,14 +139,14 @@ impl Store for VerifyStore {
         }
 
         let mut hasher = None;
-        if self.verify_hash {
-            hasher = Some((digest.packed_hash, Sha256::new()));
+        if let Some(hash_verification_function) = self.hash_verification_function {
+            hasher = Some(DigestHasher::from(DigestHasherFunc::from(hash_verification_function)));
         }
 
         let (tx, rx) = make_buf_channel_pair();
 
         let update_fut = self.pin_inner().update(digest, rx, size_info);
-        let check_fut = self.inner_check_update(tx, reader, size_info, hasher);
+        let check_fut = self.inner_check_update(tx, reader, size_info, digest.packed_hash, hasher);
 
         let (update_res, check_res) = tokio::join!(update_fut, check_fut);
 
@@ -180,11 +183,24 @@ impl MetricsComponent for VerifyStore {
             &self.verify_size,
             "If the verification store is verifying the size of the data",
         );
-        c.publish(
-            "verify_hash_enabled",
-            &self.verify_hash,
-            "If the verification store is verifying the hash of the data",
-        );
+        if let Some(hash_verification_function) = self.hash_verification_function {
+            match hash_verification_function {
+                ConfigDigestHashFunction::sha256 => {
+                    c.publish(
+                        "hash_verification_function",
+                        &"sha256".to_string(),
+                        "Hash verification function to verify the contents of the data",
+                    );
+                }
+                ConfigDigestHashFunction::blake3 => {
+                    c.publish(
+                        "hash_verification_function",
+                        &"blake3".to_string(),
+                        "Hash verification function to verify the contents of the data",
+                    );
+                }
+            }
+        }
         c.publish(
             "size_verification_failures_total",
             &self.size_verification_failures,

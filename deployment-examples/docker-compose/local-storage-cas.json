@@ -25,7 +25,7 @@
           }
         },
         "verify_size": true,
-        "verify_hash": true
+        "hash_verification_function": "sha256"
       }
     },
     "AC_MAIN_STORE": {

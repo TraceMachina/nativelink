@@ -21,6 +21,18 @@ use crate::serde_utils::{convert_numeric_with_shellexpand, convert_string_with_s
 pub type StoreRefName = String;
 
 #[allow(non_camel_case_types)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum ConfigDigestHashFunction {
+    /// Use the sha256 hash function.
+    /// <https://en.wikipedia.org/wiki/SHA-2>
+    sha256,
+
+    /// Use the blake3 hash function.
+    /// <https://en.wikipedia.org/wiki/BLAKE_(hash_function)>
+    blake3,
+}
+
+#[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum StoreConfig {
     /// Memory store will store all data in a hashmap in memory.
@@ -329,12 +341,14 @@ pub struct VerifyStore {
     #[serde(default)]
     pub verify_size: bool,
 
-    /// If set this store will hash the contents and verify it matches the
-    /// digest hash before writing the entry to underlying store.
+    /// The digest hash function to hash the contents and to verify if the digest hash is
+    /// matching before writing the entry to underlying store.
     ///
-    /// This should be set to false for AC, but true for CAS stores.
-    #[serde(default)]
-    pub verify_hash: bool,
+    /// Sha256 and Blake3 algorithms are supported.
+    /// If None, the hash verification will be disabled.
+    ///
+    /// This should be set to None for AC, but sha256 or blake3 for CAS stores.
+    pub hash_verification_function: Option<ConfigDigestHashFunction>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

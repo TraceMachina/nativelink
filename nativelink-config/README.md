@@ -291,10 +291,11 @@ the rest will be stored in AWS's S3:
 
 This store is special. It's only job is to verify the content as it is fetched
 and uploaded to ensure it meets some criteria or errors. This store should only
-be added to the CAS. If `verify_hash` is set to true, it will apply a sha256
-algorithm on the data as it is sent/received and at the end if it does not match
-the name of the digest it will cancel the upload/download and return an error.
-If `verify_size` is set, a similar item will happen, but count the bytes sent
+be added to the CAS. If `hash_verification_function` is set, it will apply the 
+hashing algorithm on the data as it is sent/received and at the end if it does 
+not match the name of the digest it will cancel the upload/download and return 
+an error. If it's not set, the hashing verification will be disabled. 
+If `verify_size` is set, a similar item will happen, but count the bytes sent 
 and check it against the digest instead.
 
 ```js
@@ -311,7 +312,8 @@ and check it against the digest instead.
           }
         },
         "verify_size": true,
-        "verify_hash": true,
+        // sha256 or blake3
+        "hash_verification_function": "sha256",
       }
     },
     "AC_MAIN_STORE": {
