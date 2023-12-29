@@ -3,9 +3,16 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
     pre-commit-hooks = {
       url = "github:cachix/pre-commit-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
     };
     crane = {
       url = "github:ipetkov/crane";
@@ -17,6 +24,7 @@
     self,
     flake-parts,
     crane,
+    rust-overlay,
     ...
   }:
     flake-parts.lib.mkFlake {inherit inputs;} {
@@ -32,17 +40,15 @@
         system,
         ...
       }: let
-        isDarwin = builtins.elem system [
-          "x86_64-darwin"
-          "aarch64-darwin"
-        ];
+        stable-rust = pkgs.rust-bin.stable."1.74.0";
+        nightly-rust = pkgs.rust-bin.nightly."2023-12-07";
 
-        maybeDarwinDeps = pkgs.lib.optionals isDarwin [
+        maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
           pkgs.darwin.apple_sdk.frameworks.Security
           pkgs.libiconv
         ];
 
-        customStdenv = import ./tools/llvmStdenv.nix {inherit pkgs isDarwin;};
+        customStdenv = import ./tools/llvmStdenv.nix {inherit pkgs;};
 
         # TODO(aaronmondal): This doesn't work with rules_rust yet.
         # Tracked in https://github.com/TraceMachina/nativelink/issues/477.
@@ -51,7 +57,13 @@
           stdenv = customStdenv;
         };
 
-        craneLib = crane.lib.${system};
+        craneLib =
+          if pkgs.stdenv.isDarwin
+          then crane.lib.${system}
+          else
+            (crane.mkLib pkgs).overrideToolchain (pkgs.rust-bin.stable.latest.default.override {
+              targets = ["x86_64-unknown-linux-musl"];
+            });
 
         src = pkgs.lib.cleanSourceWith {
           src = craneLib.path ./.;
@@ -60,18 +72,21 @@
             || (craneLib.filterCargoSources path type);
         };
 
-        commonArgs = {
-          inherit src;
-          strictDeps = true;
-          buildInputs = maybeDarwinDeps;
-          nativeBuildInputs =
-            [
-              pkgs.cacert
-            ]
-            ++ maybeDarwinDeps
-            ++ pkgs.lib.optionals (!isDarwin) [pkgs.autoPatchelfHook];
-          stdenv = customStdenv;
-        };
+        commonArgs =
+          {
+            inherit src;
+            stdenv =
+              if pkgs.stdenv.isDarwin
+              then customStdenv
+              else pkgs.pkgsMusl.stdenv;
+            strictDeps = true;
+            buildInputs = maybeDarwinDeps;
+            nativeBuildInputs = [pkgs.cacert] ++ maybeDarwinDeps;
+          }
+          // pkgs.lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
+            CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+          };
 
         # Additional target for external dependencies to simplify caching.
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -89,6 +104,10 @@
 
         generate-toolchains = import ./tools/generate-toolchains.nix {inherit pkgs;};
       in {
+        _module.args.pkgs = import self.inputs.nixpkgs {
+          inherit system;
+          overlays = [(import rust-overlay)];
+        };
         apps = {
           default = {
             type = "app";
@@ -129,13 +148,19 @@
           #   partitionType = "count";
           # });
         };
-        pre-commit.settings = {inherit hooks;};
+        pre-commit.settings = {
+          inherit hooks;
+          tools = let
+            mkOverrideTools = pkgs.lib.mkOverride (pkgs.lib.modules.defaultOverridePriority - 1);
+          in {
+            rustfmt = mkOverrideTools nightly-rust.rustfmt;
+          };
+        };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs =
             [
               # Development tooling goes here.
-              pkgs.cargo
-              pkgs.rustc
+              stable-rust.default
               pkgs.pre-commit
               pkgs.bazel
               pkgs.awscli2
