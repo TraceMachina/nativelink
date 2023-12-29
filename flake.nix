@@ -3,9 +3,16 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
     pre-commit-hooks = {
       url = "github:cachix/pre-commit-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
     };
     crane = {
       url = "github:ipetkov/crane";
@@ -17,6 +24,7 @@
     self,
     flake-parts,
     crane,
+    rust-overlay,
     ...
   }:
     flake-parts.lib.mkFlake {inherit inputs;} {
@@ -32,6 +40,8 @@
         system,
         ...
       }: let
+        stable-rust = pkgs.rust-bin.stable."1.74.0";
+        nightly-rust = pkgs.rust-bin.nightly."2023-12-07";
         isDarwin = builtins.elem system [
           "x86_64-darwin"
           "aarch64-darwin"
@@ -51,7 +61,9 @@
           stdenv = customStdenv;
         };
 
-        craneLib = crane.lib.${system};
+        craneLib = (crane.mkLib pkgs).overrideToolchain (pkgs.rust-bin.stable.latest.default.override {
+          targets = ["x86_64-unknown-linux-musl"];
+        });
 
         src = pkgs.lib.cleanSourceWith {
           src = craneLib.path ./.;
@@ -62,15 +74,16 @@
 
         commonArgs = {
           inherit src;
+          inherit (pkgs.pkgsMusl) stdenv;
           strictDeps = true;
           buildInputs = maybeDarwinDeps;
           nativeBuildInputs =
             [
               pkgs.cacert
             ]
-            ++ maybeDarwinDeps
-            ++ pkgs.lib.optionals (!isDarwin) [pkgs.autoPatchelfHook];
-          stdenv = customStdenv;
+            ++ maybeDarwinDeps;
+          CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
         };
 
         # Additional target for external dependencies to simplify caching.
@@ -89,6 +102,10 @@
 
         generate-toolchains = import ./tools/generate-toolchains.nix {inherit pkgs;};
       in {
+        _module.args.pkgs = import self.inputs.nixpkgs {
+          inherit system;
+          overlays = [(import rust-overlay)];
+        };
         apps = {
           default = {
             type = "app";
@@ -129,13 +146,19 @@
           #   partitionType = "count";
           # });
         };
-        pre-commit.settings = {inherit hooks;};
+        pre-commit.settings = {
+          inherit hooks;
+          tools = let
+            mkOverrideTools = pkgs.lib.mkOverride (pkgs.lib.modules.defaultOverridePriority - 1);
+          in {
+            rustfmt = mkOverrideTools nightly-rust.rustfmt;
+          };
+        };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs =
             [
               # Development tooling goes here.
-              pkgs.cargo
-              pkgs.rustc
+              stable-rust.default
               pkgs.pre-commit
               pkgs.bazel
               pkgs.awscli2

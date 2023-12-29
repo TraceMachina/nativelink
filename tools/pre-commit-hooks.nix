@@ -1,5 +1,5 @@
 {pkgs, ...}: let
-  excludes = ["^gencargo/" "^nativelink-proto/genproto"];
+  excludes = ["^nativelink-proto/genproto"];
 in {
   # Default hooks
   trailing-whitespace-fixer = {
@@ -56,6 +56,9 @@ in {
   alejandra.enable = true;
   statix.enable = true;
   deadnix.enable = true;
+
+  # Rust
+  rustfmt.enable = true;
 
   # Starlark
   bazel-buildifier-format = {
