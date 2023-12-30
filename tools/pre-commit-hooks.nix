@@ -52,6 +52,9 @@ in {
     types = ["text"];
   };
 
+  # Documentation
+  vale.enable = true;
+
   # Nix
   alejandra.enable = true;
   statix.enable = true;

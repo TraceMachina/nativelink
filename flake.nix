@@ -129,7 +129,10 @@
           #   partitionType = "count";
           # });
         };
-        pre-commit.settings = {inherit hooks;};
+        pre-commit.settings = {
+          inherit hooks;
+          settings.vale.configPath = ".vale.ini";
+        };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs =
             [
@@ -145,6 +148,7 @@
               pkgs.kubectl
               pkgs.kubernetes-helm
               pkgs.cilium-cli
+              pkgs.vale
 
               # Additional tools from within our development environment.
               local-image-test

@@ -1,6 +1,6 @@
 # Local Remote Execution
 
-Nativelink's Local Remote Execution is a framework to build and rapidly iterate
+NativeLink's Local Remote Execution is a framework to build and rapidly iterate
 custom toolchain setups that are transparent, fully hermetic and reproducible
 across machines of the same system architecture.
 
@@ -20,13 +20,13 @@ generate-toolchains
 ```
 
 The `generate-toolchains` command creates an OCI image from a nix `stdenv` and
-generates toolchain configs from it. The resulting [generated C++ toolchains](
-./generated/cc/BUILD) have all tools pinned to specific derivations in
-`/nix/store/*`. These paths mirror the ones that you fetched when entering the
-flake development environment, i.e. the tools in the container and in you local
-environment are the same.
+generates toolchains. The resulting [generated C++ toolchains](./generated/cc/BUILD)
+have all tools pinned to specific derivations in `/nix/store/*`. These paths
+mirror the ones that you fetched when entering the flake development
+environment, that is, the tools in the container and in you local environment
+are the same.
 
-You can now build targets with the generated toolchain configs:
+You can now build targets with the generated toolchains:
 
 ```
 bazel run --config=lre //local-remote-execution/examples:hello_lre
