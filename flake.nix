@@ -150,6 +150,7 @@
         };
         pre-commit.settings = {
           inherit hooks;
+          settings.vale.configPath = ".vale.ini";
           tools = let
             mkOverrideTools = pkgs.lib.mkOverride (pkgs.lib.modules.defaultOverridePriority - 1);
           in {
@@ -170,6 +171,7 @@
               pkgs.kubectl
               pkgs.kubernetes-helm
               pkgs.cilium-cli
+              pkgs.vale
 
               # Additional tools from within our development environment.
               local-image-test

@@ -26,7 +26,7 @@ Finally deploy NativeLink:
 ```
 
 > [!TIP]
-> You can use `./03_delete_application.sh` to remove just the nativelink
+> You can use `./03_delete_application.sh` to remove just the `nativelink`
 > deployments but leave the rest of the cluster intact.
 
 This demo setup creates two gateways to expose the `cas` and `scheduler`
@@ -45,8 +45,8 @@ echo "Scheduler IP: $SCHEDULER"
 # Scheduler IP: 172.20.255.5
 ```
 
-You can now pass these IPs to your bazel invocation to use the remote cache and
-executor:
+You can now pass these IP addresses to your Bazel invocation to use the remote
+cache and executor:
 
 ```bash
 bazel test \
@@ -59,8 +59,8 @@ bazel test \
 
 > [!TIP]
 > You can add these flags to a to a `.bazelrc.user` file in the workspace root.
-> Note that you'll need to pass in explicit IPs as this file can't resolve
-> environment variables:
+> Note that you'll need to pass in explicit IP addresses as this file can't
+> resolve environment variables:
 > ```bash
 > # .bazelrc.user
 > build --config=lre
