@@ -43,7 +43,7 @@
   "navigation": [
     {
       "group": "Get Started",
-      "pages": ["quickstart", "contributing", "about"]
+      "pages": ["quickstart", "deployment-examples", "contributing", "about"]
     }
   ],
   "footerSocials": {
