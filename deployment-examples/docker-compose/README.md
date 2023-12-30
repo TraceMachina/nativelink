@@ -1,13 +1,16 @@
-# NativeLink's Docker Compose Deployment
+# NativeLink's Docker Compose deployment
 
-This directory contains a reference/starting point on creating a full Docker Compose deployment of NativeLink's cache and remote execution system.
+This directory is a reference/starting point on creating a full Docker Compose
+deployment of NativeLink's cache and remote execution system.
 
-## Docker Setup
+## Docker setup
 
-1. Ensure [Docker](https://docs.docker.com/engine/install/) and [Docker Compose](https://docs.docker.com/compose/install/) are installed on your system.
-2. Open a terminal and run `docker-compose up -d` in this directory to start the services.
+1. Install [Docker](https://docs.docker.com/engine/install/) and
+   [Docker Compose](https://docs.docker.com/compose/install/) on your system.
+2. Open a terminal and run `docker-compose up -d` in this directory to start the
+   services.
 
-It will take some time to apply, when it is finished everything should be running. The endpoints are:
+It will take some time to apply, when it's finished everything should be running. The endpoints are:
 
 ```sh
 CAS/AC: 0.0.0.0:50051 # Configures CAS & AC for SSL connections
@@ -15,7 +18,7 @@ CAS/AC: 0.0.0.0:50071 # Configures CAS & AC for TLS connections
 Scheduler: 0.0.0.0:50052
 ```
 
-As a reference you should be able to compile this project using bazel with something like:
+As a reference you should be able to compile this project using Bazel with something like:
 
 ```sh
 bazel test //... \
@@ -27,11 +30,12 @@ bazel test //... \
 
 ## Instances
 
-All instances use the same Docker image, trace_machina/nativelink:latest, built from the Dockerfile located at ./deployment-examples/docker-compose/Dockerfile.
+All instances use the same Docker image, `trace_machina/nativelink:latest`,
+built from the `Dockerfile` located at `./deployment-examples/docker-compose/Dockerfile`.
 
 ### CAS
 
-The CAS (Content Addressable Storage) service is used as a local cache for the NativeLink system. It is configured in the docker-compose.yml file under the nativelink_local_cas service.
+The CAS (Content Addressable Storage) service is used as a local cache for the NativeLink system. It's configured in the docker-compose.yml file under the nativelink_local_cas service.
 
 ```yml
   nativelink_local_cas:
@@ -62,7 +66,7 @@ The CAS (Content Addressable Storage) service is used as a local cache for the N
 ### Scheduler
 
 The scheduler is currently the only single point of failure in the system. We currently only support one scheduler at a time.
-The scheduler service is responsible for scheduling tasks in the NativeLink system. It is configured in the docker-compose.yml file under the nativelink_scheduler service.
+The scheduler service is responsible for scheduling tasks in the NativeLink system. It's configured in the docker-compose.yml file under the nativelink_scheduler service.
 
 ```yml
   nativelink_scheduler:
@@ -87,7 +91,7 @@ The scheduler service is responsible for scheduling tasks in the NativeLink syst
 
 ### Workers
 
-Worker instances are responsible for executing tasks. They are configured in the docker-compose.yml file under the nativelink_executor service.
+Worker instances are responsible for executing tasks. They're configured in the docker-compose.yml file under the nativelink_executor service.
 
 ```yml
   nativelink_executor:
@@ -113,17 +117,27 @@ Worker instances are responsible for executing tasks. They are configured in the
 
 ## Security
 
-The Docker Compose setup is configured to run all services locally, which may not be suitable for production environments. The scheduler is currently the only single point of failure in the system. If the scheduler service fails, the entire system will be affected.
+The Docker Compose setup is configured to run all services locally and isn't
+suitable for production environments. The scheduler is a single point of failure
+in the system.
 
-The Docker Compose setup does not automatically delete old data. This could lead to storage issues over time if not managed properly.
+The Docker Compose setup doesn't automatically delete old data. This could lead
+to storage issues over time if not managed properly.
 
-If you decide to stop using this setup, you can use `docker-compose down` to stop and remove all the containers. However, in a non-local setup, additional steps may be required to ensure that all data is securely deleted.
+If you decide to stop using this setup, you can use `docker-compose down` to
+stop and remove all the containers. However, in a non-local setup, additional
+steps may be required to ensure that all data is securely deleted.
 
-## Future work / TODOs
+## Future work
 
-Currently, the Docker Compose setup does not automatically scale services. This could be implemented using Docker Swarm or Kubernetes.
-The Docker Compose setup does not automatically delete old data. This could be implemented with a cleanup service or script.
+The Docker Compose setup doesn't automatically scale services. This could be
+implemented using Docker Swarm or Kubernetes.
+
+The Docker Compose setup doesn't automatically delete old data. This could be
+implemented with a cleanup service or script.
 
 ## Useful tips
 
-The Docker Compose setup can be easily modified for testing and development. For example, you can change the RUST_LOG environment variable to control the logging level of the services.
+The Docker Compose setup can be modified for testing and development. For
+example, you can change the RUST_LOG environment variable to control the logging
+level of the services.

@@ -1,0 +1,22 @@
+---
+name: Vale
+
+on: [pull_request]
+
+permissions: read-all
+
+jobs:
+  vale:
+    name: vale
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Run Vale
+        uses: >- # Custom commit, last pinned 2023.12.30.
+          errata-ai/vale-action@c99f2dfd2aeaedb3d4bb16f385841830b9164d31
+        with:
+          filter_mode: file
+          reporter: github-pr-check

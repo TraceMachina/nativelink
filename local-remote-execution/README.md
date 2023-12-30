@@ -2,12 +2,14 @@
 
 NativeLink's Local Remote Execution is a framework to build and rapidly iterate
 custom toolchain setups that are transparent, fully hermetic and reproducible
-across machines of the same system architecture. When used in conjunction with Nix,
-Local Remote Execution recreates the remote execution toolchain in your local
-development environment. Working with LRE lets you seamlessly switch between remote
-and local builds while reusing the same cache.
+across machines of the same system architecture. When used in conjunction with
+Nix, Local Remote Execution recreates the remote execution toolchain in your
+local development environment. Working with LRE lets you seamlessly switch
+between remote and local builds while reusing the same cache.
 
-You must clone the repo to use Local Remote Execution. Other than that, there are few pre-requisistes.
+You must clone the repository to use Local Remote Execution. Other than that,
+there are few pre-requisistes.
+
 ## Pre-Requisites
 
 - Nix 2.19.0 or later
@@ -33,13 +35,14 @@ You should see terminal output beginning with:
 
 
 The `generate-toolchains` command creates an OCI image from a nix `stdenv` and
-generates toolchain configs from it. The resulting [generated C++ toolchains](
-./generated/cc/BUILD) have all tools pinned to specific derivations in
-`/nix/store/*`. These paths mirror the ones that you fetched when entering the
-flake development environment, i.e. the tools in the container and in your local
-environment are the same.
+generates toolchain configurations from it. The resulting
+[generated C++ toolchains](./generated/cc/BUILD) have all tools pinned to
+specific derivations in `/nix/store/*`. These paths mirror the ones that you
+fetched when entering the flake development environment, that is, the tools in
+the container and in your local environment are the same.
 
-3. You can now build targets with the generated toolchain configs. To build the `hello_lre` target in the [examples](./examples/) directory:
+3. You can now build targets with the generated toolchain configurations. To
+build the `hello_lre` target in the [examples](./examples/) directory:
 
 ```shell
 bazel run --config=lre @local-remote-execution//examples:hello_lre

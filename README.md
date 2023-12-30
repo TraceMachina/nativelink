@@ -29,7 +29,7 @@ cargo install --git https://github.com/TraceMachina/nativelink --tag v0.2.0
 ### ⚙️ Configuration
 
 The `nativelink` executable reads a JSON file as it's only parameter,
-`--config`. See [nativelink-config](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json)
+`--config`. See [`nativelink-config`](./nativelink-config/examples/basic_cas.json)
 for more details and examples.
 
 To grab the example in your current working directory, run:
@@ -59,7 +59,7 @@ bazel test //... \
   --remote_default_exec_properties=cpu_count=1
 ```
 
-For Windows Powershell;
+For Windows PowerShell;
 
 ```powershell
 bazel test //... `
@@ -71,18 +71,14 @@ bazel test //... `
 This causes Bazel to run the commands through an all-in-one `CAS`, `scheduler`
 and `worker`.
 
-
-🎉 Tada 🎉 NativeLink is working.
-
-
 ## ❄️ Installing with Nix
 
 **Installation requirements:**
 
 * Nix with [flakes](https://nixos.wiki/wiki/Flakes) enabled
 
-This build does not require cloning the repository, but you need to provide a
-config file, for instance the one at [nativelink-config/examples/basic_cas.json](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json).
+This build doesn't require cloning the repository, but you need to provide a
+configuration file, for instance the one at [`nativelink-config/examples/basic_cas.json`](./nativelink-config/examples/basic_cas.json).
 
 The following command builds and runs NativeLink in release (optimized) mode:
 
@@ -125,10 +121,10 @@ bazel run --config=windows -c opt nativelink -- $(pwd)/nativelink-config/example
 ```
 
 > [!WARNING]
-> The Rust compiler (rustc) generates numerous artifacts during compilation,
+> The Rust compiler `rustc` generates numerous artifacts during compilation,
 > including dependencies, macros, and intermediate files.
 > When compiling programs from source, be mindful of the associated files'
-> impact on your disk usage in the bazel-bin/ directory.
+> impact on your disk usage in the `bazel-bin/` directory.
 > This directory can grow substantially in size.
 >
 > If the facing issues due to this, run the following command
@@ -157,7 +153,7 @@ cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.j
 ```
 
 > [!WARNING]
-> The Rust compiler (rustc) generates numerous artifacts during compilation,
+> The Rust compiler `rustc` generates numerous artifacts during compilation,
 > including dependencies, macros, and intermediate files.
 > When compiling programs from source, be mindful of the associated files'
 > impact on your disk usage in the target/ directory.
@@ -181,8 +177,8 @@ deployments that show off remote execution and cache capabilities.
 This project was first created due to frustration with similar projects not
 working or being extremely inefficient. Rust was chosen as the language to write
 it in because at the time Rust was going through a revolution in the new-ish
-feature `async-await`. This made making multi-threading extremely simple when
-paired with a runtime like [tokio](https://github.com/tokio-rs/tokio) while
+feature `async-await`. This made making multi-threading simpler when
+paired with a runtime like [Tokio](https://github.com/tokio-rs/tokio) while
 still giving all the lifetime and other protections that Rust gives. This pretty
 much guarantees that we will never have crashes due to race conditions. This
 kind of project seemed perfect, since there is so much asynchronous activity
@@ -191,12 +187,11 @@ languages like `Go` are good candidates, but other similar projects rely heavily
 on channels and mutex locks which are cumbersome and have to be carefully
 designed by the developer. Rust doesn't have these issues, since the compiler
 will always tell you when the code you are writing might introduce undefined
-behavior. The last major reason is because Rust is extremely fast, +/- a few
-percent of C++ and has no garbage collection (like C++, but unlike `Java`, `Go`,
-or `Typescript`).
+behavior. The last major reason is because Rust is extremely fast and has no
+garbage collection (like C++, but unlike `Java`, `Go`, or `Typescript`).
 
 ## 📜 License
 
-Copyright 2020-2023 Trace Machina, Inc.
+Copyright 2020–2023 Trace Machina, Inc.
 
 Licensed under the Apache 2.0 License, SPDX identifier `Apache-2.0`.
