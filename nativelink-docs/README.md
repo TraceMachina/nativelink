@@ -1,20 +1,23 @@
 # NativeLink Docs
 
-### Development
-
-Install the [Mintlify CLI](https://www.npmjs.com/package/mintlify) to preview the documentation changes locally. To install, use the following command
+### Installation
 
 ```
-npm i -g mintlify
+$ yarn
 ```
 
-Run the following command at the root of your documentation (where mint.json is)
+### Local Development
 
 ```
-mintlify dev
+$ yarn start
 ```
 
-#### Troubleshooting
+This command starts a local development server and opens up a browser window. Most changes are reflected live without having to restart the server.
 
-- Mintlify dev isn't running - Run `mintlify install` it'll re-install dependencies.
-- Page loads as a 404 - Make sure you are running in a folder with `mint.json`
+### Build
+
+```
+$ yarn build
+```
+
+This command generates static content into the `build` directory and can be served using any static contents hosting service.
