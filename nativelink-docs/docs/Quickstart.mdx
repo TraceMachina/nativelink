@@ -1,23 +1,29 @@
 ---
+sidebar_position: 1
 title: 'Quickstart'
-description: 'Getting started with NativeLink remote execution in <5 minutes'
+description: 'Getting started with NativeLink remote execution in <5 minutes.'
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
 ## 🦀 Installing with Cargo
 
 Install or Update Rust
 
-<CodeGroup>
+<Tabs>
+  <TabItem value="install" label="Install" default>
+    ```sh
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+  </TabItem>
 
-```shell  Install
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-```shell Update
-rustup update
-```
-</CodeGroup>
+  <TabItem value="update" label="Update">
+    ```shell
+    rustup update
+    ```
+  </TabItem>
+</Tabs>
 
 ```bash
 cargo install --git https://github.com/TraceMachina/nativelink
@@ -43,12 +49,17 @@ cas basic_cas.json
 
 ## 🧪 Evaluating Native Link
 
-<Note>If Bazel is not installed follow the instructions below based on your
-machine.</Note>
+:::note
 
-<CodeGroup>
+If Bazel is not installed follow the instructions below based on your
+machine.
 
-```shell Linux
+:::
+
+<Tabs>
+
+<TabItem value="linux" label="Linux" default>
+```shell
 apt install -y gcc g++ lld python3 curl
 
 sudo apt update && sudo apt install bazel
@@ -56,8 +67,10 @@ sudo apt update && sudo apt install bazel
 # Verify the installation.
 bazel --version
 ```
+</TabItem>
 
-```shell Docker-ARM
+<TabItem value="dockerArm" label="Docker-ARM">
+```sh
 # The commands for creating docker containers can fill up space very quickly when run frequently.
 # If `apt update` throws an out of space error you can run `docker system prune`
 # to free up space. Be careful to make sure it's not removing any containers/images you want to keep.
@@ -83,8 +96,10 @@ mv bazel-6.4.0-linux-arm64 /usr/local/bin/bazel
 bazel --version
 
 ```
+</TabItem>
 
-```shell Docker-x86
+<TabItem value="dockerx" label="Docker-x86">
+```shell
 # The commands for creating docker containers can fill up space very quickly
 # when run frequently. If `apt update` throws an out of space error you can
 # run `docker system prune` to free up space. Be careful to make sure it's
@@ -111,8 +126,10 @@ mv bazel-6.4.0-linux-x86_64 /usr/local/bin/bazel
 bazel --version
 
 ```
+</TabItem>
 
-```shell MacOS (Beta)
+<TabItem value="macOS (Beta)" label="MacOS">
+```shell
 # It is recommended to use x86 Docker for Intel Macs and ARM Docker for Silicon Macs.
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
@@ -121,8 +138,9 @@ brew install bazel
 # Verify the installation.
 bazel --version
 ```
+</TabItem>
 
-</CodeGroup>
+</Tabs>
 
 Once you've built Native Link and have an instance running with the
 `basic_cas.json` configuration, launch a separate terminal session and run the
@@ -149,7 +167,7 @@ bazel test //... `
 This causes Bazel to run the commands through an all-in-one `CAS`, `scheduler`
 and `worker`.
 
-🎉 Tada 🎉 Native Link is working.
+**🎉 Tada 🎉 Native Link is working.**
 
 ## 🌱 Building with Bazel
 
@@ -158,9 +176,12 @@ and `worker`.
 * Bazel 6.4.0+
 * A recent C++ toolchain with LLD as linker
 
-> [!TIP]
-> This build supports Nix/direnv which provides Bazel but no C++ toolchain
-> (yet).
+:::tip
+
+This build supports Nix/direnv which provides Bazel but no C++ toolchain
+(yet).
+
+:::
 
 The following commands place an executable in `./bazel-bin/cas/cas` and start
 the service:
@@ -179,7 +200,11 @@ bazel run --config=windows cas -- ./nativelink-config/examples/basic_cas.json
 bazel run --config=windows -c opt cas -- ./nativelink-config/examples/basic_cas.json
 ```
 
-<Note>The `--release` flag causes link-time-optmization to be enabled, which can take a while to compile, but will result in a much faster binary.</Note>
+:::note
+
+The `--release` flag causes link-time-optmization to be enabled, which can take a while to compile, but will result in a much faster binary.
+
+:::
 
 ## 🦀 Building with Cargo
 
@@ -188,9 +213,12 @@ bazel run --config=windows -c opt cas -- ./nativelink-config/examples/basic_cas.
 * Cargo 1.74.0+
 * A recent C++ toolchain with LLD as linker
 
-> [!TIP]
-> This build supports Nix/direnv which provides Cargo but no C++
-> toolchain/stdenv (yet).
+:::tip
+
+This build supports Nix/direnv which provides Cargo but no C++
+toolchain/stdenv (yet).
+
+:::
 
 ```bash
 # Unoptimized development build
