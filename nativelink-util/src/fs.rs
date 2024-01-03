@@ -139,6 +139,7 @@ impl<'a> ResumeableFileSlot<'a> {
     where
         F: (FnMut((BytesMut, T)) -> Fut) + 'b,
         Fut: Future<Output = Result<(BytesMut, T), Error>> + 'b,
+        T: std::fmt::Debug
     {
         loop {
             buf.clear();

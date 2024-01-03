@@ -655,16 +655,26 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "enable_tracing")]
+    use tracing_chrome::ChromeLayerBuilder;
+
     use tracing_subscriber::prelude::*;
+
+    #[cfg(feature = "enable_tracing")]
+    let (chrome_layer, _guard) = ChromeLayerBuilder::new().build();
 
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())
         .from_env_lossy();
 
     if cfg!(feature = "enable_tokio_console") {
-        tracing_subscriber::registry()
-            .with(console_subscriber::spawn())
-            .with(
+        let tracing_builder = tracing_subscriber::registry()
+            .with(console_subscriber::spawn());
+
+        #[cfg(feature = "enable_tracing")]
+        let tracing_builder = tracing_builder.with(chrome_layer);
+
+            tracing_builder.with(
                 tracing_subscriber::fmt::layer()
                     .pretty()
                     .with_thread_ids(true)
@@ -734,6 +744,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     runtime.spawn(async move {
         tokio::signal::ctrl_c().await.expect("Failed to listen to SIGINT");
+
+        #[cfg(feature = "enable_tracing")]
+        _guard.start_new(None);
+
         eprintln!("User terminated process via SIGINT");
         std::process::exit(130);
     });
