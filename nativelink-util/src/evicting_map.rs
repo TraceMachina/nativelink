@@ -249,9 +249,7 @@ where
 
     pub async fn size_for_key(&self, digest: &DigestInfo) -> Option<usize> {
         let mut state = self.state.lock().await;
-        let Some(entry) = state.lru.get_mut(digest) else {
-            return None;
-        };
+        let entry = state.lru.get_mut(digest)?;
         entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
         let data = entry.data.clone();
         drop(state);
@@ -266,9 +264,7 @@ where
             .iter()
             .zip(results.iter_mut())
             .filter_map(|(digest, result)| {
-                let Some(entry) = state.lru.get_mut(digest) else {
-                    return None;
-                };
+                let entry = state.lru.get_mut(digest)?;
                 entry.seconds_since_anchor = seconds_since_anchor;
                 let data = entry.data.clone();
                 *result = Some(data.len());
