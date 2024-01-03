@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 serde = { version = "1.0.193", features = ["derive"] }
 shellexpand = "3.1.0"
+tracing = "0.1.40"
