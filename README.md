@@ -109,16 +109,16 @@ starts the service:
 
 ```sh
 # Unoptimized development build on Unix
-bazel run nativelink -- ./nativelink-config/examples/basic_cas.json
+bazel run nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
 
 # Optimized release build on Unix
-bazel run -c opt nativelink -- ./nativelink-config/examples/basic_cas.json
+bazel run -c opt nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
 
 # Unoptimized development build on Windows
-bazel run --config=windows nativelink -- ./nativelink-config/examples/basic_cas.json
+bazel run --config=windows nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
 
 # Optimized release build on Windows
-bazel run --config=windows -c opt nativelink -- ./nativelink-config/examples/basic_cas.json
+bazel run --config=windows -c opt nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
 ```
 
 ## 🦀 Building with Cargo
