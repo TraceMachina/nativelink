@@ -1,0 +1,8 @@
+{
+  "label": "Deployment Examples",
+  "position": 2,
+  "link": {
+    "type": "generated-index",
+    "description": "See the capabilities of remote execution and cache."
+  }
+}

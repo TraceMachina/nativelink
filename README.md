@@ -26,7 +26,7 @@ cargo install --git https://github.com/TraceMachina/nativelink --tag v0.2.0
 ### ⚙️ Configuration
 
 The `nativelink` executable reads a JSON file as it's only parameter,
-`--config`. See [nativelink-config](./nativelink-config/examples/basic_cas.json)
+`--config`. See [nativelink-config](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json)
 for more details and examples.
 
 To grab the example in your current working directory, run:
@@ -79,7 +79,7 @@ and `worker`.
 * Nix with [flakes](https://nixos.wiki/wiki/Flakes) enabled
 
 This build does not require cloning the repository, but you need to provide a
-config file, for instance the one at [nativelink-config/examples/basic_cas.json](./nativelink-config/examples/basic_cas.json).
+config file, for instance the one at [nativelink-config/examples/basic_cas.json](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json).
 
 The following command builds and runs Native Link in release (optimized) mode:
 

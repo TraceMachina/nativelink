@@ -1,54 +1,66 @@
 ---
+slug: /
+sidebar_position: 1
 title: 'Quickstart'
-description: 'Getting started with NativeLink remote execution in <5 minutes'
+description: 'Getting started with NativeLink remote execution in <5 minutes.'
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
 ## 🦀 Installing with Cargo
 
 Install or Update Rust
 
-<CodeGroup>
+<Tabs>
+  <TabItem value="install" label="Install" default>
+    ```sh
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+  </TabItem>
 
-```shell  Install
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
+  <TabItem value="update" label="Update">
+    ```sh
+    rustup update
+    ```
+  </TabItem>
+</Tabs>
 
-```shell Update
-rustup update
-```
-</CodeGroup>
-
-```bash
+```sh
 cargo install --git https://github.com/TraceMachina/nativelink
 ```
 
 ### ⚙️ Configuration
 
 The `cas` executable reads a JSON file as it's only parameter,
-`--config`. See [nativelink-config](./nativelink-config/examples/basic_cas.json)
+`--config`. See [nativelink-config](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json)
 for more details and examples.
 
 To grab the example in your current working directory, run:
 
-```bash
+```sh
 curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
 ```
 
 ### 🚀 Start Native Link
 
-```bash
+```sh
 cas basic_cas.json
 ```
 
 ## 🧪 Evaluating Native Link
 
-<Note>If Bazel is not installed follow the instructions below based on your
-machine.</Note>
+:::note
 
-<CodeGroup>
+If Bazel is not installed follow the instructions below based on your
+machine.
 
-```shell Linux
+:::
+
+<Tabs>
+
+<TabItem value="linux" label="Linux" default>
+```sh
 apt install -y gcc g++ lld python3 curl
 
 sudo apt update && sudo apt install bazel
@@ -56,15 +68,17 @@ sudo apt update && sudo apt install bazel
 # Verify the installation.
 bazel --version
 ```
+</TabItem>
 
-```shell Docker-ARM
+<TabItem value="dockerArm" label="Docker-ARM">
+```sh
 # The commands for creating docker containers can fill up space very quickly when run frequently.
 # If `apt update` throws an out of space error you can run `docker system prune`
 # to free up space. Be careful to make sure it's not removing any containers/images you want to keep.
 docker run -it --name=NL -v $(pwd):/nativelink ubuntu:latest
 
 # If above has already been run or trying to start in new terminal:
-docker exec -it NL bash
+docker exec -it NL sh
 
 apt update
 
@@ -83,8 +97,10 @@ mv bazel-6.4.0-linux-arm64 /usr/local/bin/bazel
 bazel --version
 
 ```
+</TabItem>
 
-```shell Docker-x86
+<TabItem value="dockerx" label="Docker-x86">
+```sh
 # The commands for creating docker containers can fill up space very quickly
 # when run frequently. If `apt update` throws an out of space error you can
 # run `docker system prune` to free up space. Be careful to make sure it's
@@ -92,7 +108,7 @@ bazel --version
 docker run -it --name=NL -v $(pwd):/nativelink ubuntu:latest
 
 # If above has already been run or trying to start in new terminal:
-docker exec -it NL bash
+docker exec -it NL sh
 
 apt update
 
@@ -111,18 +127,21 @@ mv bazel-6.4.0-linux-x86_64 /usr/local/bin/bazel
 bazel --version
 
 ```
+</TabItem>
 
-```shell MacOS (Beta)
+<TabItem value="macOS (Beta)" label="MacOS">
+```sh
 # It is recommended to use x86 Docker for Intel Macs and ARM Docker for Silicon Macs.
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 brew install bazel
 
 # Verify the installation.
 bazel --version
 ```
+</TabItem>
 
-</CodeGroup>
+</Tabs>
 
 Once you've built Native Link and have an instance running with the
 `basic_cas.json` configuration, launch a separate terminal session and run the
@@ -137,9 +156,9 @@ bazel test //... \
   --remote_default_exec_properties=cpu_count=1
 ```
 
-For Windows Powershell;
+For Windows sh;
 
-```powershell
+```sh
 bazel test //... `
   --remote_instance_name=main `
   --remote_cache=grpc://127.0.0.1:50051 `
@@ -149,7 +168,7 @@ bazel test //... `
 This causes Bazel to run the commands through an all-in-one `CAS`, `scheduler`
 and `worker`.
 
-🎉 Tada 🎉 Native Link is working.
+**🎉 Tada 🎉 Native Link is working.**
 
 ## 🌱 Building with Bazel
 
@@ -158,9 +177,12 @@ and `worker`.
 * Bazel 6.4.0+
 * A recent C++ toolchain with LLD as linker
 
-> [!TIP]
-> This build supports Nix/direnv which provides Bazel but no C++ toolchain
-> (yet).
+:::tip
+
+This build supports Nix/direnv which provides Bazel but no C++ toolchain
+(yet).
+
+:::
 
 The following commands place an executable in `./bazel-bin/cas/cas` and start
 the service:
@@ -179,7 +201,11 @@ bazel run --config=windows cas -- ./nativelink-config/examples/basic_cas.json
 bazel run --config=windows -c opt cas -- ./nativelink-config/examples/basic_cas.json
 ```
 
-<Note>The `--release` flag causes link-time-optmization to be enabled, which can take a while to compile, but will result in a much faster binary.</Note>
+:::note
+
+The `--release` flag causes link-time-optmization to be enabled, which can take a while to compile, but will result in a much faster binary.
+
+:::
 
 ## 🦀 Building with Cargo
 
@@ -188,11 +214,14 @@ bazel run --config=windows -c opt cas -- ./nativelink-config/examples/basic_cas.
 * Cargo 1.74.0+
 * A recent C++ toolchain with LLD as linker
 
-> [!TIP]
-> This build supports Nix/direnv which provides Cargo but no C++
-> toolchain/stdenv (yet).
+:::tip
 
-```bash
+This build supports Nix/direnv which provides Cargo but no C++
+toolchain/stdenv (yet).
+
+:::
+
+```sh
 # Unoptimized development build
 cargo run --bin cas -- ./nativelink-config/examples/basic_cas.json
 
@@ -207,7 +236,7 @@ cargo run --release --bin cas -- ./nativelink-config/examples/basic_cas.json
 * Nix with [flakes](https://nixos.wiki/wiki/Flakes) enabled
 
 This build does not require cloning the repository, but you need to provide a
-config file, for instance the one at [nativelink-config/examples/basic_cas.json](./nativelink-config/examples/basic_cas.json).
+config file, for instance the one at [nativelink-config/examples/basic_cas.json](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json).
 
 The following command builds and runs Native Link in release (optimized) mode:
 
@@ -229,18 +258,6 @@ export LATEST=$(nix eval github:TraceMachina/nativelink#image.imageTag --raw)
 cosign verify ghcr.io/tracemachina/nativelink:${LATEST} \
     --certificate-identity=https://github.com/TraceMachina/nativelink/.github/workflows/image.yaml@refs/heads/main \
     --certificate-oidc-issuer=https://token.actions.githubusercontent.com
-
-
-For use in production pin the image to a specific revision:
-
-```sh
-# Get the tag for a specific commit
-export PINNED_TAG=$(nix eval github:TraceMachina/nativelink/<revision>#image.imageTag --raw)
-
-# Verify the signature
-cosign verify ghcr.io/tracemachina/nativelink:${PINNED_TAG} \
-    --certificate-identity=https://github.com/TraceMachina/nativelink/.github/workflows/image.yaml@refs/heads/main \
-    --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
 For use in production pin the executable to a specific revision:
@@ -248,10 +265,3 @@ For use in production pin the executable to a specific revision:
 ```sh
 nix run github:TraceMachina/nativelink/<revision> ./basic_cas.json
 ```
-
-## 🚀 Example Deployments
-
-You can find a few example deployments in the [deployment-examples directory](./deployment-examples).
-
-See the [terraform deployments](./deployment-examples/terraform) for an example
-deployments that show off remote execution and cache capabilities.

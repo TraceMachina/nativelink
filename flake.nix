@@ -170,6 +170,7 @@
               pkgs.kubectl
               pkgs.kubernetes-helm
               pkgs.cilium-cli
+              pkgs.yarn
 
               # Additional tools from within our development environment.
               local-image-test
