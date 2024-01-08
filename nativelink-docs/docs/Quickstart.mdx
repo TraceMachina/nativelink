@@ -8,7 +8,7 @@ description: 'Getting started with NativeLink remote execution in <5 minutes.'
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-## 🦀 Installing with Cargo
+## 📦 Installing with Cargo
 
 Install or Update Rust
 
@@ -207,7 +207,23 @@ The `--release` flag causes link-time-optmization to be enabled, which can take 
 
 :::
 
-## 🦀 Building with Cargo
+:::warning
+
+The Rust compiler (rustc) generates numerous artifacts during compilation, 
+including dependencies, macros, and intermediate files. 
+When compiling programs from source, be mindful of the associated files' 
+impact on your disk usage in the bazel-bin/ directory. 
+This directory can grow substantially in size.
+
+If the facing issues due to this, run the following command 
+to clear cache files:
+```sh
+bazel clean --expunge
+```
+
+:::
+
+## 📦 Building with Cargo
 
 **Build requirements:**
 
@@ -228,6 +244,22 @@ cargo run --bin cas -- ./nativelink-config/examples/basic_cas.json
 # Optimized release build
 cargo run --release --bin cas -- ./nativelink-config/examples/basic_cas.json
 ```
+
+:::warning
+
+The Rust compiler (rustc) generates numerous artifacts during compilation, 
+including dependencies, macros, and intermediate files. 
+When compiling programs from source, be mindful of the associated files' 
+impact on your disk usage in the target/ directory. 
+This directory can grow substantially in size.
+
+If the facing issues due to this, run the following command 
+to clear cache files:
+```sh
+cargo clean
+```
+
+:::
 
 ## ❄️ Installing with Nix
 
