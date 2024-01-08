@@ -17,7 +17,7 @@ Supports Unix-based operating systems and Windows.
 Below, you will find a few different options for getting started with Native Link.
 
 
-### 🦀 Installing with Cargo
+### 📦 Installing with Cargo
 
 ```bash
 cargo install --git https://github.com/TraceMachina/nativelink --tag v0.2.0
@@ -121,7 +121,20 @@ bazel run --config=windows nativelink -- $(pwd)/nativelink-config/examples/basic
 bazel run --config=windows -c opt nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
 ```
 
-## 🦀 Building with Cargo
+> [!WARNING]
+> The Rust compiler (rustc) generates numerous artifacts during compilation, 
+> including dependencies, macros, and intermediate files. 
+> When compiling programs from source, be mindful of the associated files' 
+> impact on your disk usage in the bazel-bin/ directory. 
+> This directory can grow substantially in size.
+>
+> If the facing issues due to this, run the following command
+> to clear cache files:
+> ```sh
+> bazel clean --expunge
+> ```
+
+## 📦 Building with Cargo
 
 **Build requirements:**
 
@@ -139,6 +152,19 @@ cargo run --bin nativelink -- ./nativelink-config/examples/basic_cas.json
 # Optimized release build
 cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.json
 ```
+
+> [!WARNING]
+> The Rust compiler (rustc) generates numerous artifacts during compilation, 
+> including dependencies, macros, and intermediate files. 
+> When compiling programs from source, be mindful of the associated files' 
+> impact on your disk usage in the target/ directory. 
+> This directory can grow substantially in size.
+>
+> If the facing issues due to this, run the following command
+> to clear cache files:
+> ```sh
+> cargo clean
+> ```
 
 ## 🚀 Example Deployments
 
