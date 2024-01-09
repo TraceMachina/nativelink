@@ -20,7 +20,7 @@ use crate::schedulers::SchedulerConfig;
 use crate::serde_utils::{
     convert_numeric_with_shellexpand, convert_optinoal_numeric_with_shellexpand, convert_string_with_shellexpand,
 };
-use crate::stores::{StoreConfig, StoreRefName};
+use crate::stores::{ConfigDigestHashFunction, StoreConfig, StoreRefName};
 
 /// Name of the scheduler. This type will be used when referencing a
 /// scheduler in the `CasConfig::schedulers`'s map key.
@@ -541,18 +541,6 @@ pub struct LocalWorkerConfig {
 pub enum WorkerConfig {
     /// A worker type that executes jobs locally on this machine.
     local(LocalWorkerConfig),
-}
-
-#[allow(non_camel_case_types)]
-#[derive(Deserialize, Debug, Clone, Copy)]
-pub enum ConfigDigestHashFunction {
-    /// Use the sha256 hash function.
-    /// <https://en.wikipedia.org/wiki/SHA-2>
-    sha256,
-
-    /// Use the blake3 hash function.
-    /// <https://en.wikipedia.org/wiki/BLAKE_(hash_function)>
-    blake3,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]
