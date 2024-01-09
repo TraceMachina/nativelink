@@ -297,9 +297,7 @@ impl GrpcStore {
                     let stream = unfold((None, local_state.clone()), move |(stream, local_state)| async {
                         // Only consume the stream on the first request to read,
                         // then pass it for future requests in the unfold.
-                        let Some(mut stream) = stream.or_else(|| local_state.read_stream.lock().take()) else {
-                            return None;
-                        };
+                        let mut stream = stream.or_else(|| local_state.read_stream.lock().take())?;
                         let maybe_message = stream.next().await;
                         if let Ok(maybe_message) = maybe_message {
                             if let Some(mut message) = maybe_message {
