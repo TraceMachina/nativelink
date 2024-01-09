@@ -40,7 +40,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
-                verify_hash: false,
+                hash_verification_function: None,
             },
             inner_store.clone(),
         );
@@ -72,7 +72,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: true,
-                verify_hash: false,
+                hash_verification_function: None,
             },
             inner_store.clone(),
         );
@@ -112,7 +112,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: true,
-                verify_hash: false,
+                hash_verification_function: None,
             },
             inner_store.clone(),
         );
@@ -139,7 +139,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: true,
-                verify_hash: false,
+                hash_verification_function: None,
             },
             inner_store.clone(),
         );
@@ -167,7 +167,7 @@ mod verify_store_tests {
     }
 
     #[tokio::test]
-    async fn verify_hash_true_suceeds_on_update() -> Result<(), Error> {
+    async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
@@ -175,7 +175,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
-                verify_hash: true,
+                hash_verification_function: Some(nativelink_config::stores::ConfigDigestHashFunction::sha256),
             },
             inner_store.clone(),
         );
@@ -196,7 +196,7 @@ mod verify_store_tests {
     }
 
     #[tokio::test]
-    async fn verify_hash_true_fails_on_update() -> Result<(), Error> {
+    async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
@@ -204,7 +204,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
-                verify_hash: true,
+                hash_verification_function: Some(nativelink_config::stores::ConfigDigestHashFunction::sha256),
             },
             inner_store.clone(),
         );
@@ -217,6 +217,72 @@ mod verify_store_tests {
         let result = store.update_oneshot(digest, VALUE.into()).await;
         let err = result.unwrap_err().to_string();
         const ACTUAL_HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
+        let expected_err = format!("Hashes do not match, got: {} but digest hash was {}", HASH, ACTUAL_HASH);
+        assert!(
+            err.contains(&expected_err),
+            "Error should contain '{}', got: {:?}",
+            expected_err,
+            err
+        );
+        assert_eq!(
+            Pin::new(inner_store.as_ref()).has(digest).await,
+            Ok(None),
+            "Expected data to not exist in store after update"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
+        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let store_owned = VerifyStore::new(
+            &nativelink_config::stores::VerifyStore {
+                backend: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
+                verify_size: false,
+                hash_verification_function: Some(nativelink_config::stores::ConfigDigestHashFunction::blake3),
+            },
+            inner_store.clone(),
+        );
+        let store = Pin::new(&store_owned);
+
+        /// This value is blake3("123").
+        const HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
+        const VALUE: &str = "123";
+        let digest = DigestInfo::try_new(HASH, 3).unwrap();
+        let result = store.update_oneshot(digest, VALUE.into()).await;
+        assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
+        assert_eq!(
+            Pin::new(inner_store.as_ref()).has(digest).await,
+            Ok(Some(VALUE.len())),
+            "Expected data to exist in store after update"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
+        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let store_owned = VerifyStore::new(
+            &nativelink_config::stores::VerifyStore {
+                backend: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
+                verify_size: false,
+                hash_verification_function: Some(nativelink_config::stores::ConfigDigestHashFunction::blake3),
+            },
+            inner_store.clone(),
+        );
+        let store = Pin::new(&store_owned);
+
+        /// This value is blake3("12").
+        const HASH: &str = "b944a0a3b20cf5927e594ff306d256d16cd5b0ba3e27b3285f40d7ef5e19695b";
+        const VALUE: &str = "123";
+        let digest = DigestInfo::try_new(HASH, 3).unwrap();
+        let result = store.update_oneshot(digest, VALUE.into()).await;
+        let err = result.unwrap_err().to_string();
+        const ACTUAL_HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
         let expected_err = format!("Hashes do not match, got: {} but digest hash was {}", HASH, ACTUAL_HASH);
         assert!(
             err.contains(&expected_err),

@@ -25,8 +25,9 @@ use futures::FutureExt;
 use hyper::server::conn::Http;
 use hyper::{Response, StatusCode};
 use nativelink_config::cas_server::{
-    CasConfig, CompressionAlgorithm, ConfigDigestHashFunction, GlobalConfig, ListenerConfig, ServerConfig, WorkerConfig,
+    CasConfig, CompressionAlgorithm, GlobalConfig, ListenerConfig, ServerConfig, WorkerConfig,
 };
+use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
 use nativelink_scheduler::worker::WorkerId;
