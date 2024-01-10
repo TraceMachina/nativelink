@@ -172,7 +172,9 @@ where
     }
 
     pub async fn build_lru_index(&self) -> SerializedLRU {
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
+        self.evict_items(state.deref_mut()).await;
+
         let mut serialized_lru = SerializedLRU {
             data: Vec::with_capacity(state.lru.len()),
             anchor_time: self.anchor_time.unix_timestamp(),
@@ -247,33 +249,67 @@ where
         }
     }
 
+    /// Return the size of a `DigestInfo`, if not found `None` is returned.
     pub async fn size_for_key(&self, digest: &DigestInfo) -> Option<usize> {
-        let mut state = self.state.lock().await;
-        let entry = state.lru.get_mut(digest)?;
-        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
-        let data = entry.data.clone();
-        drop(state);
-        data.touch().await;
-        Some(data.len())
+        let mut results = [None];
+        self.sizes_for_keys(&[*digest], &mut results[..]).await;
+        results[0]
     }
 
+    /// Return the sizes of a collection of `DigestInfo`. Expects `results` collection
+    /// to be provided for storing the resulting `DigestInfo` size. Each index value in
+    /// `digests` maps directly to the size value of the `DigestInfo` in `results`.
+    /// If no digest is found in the internal map, `None` is filled in its place.
     pub async fn sizes_for_keys(&self, digests: &[DigestInfo], results: &mut [Option<usize>]) {
         let mut state = self.state.lock().await;
-        let seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
-        let to_touch: Vec<T> = digests
+        self.evict_items(state.deref_mut()).await;
+        let touch_or_remove: Vec<(Option<T>, Option<&DigestInfo>)> = digests
             .iter()
             .zip(results.iter_mut())
-            .filter_map(|(digest, result)| {
-                let entry = state.lru.get_mut(digest)?;
-                entry.seconds_since_anchor = seconds_since_anchor;
-                let data = entry.data.clone();
-                *result = Some(data.len());
-                Some(data)
+            .map(|(digest, result)| {
+                let lru_len = state.lru.len();
+                let sum_store_size = state.sum_store_size;
+                // Determine if a digest should be evicted or data should be touched.
+                // First element in tuple is a data entry, second element is a digest.
+                // First or second element should contain a value, not both, they will
+                // be split and filtered for processing.
+                if let Some(entry) = state.lru.get(digest) {
+                    if self.should_evict(lru_len, entry, sum_store_size, self.max_bytes) {
+                        // Digest should be evicted.
+                        (None, Some(digest))
+                    } else {
+                        // Extract data entry to be touched and slot length into results.
+                        let data = entry.data.clone();
+                        *result = Some(data.len());
+                        (Some(data), None)
+                    }
+                } else {
+                    // Digest will be evicted if not in lru map, this is a pedantic case.
+                    (None, Some(digest))
+                }
             })
             .collect();
+
+        // Split collect into data files for touch/atime update or removal from internal map.
+        let (to_touch, to_remove): (Vec<Option<T>>, Vec<Option<&DigestInfo>>) = touch_or_remove.into_iter().unzip();
+
         drop(state);
+
+        // Create collection of futures to remove digest from internal map.
+        let mut futures = FuturesUnordered::new();
+        to_remove.iter().flatten().for_each(|digest| {
+            futures.push(async move {
+                let mut state = self.state.lock().await;
+                self.inner_remove(state.deref_mut(), digest).await;
+                drop(state);
+            });
+        });
+        while (futures.next().await).is_some() {}
+
+        // Map/Collect calls to touch/atime update LenEntry.
         to_touch
             .iter()
+            .flatten()
             .map(|data| data.touch())
             .collect::<FuturesUnordered<_>>()
             .for_each(|_| future::ready(()))
@@ -282,8 +318,9 @@ where
 
     pub async fn get(&self, digest: &DigestInfo) -> Option<T> {
         let mut state = self.state.lock().await;
+        self.evict_items(state.deref_mut()).await;
+
         if let Some(entry) = state.lru.get_mut(digest) {
-            entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
             let data = entry.data.clone();
             drop(state);
             data.touch().await;
@@ -354,7 +391,8 @@ where
         self.inner_remove(&mut state, digest).await
     }
 
-    async fn inner_remove(&self, state: &mut State<T>, digest: &DigestInfo) -> bool {
+    async fn inner_remove(&self, mut state: &mut State<T>, digest: &DigestInfo) -> bool {
+        self.evict_items(state.deref_mut()).await;
         if let Some(entry) = state.lru.pop(digest) {
             let data_len = entry.data.len() as u64;
             state.sum_store_size -= data_len;
