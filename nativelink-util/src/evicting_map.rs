@@ -248,17 +248,15 @@ where
     }
 
     pub async fn size_for_key(&self, digest: &DigestInfo) -> Option<usize> {
-        let mut state = self.state.lock().await;
-        let entry = state.lru.get_mut(digest)?;
-        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
-        let data = entry.data.clone();
-        drop(state);
-        data.touch().await;
-        Some(data.len())
+        let results = &mut vec![None];
+        self.sizes_for_keys(&[*digest], results).await;
+        results[0]
     }
 
     pub async fn sizes_for_keys(&self, digests: &[DigestInfo], results: &mut [Option<usize>]) {
         let mut state = self.state.lock().await;
+        self.evict_items(state.deref_mut()).await;
+
         let seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
         let to_touch: Vec<T> = digests
             .iter()
@@ -282,6 +280,8 @@ where
 
     pub async fn get(&self, digest: &DigestInfo) -> Option<T> {
         let mut state = self.state.lock().await;
+        self.evict_items(state.deref_mut()).await;
+
         if let Some(entry) = state.lru.get_mut(digest) {
             entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
             let data = entry.data.clone();
@@ -354,7 +354,8 @@ where
         self.inner_remove(&mut state, digest).await
     }
 
-    async fn inner_remove(&self, state: &mut State<T>, digest: &DigestInfo) -> bool {
+    async fn inner_remove(&self, mut state: &mut State<T>, digest: &DigestInfo) -> bool {
+        self.evict_items(state.deref_mut()).await;
         if let Some(entry) = state.lru.pop(digest) {
             let data_len = entry.data.len() as u64;
             state.sum_store_size -= data_len;

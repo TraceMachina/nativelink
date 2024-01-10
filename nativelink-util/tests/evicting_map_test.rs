@@ -300,8 +300,8 @@ mod evicting_map_tests {
 
         assert_eq!(
             evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
-            Some(DATA.len()),
-            "Expected map to have item 1"
+            None,
+            "Expected map to not have item 1"
         );
         assert_eq!(
             evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 0)?).await,
@@ -415,8 +415,8 @@ mod evicting_map_tests {
 
         assert_eq!(
             evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
-            Some(8),
-            "Expected map to have item 1"
+            None,
+            "Expected map to not have item 1"
         );
         assert_eq!(
             evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 0)?).await,
@@ -538,6 +538,63 @@ mod evicting_map_tests {
             None,
             "HASH3/2 should be empty"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_evicts_on_time() -> Result<(), Error> {
+        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+            &EvictionPolicy {
+                max_count: 0,
+                max_seconds: 5,
+                max_bytes: 0,
+                evict_bytes: 0,
+            },
+            MockInstantWrapped(MockInstant::now()),
+        );
+
+        const DATA: &str = "12345678";
+        let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
+        evicting_map.insert(digest_info1, Bytes::from(DATA).into()).await;
+
+        // Getting from map before time has expired should return the value.
+        assert_eq!(evicting_map.get(&digest_info1).await, Some(Bytes::from(DATA).into()));
+
+        MockClock::advance(Duration::from_secs(10));
+
+        // Getting from map after time has expired should return None.
+        assert_eq!(evicting_map.get(&digest_info1).await, None);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remove_evicts_on_time() -> Result<(), Error> {
+        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+            &EvictionPolicy {
+                max_count: 0,
+                max_seconds: 5,
+                max_bytes: 0,
+                evict_bytes: 0,
+            },
+            MockInstantWrapped(MockInstant::now()),
+        );
+
+        const DATA: &str = "12345678";
+        let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
+        evicting_map.insert(digest_info1, Bytes::from(DATA).into()).await;
+
+        let digest_info2: DigestInfo = DigestInfo::try_new(HASH2, 0)?;
+        evicting_map.insert(digest_info2, Bytes::from(DATA).into()).await;
+
+        // Removing digest before time has expired should return true.
+        assert_eq!(evicting_map.remove(&digest_info2).await, true);
+
+        MockClock::advance(Duration::from_secs(10));
+
+        // Removing digest after time has expired should return false.
+        assert_eq!(evicting_map.remove(&digest_info1).await, false);
 
         Ok(())
     }
