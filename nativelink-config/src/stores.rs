@@ -480,6 +480,16 @@ pub struct S3Store {
     /// Default: false
     #[serde(default)]
     pub insecure_allow_http: bool,
+
+    /// Disable http/2 connections and only use http/1.1. Default client
+    /// configuration will have http/1.1 and http/2 enabled for connection
+    /// schemes. Http/2 should be disabled if environments have poor support
+    /// or performance related to http/2. Safe to keep default unless
+    /// underlying network environment or S3 API servers specify otherwise.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub disable_http2: bool,
 }
 
 #[allow(non_camel_case_types)]
