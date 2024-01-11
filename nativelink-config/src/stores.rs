@@ -465,6 +465,12 @@ pub struct S3Store {
     /// Default: false
     #[serde(default)]
     pub insecure_allow_http: bool,
+
+    /// Disable http2 connections and rely on http1 only.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub disable_http2: bool,
 }
 
 #[allow(non_camel_case_types)]
