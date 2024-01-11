@@ -50,6 +50,7 @@ pub enum CompressionAlgorithm {
 /// different ports. Then configure the non-cloud clients to use one port
 /// and cloud-clients to use another.
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CompressionConfig {
     /// The compression algorithm that the server will use when sending
     /// responses to clients. Enabling this will likely save a lot of
@@ -72,6 +73,7 @@ pub struct CompressionConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct AcStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -80,6 +82,7 @@ pub struct AcStoreConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct CasStoreConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -88,6 +91,7 @@ pub struct CasStoreConfig {
 }
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilitiesRemoteExecutionConfig {
     /// Scheduler used to configure the capabilities of remote execution.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -95,6 +99,7 @@ pub struct CapabilitiesRemoteExecutionConfig {
 }
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilitiesConfig {
     /// Configuration for remote execution capabilities.
     /// If not set the capabilities service will inform the client that remote
@@ -103,6 +108,7 @@ pub struct CapabilitiesConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionConfig {
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
@@ -116,6 +122,7 @@ pub struct ExecutionConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
     pub cas_stores: HashMap<InstanceName, StoreRefName>,
@@ -139,6 +146,7 @@ pub struct ByteStreamConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerApiConfig {
     /// The scheduler name referenced in the `schedulers` map in the main config.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -146,6 +154,7 @@ pub struct WorkerApiConfig {
 }
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PrometheusConfig {
     /// Path to register prometheus metrics. If path is "/metrics", and your
     /// domain is "example.com", you can reach the endpoint with:
@@ -157,6 +166,7 @@ pub struct PrometheusConfig {
 }
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AdminConfig {
     /// Path to register the admin API. If path is "/admin", and your
     /// domain is "example.com", you can reach the endpoint with:
@@ -168,6 +178,7 @@ pub struct AdminConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
     /// The key is the instance_name used in the protocol and the
@@ -213,6 +224,7 @@ pub struct ServicesConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     /// Path to the certificate file.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -230,6 +242,7 @@ pub struct TlsConfig {
 /// Note: All of these default to hyper's default values unless otherwise
 /// specified.
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct HttpServerConfig {
     /// Interval to send keep-alive pings via HTTP2.
     /// Note: This is in seconds.
@@ -276,6 +289,7 @@ pub enum ListenerConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct HttpListener {
     /// Address to listen on. Example: `127.0.0.1:8080` or `:8080` to listen
     /// to all IPs.
@@ -299,6 +313,7 @@ pub struct HttpListener {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Name of the server. This is used to help identify the service
     /// for telemetry and logs.
@@ -329,6 +344,7 @@ pub enum WorkerProperty {
 
 /// Generic config for an endpoint and associated configs.
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct EndpointConfig {
     /// URI of the endpoint.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -389,6 +405,7 @@ pub enum EnvironmentSource {
 }
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct UploadActionResultConfig {
     /// Underlying AC store that the worker will use to publish execution results
     /// into. Objects placed in this store should be reachable from the
@@ -447,6 +464,7 @@ pub struct UploadActionResultConfig {
 }
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct LocalWorkerConfig {
     /// Name of the worker. This is give a more friendly name to a worker for logging
     /// and metric publishing.
@@ -544,6 +562,7 @@ pub enum WorkerConfig {
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub struct GlobalConfig {
     /// Maximum number of open files that can be opened at one time.
     /// This value is not strictly enforced, it is a best effort. Some internal libraries
@@ -594,6 +613,7 @@ pub struct GlobalConfig {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct CasConfig {
     /// List of stores available to use in this config.
     /// The keys can be used in other configs when needing to reference a store.

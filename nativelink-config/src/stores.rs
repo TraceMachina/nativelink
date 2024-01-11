@@ -169,6 +169,7 @@ pub enum StoreConfig {
 
 /// Configuration for an individual shard of the store.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ShardConfig {
     /// Store to shard the data to.
     pub store: StoreConfig,
@@ -182,12 +183,14 @@ pub struct ShardConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ShardStore {
     /// Stores to shard the data to.
     pub stores: Vec<ShardConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SizePartitioningStore {
     /// Size to partition the data on.
     #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
@@ -201,6 +204,7 @@ pub struct SizePartitioningStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct RefStore {
     /// Name of the store under the root "stores" config object.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -208,6 +212,7 @@ pub struct RefStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct FilesystemStore {
     /// Path on the system where to store the actual content. This is where
     /// the bulk of the data will be placed.
@@ -238,6 +243,7 @@ pub struct FilesystemStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct FastSlowStore {
     /// Fast store that will be attempted to be contacted before reaching
     /// out to the `slow` store.
@@ -249,6 +255,7 @@ pub struct FastSlowStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryStore {
     /// Policy used to evict items out of the store. Failure to set this
     /// value will cause items to never be removed from the store causing
@@ -257,6 +264,7 @@ pub struct MemoryStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DedupStore {
     /// Store used to store the index of each dedup slice. This store
     /// should generally be fast and small.
@@ -311,6 +319,7 @@ pub struct DedupStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ExistenceCacheStore {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -326,6 +335,7 @@ pub struct ExistenceCacheStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct VerifyStore {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -351,6 +361,7 @@ pub struct VerifyStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct CompletenessCheckingStore {
     /// The underlying store that will have it's results validated before sending to client.
     pub backend: StoreConfig,
@@ -361,6 +372,7 @@ pub struct CompletenessCheckingStore {
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub struct Lz4Config {
     /// Size of the blocks to compress.
     /// Higher values require more ram, but might yield slightly better
@@ -396,6 +408,7 @@ pub enum CompressionAlgorithm {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct CompressionStore {
     /// The underlying store wrap around. All content will first flow
     /// through self before forwarding to backend. In the event there
@@ -413,6 +426,7 @@ pub struct CompressionStore {
 /// eviction policy removing any expired entries and/or the oldest entries
 /// until the store size becomes smaller than max_bytes.
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct EvictionPolicy {
     /// Maximum number of bytes before eviction takes place.
     /// Default: 0. Zero means never evict based on size.
@@ -438,6 +452,7 @@ pub struct EvictionPolicy {
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct S3Store {
     /// S3 region. Usually us-east-1, us-west-2, af-south-1, exc...
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -477,6 +492,7 @@ pub enum StoreType {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct GrpcStore {
     /// Instance name for GRPC calls. Proxy calls will have the instance_name changed to this.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
@@ -516,6 +532,7 @@ pub struct GrpcStore {
 /// Remember that to get total results is additive, meaning the above results
 /// would mean a single request would have a total delay of 9.525s - 15.875s.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Retry {
     /// Maximum number of retries until retrying stops.
     /// Setting this to zero will always attempt 1 time, but not retry.

@@ -66,6 +66,7 @@ pub enum WorkerAllocationStrategy {
 }
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SimpleScheduler {
     /// A list of supported platform properties mapped to how these properties
     /// are used when the scheduler looks for worker nodes capable of running
@@ -125,6 +126,7 @@ pub struct SimpleScheduler {
 /// the main cluster of workers.  In general, it's more efficient to point the
 /// build at the main scheduler directly though.
 #[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct GrpcScheduler {
     /// The upstream scheduler to forward requests to.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
@@ -135,6 +137,7 @@ pub struct GrpcScheduler {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct CacheLookupScheduler {
     /// The reference to the action cache store to use to returned cached
     /// actions from rather than running them again.
@@ -150,6 +153,7 @@ pub struct CacheLookupScheduler {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct PlatformPropertyAddition {
     /// The name of the property to add.
     pub name: String,
@@ -167,6 +171,7 @@ pub enum PropertyModification {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct PropertyModifierScheduler {
     /// A list of modifications to perform to incoming actions for the nested
     /// scheduler.  These are performed in order and blindly, so removing a
