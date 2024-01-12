@@ -303,18 +303,32 @@ impl DropCloserReadHalf {
         let (first_chunk, second_chunk) = {
             // This is an optimization for a relatively common case when the first chunk in the
             // stream satisfies all the requirements to fill this `take()`.
-            // This will us from needing to copy the data into a new buffer and instead we can
+            // This will prevent us from needing to copy the data into a new buffer and instead we can
             // just forward on the original Bytes object. If we need more than the first chunk
             // we will then go the slow path and actually copy our data.
+
+            // 1. Read some data from our stream (or self.partial).
             let mut first_chunk = self.recv().await.err_tip(|| "During first buf_channel::take()")?;
+            assert!(
+                self.partial.is_none(),
+                "Partial should have been consumed during the recv()"
+            );
+            // 2. Split our data so `first_chunk` is <= `size` and puts any remaining
+            //    in `self.partial` (or set it to None).
             populate_partial_if_needed(0, size, &mut first_chunk, &mut self.partial);
-            if first_chunk.is_empty() || first_chunk.len() >= size {
-                assert!(
-                    first_chunk.is_empty() || first_chunk.len() == size,
-                    "Length should be exactly size here"
-                );
+            // 3a. If our `first_chunk` is EOF, we are done.
+            if first_chunk.is_empty() {
                 return Ok(first_chunk);
             }
+            // 3b. If our first_chunk has data and it our self.partial was filled it means our stream has more data.
+            if self.partial.is_some() {
+                assert!(first_chunk.len() == size, "Length should be exactly size here");
+                return Ok(first_chunk);
+            }
+            assert!(
+                self.partial.is_none(),
+                "If `first_chunk`'s len is < size and not EOF, partial should be None"
+            );
 
             let mut second_chunk = self.recv().await.err_tip(|| "During second buf_channel::take()")?;
             if second_chunk.is_empty() {
@@ -333,20 +347,28 @@ impl DropCloserReadHalf {
 
         loop {
             let mut chunk = self.recv().await.err_tip(|| "During buf_channel::take()")?;
+            assert!(
+                self.partial.is_none(),
+                "Partial should have been consumed during the recv()"
+            );
             if chunk.is_empty() {
-                break; // EOF.
+                // Forward EOF to next recv() and return our current buffer.
+                self.partial = Some(Ok(chunk));
+                return Ok(output.freeze());
             }
 
             populate_partial_if_needed(output.len(), size, &mut chunk, &mut self.partial);
 
             output.put(chunk);
 
-            if output.len() >= size {
-                assert!(output.len() == size); // Length should never be larger than size here.
-                break;
+            if output.len() == size && self.partial.is_some() {
+                return Ok(output.freeze());
             }
+            assert!(
+                output.len() <= size,
+                "Length should never be larger than size in take()"
+            );
         }
-        Ok(output.freeze())
     }
 }
 
