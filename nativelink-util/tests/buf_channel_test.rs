@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use tokio::try_join;
@@ -25,6 +25,7 @@ mod buf_channel_tests {
 
     const DATA1: &str = "foo";
     const DATA2: &str = "bar";
+    const DATA3: &str = "foobar1234";
 
     #[tokio::test]
     async fn smoke_test() -> Result<(), Error> {
@@ -219,6 +220,42 @@ mod buf_channel_tests {
             Result::<(), Error>::Ok(())
         };
         try_join!(tx_fut, rx_fut)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn send_and_take_test() -> Result<(), Error> {
+        for data_size in 1..11 {
+            // Create a random bytes of `data_size`.
+            let data: Vec<u8> = DATA3.as_bytes()[0..data_size].to_vec();
+
+            for write_size in 1..11 {
+                for read_size in 1..11 {
+                    let tx_data = Bytes::from(data.clone());
+                    let expected_data = Bytes::from(data.clone());
+
+                    let (mut tx, mut rx) = make_buf_channel_pair();
+
+                    let tx_fut = async move {
+                        for i in (0..data_size).step_by(write_size) {
+                            tx.send(tx_data.slice(i..std::cmp::min(data_size, i + write_size)))
+                                .await?;
+                        }
+                        tx.send_eof().await?;
+                        Result::<(), Error>::Ok(())
+                    };
+                    let rx_fut = async move {
+                        let mut round_trip_data = BytesMut::new();
+                        for _ in (0..data_size).step_by(read_size) {
+                            round_trip_data.extend(rx.take(read_size).await?.iter());
+                        }
+                        assert_eq!(round_trip_data.freeze(), expected_data);
+                        Result::<(), Error>::Ok(())
+                    };
+                    try_join!(tx_fut, rx_fut)?;
+                }
+            }
+        }
         Ok(())
     }
 
