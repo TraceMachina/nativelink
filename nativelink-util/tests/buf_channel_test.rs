@@ -223,6 +223,44 @@ mod buf_channel_tests {
     }
 
     #[tokio::test]
+    async fn send_and_take_test() -> Result<(), Error> {
+        for data_size in 1..11 {
+            // Create a random bytes of `data_size`.
+            let data: Vec<u8> = std::iter::repeat_with(|| rand::random::<u8>())
+                .take(data_size)
+                .collect();
+
+            for write_size in 1..11 {
+                for read_size in 1..11 {
+                    let tx_data = Bytes::from(data.clone());
+                    let rx_data = Bytes::from(data.clone());
+
+                    let (mut tx, mut rx) = make_buf_channel_pair();
+
+                    let tx_fut = async move {
+                        for i in (0..data_size).step_by(write_size) {
+                            tx.send(tx_data.slice(i..std::cmp::min(data_size, i + write_size)))
+                                .await?;
+                        }
+                        tx.send_eof().await?;
+                        Result::<(), Error>::Ok(())
+                    };
+                    let rx_fut = async move {
+                        let mut rx_mut_data = bytes::BytesMut::new();
+                        for _ in (0..data_size).step_by(read_size) {
+                            rx_mut_data.extend(rx.take(read_size).await?.iter());
+                        }
+                        assert_eq!(rx_mut_data.freeze(), rx_data);
+                        Result::<(), Error>::Ok(())
+                    };
+                    try_join!(tx_fut, rx_fut)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn rx_gets_error_if_tx_drops_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let tx_fut = async move {
