@@ -6,26 +6,20 @@
 {
   "stores": {
     "CAS_MAIN_STORE": {
-      "verify": {
+      "compression": {
+        "compression_algorithm": {
+          "lz4": {}
+        },
         "backend": {
-          "compression": {
-            "compression_algorithm": {
-              "lz4": {}
-            },
-            "backend": {
-              "filesystem": {
-                "content_path": "~/.cache/nativelink/content_path-cas",
-                "temp_path": "~/.cache/nativelink/tmp_path-cas",
-                "eviction_policy": {
-                  // 10gb.
-                  "max_bytes": 10000000000,
-                }
-              }
+          "filesystem": {
+            "content_path": "~/.cache/nativelink/content_path-cas",
+            "temp_path": "~/.cache/nativelink/tmp_path-cas",
+            "eviction_policy": {
+              // 10gb.
+              "max_bytes": 10000000000,
             }
           }
-        },
-        "verify_size": true,
-        "hash_verification_function": "sha256"
+        }
       }
     },
     "AC_MAIN_STORE": {
