@@ -411,7 +411,7 @@ impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T,
                 &state.sum_store_size,
                 "Total size of all items in the store",
             );
-            c.publish("items_in_store_total", &state.lru.len(), "Mumber of items in the store");
+            c.publish("items_in_store_total", &state.lru.len(), "Number of items in the store");
             c.publish(
                 "oldest_item_timestamp",
                 &state

@@ -316,7 +316,7 @@ impl ByteStreamServer {
                                     // Trim the error code. Not Found is quite common and we don't want to send a large
                                     // error (debug) message for something that is common. We resize to just the last
                                     // message as it will be the most relevant.
-                                    e.messages.resize_with(1, || "".to_string());
+                                    e.messages.truncate(1);
                                 }
                                 info!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: Error {:?}", e);
                                 return Some((Err(e.into()), None))

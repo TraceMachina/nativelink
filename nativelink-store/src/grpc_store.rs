@@ -646,9 +646,7 @@ impl Store for GrpcStore {
                 .message()
                 .await
                 .err_tip(|| "While fetching message in GrpcStore::get_part()")?;
-            let message = if let Some(message) = maybe_message {
-                message
-            } else {
+            let Some(message) = maybe_message else {
                 writer
                     .send_eof()
                     .await
