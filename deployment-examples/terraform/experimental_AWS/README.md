@@ -15,7 +15,8 @@ It may take a few mins to propagate
 ## Terraform Setup
 1. [Install terraform](https://www.terraform.io/downloads)
 2. Open terminal and run `terraform init` in this directory
-3. Run `terraform apply -var base_domain=INSERT_DOMAIN_NAME_YOU_SETUP_IN_PREREQUISITES_HERE`
+3. Ensure you have a configured AWS CLI IAM credentialed user https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html
+4. Run `terraform apply -var base_domain=INSERT_DOMAIN_NAME_YOU_SETUP_IN_PREREQUISITES_HERE`
 
 It will take some time to apply, when it is finished everything should be running. The endpoints are:
 ```
