@@ -82,7 +82,11 @@ impl TlsConnector {
             connector_with_roots.https_only()
         };
 
-        let connector = connector_with_schemes.enable_http1().enable_http2().build();
+        let connector = if config.disable_http2 {
+            connector_with_schemes.enable_http1().build()
+        } else {
+            connector_with_schemes.enable_http1().enable_http2().build()
+        };
 
         Self {
             connector,
