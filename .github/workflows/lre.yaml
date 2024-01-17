@@ -59,13 +59,20 @@ jobs:
         uses: >- # Custom commit, last pinned at 2023-11-17.
           DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
 
-      - name: Start Kubernetes cluster
+      - name: Start Kubernetes cluster (Infra)
         run: >
           nix develop --impure --command
-          bash -c "cd deployment-examples/kubernetes \
-            && ./00_infra.sh \
-            && ./01_operations.sh \
-            && ./02_application.sh"
+          bash -c "./deployment-examples/kubernetes/00_infra.sh"
+
+      - name: Start Kubernetes cluster (Operations)
+        run: >
+          nix develop --impure --command
+          bash -c "./deployment-examples/kubernetes/01_operations.sh"
+
+      - name: Start Kubernetes cluster (Application)
+        run: >
+          nix develop --impure --command
+          bash -c "./deployment-examples/kubernetes/02_application.sh"
 
       - name: Get gateway IPs
         id: gateway-ips
