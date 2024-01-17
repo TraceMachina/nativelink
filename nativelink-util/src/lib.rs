@@ -24,5 +24,6 @@ pub mod platform_properties;
 pub mod resource_info;
 pub mod retry;
 pub mod store_trait;
+pub mod tls_utils;
 pub mod write_counter;
 pub mod write_request_stream_wrapper;

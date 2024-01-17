@@ -14,7 +14,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
+use crate::serde_utils::{
+    convert_numeric_with_shellexpand, convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
+};
 
 /// Name of the store. This type will be used when referencing a store
 /// in the `CasConfig::stores`'s map key.
@@ -502,6 +504,21 @@ pub enum StoreType {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ClientTlsConfig {
+    /// Path to the certificate authority to use to validate the remote.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub ca_file: String,
+
+    /// Path to the certificate file for client authentication.
+    #[serde(deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub cert_file: Option<String>,
+
+    /// Path to the private key file for client authentication.
+    #[serde(deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub key_file: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcStore {
     /// Instance name for GRPC calls. Proxy calls will have the instance_name changed to this.
@@ -518,6 +535,9 @@ pub struct GrpcStore {
     /// Retry configuration to use when a network request fails.
     #[serde(default)]
     pub retry: Retry,
+
+    /// The TLS configuration to use to connect to the endpoints.
+    pub tls_config: Option<ClientTlsConfig>,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
