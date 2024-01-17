@@ -163,7 +163,12 @@ impl DropCloserReadHalf {
     /// Receive a chunk of data.
     pub async fn recv(&mut self) -> Result<Bytes, Error> {
         let maybe_chunk = match self.partial.take() {
-            Some(result_bytes) => Some(result_bytes),
+            // `partial` is allowed to have empty bytes that represent EOF (as
+            // returned in the None case below), but `self.rx.recv()` should
+            // never respond with empty bytes as EOF.  If `partial` is empty,
+            // then pass None to simulate the stream's version of EOF.
+            Some(Ok(result_bytes)) => (!result_bytes.is_empty()).then(|| Ok(result_bytes)),
+            Some(Err(cached_error)) => Some(Err(cached_error)),
             None => self.rx.recv().await,
         };
         match maybe_chunk {
