@@ -52,6 +52,7 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
 }
 
 /// Writer half of the pair.
+#[derive(Debug)]
 pub struct DropCloserWriteHalf {
     tx: Option<mpsc::Sender<Result<Bytes, Error>>>,
     bytes_written: u64,

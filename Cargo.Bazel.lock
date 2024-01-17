@@ -1,5 +1,5 @@
 {
-  "checksum": "a6b16863ad5d0a1a72b20d57a7b103696e736e78f865de8cee087e4876a07970",
+  "checksum": "0537a3af4c115d803aa31489688679acfecd43a5d05b79d2e6cb5e8f1dc21951",
   "crates": {
     "addr2line 0.21.0": {
       "name": "addr2line",
@@ -8522,6 +8522,10 @@
             {
               "id": "shellexpand 3.1.0",
               "target": "shellexpand"
+            },
+            {
+              "id": "tracing 0.1.40",
+              "target": "tracing"
             }
           ],
           "selects": {}
@@ -8572,6 +8576,10 @@
             {
               "id": "tonic 0.10.2",
               "target": "tonic"
+            },
+            {
+              "id": "tracing 0.1.40",
+              "target": "tracing"
             }
           ],
           "selects": {}
