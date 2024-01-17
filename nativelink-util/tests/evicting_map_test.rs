@@ -336,8 +336,9 @@ mod evicting_map_tests {
                 unreachable!("We are not testing this functionality");
             }
 
-            async fn touch(&self) {
+            async fn touch(&self) -> bool {
                 // Do nothing. We are not testing this functionality.
+                true
             }
 
             async fn unref(&self) {
