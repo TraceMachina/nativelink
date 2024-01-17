@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
-use futures::{future, join, FutureExt, StreamExt};
+use futures::{future, join, StreamExt};
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use serde::{Deserialize, Serialize};
@@ -71,9 +71,12 @@ pub trait LenEntry: 'static {
     /// Returns `true` if `self` has zero length.
     fn is_empty(&self) -> bool;
 
-    /// Called when an entry is touched.
+    /// Called when an entry is touched.  On failure, will remove the entry
+    /// from the map.
     #[inline]
-    async fn touch(&self) {}
+    async fn touch(&self) -> bool {
+        true
+    }
 
     /// This will be called when object is removed from map.
     /// Note: There may still be a reference to it held somewhere else, which
@@ -104,8 +107,8 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 
     #[inline]
-    async fn touch(&self) {
-        self.as_ref().touch().await;
+    async fn touch(&self) -> bool {
+        self.as_ref().touch().await
     }
 
     #[inline]
@@ -126,6 +129,21 @@ struct State<T: LenEntry + Debug> {
     removed_bytes: Counter,
     removed_items: CounterWithTime,
     lifetime_inserted_bytes: Counter,
+}
+
+impl<T: LenEntry + Debug + Sync> State<T> {
+    async fn remove(&mut self, eviction_item: &EvictionItem<T>, replaced: bool) {
+        self.sum_store_size -= eviction_item.data.len() as u64;
+        if replaced {
+            self.replaced_items.inc();
+            self.replaced_bytes.add(eviction_item.data.len() as u64);
+        } else {
+            self.evicted_items.inc();
+            self.evicted_bytes.add(eviction_item.data.len() as u64);
+        }
+        // Note: See comment in `unref()` requring global lock of insert/remove.
+        eviction_item.data.unref().await;
+    }
 }
 
 pub struct EvictingMap<T: LenEntry + Debug, I: InstantWrapper> {
@@ -234,12 +252,8 @@ where
 
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
             let (key, eviction_item) = state.lru.pop_lru().expect("Tried to peek() then pop() but failed");
-            state.sum_store_size -= eviction_item.data.len() as u64;
-            state.evicted_items.inc();
-            state.evicted_bytes.add(eviction_item.data.len() as u64);
-            // Note: See comment in `unref()` requring global lock of insert/remove.
-            eviction_item.data.unref().await;
             info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.hash_str());
+            state.remove(&eviction_item, false).await;
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
@@ -256,6 +270,21 @@ where
         results[0]
     }
 
+    async fn touch_or_remove(&self, digest: &DigestInfo, data: T) -> Option<T> {
+        if data.touch().await {
+            return Some(data);
+        }
+
+        let mut state = self.state.lock().await;
+        let (key, eviction_item) = state.lru.pop_entry(digest)?;
+        info!(
+            "\x1b[0;31mEvicting Map\x1b[0m: Touch failed, evicting {}",
+            key.hash_str()
+        );
+        state.remove(&eviction_item, false).await;
+        None
+    }
+
     /// Return the sizes of a collection of `DigestInfo`. Expects `results` collection
     /// to be provided for storing the resulting `DigestInfo` size. Each index value in
     /// `digests` maps directly to the size value of the `DigestInfo` in `results`.
@@ -264,25 +293,26 @@ where
         let mut state = self.state.lock().await;
         let mut remove_digests: Vec<&DigestInfo> = Vec::new();
 
-        let to_touch: Vec<T> = digests
+        let mut lru_len = state.lru.len();
+        let mut sum_store_size = state.sum_store_size;
+        let to_touch_or_remove: Vec<Option<T>> = digests
             .iter()
-            .zip(results.iter_mut())
-            .flat_map(|(digest, result)| {
-                let lru_len = state.lru.len();
-                let sum_store_size = state.sum_store_size;
+            .map(|digest| {
                 // Determine if a digest should be evicted or data should be touched.
                 // Digests to be eviected are collected in separate vector and chained
                 // in a single future.
                 if let Some(entry) = state.lru.get(digest) {
                     if self.should_evict(lru_len, entry, sum_store_size, self.max_bytes) {
+                        // Important to track the eviction size, otherwise if we
+                        // reach the maximum we end up eviciting everything!
+                        sum_store_size -= entry.data.len() as u64;
+                        lru_len -= 1;
                         // Digest should be evicted.
                         remove_digests.push(digest);
                         None
                     } else {
-                        // Extract data entry to be touched and slot length into results.
-                        let data = entry.data.clone();
-                        *result = Some(data.len());
-                        Some(data)
+                        // Extract data entry to be touched.
+                        Some(entry.data.clone())
                     }
                 } else {
                     // Digest will be evicted if not in lru map, this is a pedantic case.
@@ -293,14 +323,23 @@ where
             .collect();
 
         join!(
-            to_touch
-                .iter()
-                .map(|data| data.touch().map(|_| ()))
+            to_touch_or_remove
+                .into_iter()
+                .zip(results.iter_mut())
+                .zip(digests.iter())
+                .filter_map(|((data, result), digest)| Some((data?, result, digest)))
+                .map(|(data, result, digest)| async move {
+                    *result = self.touch_or_remove(digest, data).await.map(|data| data.len());
+                })
                 .collect::<FuturesUnordered<_>>()
                 .for_each(|_| future::ready(())),
             async move {
                 for digest in remove_digests {
-                    self.inner_remove(state.deref_mut(), digest).await;
+                    // Do not use inner_remove as it calls evict_items, which
+                    // is precisely what we're doing here.
+                    if let Some(entry) = state.lru.pop(digest) {
+                        state.remove(&entry, false).await;
+                    }
                 }
             }
         );
@@ -310,13 +349,10 @@ where
         let mut state = self.state.lock().await;
         self.evict_items(state.deref_mut()).await;
 
-        if let Some(entry) = state.lru.get_mut(digest) {
-            let data = entry.data.clone();
-            drop(state);
-            data.touch().await;
-            return Some(data);
-        }
-        None
+        let entry = state.lru.get_mut(digest)?;
+        let data = entry.data.clone();
+        drop(state);
+        self.touch_or_remove(digest, data).await
     }
 
     /// Returns the replaced item if any.
@@ -362,11 +398,7 @@ where
             };
 
             if let Some(old_item) = state.lru.put(digest, eviction_item) {
-                state.sum_store_size -= old_item.data.len() as u64;
-                state.replaced_items.inc();
-                state.replaced_bytes.add(old_item.data.len() as u64);
-                // Note: See comment in `unref()` requring global lock of insert/remove.
-                old_item.data.unref().await;
+                state.remove(&old_item, true).await;
                 replaced_items.push(old_item.data);
             }
             state.sum_store_size += new_item_size;
@@ -384,12 +416,7 @@ where
     async fn inner_remove(&self, mut state: &mut State<T>, digest: &DigestInfo) -> bool {
         self.evict_items(state.deref_mut()).await;
         if let Some(entry) = state.lru.pop(digest) {
-            let data_len = entry.data.len() as u64;
-            state.sum_store_size -= data_len;
-            state.removed_items.inc();
-            state.removed_bytes.add(data_len);
-            // Note: See comment in `unref()` requring global lock of insert/remove.
-            entry.data.unref().await;
+            state.remove(&entry, false).await;
             return true;
         }
         false

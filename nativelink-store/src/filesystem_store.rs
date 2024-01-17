@@ -266,7 +266,7 @@ impl LenEntry for FileEntryImpl {
     }
 
     #[inline]
-    async fn touch(&self) {
+    async fn touch(&self) -> bool {
         let result = self
             .get_file_path_locked(move |full_content_path| async move {
                 spawn_blocking(move || {
@@ -284,8 +284,10 @@ impl LenEntry for FileEntryImpl {
             })
             .await;
         if let Err(e) = result {
-            error!("{}", e);
+            error!("{e}");
+            return false;
         }
+        true
     }
 
     // unref() only triggers when an item is removed from the eviction_map. It is possible
