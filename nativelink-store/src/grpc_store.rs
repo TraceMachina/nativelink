@@ -45,7 +45,7 @@ use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::time::sleep;
 use tonic::transport::Channel;
-use tonic::{transport, IntoRequest, Request, Response, Streaming};
+use tonic::{transport, IntoRequest, Request, Response, Status, Streaming};
 use tracing::error;
 use uuid::Uuid;
 
@@ -63,6 +63,22 @@ pub struct GrpcStore {
     jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     retry: nativelink_config::stores::Retry,
     retrier: Retrier,
+}
+
+struct FirstStream {
+    first_response: Option<Option<ReadResponse>>,
+    stream: Streaming<ReadResponse>,
+}
+
+impl Stream for FirstStream {
+    type Item = Result<ReadResponse, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        if let Some(first_response) = self.first_response.take() {
+            return std::task::Poll::Ready(first_response.map(Ok));
+        }
+        Pin::new(&mut self.stream).poll_next(cx)
+    }
 }
 
 impl GrpcStore {
@@ -233,7 +249,7 @@ impl GrpcStore {
     pub async fn read(
         &self,
         grpc_request: impl IntoRequest<ReadRequest>,
-    ) -> Result<Response<Streaming<ReadResponse>>, Error> {
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
         error_if!(
             matches!(self.store_type, nativelink_config::stores::StoreType::ac),
             "CAS operation on AC store"
@@ -253,11 +269,21 @@ impl GrpcStore {
         );
 
         self.perform_request(request, |request| async move {
-            self.bytestream_client
+            let mut response = self
+                .bytestream_client
                 .clone()
                 .read(Request::new(request))
                 .await
-                .err_tip(|| "in GrpcStore::read")
+                .err_tip(|| "in GrpcStore::read")?
+                .into_inner();
+            let first_response = response
+                .message()
+                .await
+                .err_tip(|| "Fetching first chunk in GrpcStore::read()")?;
+            Ok(FirstStream {
+                first_response: Some(first_response),
+                stream: response,
+            })
         })
         .await
     }
@@ -640,20 +666,18 @@ impl Store for GrpcStore {
                 read_limit: length.unwrap_or(0) as i64,
             }))
             .await
-            .err_tip(|| "in GrpcStore::get_part()")?
-            .into_inner();
+            .err_tip(|| "in GrpcStore::get_part()")?;
 
         loop {
-            let maybe_message = stream
-                .message()
-                .await
-                .err_tip(|| "While fetching message in GrpcStore::get_part()")?;
-            let Some(message) = maybe_message else {
-                writer
-                    .send_eof()
-                    .await
-                    .err_tip(|| "Could not send eof in GrpcStore::get_part()")?;
-                break; // EOF.
+            let message = match future::poll_fn(|cx| Pin::new(&mut stream).poll_next(cx)).await {
+                Some(message) => message.err_tip(|| "While fetching message in GrpcStore::get_part()")?,
+                None => {
+                    writer
+                        .send_eof()
+                        .await
+                        .err_tip(|| "Could not send eof in GrpcStore::get_part()")?;
+                    break; // EOF.
+                }
             };
             if message.data.is_empty() {
                 writer

@@ -163,7 +163,8 @@ impl DropCloserReadHalf {
     /// Receive a chunk of data.
     pub async fn recv(&mut self) -> Result<Bytes, Error> {
         let maybe_chunk = match self.partial.take() {
-            Some(result_bytes) => Some(result_bytes),
+            // Only return bytes if we haven't already reached EOF.
+            Some(result_bytes) => self.close_tx.is_some().then_some(result_bytes),
             None => self.rx.recv().await,
         };
         match maybe_chunk {
