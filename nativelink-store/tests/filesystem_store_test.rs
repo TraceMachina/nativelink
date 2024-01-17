@@ -122,7 +122,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<H
         self.inner.as_ref().unwrap().is_empty()
     }
 
-    async fn touch(&self) {
+    async fn touch(&self) -> bool {
         self.inner.as_ref().unwrap().touch().await
     }
 
@@ -1004,7 +1004,6 @@ mod filesystem_store_tests {
 
                 // Test that the empty digest file is created and contains an empty length.
                 if file_metadata.is_file() && file_metadata.len() == 0 {
-                    println!("{}", file_metadata.is_file());
                     return Ok(());
                 }
             }
@@ -1040,7 +1039,7 @@ mod filesystem_store_tests {
                     ..Default::default()
                 },
                 |_| sleep(Duration::ZERO),
-                |_, _| {
+                |from, to| {
                     // If someone locked our mutex, it means we need to pause, so we
                     // simply request a lock on the same mutex.
                     if RENAME_REQUEST_PAUSE_MUX.try_lock().is_err() {
@@ -1048,7 +1047,7 @@ mod filesystem_store_tests {
                         let _lock = RENAME_REQUEST_PAUSE_MUX.lock();
                         RENAME_IS_PAUSED.store(false, Ordering::Release);
                     }
-                    Ok(())
+                    std::fs::rename(from, to)
                 },
             )
             .await?,
@@ -1102,6 +1101,37 @@ mod filesystem_store_tests {
                 Ok(())
             })
             .await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deleted_file_removed_from_store() -> Result<(), Error> {
+        let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+
+        let store = Box::pin(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    read_buffer_size: 1,
+                    ..Default::default()
+                },
+                |_| sleep(Duration::ZERO),
+                |from, to| std::fs::rename(from, to),
+            )
+            .await?,
+        );
+
+        store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
+
+        let stored_file_path = OsString::from(format!("{}/{}-{}", content_path, digest.hash_str(), digest.size_bytes));
+        std::fs::remove_file(stored_file_path)?;
+
+        let digest_result = store.as_ref().has(digest).await.err_tip(|| "Failed to execute has")?;
+        assert!(digest_result.is_none());
 
         Ok(())
     }
