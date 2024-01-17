@@ -122,7 +122,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<H
         self.inner.as_ref().unwrap().is_empty()
     }
 
-    async fn touch(&self) {
+    async fn touch(&self) -> bool {
         self.inner.as_ref().unwrap().touch().await
     }
 
