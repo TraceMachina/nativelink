@@ -51,11 +51,32 @@ pub fn endpoint_from(
     let endpoint =
         Uri::try_from(endpoint).map_err(|e| make_err!(Code::Internal, "Unable to parse endpoint {endpoint}: {e:?}"))?;
 
-    let endpoint_transport = if let Some(tls_config) = &tls_config {
+    // Tonic uses the TLS configuration if the scheme is "https", so replace
+    // grpcs with https.
+    let endpoint = if endpoint.scheme_str() == Some("grpcs") {
+        let mut parts = endpoint.into_parts();
+        parts.scheme = Some(
+            "https"
+                .parse()
+                .map_err(|e| make_err!(Code::Internal, "https is an invalid scheme apparently? {e:?}"))?,
+        );
+        parts
+            .try_into()
+            .map_err(|e| make_err!(Code::Internal, "Error changing Uri from grpcs to https: {e:?}"))?
+    } else {
+        endpoint
+    };
+
+    let endpoint_transport = if let Some(tls_config) = tls_config {
         let Some(authority) = endpoint.authority() else {
             return Err(make_input_err!("Unable to determine authority of endpont: {endpoint}"));
         };
-        let tls_config = tls_config.clone().domain_name(authority.host());
+        if endpoint.scheme_str() != Some("https") {
+            return Err(make_input_err!(
+                "You have set TLS configuration on {endpoint}, but the scheme is not https or grpcs"
+            ));
+        }
+        let tls_config = tls_config.domain_name(authority.host());
         tonic::transport::Endpoint::from(endpoint)
             .tls_config(tls_config)
             .map_err(|e| make_input_err!("Setting mTLS configuration: {e:?}"))?
