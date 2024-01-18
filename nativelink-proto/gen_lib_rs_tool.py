@@ -40,7 +40,7 @@ _HEADER = """\
 
 
 def print_package_part_to_mod(tree, indents = 0):
-  tabs = "  " * indents
+  tabs = "    " * indents
   if tree["filename"] is not None:
       print('%sinclude!("%s");' % (tabs, tree["filename"]))
 
@@ -59,7 +59,7 @@ def main():
                         help='pb.rs files used to generate lib.rs')
     args = parser.parse_args()
     print(_HEADER)
-    print("")
+
     tree_root = { "children": {}, "filename": None }
     for filepath in args.files:
         filepath = os.path.relpath(os.path.normpath(filepath), args.rootdir)
@@ -76,7 +76,6 @@ def main():
         cur_node["filename"] = '.'.join(package_parts) + '.pb.rs'
 
     print_package_part_to_mod(tree_root)
-    print("")
 
 
 if __name__ == "__main__":
