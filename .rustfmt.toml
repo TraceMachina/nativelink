@@ -1,4 +1,3 @@
-ignore = ["nativelink-proto/genproto/lib.rs"]
 max_width = 120
 reorder_imports = true
 imports_granularity = "Module"

@@ -16,44 +16,42 @@
 // This file is auto-generated. To update it, run:
 // `bazel run proto:update_protos`
 
-
 pub mod build {
-  pub mod bazel {
-    pub mod remote {
-      pub mod execution {
-        pub mod v2 {
-          include!("build.bazel.remote.execution.v2.pb.rs");
+    pub mod bazel {
+        pub mod remote {
+            pub mod execution {
+                pub mod v2 {
+                    include!("build.bazel.remote.execution.v2.pb.rs");
+                }
+            }
         }
-      }
+        pub mod semver {
+            include!("build.bazel.semver.pb.rs");
+        }
     }
-    pub mod semver {
-      include!("build.bazel.semver.pb.rs");
-    }
-  }
 }
 pub mod com {
-  pub mod github {
-    pub mod trace_machina {
-      pub mod nativelink {
-        pub mod remote_execution {
-          include!("com.github.trace_machina.nativelink.remote_execution.pb.rs");
+    pub mod github {
+        pub mod trace_machina {
+            pub mod nativelink {
+                pub mod remote_execution {
+                    include!("com.github.trace_machina.nativelink.remote_execution.pb.rs");
+                }
+            }
         }
-      }
     }
-  }
 }
 pub mod google {
-  pub mod api {
-    include!("google.api.pb.rs");
-  }
-  pub mod bytestream {
-    include!("google.bytestream.pb.rs");
-  }
-  pub mod longrunning {
-    include!("google.longrunning.pb.rs");
-  }
-  pub mod rpc {
-    include!("google.rpc.pb.rs");
-  }
+    pub mod api {
+        include!("google.api.pb.rs");
+    }
+    pub mod bytestream {
+        include!("google.bytestream.pb.rs");
+    }
+    pub mod longrunning {
+        include!("google.longrunning.pb.rs");
+    }
+    pub mod rpc {
+        include!("google.rpc.pb.rs");
+    }
 }
-
