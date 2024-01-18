@@ -28,9 +28,11 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # - name: Cache Nix derivations TODO(aaronmondal): revisit this bit when there are less flakes or it is more understood
-        # uses: >- # Custom commit, last pinned at 2023-11-17.
-          # DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+      # TODO(aaronmondal): Caching is flaky for this workflow.
+      # See: https://github.com/DeterminateSystems/magic-nix-cache/issues/32
+      # - name: Cache Nix derivations
+      #   uses: >- # Custom commit, last pinned at 2023-11-17.
+      #     DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
 
       - name: Test image
         run: |
