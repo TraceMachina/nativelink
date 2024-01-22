@@ -9,3 +9,4 @@ bazel-remote-nativelink
 bazel-root
 bazel-testlogs
 bazel-nativelink
+local-remote-execution

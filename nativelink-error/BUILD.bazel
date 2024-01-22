@@ -8,10 +8,10 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "//nativelink-proto",
-        "@crate_index//:hex",
-        "@crate_index//:prost",
-        "@crate_index//:prost-types",
-        "@crate_index//:tokio",
-        "@crate_index//:tonic",
+        "@crates//:hex",
+        "@crates//:prost",
+        "@crates//:prost-types",
+        "@crates//:tokio",
+        "@crates//:tonic",
     ],
 )

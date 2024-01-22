@@ -49,12 +49,12 @@ You can now pass these IPs to your bazel invocation to use the remote cache and
 executor:
 
 ```bash
-bazel test \
+bazel build \
     --config=lre \
     --remote_instance_name=main \
-    --remote_cache=grpc://$CACHE:50051
-    --remote_executore=grpc://$SCHEDULER:50052
-    //:dummy_test
+    --remote_cache=grpc://$CACHE:50051 \
+    --remote_executor=grpc://$SCHEDULER:50052 \
+    //local-remote-execution/examples:hello_lre
 ```
 
 > [!TIP]

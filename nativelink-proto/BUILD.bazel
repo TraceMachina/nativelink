@@ -14,9 +14,9 @@ rust_binary(
     name = "gen_protos_tool",
     srcs = ["gen_protos_tool.rs"],
     deps = [
-        "@crate_index//:clap",
-        "@crate_index//:prost-build",
-        "@crate_index//:tonic-build",
+        "@crates//:clap",
+        "@crates//:prost-build",
+        "@crates//:tonic-build",
     ],
 )
 
@@ -42,7 +42,7 @@ genrule(
     outs = ["{}.pb.rs".format(name) for name in PROTO_NAMES],
     cmd = '''
         set -e
-        export PROTOC=$(execpath @com_google_protobuf//:protoc)
+        export PROTOC=$(execpath @protobuf//:protoc)
 
         $(execpath :gen_protos_tool) $(SRCS) -o $(RULEDIR)
 
@@ -52,7 +52,7 @@ genrule(
         ''',
     tools = [
         ":gen_protos_tool",
-        "@com_google_protobuf//:protoc",
+        "@protobuf//:protoc",
     ],
 )
 
@@ -75,9 +75,9 @@ rust_library(
     tags = ["no-rustfmt"],
     visibility = ["//visibility:public"],
     deps = [
-        "@crate_index//:prost",
-        "@crate_index//:prost-types",
-        "@crate_index//:tonic",
+        "@crates//:prost",
+        "@crates//:prost-types",
+        "@crates//:tonic",
     ],
 )
 

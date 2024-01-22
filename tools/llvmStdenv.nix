@@ -1,25 +1,23 @@
 {pkgs}: let
-  llvmPackages = pkgs.llvmPackages_17;
-
   toolchain =
     if pkgs.stdenv.isDarwin
     then
       (
         pkgs.overrideCC (
-          llvmPackages.libcxxStdenv.override {
+          pkgs.llvmPackages_16.libcxxStdenv.override {
             targetPlatform.useLLVM = true;
           }
         )
-        llvmPackages.clangUseLLVM
+        pkgs.llvmPackages.clangUseLLVM
       )
     else
       (pkgs.useMoldLinker (
         pkgs.overrideCC (
-          llvmPackages.libcxxStdenv.override {
+          pkgs.llvmPackages_17.libcxxStdenv.override {
             targetPlatform.useLLVM = true;
           }
         )
-        llvmPackages.clangUseLLVM
+        pkgs.llvmPackages_17.clangUseLLVM
       ));
 in
   # This toolchain uses Clang as compiler, Mold as linker, libc++ as C++

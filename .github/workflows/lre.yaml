@@ -37,7 +37,7 @@ jobs:
           bash -c "bazel run \
            --config=lre \
            --verbose_failures \
-           //local-remote-execution/examples:hello_lre"
+           @local-remote-execution//examples:hello_lre"
 
   remote:
     strategy:
@@ -105,4 +105,4 @@ jobs:
             --remote_cache=grpc://$cache_ip:50051 \
             --remote_executor=grpc://$scheduler_ip:50052 \
             --verbose_failures \
-            //local-remote-execution/examples:hello_lre"
+            @local-remote-execution//examples:hello_lre"

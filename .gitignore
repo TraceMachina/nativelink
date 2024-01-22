@@ -12,3 +12,4 @@ __pycache__
 .pre-commit-config.yaml
 result
 .bazelrc.user
+MODULE.bazel.lock

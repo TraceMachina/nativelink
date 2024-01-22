@@ -16,8 +16,8 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "@crate_index//:serde",
-        "@crate_index//:shellexpand",
+        "@crates//:serde",
+        "@crates//:shellexpand",
     ],
 )
 

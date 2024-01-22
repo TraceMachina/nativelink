@@ -1,0 +1,83 @@
+module(
+    name = "nativelink",
+    version = "0.3.0",
+    compatibility_level = 0,
+)
+
+bazel_dep(name = "rules_cc", version = "0.0.9")
+bazel_dep(name = "platforms", version = "0.0.8")
+bazel_dep(name = "rules_python", version = "0.29.0")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    configure_coverage_tool = True,
+    # TODO(aaronmondal): Fix or remove legacy container pipelines so that they
+    #                    run rootless.
+    ignore_root_user_error = True,
+    python_version = "3.12",
+)
+use_repo(python, python = "python_versions")
+
+bazel_dep(name = "hermetic_cc_toolchain", version = "2.2.1")
+
+zig_toolchains = use_extension(
+    "@hermetic_cc_toolchain//toolchain:ext.bzl",
+    "toolchains",
+)
+use_repo(zig_toolchains, "zig_sdk")
+
+bazel_dep(name = "rules_rust", version = "0.36.2")
+git_override(
+    module_name = "rules_rust",
+    commit = "4136f6fedd033108294138a657b4ccd8ac57c8ef",
+    patch_strip = 1,
+    patches = [
+        # TODO(aaronmondal): Remove this after:
+        # https://github.com/bazelbuild/rules_rust/pull/2428
+        "//tools:rules_rust_deduplicate_sysroot.diff",
+        # TODO(aaronmondal): Remove this after:
+        # https://github.com/bazelbuild/rules_rust/pull/2422
+        "//tools:rules_rust_bindgen_linkopts.diff",
+    ],
+    remote = "https://github.com/bazelbuild/rules_rust",
+)
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    versions = [
+        "1.75.0",
+        "nightly/2024-01-01",
+    ],
+)
+rust.host_tools(
+    edition = "2021",
+    version = "1.75.0",
+)
+use_repo(rust, "rust_toolchains")
+
+crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = ["//:Cargo.toml"],
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "arm-unknown-linux-gnueabi",
+        "armv7-unknown-linux-gnueabi",
+        "x86_64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+use_repo(crate, "crates")
+
+bazel_dep(name = "protobuf", version = "23.1")
+
+# Local remote execution.
+bazel_dep(name = "local-remote-execution", version = "0.0.0")
+local_path_override(
+    module_name = "local-remote-execution",
+    path = "local-remote-execution",
+)

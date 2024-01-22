@@ -42,7 +42,7 @@ environment are the same.
 3. You can now build targets with the generated toolchain configs. To build the `hello_lre` target in the [examples](./examples/) directory:
 
 ```shell
-bazel run --config=lre //local-remote-execution/examples:hello_lre
+bazel run --config=lre @local-remote-execution//examples:hello_lre
 ```
 🎉 That's it! You've built a target with Local Remote Execution using NativeLink. 🎉
 
@@ -57,5 +57,5 @@ bazel run \
     --remote_cache=grpc://172.20.255.200:50051 \
     --strategy_regexp .*=remote \
     --remote_executor=grpc://172.20.255.201:50052 \
-    //local-remote-execution/examples:hello_lre
+    @local-remote-execution//examples:hello_lre
 ```

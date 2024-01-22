@@ -1,0 +1,211 @@
+diff --git a/bindgen/private/bindgen.bzl b/bindgen/private/bindgen.bzl
+index f32a4fc86c..445036bab3 100644
+--- a/bindgen/private/bindgen.bzl
++++ b/bindgen/private/bindgen.bzl
+@@ -99,6 +99,14 @@ def rust_bindgen_library(
+         **kwargs
+     )
+
++def _get_user_link_flags(cc_lib):
++    linker_flags = []
++
++    for linker_input in cc_lib[CcInfo].linking_context.linker_inputs.to_list():
++        linker_flags.extend(linker_input.user_link_flags)
++
++    return linker_flags
++
+ def _generate_cc_link_build_info(ctx, cc_lib):
+     """Produce the eqivilant cargo_build_script providers for use in linking the library.
+
+@@ -110,33 +118,30 @@ def _generate_cc_link_build_info(ctx, cc_lib):
+         The `BuildInfo` provider.
+     """
+     compile_data = []
+-    linker_flags = []
++
++    rustc_flags = []
+     linker_search_paths = []
+
+     for linker_input in cc_lib[CcInfo].linking_context.linker_inputs.to_list():
+         for lib in linker_input.libraries:
+             if lib.static_library:
+-                linker_flags.append("-lstatic={}".format(get_lib_name_default(lib.static_library)))
++                rustc_flags.append("-lstatic={}".format(get_lib_name_default(lib.static_library)))
+                 linker_search_paths.append(lib.static_library.dirname)
+                 compile_data.append(lib.static_library)
+             elif lib.pic_static_library:
+-                linker_flags.append("-lstatic={}".format(get_lib_name_default(lib.pic_static_library)))
++                rustc_flags.append("-lstatic={}".format(get_lib_name_default(lib.pic_static_library)))
+                 linker_search_paths.append(lib.pic_static_library.dirname)
+                 compile_data.append(lib.pic_static_library)
+
+-        if linker_input.user_link_flags:
+-            linker_flags.append("-C")
+-            linker_flags.append("link-args={}".format(" ".join(linker_input.user_link_flags)))
+-
+     if not compile_data:
+         fail("No static libraries found in {}".format(
+             cc_lib.label,
+         ))
+
+-    link_flags = ctx.actions.declare_file("{}.link_flags".format(ctx.label.name))
++    rustc_flags_file = ctx.actions.declare_file("{}.rustc_flags".format(ctx.label.name))
+     ctx.actions.write(
+-        output = link_flags,
+-        content = "\n".join(linker_flags),
++        output = rustc_flags_file,
++        content = "\n".join(rustc_flags),
+     )
+
+     link_search_paths = ctx.actions.declare_file("{}.link_search_paths".format(ctx.label.name))
+@@ -151,8 +156,9 @@ def _generate_cc_link_build_info(ctx, cc_lib):
+     return BuildInfo(
+         compile_data = depset(compile_data),
+         dep_env = None,
+-        flags = None,
+-        link_flags = link_flags,
++        flags = rustc_flags_file,
++        # linker_flags is provided via CcInfo
++        linker_flags = None,
+         link_search_paths = link_search_paths,
+         out_dir = None,
+         rustc_env = None,
+@@ -282,7 +288,24 @@ def _rust_bindgen_impl(ctx):
+             direct_cc_infos = [cc_lib[CcInfo]],
+         )]
+     else:
+-        providers = [_generate_cc_link_build_info(ctx, cc_lib)]
++        providers = [
++            _generate_cc_link_build_info(ctx, cc_lib),
++            # As in https://github.com/bazelbuild/rules_rust/pull/2361, we want
++            # to link cc_lib to the direct parent (rlib) using `-lstatic=<cc_lib>` rustc flag
++            # Hence, we do not need to provide the whole CcInfo of cc_lib because
++            # it will cause the downstream binary to link the cc_lib again
++            # (same effect as setting `leak_symbols` attribute above)
++            # The CcInfo here only contains the custom link flags (i.e. linkopts attribute)
++            # specified by users in cc_lib
++            CcInfo(
++                linking_context = cc_common.create_linking_context(
++                    linker_inputs = depset([cc_common.create_linker_input(
++                        owner = ctx.label,
++                        user_link_flags = _get_user_link_flags(cc_lib),
++                    )]),
++                ),
++            ),
++        ]
+
+     return providers + [
+         OutputGroupInfo(
+diff --git a/cargo/private/cargo_build_script.bzl b/cargo/private/cargo_build_script.bzl
+index ad93a5c201..e88158c115 100644
+--- a/cargo/private/cargo_build_script.bzl
++++ b/cargo/private/cargo_build_script.bzl
+@@ -299,7 +299,7 @@ def _cargo_build_script_impl(ctx):
+             rustc_env = env_out,
+             dep_env = dep_env_out,
+             flags = flags_out,
+-            link_flags = link_flags,
++            linker_flags = link_flags,
+             link_search_paths = link_search_paths,
+             compile_data = depset([]),
+         ),
+@@ -445,7 +445,7 @@ def _cargo_dep_env_implementation(ctx):
+         build_infos.append(BuildInfo(
+             dep_env = empty_file,
+             flags = empty_file,
+-            link_flags = empty_file,
++            linker_flags = empty_file,
+             link_search_paths = empty_file,
+             out_dir = out_dir,
+             rustc_env = empty_file,
+@@ -464,7 +464,7 @@ def _cargo_dep_env_implementation(ctx):
+         BuildInfo(
+             dep_env = empty_file,
+             flags = empty_file,
+-            link_flags = empty_file,
++            linker_flags = empty_file,
+             link_search_paths = empty_file,
+             out_dir = None,
+             rustc_env = empty_file,
+diff --git a/rust/private/providers.bzl b/rust/private/providers.bzl
+index 56f91e0ebf..a1ab2fe6ef 100644
+--- a/rust/private/providers.bzl
++++ b/rust/private/providers.bzl
+@@ -75,8 +75,8 @@ BuildInfo = provider(
+         "compile_data": "Depset[File]: Compile data provided by the build script that was not copied into `out_dir`.",
+         "dep_env": "Optinal[File]: extra build script environment varibles to be set to direct dependencies.",
+         "flags": "Optional[File]: file containing additional flags to pass to rustc",
+-        "link_flags": "Optional[File]: file containing flags to pass to the linker",
+-        "link_search_paths": "Optional[File]: file containing search paths to pass to the linker",
++        "link_search_paths": "Optional[File]: file containing search paths to pass to rustc and linker",
++        "linker_flags": "Optional[File]: file containing flags to pass to the linker invoked by rustc or cc_common.link",
+         "out_dir": "Optional[File]: directory containing the result of a build script",
+         "rustc_env": "Optional[File]: file containing additional environment variables to set for rustc.",
+     },
+diff --git a/rust/private/rustc.bzl b/rust/private/rustc.bzl
+index eff542eb39..2e6db41347 100644
+--- a/rust/private/rustc.bzl
++++ b/rust/private/rustc.bzl
+@@ -310,18 +310,19 @@ def collect_deps(
+                 transitive_link_search_paths.append(dep_info.link_search_path_files)
+
+             transitive_build_infos.append(dep_info.transitive_build_infos)
+-
+-        elif cc_info:
+-            # This dependency is a cc_library
+-            transitive_noncrates.append(cc_info.linking_context.linker_inputs)
+-        elif dep_build_info:
+-            if build_info:
+-                fail("Several deps are providing build information, " +
+-                     "only one is allowed in the dependencies")
+-            build_info = dep_build_info
+-            transitive_build_infos.append(depset([build_info]))
+-            if build_info.link_search_paths:
+-                transitive_link_search_paths.append(depset([build_info.link_search_paths]))
++        elif cc_info or dep_build_info:
++            if cc_info:
++                # This dependency is a cc_library
++                transitive_noncrates.append(cc_info.linking_context.linker_inputs)
++
++            if dep_build_info:
++                if build_info:
++                    fail("Several deps are providing build information, " +
++                         "only one is allowed in the dependencies")
++                build_info = dep_build_info
++                transitive_build_infos.append(depset([build_info]))
++                if build_info.link_search_paths:
++                    transitive_link_search_paths.append(depset([build_info.link_search_paths]))
+         else:
+             fail("rust targets can only depend on rust_library, rust_*_library or cc_library " +
+                  "targets.")
+@@ -776,7 +777,6 @@ def collect_inputs(
+     if build_env_file:
+         build_env_files = [f for f in build_env_files] + [build_env_file]
+     compile_inputs = depset(build_env_files, transitive = [compile_inputs])
+-
+     return compile_inputs, out_dir, build_env_files, build_flags_files, linkstamp_outs, ambiguous_libs
+
+ def construct_arguments(
+@@ -1658,7 +1658,7 @@ def _create_extra_input_args(build_info, dep_info):
+             - (depset[File]): A list of all build info `OUT_DIR` File objects
+             - (str): The `OUT_DIR` of the current build info
+             - (File): An optional generated environment file from a `cargo_build_script` target
+-            - (depset[File]): All direct and transitive build flag files from the current build info.
++            - (depset[File]): All direct and transitive build flag files from the current build info to be passed to rustc.
+     """
+     input_files = []
+     input_depsets = []
+@@ -1676,9 +1676,10 @@ def _create_extra_input_args(build_info, dep_info):
+         build_env_file = build_info.rustc_env
+         if build_info.flags:
+             build_flags_files.append(build_info.flags)
+-        if build_info.link_flags:
+-            build_flags_files.append(build_info.link_flags)
+-            input_files.append(build_info.link_flags)
++        if build_info.linker_flags:
++            build_flags_files.append(build_info.linker_flags)
++            input_files.append(build_info.linker_flags)
++
+         input_depsets.append(build_info.compile_data)
+
+     return (

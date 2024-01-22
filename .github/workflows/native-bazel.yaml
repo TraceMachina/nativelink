@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, ubuntu-22.04]
+        os: [ubuntu-22.04, macos-13]
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     steps:
@@ -67,3 +67,35 @@ jobs:
             exit 1
           fi
         shell: bash
+
+  zig-cc-unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04]
+    name: zig-cc ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    steps:
+
+      - name: Checkout
+        uses: >- # v4.1.1
+          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Setup Bazelisk
+        uses: >- # Custom commit at 2023-10-23
+          bazelbuild/setup-bazelisk@5bc144ec07bd24eaa9b5c3e8c9af4006b033b629
+
+      - name: Mount bazel cache
+        uses: >- # v3.3.2
+          actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84
+        with:
+          path: |
+            ~/.cache/bazel
+          key: |
+            ${{ matrix.os }}-bazel-legacy-${{ hashFiles('.bazelversion', '.bazelrc', 'WORKSPACE.bazel', 'MODULE.bazel') }}
+          restore-keys: |
+            ${{ matrix.os }}-bazel-legacy-
+
+      - name: Run Bazel tests
+        run: |
+          bazel test --config=linux_zig //... --verbose_failures

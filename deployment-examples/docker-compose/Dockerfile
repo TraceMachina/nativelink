@@ -31,7 +31,6 @@ RUN apt update && \
         git \
         gcc \
         g++ \
-        python3 \
         ca-certificates && \
     npm install -g @bazel/bazelisk
 
