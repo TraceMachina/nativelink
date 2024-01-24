@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nativelink_config::stores::ClientTlsConfig;
+use nativelink_config::stores::{ClientTlsConfig, GrpcEndpoint};
 use nativelink_error::{make_err, make_input_err, Code, Error};
 use tonic::transport::Uri;
 
@@ -85,4 +85,16 @@ pub fn endpoint_from(
     };
 
     Ok(endpoint_transport)
+}
+
+pub fn endpoint(endpoint_config: &GrpcEndpoint) -> Result<tonic::transport::Endpoint, Error> {
+    let endpoint = endpoint_from(
+        &endpoint_config.address,
+        load_client_config(&endpoint_config.tls_config)?,
+    )?;
+    if let Some(concurrency_limit) = endpoint_config.concurrency_limit {
+        Ok(endpoint.concurrency_limit(concurrency_limit))
+    } else {
+        Ok(endpoint)
+    }
 }

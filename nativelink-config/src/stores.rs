@@ -520,14 +520,25 @@ pub struct ClientTlsConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+pub struct GrpcEndpoint {
+    /// The endpoint address (i.e. grpc(s)://example.com:443).
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub address: String,
+    /// The TLS configuration to use to connect to the endpoint (if grpcs).
+    pub tls_config: Option<ClientTlsConfig>,
+    /// The maximum concurrency to allow on this endpoint.
+    pub concurrency_limit: Option<usize>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct GrpcStore {
     /// Instance name for GRPC calls. Proxy calls will have the instance_name changed to this.
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub instance_name: String,
 
     /// The endpoint of the grpc connection.
-    #[serde(default)]
-    pub endpoints: Vec<String>,
+    pub endpoints: Vec<GrpcEndpoint>,
 
     /// The type of the upstream store, this ensures that the correct server calls are made.
     pub store_type: StoreType,
@@ -535,9 +546,6 @@ pub struct GrpcStore {
     /// Retry configuration to use when a network request fails.
     #[serde(default)]
     pub retry: Retry,
-
-    /// The TLS configuration to use to connect to the endpoints.
-    pub tls_config: Option<ClientTlsConfig>,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
