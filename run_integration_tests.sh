@@ -20,6 +20,14 @@ if [[ $EUID -eq 0 ]]; then
   exit 1
 fi
 
+if which bazel >/dev/null; then
+    echo "Bazel is installed."
+else
+    echo "Bazel is not installed."
+    echo "Bazel needs to be installed to run this integration test script and the instructions are currently here: https://bazel.build/install/"
+    exit 1
+fi
+
 TEST_PATTERNS=()
 
 while [[ $# -gt 0 ]]; do
