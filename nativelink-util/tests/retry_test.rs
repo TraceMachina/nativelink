@@ -90,7 +90,7 @@ mod retry_tests {
         assert_eq!(result.is_err(), true, "Expected result to error");
         assert_eq!(
             result.unwrap_err().to_string(),
-            "Error { code: Unavailable, messages: [\"Dummy failure\"] }"
+            "Error { code: Unavailable, messages: [\"Dummy failure\", \"Retry attempts exhausted\"] }"
         );
 
         Ok(())

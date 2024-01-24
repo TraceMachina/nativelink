@@ -78,7 +78,9 @@ impl Retrier {
                     None => return Err(make_err!(Code::Internal, "Retry stream ended abruptly",)),
                     Some(RetryResult::Ok(value)) => return Ok(value),
                     Some(RetryResult::Err(e)) => return Err(e),
-                    Some(RetryResult::Retry(e)) => (self.sleep_fn)(iter.next().ok_or(e)?).await,
+                    Some(RetryResult::Retry(e)) => {
+                        (self.sleep_fn)(iter.next().ok_or(e.append("Retry attempts exhausted"))?).await
+                    }
                 }
             }
         })
