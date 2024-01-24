@@ -100,6 +100,7 @@ async fn setup_stores() -> Result<
         &nativelink_config::stores::FastSlowStore {
             fast: nativelink_config::stores::StoreConfig::filesystem(fast_config),
             slow: nativelink_config::stores::StoreConfig::memory(slow_config),
+            check_slow_store_only: false,
         },
         Pin::into_inner(fast_store.clone()),
         Pin::into_inner(slow_store.clone()),

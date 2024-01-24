@@ -391,6 +391,7 @@ mod local_worker_tests {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
                 fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
                 slow: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+                check_slow_store_only: false,
             },
             Arc::new(
                 <FilesystemStore>::new(&nativelink_config::stores::FilesystemStore {
@@ -430,6 +431,7 @@ mod local_worker_tests {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
                 fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
                 slow: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+                check_slow_store_only: false,
             },
             Arc::new(
                 <FilesystemStore>::new(&nativelink_config::stores::FilesystemStore {

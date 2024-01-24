@@ -35,15 +35,20 @@ use nativelink_util::store_trait::{Store, UploadSizeInfo};
 pub struct FastSlowStore {
     fast_store: Arc<dyn Store>,
     slow_store: Arc<dyn Store>,
+    check_slow_store_only: bool,
 }
 
 impl FastSlowStore {
     pub fn new(
-        _config: &nativelink_config::stores::FastSlowStore,
+        config: &nativelink_config::stores::FastSlowStore,
         fast_store: Arc<dyn Store>,
         slow_store: Arc<dyn Store>,
     ) -> Self {
-        Self { fast_store, slow_store }
+        Self {
+            fast_store,
+            slow_store,
+            check_slow_store_only: config.check_slow_store_only,
+        }
     }
 
     pub fn fast_store(&self) -> &Arc<dyn Store> {
@@ -111,7 +116,9 @@ impl Store for FastSlowStore {
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.pin_fast_store().has_with_results(digests, results).await?;
+        if !self.check_slow_store_only {
+            self.pin_fast_store().has_with_results(digests, results).await?;
+        }
         let missing_digests: Vec<DigestInfo> = results
             .iter()
             .zip(digests.iter())

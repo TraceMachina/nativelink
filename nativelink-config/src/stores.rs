@@ -254,6 +254,12 @@ pub struct FastSlowStore {
     /// If the object does not exist in the `fast` store it will try to
     /// get it from this store.
     pub slow: StoreConfig,
+
+    /// If this is set to true, then only respond that the store has a value
+    /// if the slow store has it, do not check the fast store.  Serving content
+    /// will still come from the fast store if it exists.
+    #[serde(default)]
+    pub check_slow_store_only: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
