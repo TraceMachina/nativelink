@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use futures::{Stream, StreamExt};
 use nativelink_error::{error_if, Error, ResultExt};
 use nativelink_proto::google::bytestream::WriteRequest;
@@ -31,6 +34,7 @@ where
     pub bytes_received: usize,
     stream: T,
     first_msg: Option<WriteRequest>,
+    first_sent: bool,
     write_finished: bool,
 }
 
@@ -66,14 +70,36 @@ where
             bytes_received: 0,
             stream,
             first_msg: Some(first_msg),
+            first_sent: false,
             write_finished,
         })
     }
 
-    pub async fn next(&mut self) -> Result<Option<WriteRequest>, Error> {
-        if let Some(first_msg) = self.first_msg.take() {
-            self.bytes_received += first_msg.data.len();
-            return Ok(Some(first_msg));
+    pub fn reset_for_retry(&mut self) -> bool {
+        if self.first_msg.is_some() {
+            self.bytes_received = 0;
+            self.first_sent = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<T, E> Stream for WriteRequestStreamWrapper<T, E>
+where
+    E: Into<Error>,
+    T: Stream<Item = Result<WriteRequest, E>> + Unpin,
+{
+    type Item = Result<WriteRequest, Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<WriteRequest, Error>>> {
+        if !self.first_sent {
+            if let Some(first_msg) = self.first_msg.clone() {
+                self.bytes_received += first_msg.data.len();
+                self.first_sent = true;
+                return Poll::Ready(Some(Ok(first_msg)));
+            }
         }
         if self.write_finished {
             error_if!(
@@ -82,7 +108,7 @@ where
                 self.expected_size,
                 self.bytes_received
             );
-            return Ok(None); // Previous message said it was the last msg.
+            return Poll::Ready(None); // Previous message said it was the last msg.
         }
         error_if!(
             self.bytes_received > self.expected_size,
@@ -90,15 +116,21 @@ where
             self.expected_size,
             self.bytes_received
         );
-        let next_msg = self
-            .stream
-            .next()
-            .await
-            .err_tip(|| format!("Stream error at byte {}", self.bytes_received))?
-            .err_tip(|| "Expected WriteRequest struct in stream")?;
-        self.write_finished = next_msg.finish_write;
-        self.bytes_received += next_msg.data.len();
-
-        Ok(Some(next_msg))
+        match Pin::new(&mut self.stream).poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(maybe_message)) => {
+                if let Ok(message) = &maybe_message {
+                    // Upon a successful second message, the first needs to be
+                    // discarded as we can't use it to retry any more.
+                    self.first_msg.take();
+                    self.write_finished = message.finish_write;
+                    self.bytes_received += message.data.len();
+                }
+                Poll::Ready(Some(
+                    maybe_message.err_tip(|| format!("Stream error at byte {}", self.bytes_received)),
+                ))
+            }
+        }
     }
 }
