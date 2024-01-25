@@ -41,6 +41,7 @@ use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
 use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
+use nativelink_util::health_utils::HealthRegistry;
 use nativelink_util::metrics_utils::{
     set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent, Registry,
 };
@@ -87,17 +88,28 @@ struct Args {
 
 async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), Box<dyn std::error::Error>> {
     let mut root_metrics_registry = <Registry>::with_prefix("nativelink");
+    let health_registery = Arc::new(AsyncMutex::new(HealthRegistry::new("nativelink".into())));
 
     let store_manager = Arc::new(StoreManager::new());
     {
+        let mut health_registery_lock = health_registery.lock().await;
+
         let root_store_metrics = root_metrics_registry.sub_registry_with_prefix("stores");
+
         for (name, store_cfg) in cfg.stores {
+            let health_component_name = format!("stores/{name}");
+            let health_register_store = health_registery_lock.add_dependency(health_component_name);
             let store_metrics = root_store_metrics.sub_registry_with_prefix(&name);
             store_manager.add_store(
                 &name,
-                store_factory(&store_cfg, &store_manager, Some(store_metrics))
-                    .await
-                    .err_tip(|| format!("Failed to create store '{name}'"))?,
+                store_factory(
+                    &store_cfg,
+                    &store_manager,
+                    Some(store_metrics),
+                    Some(health_register_store),
+                )
+                .await
+                .err_tip(|| format!("Failed to create store '{name}'"))?,
             );
         }
     }
@@ -349,12 +361,41 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             );
 
         let root_metrics_registry = root_metrics_registry.clone();
-
+        let health_registery_status = health_registery.clone();
         let mut svc = Router::new()
             // This is the default service that executes if no other endpoint matches.
             .fallback_service(tonic_services.into_service().map_err(|e| panic!("{e}")))
-            // This is a generic endpoint used to check if the server is up.
-            .route_service("/status", axum::routing::get(move || async move { "Ok".to_string() }));
+            .route_service(
+                "/status",
+                axum::routing::get(move || async move {
+                    fn error_to_response<E: std::error::Error>(e: E) -> Response<String> {
+                        let mut response = Response::new(format!("Error: {e:?}"));
+                        *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                        response
+                    }
+
+                    spawn_blocking(move || {
+                        let mut buf = String::new();
+
+                        let indicators = futures::executor::block_on(async {
+                            health_registery_status.lock().await.flatten_indicators().await
+                        });
+
+                        for indicator in indicators {
+                            buf.push_str(&format!("{:?}\n", indicator));
+                        }
+
+                        let mut response = Response::new(buf);
+                        response.headers_mut().insert(
+                            hyper::header::CONTENT_TYPE,
+                            hyper::header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+                        );
+                        response
+                    })
+                    .await
+                    .unwrap_or_else(error_to_response)
+                }),
+            );
 
         if let Some(prometheus_cfg) = services.experimental_prometheus {
             fn error_to_response<E: std::error::Error>(e: E) -> Response<String> {
