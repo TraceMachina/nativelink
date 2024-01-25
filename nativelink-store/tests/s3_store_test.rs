@@ -35,6 +35,7 @@ use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 mod s3_store_tests {
+    use nativelink_config::stores::ErrorRetryMapping;
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -148,6 +149,10 @@ mod s3_store_tests {
                     max_retries: 1024,
                     delay: 0.,
                     jitter: 0.,
+                    retry_mapping: ErrorRetryMapping {
+                        other: true,
+                        ..Default::default()
+                    },
                 },
                 ..Default::default()
             },
@@ -339,6 +344,10 @@ mod s3_store_tests {
                     max_retries: 1024,
                     delay: 0.,
                     jitter: 0.,
+                    retry_mapping: ErrorRetryMapping {
+                        other: true,
+                        ..Default::default()
+                    },
                 },
                 ..Default::default()
             },
