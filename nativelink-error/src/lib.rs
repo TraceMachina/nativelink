@@ -312,6 +312,8 @@ pub enum Code {
     Unavailable = 14,
     DataLoss = 15,
     Unauthenticated = 16,
+    // NOTE: Additional codes must be added to stores.rs in ErrorCodes and also
+    // in both match statements in retry.rs.
 }
 
 impl From<i32> for Code {

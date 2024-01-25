@@ -548,6 +548,28 @@ pub struct GrpcStore {
     pub retry: Retry,
 }
 
+/// The possible error codes that might occur on an upstream request.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum ErrorCode {
+    Cancelled = 1,
+    Unknown = 2,
+    InvalidArgument = 3,
+    DeadlineExceeded = 4,
+    NotFound = 5,
+    AlreadyExists = 6,
+    PermissionDenied = 7,
+    ResourceExhausted = 8,
+    FailedPrecondition = 9,
+    Aborted = 10,
+    OutOfRange = 11,
+    Unimplemented = 12,
+    Internal = 13,
+    Unavailable = 14,
+    DataLoss = 15,
+    Unauthenticated = 16,
+    // Note: This list is duplicated from nativelink-error/lib.rs.
+}
+
 /// Retry configuration. This configuration is exponential and each iteration
 /// a jitter as a percentage is applied of the calculated delay. For example:
 /// ```rust,ignore
@@ -591,4 +613,18 @@ pub struct Retry {
     /// ```
     #[serde(default)]
     pub jitter: f32,
+
+    /// A list of error codes to retry on, if this is not set then the default
+    /// error codes to retry on are used.  These default codes are the most
+    /// likely to be non-permanent.
+    ///  - Unknown
+    ///  - Cancelled
+    ///  - DeadlineExceeded
+    ///  - ResourceExhausted
+    ///  - Aborted
+    ///  - Internal
+    ///  - Unavailable
+    ///  - DataLoss
+    #[serde(default)]
+    pub retry_on_errors: Option<Vec<ErrorCode>>,
 }

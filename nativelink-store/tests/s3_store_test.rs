@@ -148,6 +148,7 @@ mod s3_store_tests {
                     max_retries: 1024,
                     delay: 0.,
                     jitter: 0.,
+                    ..Default::default()
                 },
                 ..Default::default()
             },
@@ -339,6 +340,7 @@ mod s3_store_tests {
                     max_retries: 1024,
                     delay: 0.,
                     jitter: 0.,
+                    ..Default::default()
                 },
                 ..Default::default()
             },
