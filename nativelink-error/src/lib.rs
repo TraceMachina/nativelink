@@ -91,6 +91,30 @@ impl Error {
     pub fn message_string(&self) -> String {
         self.messages.join(" : ")
     }
+
+    /// This should only return true if the error code should be interpreted as
+    /// temporary.
+    pub fn should_retry(&self) -> bool {
+        match self.code {
+            Code::Ok => false,
+            Code::Cancelled => true,
+            Code::Unknown => true,
+            Code::InvalidArgument => false,
+            Code::DeadlineExceeded => true,
+            Code::NotFound => false,
+            Code::AlreadyExists => false,
+            Code::PermissionDenied => false,
+            Code::ResourceExhausted => true,
+            Code::FailedPrecondition => false,
+            Code::Aborted => true,
+            Code::OutOfRange => false,
+            Code::Unimplemented => false,
+            Code::Internal => true,
+            Code::Unavailable => true,
+            Code::DataLoss => true,
+            Code::Unauthenticated => false,
+        }
+    }
 }
 
 impl std::error::Error for Error {}
