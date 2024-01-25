@@ -548,6 +548,56 @@ pub struct GrpcStore {
     pub retry: Retry,
 }
 
+#[inline]
+fn bool_true() -> bool {
+    true
+}
+
+/// This allows the user to configure whether an upstream error should be
+/// considerered permanent or not.  Setting a value to true will cause it to
+/// retry and setting it to false will cause it to not retry.
+///
+/// It is codified that retry will not be performed on the following upstream
+/// errors as they are considered permanent:
+///  - Invalid argument
+///  - Failed precondition
+///  - Out of range
+///  - Unimplemented
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorRetryMapping {
+    /// The upstream says that the resource doesn't exist, defaults to not
+    /// retry.
+    #[serde(default)]
+    pub not_found: bool,
+    /// The upstream returns unauthenticated which means no authentication was
+    /// performed for a resource that requires authentication.  This defaults
+    /// to not retry.
+    #[serde(default)]
+    pub unauthenticated: bool,
+    /// The upstream returns that permission is denied, whether authentication
+    /// has been provided or not.  This defaults to not retry.
+    #[serde(default)]
+    pub permission_denied: bool,
+    /// The upstream says the resource already exists and cannot be overwritten.
+    /// This default to not retry.
+    #[serde(default)]
+    pub already_exists: bool,
+    /// Other is all other error codes which are not considered permanent
+    /// failures as defined above, these are:
+    ///  - Unknown
+    ///  - Cancelled
+    ///  - Deadline exceeded
+    ///  - Resource exhausted
+    ///  - Aborted
+    ///  - Internal
+    ///  - Unavailable
+    ///  - Data loss
+    /// These default to retrying.
+    #[serde(default = "bool_true")]
+    pub other: bool,
+}
+
 /// Retry configuration. This configuration is exponential and each iteration
 /// a jitter as a percentage is applied of the calculated delay. For example:
 /// ```rust,ignore
@@ -591,4 +641,8 @@ pub struct Retry {
     /// ```
     #[serde(default)]
     pub jitter: f32,
+
+    /// A mapping of whether to perform a retry on specific upstream errors.
+    #[serde(default)]
+    pub retry_mapping: ErrorRetryMapping,
 }

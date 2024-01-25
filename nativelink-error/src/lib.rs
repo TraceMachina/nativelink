@@ -312,6 +312,7 @@ pub enum Code {
     Unavailable = 14,
     DataLoss = 15,
     Unauthenticated = 16,
+    // NOTE: Additional codes must be added to retry.rs
 }
 
 impl From<i32> for Code {

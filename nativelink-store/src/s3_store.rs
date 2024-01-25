@@ -40,7 +40,7 @@ use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::retry::{ExponentialBackoff, Retrier, RetryResult};
+use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use rand::rngs::OsRng;
 use rand::Rng;
@@ -63,9 +63,7 @@ const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
 #[derive(Clone)]
 pub struct TlsConnector {
     connector: HttpsConnector<HttpConnector>,
-    retry: nativelink_config::stores::Retry,
     retrier: Retrier,
-    jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
 }
 
 impl TlsConnector {
@@ -90,30 +88,25 @@ impl TlsConnector {
 
         Self {
             connector,
-            retry: config.retry.clone(),
-            retrier: Retrier::new(Arc::new(|duration| Box::pin(sleep(duration)))),
-            jitter_fn,
+            retrier: Retrier::new(
+                Arc::new(|duration| Box::pin(sleep(duration))),
+                jitter_fn,
+                config.retry.to_owned(),
+            ),
         }
     }
 
     async fn call_with_retry(&self, req: &Uri) -> Result<MaybeHttpsStream<TcpStream>, Error> {
-        let retry_config = ExponentialBackoff::new(Duration::from_millis(self.retry.delay as u64))
-            .map(|d| (self.jitter_fn)(d))
-            .take(self.retry.max_retries); // Remember this is number of retries, so will run max_retries + 1.
         let retry_stream_fn = unfold(self.connector.clone(), move |mut connector| async move {
             match connector.call(req.clone()).await {
                 Ok(stream) => Some((RetryResult::Ok(stream), connector)),
                 Err(e) => Some((
-                    RetryResult::Retry(make_err!(
-                        Code::Unavailable,
-                        "Failed to call S3 connector: {e:?}, retries: {}",
-                        self.retry.max_retries + 1,
-                    )),
+                    RetryResult::Retry(make_err!(Code::Unavailable, "Failed to call S3 connector: {e:?}")),
                     connector,
                 )),
             }
         });
-        self.retrier.retry(retry_config, retry_stream_fn).await
+        self.retrier.retry(retry_stream_fn).await
     }
 }
 
@@ -138,8 +131,6 @@ pub struct S3Store {
     s3_client: Arc<Client>,
     bucket: String,
     key_prefix: String,
-    jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
-    retry: nativelink_config::stores::Retry,
     retrier: Retrier,
     multipart_max_concurrent_uploads: usize,
 }
@@ -182,9 +173,11 @@ impl S3Store {
             s3_client: Arc::new(s3_client),
             bucket: config.bucket.to_string(),
             key_prefix: config.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
-            jitter_fn,
-            retry: config.retry.clone(),
-            retrier: Retrier::new(Arc::new(|duration| Box::pin(sleep(duration)))),
+            retrier: Retrier::new(
+                Arc::new(|duration| Box::pin(sleep(duration))),
+                jitter_fn,
+                config.retry.to_owned(),
+            ),
             multipart_max_concurrent_uploads: config
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
@@ -196,48 +189,37 @@ impl S3Store {
     }
 
     async fn has(self: Pin<&Self>, digest: &DigestInfo) -> Result<Option<usize>, Error> {
-        let retry_config = ExponentialBackoff::new(Duration::from_millis(self.retry.delay as u64))
-            .map(|d| (self.jitter_fn)(d))
-            .take(self.retry.max_retries); // Remember this is number of retries, so will run max_retries + 1.
         self.retrier
-            .retry(
-                retry_config,
-                unfold((), move |state| async move {
-                    let result = self
-                        .s3_client
-                        .head_object()
-                        .bucket(&self.bucket)
-                        .key(&self.make_s3_path(digest))
-                        .send()
-                        .await;
+            .retry(unfold((), move |state| async move {
+                let result = self
+                    .s3_client
+                    .head_object()
+                    .bucket(&self.bucket)
+                    .key(&self.make_s3_path(digest))
+                    .send()
+                    .await;
 
-                    match result {
-                        Ok(head_object_output) => {
-                            let sz = head_object_output.content_length;
-                            Some((RetryResult::Ok(Some(sz as usize)), state))
-                        }
-                        Err(sdk_error) => match sdk_error.into_service_error() {
-                            HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
-                            HeadObjectError::Unhandled(e) => Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Unavailable,
-                                    "Unhandled HeadObjectError in S3: {e:?}, retries: {}",
-                                    self.retry.max_retries + 1,
-                                )),
-                                state,
-                            )),
-                            other => Some((
-                                RetryResult::Err(make_err!(
-                                    Code::Unavailable,
-                                    "Unkown error getting head_object in S3: {other:?}, retries: {}",
-                                    self.retry.max_retries + 1,
-                                )),
-                                state,
-                            )),
-                        },
+                match result {
+                    Ok(head_object_output) => {
+                        let sz = head_object_output.content_length;
+                        Some((RetryResult::Ok(Some(sz as usize)), state))
                     }
-                }),
-            )
+                    Err(sdk_error) => match sdk_error.into_service_error() {
+                        HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
+                        HeadObjectError::Unhandled(e) => Some((
+                            RetryResult::Retry(make_err!(Code::Unavailable, "Unhandled HeadObjectError in S3: {e:?}")),
+                            state,
+                        )),
+                        other => Some((
+                            RetryResult::Err(make_err!(
+                                Code::Unavailable,
+                                "Unkown error getting head_object in S3: {other:?}",
+                            )),
+                            state,
+                        )),
+                    },
+                }
+            }))
             .await
     }
 }
@@ -459,97 +441,88 @@ impl Store for S3Store {
             .map_or(Some(None), |length| Some(offset.checked_add(length)))
             .err_tip(|| "Integer overflow protection triggered")?;
 
-        let retry_config = ExponentialBackoff::new(Duration::from_millis(self.retry.delay as u64))
-            .map(|d| (self.jitter_fn)(d))
-            .take(self.retry.max_retries); // Remember this is number of retries, so will run max_retries + 1.
-
         // S3 drops connections when a stream is done. This means that we can't
         // run the EOF error check. It's safe to disable it since S3 can be
         // trusted to handle incomplete data properly.
         writer.set_ignore_eof();
 
         self.retrier
-            .retry(
-                retry_config,
-                unfold(writer, move |writer| async move {
-                    let result = self
-                        .s3_client
-                        .get_object()
-                        .bucket(&self.bucket)
-                        .key(s3_path)
-                        .range(format!(
-                            "bytes={}-{}",
-                            offset + writer.get_bytes_written() as usize,
-                            end_read_byte.map_or_else(String::new, |v| v.to_string())
-                        ))
-                        .send()
-                        .await;
+            .retry(unfold(writer, move |writer| async move {
+                let result = self
+                    .s3_client
+                    .get_object()
+                    .bucket(&self.bucket)
+                    .key(s3_path)
+                    .range(format!(
+                        "bytes={}-{}",
+                        offset + writer.get_bytes_written() as usize,
+                        end_read_byte.map_or_else(String::new, |v| v.to_string())
+                    ))
+                    .send()
+                    .await;
 
-                    let mut s3_in_stream = match result {
-                        Ok(head_object_output) => head_object_output.body,
-                        Err(sdk_error) => match sdk_error.into_service_error() {
-                            GetObjectError::NoSuchKey(e) => {
-                                return Some((
-                                    RetryResult::Err(make_err!(Code::NotFound, "No such key in S3: {e}")),
-                                    writer,
-                                ));
-                            }
-                            GetObjectError::Unhandled(e) => {
-                                return Some((
-                                    RetryResult::Retry(make_err!(
-                                        Code::Unavailable,
-                                        "Unhandled GetObjectError in S3: {e:?}, retries: {}",
-                                        self.retry.max_retries + 1,
-                                    )),
-                                    writer,
-                                ));
-                            }
-                            other => {
-                                return Some((
-                                    RetryResult::Err(make_err!(
-                                        Code::Unavailable,
-                                        "Unkown error getting result in S3: {other:?}, retries: {}",
-                                        self.retry.max_retries + 1,
-                                    )),
-                                    writer,
-                                ));
-                            }
-                        },
-                    };
+                let mut s3_in_stream = match result {
+                    Ok(head_object_output) => head_object_output.body,
+                    Err(sdk_error) => match sdk_error.into_service_error() {
+                        GetObjectError::NoSuchKey(e) => {
+                            return Some((
+                                RetryResult::Err(make_err!(Code::NotFound, "No such key in S3: {e}")),
+                                writer,
+                            ));
+                        }
+                        GetObjectError::Unhandled(e) => {
+                            return Some((
+                                RetryResult::Retry(make_err!(
+                                    Code::Unavailable,
+                                    "Unhandled GetObjectError in S3: {e:?}",
+                                )),
+                                writer,
+                            ));
+                        }
+                        other => {
+                            return Some((
+                                RetryResult::Err(make_err!(
+                                    Code::Unavailable,
+                                    "Unkown error getting result in S3: {other:?}"
+                                )),
+                                writer,
+                            ));
+                        }
+                    },
+                };
 
-                    // Copy data from s3 input stream to the writer stream.
-                    while let Some(maybe_bytes) = s3_in_stream.next().await {
-                        match maybe_bytes {
-                            Ok(bytes) => {
-                                if bytes.is_empty() {
-                                    // Ignore possible EOF. Different implimentations of S3 may or may not
-                                    // send EOF this way.
-                                    continue;
-                                }
-                                if let Err(e) = writer.send(bytes).await {
-                                    return Some((
-                                        RetryResult::Err(make_input_err!("Error sending bytes to consumer in S3: {e}")),
-                                        writer,
-                                    ));
-                                }
+                // Copy data from s3 input stream to the writer stream.
+                while let Some(maybe_bytes) = s3_in_stream.next().await {
+                    match maybe_bytes {
+                        Ok(bytes) => {
+                            if bytes.is_empty() {
+                                // Ignore possible EOF. Different implimentations of S3 may or may not
+                                // send EOF this way.
+                                continue;
                             }
-                            Err(e) => {
+                            if let Err(e) = writer.send(bytes).await {
                                 return Some((
-                                    RetryResult::Retry(make_input_err!("Bad bytestream element in S3: {e}")),
+                                    RetryResult::Err(make_input_err!("Error sending bytes to consumer in S3: {e}")),
                                     writer,
                                 ));
                             }
                         }
+                        Err(e) => {
+                            return Some((
+                                RetryResult::Retry(make_input_err!("Bad bytestream element in S3: {e}")),
+                                writer,
+                            ));
+                        }
                     }
-                    if let Err(e) = writer.send_eof().await {
-                        return Some((
-                            RetryResult::Err(make_input_err!("Failed to send EOF to consumer in S3: {e}")),
-                            writer,
-                        ));
-                    }
-                    Some((RetryResult::Ok(()), writer))
-                }),
-            )
+                }
+                if let Err(e) = writer.send_eof().await {
+                    return Some((
+                        RetryResult::Err(make_input_err!("Failed to send EOF to consumer in S3: {e}")),
+                        writer,
+                    ));
+                }
+                Some((RetryResult::Ok(()), writer))
+            }))
             .await
     }
 

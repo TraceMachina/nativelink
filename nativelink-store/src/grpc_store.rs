@@ -1,4 +1,4 @@
-// Copyright 2023 The Native Link Authors. All rights reserved.
+// Copyright 2023-2024 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ use nativelink_proto::google::bytestream::{
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::retry::{ExponentialBackoff, Retrier, RetryResult};
+use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use nativelink_util::tls_utils;
 use nativelink_util::write_request_stream_wrapper::WriteRequestStreamWrapper;
@@ -60,8 +60,6 @@ pub struct GrpcStore {
     bytestream_client: ByteStreamClient<transport::Channel>,
     ac_client: ActionCacheClient<transport::Channel>,
     store_type: nativelink_config::stores::StoreType,
-    jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
-    retry: nativelink_config::stores::Retry,
     retrier: Retrier,
 }
 
@@ -126,16 +124,12 @@ impl GrpcStore {
             bytestream_client: ByteStreamClient::new(conn.clone()),
             ac_client: ActionCacheClient::new(conn),
             store_type: config.store_type,
-            jitter_fn,
-            retry: config.retry.to_owned(),
-            retrier: Retrier::new(Arc::new(|duration| Box::pin(sleep(duration)))),
+            retrier: Retrier::new(
+                Arc::new(|duration| Box::pin(sleep(duration))),
+                Arc::new(jitter_fn),
+                config.retry.to_owned(),
+            ),
         })
-    }
-
-    fn get_retry_config(&self) -> impl Iterator<Item = Duration> + '_ {
-        ExponentialBackoff::new(Duration::from_millis(self.retry.delay as u64))
-            .map(|d| (self.jitter_fn)(d))
-            .take(self.retry.max_retries) // Remember this is number of retries, so will run max_retries + 1.
     }
 
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
@@ -145,20 +139,16 @@ impl GrpcStore {
         R: Send,
         I: Send + Clone,
     {
-        let retry_config = self.get_retry_config();
         self.retrier
-            .retry(
-                retry_config,
-                unfold(input, move |input| async move {
-                    let input_clone = input.clone();
-                    Some((
-                        request(input_clone)
-                            .await
-                            .map_or_else(RetryResult::Retry, RetryResult::Ok),
-                        input,
-                    ))
-                }),
-            )
+            .retry(unfold(input, move |input| async move {
+                let input_clone = input.clone();
+                Some((
+                    request(input_clone)
+                        .await
+                        .map_or_else(RetryResult::Retry, RetryResult::Ok),
+                    input,
+                ))
+            }))
             .await
     }
 
@@ -323,11 +313,9 @@ impl GrpcStore {
             client: self.bytestream_client.clone(),
         });
 
-        let retry_config = self.get_retry_config();
         let result = self
             .retrier
             .retry(
-                retry_config,
                 unfold(local_state, move |local_state| async move {
                     let stream = unfold((None, local_state.clone()), move |(stream, local_state)| async {
                         // Only consume the stream on the first request to read,
@@ -680,60 +668,56 @@ impl Store for GrpcStore {
             read_limit: length.unwrap_or(0) as i64,
         };
 
-        let retry_config = self.get_retry_config();
         self.retrier
-            .retry(
-                retry_config,
-                unfold(local_state, move |mut local_state| async move {
-                    let request = ReadRequest {
-                        resource_name: local_state.resource_name.clone(),
-                        read_offset: local_state.read_offset,
-                        read_limit: local_state.read_limit,
-                    };
-                    let mut stream = match self.read_internal(request).await.err_tip(|| "in GrpcStore::get_part()") {
-                        Ok(stream) => stream,
-                        Err(err) => return Some((RetryResult::Retry(err), local_state)),
-                    };
+            .retry(unfold(local_state, move |mut local_state| async move {
+                let request = ReadRequest {
+                    resource_name: local_state.resource_name.clone(),
+                    read_offset: local_state.read_offset,
+                    read_limit: local_state.read_limit,
+                };
+                let mut stream = match self.read_internal(request).await.err_tip(|| "in GrpcStore::get_part()") {
+                    Ok(stream) => stream,
+                    Err(err) => return Some((RetryResult::Retry(err), local_state)),
+                };
 
-                    loop {
-                        let data = match stream.next().await {
-                            // Create an empty response to represent EOF.
-                            None => bytes::Bytes::new(),
-                            Some(Ok(message)) => message.data,
-                            Some(Err(status)) => {
-                                return Some((
-                                    RetryResult::Retry(
-                                        Into::<Error>::into(status)
-                                            .append("While fetching message in GrpcStore::get_part()"),
-                                    ),
-                                    local_state,
-                                ))
-                            }
-                        };
-                        let length = data.len() as i64;
-                        // This is the usual exit from the loop at EOF.
-                        if length == 0 {
-                            let eof_result = local_state
-                                .writer
-                                .send_eof()
-                                .await
-                                .err_tip(|| "Could not send eof in GrpcStore::get_part()")
-                                .map_or_else(RetryResult::Err, RetryResult::Ok);
-                            return Some((eof_result, local_state));
+                loop {
+                    let data = match stream.next().await {
+                        // Create an empty response to represent EOF.
+                        None => bytes::Bytes::new(),
+                        Some(Ok(message)) => message.data,
+                        Some(Err(status)) => {
+                            return Some((
+                                RetryResult::Retry(
+                                    Into::<Error>::into(status)
+                                        .append("While fetching message in GrpcStore::get_part()"),
+                                ),
+                                local_state,
+                            ))
                         }
-                        // Forward the data upstream.
-                        if let Err(err) = local_state
+                    };
+                    let length = data.len() as i64;
+                    // This is the usual exit from the loop at EOF.
+                    if length == 0 {
+                        let eof_result = local_state
                             .writer
-                            .send(data)
+                            .send_eof()
                             .await
-                            .err_tip(|| "While sending in GrpcStore::get_part()")
-                        {
-                            return Some((RetryResult::Err(err), local_state));
-                        }
-                        local_state.read_offset += length;
+                            .err_tip(|| "Could not send eof in GrpcStore::get_part()")
+                            .map_or_else(RetryResult::Err, RetryResult::Ok);
+                        return Some((eof_result, local_state));
                     }
-                }),
-            )
+                    // Forward the data upstream.
+                    if let Err(err) = local_state
+                        .writer
+                        .send(data)
+                        .await
+                        .err_tip(|| "While sending in GrpcStore::get_part()")
+                    {
+                        return Some((RetryResult::Err(err), local_state));
+                    }
+                    local_state.read_offset += length;
+                }
+            }))
             .await
     }
 

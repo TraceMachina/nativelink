@@ -28,7 +28,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
-use nativelink_util::retry::{ExponentialBackoff, Retrier, RetryResult};
+use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::tls_utils;
 use parking_lot::Mutex;
 use rand::rngs::OsRng;
@@ -46,8 +46,6 @@ pub struct GrpcScheduler {
     capabilities_client: CapabilitiesClient<transport::Channel>,
     execution_client: ExecutionClient<transport::Channel>,
     platform_property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
-    jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
-    retry: nativelink_config::stores::Retry,
     retrier: Retrier,
 }
 
@@ -76,9 +74,11 @@ impl GrpcScheduler {
             capabilities_client: CapabilitiesClient::new(channel.clone()),
             execution_client: ExecutionClient::new(channel),
             platform_property_managers: Mutex::new(HashMap::new()),
-            jitter_fn,
-            retry: config.retry.clone(),
-            retrier: Retrier::new(Arc::new(|duration| Box::pin(sleep(duration)))),
+            retrier: Retrier::new(
+                Arc::new(|duration| Box::pin(sleep(duration))),
+                Arc::new(jitter_fn),
+                config.retry.to_owned(),
+            ),
         })
     }
 
@@ -89,22 +89,16 @@ impl GrpcScheduler {
         R: Send,
         I: Send + Clone,
     {
-        let retry_config = ExponentialBackoff::new(Duration::from_millis(self.retry.delay as u64))
-            .map(|d| (self.jitter_fn)(d))
-            .take(self.retry.max_retries); // Remember this is number of retries, so will run max_retries + 1.
         self.retrier
-            .retry(
-                retry_config,
-                unfold(input, move |input| async move {
-                    let input_clone = input.clone();
-                    Some((
-                        request(input_clone)
-                            .await
-                            .map_or_else(RetryResult::Retry, RetryResult::Ok),
-                        input,
-                    ))
-                }),
-            )
+            .retry(unfold(input, move |input| async move {
+                let input_clone = input.clone();
+                Some((
+                    request(input_clone)
+                        .await
+                        .map_or_else(RetryResult::Retry, RetryResult::Ok),
+                    input,
+                ))
+            }))
             .await
     }
 
