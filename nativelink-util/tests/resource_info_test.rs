@@ -32,6 +32,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -47,6 +48,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -62,6 +64,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -76,6 +79,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -91,6 +95,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -120,6 +125,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -134,6 +140,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -149,6 +156,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -163,6 +171,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -177,6 +186,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -191,6 +201,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -206,6 +217,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -220,12 +232,13 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
     #[tokio::test]
     async fn read_blobs_hash_size_optional_metadata_test() -> Result<(), Box<dyn std::error::Error>> {
-        const RESOURCE_NAME: &str = "compressed-blobs/hash/12345/optional_metadata";
+        const RESOURCE_NAME: &str = "blobs/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, None);
@@ -234,12 +247,13 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
     #[tokio::test]
     async fn read_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
-        const RESOURCE_NAME: &str = "compressed-blobs/hash/12345";
+        const RESOURCE_NAME: &str = "blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, None);
@@ -248,6 +262,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -262,6 +277,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -276,6 +292,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
 
@@ -320,6 +337,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -335,6 +353,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -350,6 +369,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -365,6 +385,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -380,6 +401,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -395,6 +417,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -410,6 +433,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -424,6 +448,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -439,6 +464,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -454,6 +480,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -469,6 +496,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -483,6 +511,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -498,6 +527,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -512,12 +542,20 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn compressed_blob_invalid_compression_format() -> Result<(), Box<dyn std::error::Error>> {
+        const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/INVALID/hash/12345";
+        assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
         Ok(())
     }
 
     #[tokio::test]
     async fn write_uploads_uuid_blobs_hash_size_optional_metadata_test() -> Result<(), Box<dyn std::error::Error>> {
-        const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/hash/12345/optional_metadata";
+        const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, Some("uuid"));
@@ -526,12 +564,13 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
     #[tokio::test]
     async fn write_uploads_uuid_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
-        const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/hash/12345";
+        const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, Some("uuid"));
@@ -540,6 +579,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -554,6 +594,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
@@ -568,6 +609,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
+        assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
 
