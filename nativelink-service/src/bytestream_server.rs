@@ -251,7 +251,7 @@ impl ByteStreamServer {
         let any_store = store.clone().inner_store(Some(digest)).as_any();
         let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
         if let Some(grpc_store) = maybe_grpc_store {
-            let stream = grpc_store.read(Request::new(read_request)).await?.into_inner();
+            let stream = grpc_store.read(Request::new(read_request)).await?;
             return Ok(Response::new(Box::pin(stream)));
         }
 
