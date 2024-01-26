@@ -384,11 +384,11 @@ impl ByteStreamServer {
                     // by counting the number of bytes sent from the client. If they send
                     // less than the amount they said they were going to send and then
                     // close the stream, we know there's a problem.
-                    Ok(None) => return Err(make_input_err!("Client closed stream before sending all data")),
+                    None => return Err(make_input_err!("Client closed stream before sending all data")),
                     // Code path for client stream error. Probably client disconnect.
-                    Err(err) => return Err(err),
+                    Some(Err(err)) => return Err(err),
                     // Code path for received chunk of data.
-                    Ok(Some(write_request)) => write_request,
+                    Some(Ok(write_request)) => write_request,
                 };
                 if write_request.write_offset as u64 != tx.get_bytes_written() {
                     return Err(make_input_err!(

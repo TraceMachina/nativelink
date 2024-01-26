@@ -15,6 +15,7 @@
 use std::marker::Send;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -278,17 +279,65 @@ impl GrpcStore {
             E: Into<Error> + 'static,
         {
             instance_name: String,
-            error: Mutex<Option<Error>>,
-            read_stream: Mutex<Option<WriteRequestStreamWrapper<T, E>>>,
+            error: Option<Error>,
+            read_stream: WriteRequestStreamWrapper<T, E>,
             client: ByteStreamClient<Channel>,
         }
 
-        let local_state = Arc::new(LocalState {
+        let local_state = Arc::new(Mutex::new(LocalState {
             instance_name: self.instance_name.clone(),
-            error: Mutex::new(None),
-            read_stream: Mutex::new(Some(stream)),
+            error: None,
+            read_stream: stream,
             client: self.bytestream_client.clone(),
-        });
+        }));
+
+        // A wrapper to allow the LocalState to be given to an attempt but
+        // retrieved if the attempt fails.
+        struct StateWrapper<T, E>
+        where
+            T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
+            E: Into<Error> + 'static,
+        {
+            shared_state: Arc<Mutex<LocalState<T, E>>>,
+        }
+
+        impl<T, E> Stream for StateWrapper<T, E>
+        where
+            T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
+            E: Into<Error> + 'static,
+        {
+            type Item = WriteRequest;
+
+            fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+                // This should be an uncontended lock since write was called.
+                let mut local_state = self.shared_state.lock();
+                let Poll::Ready(maybe_message) = Pin::new(&mut local_state.read_stream).poll_next(cx) else {
+                    return Poll::Pending;
+                };
+                let result = match maybe_message {
+                    Some(Ok(mut message)) => {
+                        // `resource_name` pattern is: "{instance_name}/uploads/{uuid}/blobs/{hash}/{size}".
+                        if let Some(first_slash_pos) = message.resource_name.find('/') {
+                            message.resource_name = format!(
+                                "{}/{}",
+                                &local_state.instance_name,
+                                message.resource_name.get((first_slash_pos + 1)..).unwrap()
+                            );
+                            Some(message)
+                        } else {
+                            error!("{}", "Resource name should follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}");
+                            None
+                        }
+                    }
+                    Some(Err(err)) => {
+                        local_state.error = Some(err);
+                        None
+                    }
+                    None => None,
+                };
+                Poll::Ready(result)
+            }
+        }
 
         let retry_config = self.get_retry_config();
         let result = self
@@ -296,56 +345,42 @@ impl GrpcStore {
             .retry(
                 retry_config,
                 unfold(local_state, move |local_state| async move {
-                    let stream = unfold((None, local_state.clone()), move |(stream, local_state)| async {
-                        // Only consume the stream on the first request to read,
-                        // then pass it for future requests in the unfold.
-                        let mut stream = stream.or_else(|| local_state.read_stream.lock().take())?;
-                        let maybe_message = stream.next().await;
-                        if let Ok(maybe_message) = maybe_message {
-                            if let Some(mut message) = maybe_message {
-                                // `resource_name` pattern is: "{instance_name}/uploads/{uuid}/blobs/{hash}/{size}".
-                                let first_slash_pos = match message.resource_name.find('/') {
-                                    Some(pos) => pos,
-                                    None => {
-                                        error!("{}", "Resource name should follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}");
-                                        return None;
-                                    }
-                                };
-                                message.resource_name = format!(
-                                    "{}/{}",
-                                    &local_state.instance_name,
-                                    message.resource_name.get((first_slash_pos + 1)..).unwrap()
-                                );
-                                return Some((message, (Some(stream), local_state)));
-                            }
-                            return None;
-                        }
-                        // TODO(allada) I'm sure there's a way to do this without a mutex, but rust can be super
-                        // picky with borrowing through a stream await.
-                        *local_state.error.lock() = Some(maybe_message.unwrap_err());
-                        None
-                    });
+                    let mut client = local_state.lock().client.clone();
+                    // The client write may occur on a separate thread and
+                    // therefore in order to share the state with it we have to
+                    // wrap it in a Mutex and retrieve it after the write
+                    // has completed.  There is no way to get the value back
+                    // from the client.
+                    let result = client
+                        .write(StateWrapper {
+                            shared_state: local_state.clone(),
+                        })
+                        .await;
 
-                    let result = local_state.client.clone()
-                            .write(stream)
-                            .await
-                            .err_tip(|| "in GrpcStore::write");
+                    // Get the state back from StateWrapper, this should be
+                    // uncontended since write has returned.
+                    let mut local_state_locked = local_state.lock();
 
                     // If the stream has been consumed, don't retry, but
                     // otherwise it's ok to try again.
-                    let result = if local_state.read_stream.lock().is_some() {
-                        result.map_or_else(RetryResult::Retry, RetryResult::Ok)
+                    let result = if result.is_err() && local_state_locked.read_stream.reset_for_retry() {
+                        result
+                            .err_tip(|| "Retry is possible in GrpcStore::write")
+                            .map_or_else(RetryResult::Retry, RetryResult::Ok)
                     } else {
-                        result.map_or_else(RetryResult::Err, RetryResult::Ok)
+                        result
+                            .err_tip(|| "Retry was not possible in GrpcStore::write")
+                            .map_or_else(RetryResult::Err, RetryResult::Ok)
                     };
 
                     // If there was an error with the stream, then don't retry.
-                    let result = if let Some(err) = local_state.error.lock().take() {
-                        RetryResult::Err(err)
+                    let result = if let Some(err) = &local_state_locked.error {
+                        RetryResult::Err(err.clone())
                     } else {
                         result
                     };
 
+                    drop(local_state_locked);
                     Some((result, local_state))
                 }),
             )
