@@ -15,6 +15,7 @@
 use std::marker::Send;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -35,6 +36,7 @@ use nativelink_proto::google::bytestream::{
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{ExponentialBackoff, Retrier, RetryResult};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use nativelink_util::tls_utils;
@@ -87,6 +89,67 @@ impl Stream for FirstStream {
             return std::task::Poll::Ready(first_response.map(Ok));
         }
         Pin::new(&mut self.stream).poll_next(cx)
+    }
+}
+
+/// This structure wraps all of the information required to perform a write
+/// request on the GrpcStore, it is used to allow a write to retry on failure.
+struct WriteState<T, E>
+where
+    T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
+    E: Into<Error> + 'static,
+{
+    instance_name: String,
+    error: Option<Error>,
+    read_stream: WriteRequestStreamWrapper<T, E>,
+    client: ByteStreamClient<Channel>,
+}
+
+/// A wrapper around WriteState to allow it to be reclaimed from the underlying
+/// write call in the case of failure.
+struct WriteStateWrapper<T, E>
+where
+    T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
+    E: Into<Error> + 'static,
+{
+    shared_state: Arc<Mutex<WriteState<T, E>>>,
+}
+
+impl<T, E> Stream for WriteStateWrapper<T, E>
+where
+    T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
+    E: Into<Error> + 'static,
+{
+    type Item = WriteRequest;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // This should be an uncontended lock since write was called.
+        let mut local_state = self.shared_state.lock();
+        let Poll::Ready(maybe_message) = Pin::new(&mut local_state.read_stream).poll_next(cx) else {
+            return Poll::Pending;
+        };
+        const IS_UPLOAD_TRUE: bool = true;
+        let result = match maybe_message {
+            Some(Ok(mut message)) => match ResourceInfo::new(&message.resource_name, IS_UPLOAD_TRUE) {
+                Ok(mut resource_name) => {
+                    if resource_name.instance_name != local_state.instance_name {
+                        resource_name.instance_name = &local_state.instance_name;
+                        message.resource_name = resource_name.to_string(IS_UPLOAD_TRUE);
+                    }
+                    Some(message)
+                }
+                Err(err) => {
+                    error!("{err:?}");
+                    None
+                }
+            },
+            Some(Err(err)) => {
+                local_state.error = Some(err);
+                None
+            }
+            None => None,
+        };
+        Poll::Ready(result)
     }
 }
 
@@ -247,16 +310,12 @@ impl GrpcStore {
     }
 
     fn get_read_request(&self, mut request: ReadRequest) -> Result<ReadRequest, Error> {
-        // `resource_name` pattern is: "{instance_name}/blobs/{hash}/{size}".
-        let first_slash_pos = request
-            .resource_name
-            .find('/')
-            .err_tip(|| "Resource name expected to follow pattern {instance_name}/blobs/{hash}/{size}")?;
-        request.resource_name = format!(
-            "{}/{}",
-            self.instance_name,
-            request.resource_name.get((first_slash_pos + 1)..).unwrap()
-        );
+        const IS_UPLOAD_FALSE: bool = false;
+        let mut resource_info = ResourceInfo::new(&request.resource_name, IS_UPLOAD_FALSE)?;
+        if resource_info.instance_name != self.instance_name {
+            resource_info.instance_name = &self.instance_name;
+            request.resource_name = resource_info.to_string(IS_UPLOAD_FALSE);
+        }
         Ok(request)
     }
 
@@ -305,23 +364,12 @@ impl GrpcStore {
             "CAS operation on AC store"
         );
 
-        struct LocalState<T, E>
-        where
-            T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
-            E: Into<Error> + 'static,
-        {
-            instance_name: String,
-            error: Mutex<Option<Error>>,
-            read_stream: Mutex<Option<WriteRequestStreamWrapper<T, E>>>,
-            client: ByteStreamClient<Channel>,
-        }
-
-        let local_state = Arc::new(LocalState {
+        let local_state = Arc::new(Mutex::new(WriteState {
             instance_name: self.instance_name.clone(),
-            error: Mutex::new(None),
-            read_stream: Mutex::new(Some(stream)),
+            error: None,
+            read_stream: stream,
             client: self.bytestream_client.clone(),
-        });
+        }));
 
         let retry_config = self.get_retry_config();
         let result = self
@@ -329,56 +377,42 @@ impl GrpcStore {
             .retry(
                 retry_config,
                 unfold(local_state, move |local_state| async move {
-                    let stream = unfold((None, local_state.clone()), move |(stream, local_state)| async {
-                        // Only consume the stream on the first request to read,
-                        // then pass it for future requests in the unfold.
-                        let mut stream = stream.or_else(|| local_state.read_stream.lock().take())?;
-                        let maybe_message = stream.next().await;
-                        if let Ok(maybe_message) = maybe_message {
-                            if let Some(mut message) = maybe_message {
-                                // `resource_name` pattern is: "{instance_name}/uploads/{uuid}/blobs/{hash}/{size}".
-                                let first_slash_pos = match message.resource_name.find('/') {
-                                    Some(pos) => pos,
-                                    None => {
-                                        error!("{}", "Resource name should follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}");
-                                        return None;
-                                    }
-                                };
-                                message.resource_name = format!(
-                                    "{}/{}",
-                                    &local_state.instance_name,
-                                    message.resource_name.get((first_slash_pos + 1)..).unwrap()
-                                );
-                                return Some((message, (Some(stream), local_state)));
+                    let mut client = local_state.lock().client.clone();
+                    // The client write may occur on a separate thread and
+                    // therefore in order to share the state with it we have to
+                    // wrap it in a Mutex and retrieve it after the write
+                    // has completed.  There is no way to get the value back
+                    // from the client.
+                    let result = client
+                        .write(WriteStateWrapper {
+                            shared_state: local_state.clone(),
+                        })
+                        .await;
+
+                    // Get the state back from StateWrapper, this should be
+                    // uncontended since write has returned.
+                    let mut local_state_locked = local_state.lock();
+
+                    let result = if let Some(err) = &local_state_locked.error {
+                        // If there was an error with the stream, then don't
+                        // retry.
+                        RetryResult::Err(err.clone())
+                    } else {
+                        // On error determine whether it is possible to retry.
+                        match result.err_tip(|| "in GrpcStore::write") {
+                            Err(err) => {
+                                if local_state_locked.read_stream.is_retryable() {
+                                    local_state_locked.read_stream.reset();
+                                    RetryResult::Retry(err)
+                                } else {
+                                    RetryResult::Err(err.append("Retry is not possible"))
+                                }
                             }
-                            return None;
+                            Ok(response) => RetryResult::Ok(response),
                         }
-                        // TODO(allada) I'm sure there's a way to do this without a mutex, but rust can be super
-                        // picky with borrowing through a stream await.
-                        *local_state.error.lock() = Some(maybe_message.unwrap_err());
-                        None
-                    });
-
-                    let result = local_state.client.clone()
-                            .write(stream)
-                            .await
-                            .err_tip(|| "in GrpcStore::write");
-
-                    // If the stream has been consumed, don't retry, but
-                    // otherwise it's ok to try again.
-                    let result = if local_state.read_stream.lock().is_some() {
-                        result.map_or_else(RetryResult::Retry, RetryResult::Ok)
-                    } else {
-                        result.map_or_else(RetryResult::Err, RetryResult::Ok)
                     };
 
-                    // If there was an error with the stream, then don't retry.
-                    let result = if let Some(err) = local_state.error.lock().take() {
-                        RetryResult::Err(err)
-                    } else {
-                        result
-                    };
-
+                    drop(local_state_locked);
                     Some((result, local_state))
                 }),
             )
@@ -397,15 +431,12 @@ impl GrpcStore {
 
         let mut request = grpc_request.into_inner();
 
-        // `resource_name` pattern is: "{instance_name}/uploads/{uuid}/blobs/{hash}/{size}".
-        let first_slash_pos = request.resource_name.find('/').err_tip(|| {
-            "Resource name expected to follow pattern {instance_name}/uploads/{uuid}/blobs/{hash}/{size}"
-        })?;
-        request.resource_name = format!(
-            "{}/{}",
-            self.instance_name,
-            request.resource_name.get((first_slash_pos + 1)..).unwrap()
-        );
+        const IS_UPLOAD_TRUE: bool = true;
+        let mut request_info = ResourceInfo::new(&request.resource_name, IS_UPLOAD_TRUE)?;
+        if request_info.instance_name != self.instance_name {
+            request_info.instance_name = &self.instance_name;
+            request.resource_name = request_info.to_string(IS_UPLOAD_TRUE);
+        }
 
         self.perform_request(request, |request| async move {
             self.bytestream_client
