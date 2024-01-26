@@ -111,26 +111,11 @@ impl Store for FastSlowStore {
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.pin_fast_store().has_with_results(digests, results).await?;
-        let missing_digests: Vec<DigestInfo> = results
-            .iter()
-            .zip(digests.iter())
-            .filter_map(|(result, digest)| result.map_or_else(|| Some(*digest), |_| None))
-            .collect();
-        if !missing_digests.is_empty() {
-            let mut slow_store_results = self.pin_slow_store().has_many(&missing_digests).await?.into_iter();
-            // We did not change our `result` order and the slow store's results are all the None
-            // entries in `results`. This means we can just iterate over the `results`, find the None
-            // items and put in whatever the next item in the results from `slow_store_results`.
-            for result in results.iter_mut() {
-                if result.is_none() {
-                    *result = slow_store_results
-                        .next()
-                        .err_tip(|| "slow_store_results out of sync with missing_digests")?;
-                }
-            }
-        }
-        Ok(())
+        // Only check the slow store because if it's not there, then something
+        // down stream might be unable to get it.  This should not affect
+        // workers as they only use get() and a CAS can use an
+        // ExistenceCacheStore to avoid the bottleneck.
+        self.pin_slow_store().has_with_results(digests, results).await
     }
 
     async fn update(
