@@ -81,18 +81,24 @@ const SLASH_SIZE: usize = 1;
 pub struct ResourceInfo<'a> {
     pub instance_name: &'a str,
     pub uuid: Option<&'a str>,
+    pub compressed: bool,
     pub compressor: Option<&'a str>,
     pub digest_function: Option<&'a str>,
     pub hash: &'a str,
+    size: &'a str,
     pub expected_size: usize,
     pub optional_metadata: Option<&'a str>,
+    is_upload: bool,
 }
 
 impl<'a> ResourceInfo<'a> {
     pub fn new(resource_name: &'a str, is_upload: bool) -> Result<ResourceInfo<'a>, Error> {
         // The most amount of slashes there can be to get to "(compressed-)blobs" section is 7.
         let mut rparts = resource_name.rsplitn(7, '/');
-        let mut output = ResourceInfo::default();
+        let mut output = ResourceInfo {
+            is_upload,
+            ..Default::default()
+        };
         let mut end_bytes_processed = 0;
         let end_state = recursive_parse(&mut rparts, &mut output, State::Unknown, &mut end_bytes_processed)?;
         error_if!(
@@ -131,6 +137,27 @@ impl<'a> ResourceInfo<'a> {
     }
 }
 
+impl ToString for ResourceInfo<'_> {
+    fn to_string(&self) -> String {
+        [
+            Some(self.instance_name),
+            self.is_upload.then_some("uploads"),
+            self.uuid,
+            self.compressed.then_some("compressed-blobs").or(Some("blobs")),
+            self.compressor,
+            self.digest_function,
+            Some(self.hash),
+            Some(self.size),
+            self.optional_metadata,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<&str>>()
+        .join("/")
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum State {
     Unknown,
@@ -158,6 +185,7 @@ fn recursive_parse<'a>(
             return Ok(State::DigestFunction);
         }
         if part == "compressed-blobs" {
+            output.compressed = true;
             *bytes_processed = part.len() + SLASH_SIZE;
             return Ok(State::Compressor);
         }
@@ -196,6 +224,7 @@ fn recursive_parse<'a>(
                 return Ok(State::Size);
             }
             State::Size => {
+                output.size = part;
                 output.expected_size = part
                     .parse::<usize>()
                     .map_err(|_| make_input_err!("Digest size_bytes was not convertible to usize. Got: {}", part))?;
