@@ -84,6 +84,7 @@ pub struct ResourceInfo<'a> {
     pub compressor: Option<&'a str>,
     pub digest_function: Option<&'a str>,
     pub hash: &'a str,
+    size: &'a str,
     pub expected_size: usize,
     pub optional_metadata: Option<&'a str>,
 }
@@ -128,6 +129,25 @@ impl<'a> ResourceInfo<'a> {
             output.instance_name = instance_name;
         }
         Ok(output)
+    }
+
+    pub fn to_string(&self, is_upload: bool) -> String {
+        [
+            Some(self.instance_name),
+            is_upload.then_some("uploads"),
+            self.uuid,
+            Some(self.compressor.map_or("blobs", |_| "compressed-blobs")),
+            self.compressor,
+            self.digest_function,
+            Some(self.hash),
+            Some(self.size),
+            self.optional_metadata,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<&str>>()
+        .join("/")
     }
 }
 
@@ -177,8 +197,9 @@ fn recursive_parse<'a>(
                     output.compressor = Some(part);
                     *bytes_processed += part.len() + SLASH_SIZE;
                     return Ok(state);
+                } else {
+                    return Err(make_input_err!("Expected compressor, got {part}"));
                 }
-                continue;
             }
             State::DigestFunction => {
                 state = State::Hash;
@@ -196,6 +217,7 @@ fn recursive_parse<'a>(
                 return Ok(State::Size);
             }
             State::Size => {
+                output.size = part;
                 output.expected_size = part
                     .parse::<usize>()
                     .map_err(|_| make_input_err!("Digest size_bytes was not convertible to usize. Got: {}", part))?;

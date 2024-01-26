@@ -235,7 +235,7 @@ pub mod write_tests {
             // Now disconnect our stream.
             drop(tx);
             let (result, _bs_server) = join_handle.await?;
-            assert!(result.is_ok(), "Expected success to be returned");
+            result?;
         }
         {
             // Check to make sure our store recorded the data properly.
