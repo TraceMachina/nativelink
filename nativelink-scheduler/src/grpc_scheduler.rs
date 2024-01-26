@@ -71,10 +71,7 @@ impl GrpcScheduler {
         config: &nativelink_config::schedulers::GrpcScheduler,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
-        let channel = transport::Channel::balance_list(std::iter::once(tls_utils::endpoint_from(
-            &config.endpoint,
-            tls_utils::load_client_config(&config.tls_config)?,
-        )?));
+        let channel = transport::Channel::balance_list(std::iter::once(tls_utils::endpoint(&config.endpoint)?));
         Ok(Self {
             capabilities_client: CapabilitiesClient::new(channel.clone()),
             execution_client: ExecutionClient::new(channel),

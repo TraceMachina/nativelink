@@ -4,7 +4,9 @@
       // Note: This file is used to test GRPC store.
       "grpc": {
         "instance_name": "main",
-        "endpoints": ["grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"],
+        "endpoints": [
+          {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+        ],
         "store_type": "cas"
       }
     },
@@ -12,7 +14,9 @@
       // Note: This file is used to test GRPC store.
       "grpc": {
         "instance_name": "main",
-        "endpoints": ["grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"],
+        "endpoints": [
+          {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+        ],
         "store_type": "ac"
       }
     },

@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::serde_utils::{convert_numeric_with_shellexpand, convert_string_with_shellexpand};
-use crate::stores::{ClientTlsConfig, Retry, StoreRefName};
+use crate::serde_utils::convert_numeric_with_shellexpand;
+use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
@@ -125,19 +125,15 @@ pub struct SimpleScheduler {
 /// is useful to use when doing some kind of local action cache or CAS away from
 /// the main cluster of workers.  In general, it's more efficient to point the
 /// build at the main scheduler directly though.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcScheduler {
     /// The upstream scheduler to forward requests to.
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
-    pub endpoint: String,
+    pub endpoint: GrpcEndpoint,
 
     /// Retry configuration to use when a network request fails.
     #[serde(default)]
     pub retry: Retry,
-
-    /// The TLS configuration to use to connect to the endpoint.
-    pub tls_config: Option<ClientTlsConfig>,
 }
 
 #[derive(Deserialize, Debug)]

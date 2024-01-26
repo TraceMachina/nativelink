@@ -87,19 +87,10 @@ impl GrpcStore {
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
         error_if!(config.endpoints.is_empty(), "Expected at least 1 endpoint in GrpcStore");
-        let tls_config = tls_utils::load_client_config(&config.tls_config)?;
         let mut endpoints = Vec::with_capacity(config.endpoints.len());
-        for endpoint in &config.endpoints {
-            // TODO(allada) This should be moved to be done in utils/serde_utils.rs like the others.
-            // We currently don't have a way to handle those helpers with vectors.
-            let endpoint = shellexpand::env(&endpoint)
-                .map_err(|e| make_input_err!("{e}"))
-                .err_tip(|| "Could not expand endpoint in GrpcStore")?
-                .to_string();
-
-            let endpoint = tls_utils::endpoint_from(&endpoint, tls_config.clone())
+        for endpoint_config in &config.endpoints {
+            let endpoint = tls_utils::endpoint(endpoint_config)
                 .map_err(|e| make_input_err!("Invalid URI for GrpcStore endpoint : {e:?}"))?;
-
             endpoints.push(endpoint);
         }
 
