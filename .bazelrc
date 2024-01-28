@@ -12,7 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Use blake3 as digest function instead of the much slower default sha256.
 startup --digest_function=blake3
+common --enable_platform_specific_config
+
+# TODO(aaronmondal): Remove this once we get the build working without it.
+common --noincompatible_sandbox_hermetic_tmp
+
+# Don't leak PATH and LD_LIBRARY_PATH into the build.
+build --incompatible_strict_action_env
+
+# Don't use legacy toolchain resolution.
+build --incompatible_enable_cc_toolchain_resolution
 
 # Use the earliest supported C++ version for protoc.
 build --cxxopt=-std=c++14 --host_cxxopt=-std=c++14
@@ -57,19 +68,39 @@ startup --windows_enable_symlinks
 build:windows --cxxopt=/std:c++14 --host_cxxopt=/std:c++14
 build:windows --enable_runfiles
 
-# Local remote execution flags.
+# Global rust toolchain configuration. Deferred to here so that the cc
+# toolchains are resolved before the rust toolchains.
+build --extra_toolchains=@rust_toolchains//:all
 
-# TODO(aaronmondal): rules_rust doesn't work with this enabled.
+# Option to test the zig toolchain on Linux. Prefer the default `linux`
+# toolchain which builds cc targets roughly twice as fast.
 #
-# Tracked in: https://github.com/TraceMachina/nativelink/issues/477.
-build:lre --incompatible_enable_cc_toolchain_resolution
+# WARNING:
+#
+# We're using an incredibly old target glibc here. Builds created with this
+# toolchain have maximum compatibility (theoretically down to Ubuntu 18), but
+# miss out on half a decade of optimizations. Don't use this for production
+# builds if you're running a non-ancient OS and care about performance.
+#
+# TODO(aaronmondal): Migrate to a statically linked musl as soon as rules_rust
+#                    supports it. This way we get to keep (or even improve)
+#                    backwards compatibility without sacrificing performance.
+build:linux_zig --host_platform=@zig_sdk//platform:linux_amd64
+build:linux_zig --extra_toolchains=@zig_sdk//libc_aware/toolchain:linux_amd64_gnu.2.28
+build:linux_zig --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+
+
+# Local Remote Execution.
+build:lre --host_platform=@local-remote-execution//generated/config:platform
+build:lre --extra_toolchains=@local-remote-execution//generated/config:cc-toolchain"
+build:lre --extra_toolchains=@local-remote-execution//generated/java:all"
+
+# See: https://github.com/bazelbuild/bazel/issues/19714#issuecomment-1745604978
+build:lre --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 
 # TODO(aaronmondal): Remove when https://github.com/bazelbuild/bazel/issues/7254
 #                    is resolved.
 build:lre --define=EXECUTOR=remote
-
-# See: https://github.com/bazelbuild/bazel/issues/19714#issuecomment-1745604978
-build:lre --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 
 # Allow user-side customization.
 try-import %workspace%/.bazelrc.user

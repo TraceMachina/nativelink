@@ -19,6 +19,8 @@ load(
     "@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl",
     "action_config",
     "artifact_name_pattern",
+    "env_entry",
+    "env_set",
     "feature",
     "feature_set",
     "flag_group",
@@ -28,6 +30,11 @@ load(
     "variable_with_value",
     "with_feature_set",
 )
+
+def _target_os_version(ctx):
+    platform_type = ctx.fragments.apple.single_arch_platform.platform_type
+    xcode_config = ctx.attr._xcode_config[apple_common.XcodeVersionConfig]
+    return xcode_config.minimum_os_for_platform_type(platform_type)
 
 def layering_check_features(compiler):
     if compiler != "clang":
@@ -187,7 +194,17 @@ def _impl(ctx):
         ],
     )
 
+    objcopy_action = action_config(
+        action_name = ACTION_NAMES.objcopy_embed_data,
+        tools = [
+            tool(
+                path = ctx.attr.tool_paths["objcopy"],
+            ),
+        ],
+    )
+
     action_configs.append(llvm_cov_action)
+    action_configs.append(objcopy_action)
 
     supports_pic_feature = feature(
         name = "supports_pic",
@@ -196,6 +213,11 @@ def _impl(ctx):
     supports_start_end_lib_feature = feature(
         name = "supports_start_end_lib",
         enabled = True,
+    )
+
+    static_link_cpp_runtimes_feature = feature(
+        name = "static_link_cpp_runtimes",
+        enabled = False,
     )
 
     default_compile_flags_feature = feature(
@@ -244,6 +266,14 @@ def _impl(ctx):
                 with_features = [with_feature_set(features = ["opt"])],
             ),
             flag_set(
+                actions = [ACTION_NAMES.c_compile],
+                flag_groups = ([
+                    flag_group(
+                        flags = ctx.attr.conly_flags,
+                    ),
+                ] if ctx.attr.conly_flags else []),
+            ),
+            flag_set(
                 actions = all_cpp_compile_actions + [ACTION_NAMES.lto_backend],
                 flag_groups = ([
                     flag_group(
@@ -274,6 +304,18 @@ def _impl(ctx):
                     ),
                 ] if ctx.attr.opt_link_flags else []),
                 with_features = [with_feature_set(features = ["opt"])],
+            ),
+        ],
+        env_sets = [
+            env_set(
+                actions = all_link_actions + lto_index_actions + [ACTION_NAMES.cpp_link_static_library],
+                env_entries = ([
+                    env_entry(
+                        # Required for hermetic links on macOS
+                        key = "ZERO_AR_DATE",
+                        value = "1",
+                    ),
+                ]),
             ),
         ],
     )
@@ -749,23 +791,6 @@ def _impl(ctx):
         ],
     )
 
-    symbol_counts_feature = feature(
-        name = "symbol_counts",
-        flag_sets = [
-            flag_set(
-                actions = all_link_actions + lto_index_actions,
-                flag_groups = [
-                    flag_group(
-                        flags = [
-                            "-Wl,--print-symbol-counts=%{symbol_counts_output}",
-                        ],
-                        expand_if_available = "symbol_counts_output",
-                    ),
-                ],
-            ),
-        ],
-    )
-
     strip_debug_symbols_feature = feature(
         name = "strip_debug_symbols",
         flag_sets = [
@@ -831,6 +856,10 @@ def _impl(ctx):
                                 flags = ["-Wl,-whole-archive"],
                                 expand_if_true =
                                     "libraries_to_link.is_whole_archive",
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "static_library",
+                                ),
                             ),
                             flag_group(
                                 flags = ["%{libraries_to_link.object_files}"],
@@ -878,6 +907,10 @@ def _impl(ctx):
                             flag_group(
                                 flags = ["-Wl,-no-whole-archive"],
                                 expand_if_true = "libraries_to_link.is_whole_archive",
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "static_library",
+                                ),
                             ),
                             flag_group(
                                 flags = ["-Wl,--end-lib"],
@@ -963,15 +996,23 @@ def _impl(ctx):
         ],
     )
 
+    is_linux = ctx.attr.target_libc != "macosx"
+    libtool_feature = feature(
+        name = "libtool",
+        enabled = not is_linux,
+    )
+
     archiver_flags_feature = feature(
         name = "archiver_flags",
         flag_sets = [
             flag_set(
                 actions = [ACTION_NAMES.cpp_link_static_library],
                 flag_groups = [
-                    flag_group(flags = ["rcsD"]),
                     flag_group(
-                        flags = ["%{output_execpath}"],
+                        flags = [
+                            "rcsD" if is_linux else "rcs",
+                            "%{output_execpath}",
+                        ],
                         expand_if_available = "output_execpath",
                     ),
                 ],
@@ -984,9 +1025,12 @@ def _impl(ctx):
             flag_set(
                 actions = [ACTION_NAMES.cpp_link_static_library],
                 flag_groups = [
-                    flag_group(flags = ["-static", "-s"]),
                     flag_group(
-                        flags = ["-o", "%{output_execpath}"],
+                        flags = [
+                            "-static",
+                            "-o",
+                            "%{output_execpath}",
+                        ],
                         expand_if_available = "output_execpath",
                     ),
                 ],
@@ -1283,10 +1327,34 @@ def _impl(ctx):
         ],
     )
 
-    is_linux = ctx.attr.target_libc != "macosx"
-    libtool_feature = feature(
-        name = "libtool",
-        enabled = not is_linux,
+    # If you have Xcode + the CLT installed the version defaults can be
+    # too old for some standard C apis such as thread locals
+    macos_minimum_os_feature = feature(
+        name = "macos_minimum_os",
+        enabled = True,
+        flag_sets = [
+            flag_set(
+                actions = all_compile_actions + all_link_actions,
+                flag_groups = [flag_group(flags = ["-mmacos-version-min={}".format(_target_os_version(ctx))])],
+            ),
+        ],
+    )
+
+    # Kept for backwards compatibility with the crosstool that moved. Without
+    # linking the objc runtime binaries don't link CoreFoundation for free,
+    # which breaks abseil.
+    macos_default_link_flags_feature = feature(
+        name = "macos_default_link_flags",
+        enabled = True,
+        flag_sets = [
+            flag_set(
+                actions = all_link_actions,
+                flag_groups = [flag_group(flags = [
+                    "-no-canonical-prefixes",
+                    "-fobjc-link-runtime",
+                ])],
+            ),
+        ],
     )
 
     # TODO(#8303): Mac crosstool should also declare every feature.
@@ -1311,7 +1379,6 @@ def _impl(ctx):
             autofdo_feature,
             build_interface_libraries_feature,
             dynamic_library_linker_tool_feature,
-            symbol_counts_feature,
             shared_flag_feature,
             linkstamps_feature,
             output_execpath_flags_feature,
@@ -1327,6 +1394,7 @@ def _impl(ctx):
             asan_feature,
             tsan_feature,
             ubsan_feature,
+            static_link_cpp_runtimes_feature,
         ] + (
             [
                 supports_start_end_lib_feature,
@@ -1359,12 +1427,14 @@ def _impl(ctx):
             ),
         ]
         features = [
+            macos_minimum_os_feature,
+            macos_default_link_flags_feature,
             libtool_feature,
             archiver_flags_feature,
-            supports_pic_feature,
             asan_feature,
             tsan_feature,
             ubsan_feature,
+            static_link_cpp_runtimes_feature,
         ] + (
             [
                 supports_start_end_lib_feature,
@@ -1376,7 +1446,6 @@ def _impl(ctx):
             user_link_flags_feature,
             default_link_libs_feature,
             fdo_optimize_feature,
-            supports_dynamic_linker_feature,
             dbg_feature,
             opt_feature,
             user_compile_flags_feature,
@@ -1384,7 +1453,7 @@ def _impl(ctx):
             unfiltered_compile_flags_feature,
             treat_warnings_as_errors_feature,
             archive_param_file_feature,
-        ] + layering_check_features(ctx.attr.compiler)
+        ]
 
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
@@ -1420,6 +1489,7 @@ cc_toolchain_config = rule(
         "compile_flags": attr.string_list(),
         "dbg_compile_flags": attr.string_list(),
         "opt_compile_flags": attr.string_list(),
+        "conly_flags": attr.string_list(),
         "cxx_flags": attr.string_list(),
         "link_flags": attr.string_list(),
         "archive_flags": attr.string_list(),
@@ -1430,6 +1500,11 @@ cc_toolchain_config = rule(
         "coverage_link_flags": attr.string_list(),
         "supports_start_end_lib": attr.bool(),
         "builtin_sysroot": attr.string(),
+        "_xcode_config": attr.label(default = configuration_field(
+            fragment = "apple",
+            name = "xcode_config_label",
+        )),
     },
+    fragments = ["apple"],
     provides = [CcToolchainConfigInfo],
 )

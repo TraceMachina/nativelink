@@ -39,15 +39,24 @@ jobs:
           key: ${{ runner.os }}-bazel-nix
 
       - name: Invoke Bazel build in Nix shell
-        run: >
-          nix develop --impure --command
-          bash -c "bazel test ... --verbose_failures"
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            nix develop --impure --command \
+            bash -c "bazel test --config=linux_zig ... --verbose_failures"
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            nix develop --impure --command \
+            bash -c "bazel test //... --verbose_failures"
+          else
+            echo "Unsupported runner OS: $RUNNER_OS"
+            exit 1
+          fi
+        shell: bash
 
   nix-cargo:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04]
+        os: [ubuntu-22.04, macos-13]
     name: Cargo Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     steps:

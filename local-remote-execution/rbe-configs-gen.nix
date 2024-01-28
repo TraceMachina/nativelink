@@ -1,7 +1,7 @@
 {pkgs, ...}:
 pkgs.buildGoModule rec {
   pname = "bazel-toolchains";
-  version = "5.1.2";
+  version = "5.1.3-rc1";
 
   patches = [
     ./rbe_configs_gen_skip_pull.diff
@@ -11,7 +11,7 @@ pkgs.buildGoModule rec {
     owner = "bazelbuild";
     repo = "bazel-toolchains";
     rev = "v${version}";
-    sha256 = "sha256-J1RFrDGBF7YR5O4D/kNNu6fkxImHpLR+fxhp+R1MaGE=";
+    sha256 = "sha256-uHSZN6sThX0i1kAvMyaSIghs6kV0t7wgOA7IWVJksEo=";
   };
 
   vendorHash = "sha256-E6PylI2prXCXqOUYgYi5nZ4qptqOqbcaOquDfEkhaQ4=";

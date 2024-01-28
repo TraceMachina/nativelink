@@ -22,6 +22,24 @@ package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])  # Apache 2.0
 
+cc_library(name = "empty_lib")
+
+# Label flag for extra libraries to be linked into every binary.
+# TODO(bazel-team): Support passing flag multiple times to build a list.
+label_flag(
+    name = "link_extra_libs",
+    build_setting_default = ":empty_lib",
+)
+
+# The final extra library to be linked into every binary target. This collects
+# the above flag, but may also include more libraries depending on config.
+cc_library(
+    name = "link_extra_lib",
+    deps = [
+        ":link_extra_libs",
+    ],
+)
+
 cc_library(
     name = "malloc",
 )
@@ -88,15 +106,17 @@ cc_toolchain_config(
         "-fno-omit-frame-pointer",
     ],
     compiler = "clang",
+    conly_flags = [],
     coverage_compile_flags = ["--coverage"],
     coverage_link_flags = ["--coverage"],
     cpu = "k8",
     cxx_builtin_include_directories = [
-        "/nix/store/1siqxvd4vlfl23pr1jg6cjsapnjwx5w1-clang-wrapper-17.0.6/resource-root/include",
-        "/nix/store/jhi4wsbrxfscrf57k46d1lfq1v8d25kx-glibc-2.38-27-dev/include",
-        "/nix/store/1siqxvd4vlfl23pr1jg6cjsapnjwx5w1-clang-wrapper-17.0.6/resource-root/share",
-        "/nix/store/v966sq3k9q4543xsik6h74nsmqvk7mci-libcxx-17.0.6-dev/include/c++/v1",
-        "/nix/store/5dzw89iz8firvr5rkx2ch56g77xfh07y-libcxxabi-17.0.6-dev/include/c++/v1",
+        "/nix/store/n6hailfmb1fndpdxpb8jm6fr3hrnrajw-clang-wrapper-17.0.6/resource-root/include",
+        "/nix/store/68qbq5jzwljpl0w6i1qj2l66k129l0ii-glibc-2.38-27-dev/include",
+        "/nix/store/n6hailfmb1fndpdxpb8jm6fr3hrnrajw-clang-wrapper-17.0.6/resource-root/share",
+        "/nix/store/25n9l2zappp5xd245dq9rn6266c95cr8-libcxx-17.0.6-dev/include/c++/v1",
+        "/nix/store/0hv481gp138dc4z6a6rbf2ps3fsqc5iw-libcxxabi-17.0.6-dev/include/c++/v1",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
     ],
     cxx_flags = ["-std=c++14"],
     dbg_compile_flags = ["-g"],
@@ -104,17 +124,21 @@ cc_toolchain_config(
     link_flags = [
         "-Wl,-no-as-needed",
         "-Wl,-z,relro,-z,now",
-        "-B/nix/store/c12sgla3zb77xlfgws0yixm6kg46brbd-customClang/bin",
-        "-B/nix/store/pw8r67xpm2i22cz5c83yz3cz72ii0ba1-binutils-wrapper-2.40/bin",
-        "-L/nix/store/6kg2v6mfa2qy3fvm8hw70mglgzdi312i-libcxx-17.0.6/lib",
-        "-L/nix/store/w38qhj29a43ahvdcdxgyk04lx231b7ry-libcxxabi-17.0.6/lib",
-        "-L/nix/store/973cqkwjvdjh672idnxz17dbkfnsxavm-libunwind-17.0.6/lib",
+        "-B/nix/store/3pdbqdvd89wvidk5xr2laqrw1nj27cz7-customClang/bin",
+        "-B/nix/store/qx7yfnblqvdac3n87655lv9dh4dbk2pp-binutils-wrapper-2.40/bin",
+        "-L/nix/store/ifbprn6dicqd77dm2yxw3scd46kam7ps-libcxx-17.0.6/lib",
+        "-L/nix/store/9mqiiq5ykhk9saaffgqgf4x9z7394s35-libcxxabi-17.0.6/lib",
+        "-L/nix/store/d7zqln24v7bhldcqf65216c8vwsvj8by-libunwind-17.0.6/lib",
         "-lc++",
-        "-Wl,-rpath,/nix/store/6kg2v6mfa2qy3fvm8hw70mglgzdi312i-libcxx-17.0.6/lib,-rpath,/nix/store/w38qhj29a43ahvdcdxgyk04lx231b7ry-libcxxabi-17.0.6/lib,-rpath,/nix/store/973cqkwjvdjh672idnxz17dbkfnsxavm-libunwind-17.0.6/lib,-rpath,/nix/store/9y8pmvk8gdwwznmkzxa6pwyah52xy3nk-glibc-2.38-27/lib",
+        "-Wl,-rpath,/nix/store/ifbprn6dicqd77dm2yxw3scd46kam7ps-libcxx-17.0.6/lib,-rpath,/nix/store/9mqiiq5ykhk9saaffgqgf4x9z7394s35-libcxxabi-17.0.6/lib,-rpath,/nix/store/d7zqln24v7bhldcqf65216c8vwsvj8by-libunwind-17.0.6/lib,-rpath,/nix/store/p3jshbwxiwifm1py0yq544fmdyy98j8a-glibc-2.38-27/lib",
     ],
     link_libs = [
+        "-Wl,--push-state,-as-needed",
         "-lstdc++",
+        "-Wl,--pop-state",
+        "-Wl,--push-state,-as-needed",
         "-lm",
+        "-Wl,--pop-state",
     ],
     opt_compile_flags = [
         "-g0",
@@ -129,18 +153,18 @@ cc_toolchain_config(
     target_libc = "glibc_2.35",
     target_system_name = "local",
     tool_paths = {
-        "ar": "/nix/store/pw8r67xpm2i22cz5c83yz3cz72ii0ba1-binutils-wrapper-2.40/bin/ar",
-        "ld": "/nix/store/pw8r67xpm2i22cz5c83yz3cz72ii0ba1-binutils-wrapper-2.40/bin/ld",
+        "ar": "/nix/store/qx7yfnblqvdac3n87655lv9dh4dbk2pp-binutils-wrapper-2.40/bin/ar",
+        "ld": "/nix/store/qx7yfnblqvdac3n87655lv9dh4dbk2pp-binutils-wrapper-2.40/bin/ld",
         "llvm-cov": "None",
         "llvm-profdata": "None",
         "cpp": "/usr/bin/cpp",
-        "gcc": "/nix/store/c12sgla3zb77xlfgws0yixm6kg46brbd-customClang/bin/customClang",
-        "dwp": "/nix/store/pw8r67xpm2i22cz5c83yz3cz72ii0ba1-binutils-wrapper-2.40/bin/dwp",
+        "gcc": "/nix/store/3pdbqdvd89wvidk5xr2laqrw1nj27cz7-customClang/bin/customClang",
+        "dwp": "/nix/store/qx7yfnblqvdac3n87655lv9dh4dbk2pp-binutils-wrapper-2.40/bin/dwp",
         "gcov": "None",
-        "nm": "/nix/store/pw8r67xpm2i22cz5c83yz3cz72ii0ba1-binutils-wrapper-2.40/bin/nm",
-        "objcopy": "/nix/store/pw8r67xpm2i22cz5c83yz3cz72ii0ba1-binutils-wrapper-2.40/bin/objcopy",
-        "objdump": "/nix/store/pw8r67xpm2i22cz5c83yz3cz72ii0ba1-binutils-wrapper-2.40/bin/objdump",
-        "strip": "/nix/store/pw8r67xpm2i22cz5c83yz3cz72ii0ba1-binutils-wrapper-2.40/bin/strip",
+        "nm": "/nix/store/qx7yfnblqvdac3n87655lv9dh4dbk2pp-binutils-wrapper-2.40/bin/nm",
+        "objcopy": "/nix/store/qx7yfnblqvdac3n87655lv9dh4dbk2pp-binutils-wrapper-2.40/bin/objcopy",
+        "objdump": "/nix/store/qx7yfnblqvdac3n87655lv9dh4dbk2pp-binutils-wrapper-2.40/bin/objdump",
+        "strip": "/nix/store/qx7yfnblqvdac3n87655lv9dh4dbk2pp-binutils-wrapper-2.40/bin/strip",
     },
     toolchain_identifier = "local",
     unfiltered_compile_flags = [

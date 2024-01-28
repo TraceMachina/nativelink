@@ -162,7 +162,7 @@
               # Development tooling goes here.
               stable-rust.default
               pkgs.pre-commit
-              pkgs.bazel
+              pkgs.bazel_7
               pkgs.awscli2
               pkgs.skopeo
               pkgs.dive

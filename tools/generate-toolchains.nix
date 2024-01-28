@@ -7,7 +7,7 @@ in
     #!{pkgs.bash}/bin/bash
     set -xeuo pipefail
 
-    SRC_ROOT=$(git rev-parse --show-toplevel)
+    SRC_ROOT=$(git rev-parse --show-toplevel)/local-remote-execution
 
     cd "''${SRC_ROOT}"
 
@@ -24,11 +24,11 @@ in
       --toolchain_container=nativelink-toolchain:''${IMAGE_TAG} \
       --exec_os=linux \
       --target_os=linux \
-      --bazel_version=${pkgs.bazel.version} \
+      --bazel_version=${pkgs.bazel_7.version} \
       --output_src_root=''${SRC_ROOT} \
-      --output_config_path=local-remote-execution/generated \
-      --bazel_path=${pkgs.bazel}/bin/bazel \
-      --cpp_env_json=local-remote-execution/cpp_env.json
+      --output_config_path=generated \
+      --bazel_path=${pkgs.bazel_7}/bin/bazel \
+      --cpp_env_json=cpp_env.json
 
     pre-commit run -a
   ''

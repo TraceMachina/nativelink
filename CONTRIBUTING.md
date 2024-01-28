@@ -64,19 +64,6 @@ various Cloud CLIs for you:
     @rules_rust//:rustfmt
   ```
 
-## Updating Rust dependencies
-
-After modifying the corresponding `Cargo.toml` file in either the top level or
-one of the crate subdirectories run the following command to rebuild the crate
-index:
-
-```
-CARGO_BAZEL_REPIN=1 bazel sync --only=crate_index
-```
-
-This updates `Cargo.lock` and `Cargo.Bazel.lock` with the new dependency
-information.
-
 ## Conduct
 
 Native Link Code of Conduct is available in the

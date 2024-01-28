@@ -13,7 +13,7 @@
   # aren't required during remote execution.
   autogenDeps = [
     # Required to generate toolchain configs.
-    pkgs.bazel
+    pkgs.bazel_7
 
     # Minimal user setup. Required by Bazel.
     pkgs.fakeNss
@@ -60,7 +60,7 @@
           "${pkgs.findutils}/bin"
           "${pkgs.gnutar}/bin"
         ]))
-      "JAVA_HOME=${pkgs.jdk11_headless}/lib/openjdk"
+      "JAVA_HOME=${pkgs.jdk17_headless}/lib/openjdk"
 
       "CC=${customClang}/bin/customClang"
 

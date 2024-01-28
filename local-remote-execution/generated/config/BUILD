@@ -28,7 +28,7 @@ toolchain(
         "@platforms//os:linux",
         "@platforms//cpu:x86_64",
     ],
-    toolchain = "//local-remote-execution/generated/cc:cc-compiler-k8",
+    toolchain = "//generated/cc:cc-compiler-k8",
     toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
 )
 
@@ -40,7 +40,7 @@ platform(
         "@bazel_tools//tools/cpp:clang",
     ],
     exec_properties = {
-        "container-image": "docker://nativelink-toolchain:6sqya86qg9fsi6a5lhwddilc0ppk7b9m",
+        "container-image": "docker://nativelink-toolchain:zs9sg7rbncv8n4jzhv6q2pll9zymzlk4",
         "OSFamily": "Linux",
     },
     parents = ["@local_config_platform//:host"],
