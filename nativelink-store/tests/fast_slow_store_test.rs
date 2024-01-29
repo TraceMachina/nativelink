@@ -355,4 +355,27 @@ mod fast_slow_store_tests {
         );
         get_res.merge(read_res)
     }
+
+    #[tokio::test]
+    async fn ignore_value_in_fast_store() -> Result<(), Error> {
+        let fast_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let slow_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let fast_slow_store = Arc::new(FastSlowStore::new(
+            &nativelink_config::stores::FastSlowStore {
+                fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+                slow: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+            },
+            fast_store.clone(),
+            slow_store,
+        ));
+        let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
+        Pin::new(fast_store.as_ref())
+            .update_oneshot(digest, make_random_data(100).into())
+            .await?;
+        assert!(
+            Pin::new(fast_slow_store.as_ref()).has(digest).await?.is_none(),
+            "Expected data to not exist in store"
+        );
+        Ok(())
+    }
 }
