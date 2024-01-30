@@ -24,8 +24,11 @@ jobs:
           actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
       - name: Install Nix
-        uses: >- #v7
-          DeterminateSystems/nix-installer-action@5620eb4af6b562c53e4d4628c0b6e4f9d9ae8612
+        uses: >- # v9
+          DeterminateSystems/nix-installer-action@cd46bde16ab981b0a7b2dce0574509104543276e
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          nix-installer-tag: v0.16.1
 
       - name: Cache Nix derivations
         uses: >- # Custom commit, last pinned at 2023-11-17.
@@ -65,8 +68,11 @@ jobs:
           actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
       - name: Install Nix
-        uses: >- #v7
-          DeterminateSystems/nix-installer-action@5620eb4af6b562c53e4d4628c0b6e4f9d9ae8612
+        uses: >- # v9
+          DeterminateSystems/nix-installer-action@cd46bde16ab981b0a7b2dce0574509104543276e
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          nix-installer-tag: v0.16.1
 
       - name: Cache Nix derivations
         uses: >- # Custom commit, last pinned at 2023-11-17.
