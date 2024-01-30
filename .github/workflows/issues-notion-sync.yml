@@ -1,0 +1,36 @@
+name: Notion Sync
+
+on:
+  workflow_dispatch:
+  issues:
+    types:
+      [
+        opened,
+        edited,
+        labeled,
+        unlabeled,
+        assigned,
+        unassigned,
+        milestoned,
+        demilestoned,
+        reopened,
+        closed,
+      ]
+
+permissions: read-all
+
+jobs:
+  notion_job:
+    runs-on: ubuntu-latest
+    name: Add GitHub Issues to Notion
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@eb238b55efaa70779f274895e782ed17c84f2895 # v2.6.1
+        with:
+          egress-policy: audit
+
+      - name: Add GitHub Issues to Notion
+        uses: tryfabric/notion-github-action@10c6b128faeb9a1f16efc65a0b388b7595047e62 # v1.2.3
+        with:
+          notion-token: ${{ secrets.NOTION_TOKEN }}
+          notion-db: ${{ secrets.NOTION_DATABASE }}
