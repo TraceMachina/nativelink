@@ -55,14 +55,16 @@ resource "aws_instance" "build_nativelink_instance" {
     private_key = data.tls_public_key.nativelink_pem.private_key_openssh
   }
 
-  provisioner "local-exec" {
+# Create tarball of current nativelink checkout.
+# Note: In production this should be changed to some pinned release version.
+provisioner "local-exec" {
     command = <<EOT
       set -ex
-      SELF_DIR=$(pwd)
-      cd ../../..
-      rm -rf $SELF_DIR/.terraform-nativelink-builder
-      mkdir -p $SELF_DIR/.terraform-nativelink-builder
-      find . ! -ipath '*/target*' -and ! \( -ipath '*/.*' -and ! -name '.rustfmt.toml' -and ! -name '.bazelrc' \) -and ! -ipath './bazel-*' -type f -print0 | tar cvf $SELF_DIR/.terraform-nativelink-builder/file.tar.gz --null -T -
+      ROOT_MODULE="$(realpath ${path.root})"
+      rm -rf $ROOT_MODULE/.terraform-nativelink-builder
+      mkdir -p $ROOT_MODULE/.terraform-nativelink-builder
+      cd $ROOT_MODULE/../../../../..
+      find . ! -ipath '*/target*' -and ! \( -ipath '*/.*' -and ! -name '.rustfmt.toml' -and ! -name '.bazelrc' \) -and ! -ipath './bazel-*' -type f -print0 | tar cvf $ROOT_MODULE/.terraform-nativelink-builder/file.tar.gz --null -T -
     EOT
   }
 
