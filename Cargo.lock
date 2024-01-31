@@ -1707,6 +1707,7 @@ dependencies = [
 name = "nativelink-scheduler"
 version = "0.2.0"
 dependencies = [
+ "async-lock",
  "async-trait",
  "blake3",
  "futures",
