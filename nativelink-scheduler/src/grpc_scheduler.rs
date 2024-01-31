@@ -17,6 +17,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_lock::{Semaphore, SemaphoreGuard};
 use async_trait::async_trait;
 use futures::stream::unfold;
 use futures::TryFutureExt;
@@ -36,17 +37,56 @@ use rand::Rng;
 use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
-use tonic::{transport, Request, Streaming};
+use tonic::transport::{Channel, Endpoint};
+use tonic::{Request, Streaming};
 use tracing::{error, info, warn};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 
 pub struct GrpcScheduler {
-    capabilities_client: CapabilitiesClient<transport::Channel>,
-    execution_client: ExecutionClient<transport::Channel>,
+    endpoint: Endpoint,
+    channel: Mutex<(usize, Channel)>,
     platform_property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
     retrier: Retrier,
+    request_semaphore: Option<Semaphore>,
+}
+
+/// An instance of this is obtained for every communication with the
+/// GrpcScheduler.  This handles the permit for limiting concurrency, and also
+/// re-connecting the underlying channel on error.  It depends on users
+/// reporting all errors.
+struct Connection<'a> {
+    channel_id: usize,
+    channel: Channel,
+    parent: &'a GrpcScheduler,
+    _permit: Option<SemaphoreGuard<'a>>,
+}
+
+impl<'a> Connection<'a> {
+    fn capabilities_client(&self) -> CapabilitiesClient<Channel> {
+        CapabilitiesClient::new(self.channel.clone())
+    }
+
+    fn execution_client(&self) -> ExecutionClient<Channel> {
+        ExecutionClient::new(self.channel.clone())
+    }
+
+    fn on_error(&self, err: &Error) {
+        if err.code != Code::Internal {
+            return;
+        }
+        // The connection is not re-esablished in Tonic, so we need to create a
+        // new connection now.
+        let mut channel_lock = self.parent.channel.lock();
+        // Channel already changed, don't do it again.
+        if channel_lock.0 != self.channel_id {
+            return;
+        }
+        // Connect a new channel in the background.
+        channel_lock.0 += 1;
+        channel_lock.1 = Channel::balance_list(std::iter::once(self.parent.endpoint.clone()));
+    }
 }
 
 impl GrpcScheduler {
@@ -69,16 +109,19 @@ impl GrpcScheduler {
         config: &nativelink_config::schedulers::GrpcScheduler,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
-        let channel = transport::Channel::balance_list(std::iter::once(tls_utils::endpoint(&config.endpoint)?));
+        let endpoint = tls_utils::endpoint(&config.endpoint)?;
+        let channel = Channel::balance_list(std::iter::once(endpoint.clone()));
         Ok(Self {
-            capabilities_client: CapabilitiesClient::new(channel.clone()),
-            execution_client: ExecutionClient::new(channel),
+            endpoint,
+            channel: Mutex::new((0, channel)),
             platform_property_managers: Mutex::new(HashMap::new()),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 Arc::new(jitter_fn),
                 config.retry.to_owned(),
             ),
+            request_semaphore: (config.max_concurrent_requests > 0)
+                .then_some(Semaphore::new(config.max_concurrent_requests)),
         })
     }
 
@@ -100,6 +143,21 @@ impl GrpcScheduler {
                 ))
             }))
             .await
+    }
+
+    async fn get_connection(&self) -> Connection<'_> {
+        let _permit = if let Some(semaphore) = &self.request_semaphore {
+            Some(semaphore.acquire().await)
+        } else {
+            None
+        };
+        let channel_lock = self.channel.lock();
+        Connection {
+            channel_id: channel_lock.0,
+            channel: channel_lock.1.clone(),
+            parent: self,
+            _permit,
+        }
     }
 
     async fn stream_state(mut result_stream: Streaming<Operation>) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
@@ -150,14 +208,18 @@ impl ActionScheduler for GrpcScheduler {
 
         self.perform_request(instance_name, |instance_name| async move {
             // Not in the cache, lookup the capabilities with the upstream.
-            let capabilities = self
-                .capabilities_client
-                .clone()
+            let connection = self.get_connection().await;
+            let capabilities_result = connection
+                .capabilities_client()
                 .get_capabilities(GetCapabilitiesRequest {
                     instance_name: instance_name.to_string(),
                 })
-                .await?
-                .into_inner();
+                .await
+                .err_tip(|| "Retrieving upstream GrpcScheduler capabilities");
+            if let Err(err) = &capabilities_result {
+                connection.on_error(err);
+            }
+            let capabilities = capabilities_result?.into_inner();
             let platform_property_manager = Arc::new(PlatformPropertyManager::new(
                 capabilities
                     .execution_capabilities
@@ -195,11 +257,16 @@ impl ActionScheduler for GrpcScheduler {
         };
         let result_stream = self
             .perform_request(request, |request| async move {
-                self.execution_client
-                    .clone()
+                let connection = self.get_connection().await;
+                let result = connection
+                    .execution_client()
                     .execute(Request::new(request))
                     .await
-                    .err_tip(|| "Sending action to upstream scheduler")
+                    .err_tip(|| "Sending action to upstream scheduler");
+                if let Err(err) = &result {
+                    connection.on_error(err);
+                }
+                result
             })
             .await?
             .into_inner();
@@ -215,11 +282,16 @@ impl ActionScheduler for GrpcScheduler {
         };
         let result_stream = self
             .perform_request(request, |request| async move {
-                self.execution_client
-                    .clone()
+                let connection = self.get_connection().await;
+                let result = connection
+                    .execution_client()
                     .wait_execution(Request::new(request))
                     .await
-                    .err_tip(|| "While getting wait_execution stream")
+                    .err_tip(|| "While getting wait_execution stream");
+                if let Err(err) = &result {
+                    connection.on_error(err);
+                }
+                result
             })
             .and_then(|result_stream| Self::stream_state(result_stream.into_inner()))
             .await;

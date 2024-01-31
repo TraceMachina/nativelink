@@ -30,6 +30,7 @@ rust_library(
         "//nativelink-proto",
         "//nativelink-store",
         "//nativelink-util",
+        "@crates//:async-lock",
         "@crates//:blake3",
         "@crates//:futures",
         "@crates//:hashbrown",

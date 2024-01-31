@@ -546,6 +546,11 @@ pub struct GrpcStore {
     /// Retry configuration to use when a network request fails.
     #[serde(default)]
     pub retry: Retry,
+
+    /// Limit the number of simultaneous upstream requests to this many.  A
+    /// value of zero is treated as unlimited.
+    #[serde(default)]
+    pub max_concurrent_requests: usize,
 }
 
 /// The possible error codes that might occur on an upstream request.

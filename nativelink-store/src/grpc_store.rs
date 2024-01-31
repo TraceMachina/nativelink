@@ -18,11 +18,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use async_lock::{Semaphore, SemaphoreGuard};
 use async_trait::async_trait;
 use bytes::BytesMut;
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{future, Future, Stream, StreamExt, TryStreamExt};
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_error::{error_if, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -46,7 +47,8 @@ use prost::Message;
 use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::time::sleep;
-use tonic::{transport, IntoRequest, Request, Response, Status, Streaming};
+use tonic::transport::{Channel, Endpoint};
+use tonic::{IntoRequest, Request, Response, Status, Streaming};
 use tracing::error;
 use uuid::Uuid;
 
@@ -57,11 +59,11 @@ use crate::ac_utils::ESTIMATED_DIGEST_SIZE;
 // underlying data. This might cause issues if embedded in certain stores.
 pub struct GrpcStore {
     instance_name: String,
-    cas_client: ContentAddressableStorageClient<transport::Channel>,
-    bytestream_client: ByteStreamClient<transport::Channel>,
-    ac_client: ActionCacheClient<transport::Channel>,
+    endpoints: Vec<Endpoint>,
+    channel: Mutex<(usize, Channel)>,
     store_type: nativelink_config::stores::StoreType,
     retrier: Retrier,
+    request_semaphore: Option<Semaphore>,
 }
 
 /// This provides a buffer for the first response from GrpcStore.read in order
@@ -201,7 +203,7 @@ where
                     Some(message)
                 }
                 Err(err) => {
-                    error!("{err:?}");
+                    local_state.read_stream_error = Some(err);
                     None
                 }
             },
@@ -212,6 +214,46 @@ where
             None => None,
         };
         Poll::Ready(result)
+    }
+}
+
+/// An instance of this is obtained for every communication with the GrpcStore.
+/// This handles the permit for limiting concurrency, and also re-connecting the
+/// underlying channel on error.  It depends on users reporting all errors.
+struct Connection<'a> {
+    channel_id: usize,
+    channel: Channel,
+    parent: &'a GrpcStore,
+    _permit: Option<SemaphoreGuard<'a>>,
+}
+
+impl<'a> Connection<'a> {
+    fn cas_client(&self) -> ContentAddressableStorageClient<Channel> {
+        ContentAddressableStorageClient::new(self.channel.clone())
+    }
+
+    fn ac_client(&self) -> ActionCacheClient<Channel> {
+        ActionCacheClient::new(self.channel.clone())
+    }
+
+    fn byte_stream_client(&self) -> ByteStreamClient<Channel> {
+        ByteStreamClient::new(self.channel.clone())
+    }
+
+    fn on_error(&self, err: &Error) {
+        if err.code != Code::Internal {
+            return;
+        }
+        // The connection is not re-esablished in Tonic, so we need to create a
+        // new connection now.
+        let mut channel_lock = self.parent.channel.lock();
+        // Channel already changed, don't do it again.
+        if channel_lock.0 != self.channel_id {
+            return;
+        }
+        // Connect a new channel in the background.
+        channel_lock.0 += 1;
+        channel_lock.1 = Channel::balance_list(self.parent.endpoints.iter().cloned());
     }
 }
 
@@ -244,19 +286,34 @@ impl GrpcStore {
             endpoints.push(endpoint);
         }
 
-        let conn = transport::Channel::balance_list(endpoints.into_iter());
         Ok(GrpcStore {
             instance_name: config.instance_name.clone(),
-            cas_client: ContentAddressableStorageClient::new(conn.clone()),
-            bytestream_client: ByteStreamClient::new(conn.clone()),
-            ac_client: ActionCacheClient::new(conn),
+            channel: Mutex::new((0, Channel::balance_list(endpoints.iter().cloned()))),
+            endpoints,
             store_type: config.store_type,
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 Arc::new(jitter_fn),
                 config.retry.to_owned(),
             ),
+            request_semaphore: (config.max_concurrent_requests > 0)
+                .then_some(Semaphore::new(config.max_concurrent_requests)),
         })
+    }
+
+    async fn get_connection(&self) -> Connection<'_> {
+        let _permit = if let Some(semaphore) = &self.request_semaphore {
+            Some(semaphore.acquire().await)
+        } else {
+            None
+        };
+        let channel_lock = self.channel.lock();
+        Connection {
+            channel_id: channel_lock.0,
+            channel: channel_lock.1.clone(),
+            parent: self,
+            _permit,
+        }
     }
 
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
@@ -291,11 +348,16 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         self.perform_request(request, |request| async move {
-            self.cas_client
-                .clone()
+            let connection = self.get_connection().await;
+            let result = connection
+                .cas_client()
                 .find_missing_blobs(Request::new(request))
                 .await
-                .err_tip(|| "in GrpcStore::find_missing_blobs")
+                .err_tip(|| "in GrpcStore::find_missing_blobs");
+            if let Err(err) = &result {
+                connection.on_error(err);
+            }
+            result
         })
         .await
     }
@@ -312,11 +374,16 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         self.perform_request(request, |request| async move {
-            self.cas_client
-                .clone()
+            let connection = self.get_connection().await;
+            let result = connection
+                .cas_client()
                 .batch_update_blobs(Request::new(request))
                 .await
-                .err_tip(|| "in GrpcStore::batch_update_blobs")
+                .err_tip(|| "in GrpcStore::batch_update_blobs");
+            if let Err(err) = &result {
+                connection.on_error(err);
+            }
+            result
         })
         .await
     }
@@ -333,11 +400,16 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         self.perform_request(request, |request| async move {
-            self.cas_client
-                .clone()
+            let connection = self.get_connection().await;
+            let result = connection
+                .cas_client()
                 .batch_read_blobs(Request::new(request))
                 .await
-                .err_tip(|| "in GrpcStore::batch_read_blobs")
+                .err_tip(|| "in GrpcStore::batch_read_blobs");
+            if let Err(err) = &result {
+                connection.on_error(err);
+            }
+            result
         })
         .await
     }
@@ -354,11 +426,16 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         self.perform_request(request, |request| async move {
-            self.cas_client
-                .clone()
+            let connection = self.get_connection().await;
+            let result = connection
+                .cas_client()
                 .get_tree(Request::new(request))
                 .await
-                .err_tip(|| "in GrpcStore::get_tree")
+                .err_tip(|| "in GrpcStore::get_tree");
+            if let Err(err) = &result {
+                connection.on_error(err);
+            }
+            result
         })
         .await
     }
@@ -377,13 +454,16 @@ impl GrpcStore {
         &self,
         request: ReadRequest,
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>>, Error> {
-        let mut response = self
-            .bytestream_client
-            .clone()
+        let connection = self.get_connection().await;
+        let result = connection
+            .byte_stream_client()
             .read(Request::new(request))
             .await
-            .err_tip(|| "in GrpcStore::read")?
-            .into_inner();
+            .err_tip(|| "in GrpcStore::read");
+        if let Err(err) = &result {
+            connection.on_error(err);
+        }
+        let mut response = result?.into_inner();
         let first_response = response
             .message()
             .await
@@ -423,13 +503,14 @@ impl GrpcStore {
         let result = self
             .retrier
             .retry(unfold(local_state, move |local_state| async move {
-                let mut client = self.bytestream_client.clone();
+                let connection = self.get_connection().await;
                 // The client write may occur on a separate thread and
                 // therefore in order to share the state with it we have to
                 // wrap it in a Mutex and retrieve it after the write
                 // has completed.  There is no way to get the value back
                 // from the client.
-                let result = client
+                let result = connection
+                    .byte_stream_client()
                     .write(WriteStateWrapper {
                         shared_state: local_state.clone(),
                     })
@@ -447,6 +528,7 @@ impl GrpcStore {
                     // On error determine whether it is possible to retry.
                     match result.err_tip(|| "in GrpcStore::write") {
                         Err(err) => {
+                            connection.on_error(&err);
                             if local_state_locked.can_resume() {
                                 local_state_locked.resume();
                                 RetryResult::Retry(err)
@@ -484,11 +566,16 @@ impl GrpcStore {
         }
 
         self.perform_request(request, |request| async move {
-            self.bytestream_client
-                .clone()
+            let connection = self.get_connection().await;
+            let result = connection
+                .byte_stream_client()
                 .query_write_status(Request::new(request))
                 .await
-                .err_tip(|| "in GrpcStore::query_write_status")
+                .err_tip(|| "in GrpcStore::query_write_status");
+            if let Err(err) = &result {
+                connection.on_error(err);
+            }
+            result
         })
         .await
     }
@@ -500,11 +587,16 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         self.perform_request(request, |request| async move {
-            self.ac_client
-                .clone()
+            let connection = self.get_connection().await;
+            let result = connection
+                .ac_client()
                 .get_action_result(Request::new(request))
                 .await
-                .err_tip(|| "in GrpcStore::get_action_result")
+                .err_tip(|| "in GrpcStore::get_action_result");
+            if let Err(err) = &result {
+                connection.on_error(err);
+            }
+            result
         })
         .await
     }
@@ -516,11 +608,16 @@ impl GrpcStore {
         let mut request = grpc_request.into_inner();
         request.instance_name = self.instance_name.clone();
         self.perform_request(request, |request| async move {
-            self.ac_client
-                .clone()
+            let connection = self.get_connection().await;
+            let result = connection
+                .ac_client()
                 .update_action_result(Request::new(request))
                 .await
-                .err_tip(|| "in GrpcStore::update_action_result")
+                .err_tip(|| "in GrpcStore::update_action_result");
+            if let Err(err) = &result {
+                connection.on_error(err);
+            }
+            result
         })
         .await
     }
