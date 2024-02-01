@@ -19,6 +19,11 @@ Below, you will find a few different options for getting started with Native Lin
 
 ### 📦 Installing with Cargo
 
+1. First install Rust, but skip to step 2 if you have it already.
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+2. Install NativeLink with Cargo.
 ```bash
 cargo install --git https://github.com/TraceMachina/nativelink --tag v0.2.0
 ```
