@@ -14,6 +14,7 @@
 
 use std::ffi::OsString;
 use std::fmt::{Debug, Formatter};
+use std::io::Write;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -29,13 +30,16 @@ use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::health_utils::{HealthRegistry, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use rand::RngCore;
+use tempfile::NamedTempFile;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::task::spawn_blocking;
 use tokio::time::{sleep, timeout, Sleep};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -749,6 +753,69 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         registry.register_collector(Box::new(Collector::new(&self)));
+    }
+
+    fn register_health(self: Arc<Self>, registry: &mut HealthRegistry) {
+        registry.register_indicator(self);
+    }
+}
+
+#[async_trait]
+impl<Fe: FileEntry> HealthStatusIndicator for FilesystemStore<Fe> {
+    async fn check_health(self: Arc<Self>) -> Result<HealthStatus, Error> {
+        let temp_path = &self.shared_context.temp_path;
+        let temp_file_with_prefix = NamedTempFile::with_prefix_in(".fs_hc_", temp_path);
+
+        let failed_fn = |failure_action, error| {
+            let message = format!(
+                "Failed to {:?} temp file in filesystem store health check: {:?}",
+                failure_action, error
+            );
+            error!(message);
+            self.make_failed(message.into())
+        };
+
+        match temp_file_with_prefix {
+            Ok(mut file) => {
+                let mut data = [0u8; 1_000_000];
+
+                rand::thread_rng().fill_bytes(&mut data);
+
+                match file.write_all(&data) {
+                    Ok(()) => debug!(
+                        "Successfully wrote to temp file in filesystem store health check {:?}",
+                        file
+                    ),
+                    Err(err) => return Ok(failed_fn("write", err)),
+                }
+
+                match file.flush() {
+                    Ok(_) => debug!("Successfully flushed temp file in filesystem store health check"),
+                    Err(err) => return Ok(failed_fn("flush", err)),
+                }
+
+                let file_path: std::path::PathBuf = match file.keep() {
+                    Ok((_, p)) => {
+                        debug!("Successfully kept temp file in filesystem store health check {:?}", p);
+                        p.to_path_buf()
+                    }
+                    Err(err) => return Ok(failed_fn("keep", err.into())),
+                };
+
+                debug!("Removing temp file in filesystem store health check {:?}", file_path);
+                match fs::remove_file(file_path.as_path()).await {
+                    Ok(_) => debug!(
+                        "Successfully removed temp file in filesystem store health check {:?}",
+                        file_path.as_path()
+                    ),
+                    Err(err) => return Ok(failed_fn("remove", err.to_std_err())),
+                }
+
+                Ok(self.make_ok("Successfully filesystem store health check".into()))
+            }
+
+            Err(err) => return Ok(failed_fn("create", err)),
+        }
     }
 }
 

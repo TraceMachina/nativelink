@@ -16,6 +16,7 @@ rust_library(
         "src/evicting_map.rs",
         "src/fastcdc.rs",
         "src/fs.rs",
+        "src/health_utils.rs",
         "src/lib.rs",
         "src/metrics_utils.rs",
         "src/platform_properties.rs",
@@ -27,6 +28,7 @@ rust_library(
         "src/write_request_stream_wrapper.rs",
     ],
     proc_macro_deps = [
+        "@crates//:async-recursion",
         "@crates//:async-trait",
     ],
     visibility = ["//visibility:public"],
