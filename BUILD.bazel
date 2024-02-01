@@ -34,6 +34,7 @@ rust_binary(
         "@crates//:serde_json5",
         "@crates//:tokio",
         "@crates//:tokio-rustls",
+        "@crates//:tokio-stream",
         "@crates//:tonic",
         "@crates//:tower",
         "@crates//:tracing",
