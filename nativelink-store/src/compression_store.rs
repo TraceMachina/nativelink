@@ -26,6 +26,7 @@ use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
+use nativelink_util::metrics_utils::{CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 
@@ -194,6 +195,45 @@ impl UploadState {
         }
     }
 }
+
+impl MetricsComponent for UploadState {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish("max_output_size", &self.max_output_size, "");
+        c.publish("input_max_size", &self.input_max_size, "");
+        c.publish(
+            "header_version",
+            &self.header.version,
+            "",
+        );
+        let exact_size = match self.header.upload_size {
+            UploadSizeInfo::ExactSize(sz) => sz,
+            UploadSizeInfo::MaxSize(_) => 0, // Default to 0 if not exact size
+        };
+        let max_size = match self.header.upload_size {
+            UploadSizeInfo::MaxSize(sz) => sz,
+            UploadSizeInfo::ExactSize(sz) => sz, // Use exact size if max size is not specified
+        };
+        c.publish("header_exact_size", &exact_size, "");
+        c.publish("header_max_size", &max_size, "");
+        let footer_indexes: Vec<String> = self.footer.indexes.iter()
+            .map(|index| index.position_from_prev_index.to_string())
+            .collect();
+        let footer_indexes_str = footer_indexes.join(", ");
+        c.publish("footer_indexes", &footer_indexes_str, "");
+        c.publish(
+            "footer_index_count", 
+            &self.footer.index_count.to_string(), 
+            ""
+        ); 
+        c.publish(
+            "footer_uncompressed_data_size", 
+            &self.footer.uncompressed_data_size.to_string(), 
+            ""
+        );
+    }
+}
+
+
 
 /// This store will compress data before sending it on to the inner store.
 /// Note: Currently using get_part() and trying to read part of the data will
@@ -582,5 +622,10 @@ impl Store for CompressionStore {
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
+    }
+
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
+        self.inner_store.clone().register_metrics(inner_store_registry);
     }
 }
