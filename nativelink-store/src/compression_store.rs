@@ -26,6 +26,7 @@ use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
+use nativelink_util::metrics_utils::Registry;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 
@@ -582,5 +583,10 @@ impl Store for CompressionStore {
 
     fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
         Box::new(self)
+    }
+
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
+        self.inner_store.clone().register_metrics(inner_store_registry);
     }
 }
