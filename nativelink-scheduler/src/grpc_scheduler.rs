@@ -1,4 +1,4 @@
-// Copyright 2023 The Native Link Authors. All rights reserved.
+// Copyright 2023-2024 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
+use nativelink_util::grpc_utils::ConnectionManager;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::tls_utils;
 use parking_lot::Mutex;
@@ -36,17 +37,16 @@ use rand::Rng;
 use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
-use tonic::{transport, Request, Streaming};
+use tonic::{Request, Streaming};
 use tracing::{error, info, warn};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 
 pub struct GrpcScheduler {
-    capabilities_client: CapabilitiesClient<transport::Channel>,
-    execution_client: ExecutionClient<transport::Channel>,
     platform_property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
     retrier: Retrier,
+    connection_manager: ConnectionManager,
 }
 
 impl GrpcScheduler {
@@ -69,16 +69,15 @@ impl GrpcScheduler {
         config: &nativelink_config::schedulers::GrpcScheduler,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
-        let channel = transport::Channel::balance_list(std::iter::once(tls_utils::endpoint(&config.endpoint)?));
+        let endpoint = tls_utils::endpoint(&config.endpoint)?;
         Ok(Self {
-            capabilities_client: CapabilitiesClient::new(channel.clone()),
-            execution_client: ExecutionClient::new(channel),
             platform_property_managers: Mutex::new(HashMap::new()),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 Arc::new(jitter_fn),
                 config.retry.to_owned(),
             ),
+            connection_manager: ConnectionManager::new(std::iter::once(endpoint), config.max_concurrent_requests),
         })
     }
 
@@ -150,14 +149,17 @@ impl ActionScheduler for GrpcScheduler {
 
         self.perform_request(instance_name, |instance_name| async move {
             // Not in the cache, lookup the capabilities with the upstream.
-            let capabilities = self
-                .capabilities_client
-                .clone()
+            let (connection, channel) = self.connection_manager.get_connection().await;
+            let capabilities_result = CapabilitiesClient::new(channel)
                 .get_capabilities(GetCapabilitiesRequest {
                     instance_name: instance_name.to_string(),
                 })
-                .await?
-                .into_inner();
+                .await
+                .err_tip(|| "Retrieving upstream GrpcScheduler capabilities");
+            if let Err(err) = &capabilities_result {
+                connection.on_error(err);
+            }
+            let capabilities = capabilities_result?.into_inner();
             let platform_property_manager = Arc::new(PlatformPropertyManager::new(
                 capabilities
                     .execution_capabilities
@@ -195,11 +197,15 @@ impl ActionScheduler for GrpcScheduler {
         };
         let result_stream = self
             .perform_request(request, |request| async move {
-                self.execution_client
-                    .clone()
+                let (connection, channel) = self.connection_manager.get_connection().await;
+                let result = ExecutionClient::new(channel)
                     .execute(Request::new(request))
                     .await
-                    .err_tip(|| "Sending action to upstream scheduler")
+                    .err_tip(|| "Sending action to upstream scheduler");
+                if let Err(err) = &result {
+                    connection.on_error(err);
+                }
+                result
             })
             .await?
             .into_inner();
@@ -215,11 +221,15 @@ impl ActionScheduler for GrpcScheduler {
         };
         let result_stream = self
             .perform_request(request, |request| async move {
-                self.execution_client
-                    .clone()
+                let (connection, channel) = self.connection_manager.get_connection().await;
+                let result = ExecutionClient::new(channel)
                     .wait_execution(Request::new(request))
                     .await
-                    .err_tip(|| "While getting wait_execution stream")
+                    .err_tip(|| "While getting wait_execution stream");
+                if let Err(err) = &result {
+                    connection.on_error(err);
+                }
+                result
             })
             .and_then(|result_stream| Self::stream_state(result_stream.into_inner()))
             .await;

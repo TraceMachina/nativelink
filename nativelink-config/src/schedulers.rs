@@ -1,4 +1,4 @@
-// Copyright 2023 The Native Link Authors. All rights reserved.
+// Copyright 2023-2024 The Native Link Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -134,6 +134,12 @@ pub struct GrpcScheduler {
     /// Retry configuration to use when a network request fails.
     #[serde(default)]
     pub retry: Retry,
+
+    /// Limit the number of simultaneous upstream requests to this many.  A
+    /// value of zero is treated as unlimited.  If the limit is reached the
+    /// request is queued.
+    #[serde(default)]
+    pub max_concurrent_requests: usize,
 }
 
 #[derive(Deserialize, Debug)]
