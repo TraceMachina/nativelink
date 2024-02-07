@@ -1,6 +1,6 @@
-# Native Link's Terraform Deployment
+# NativeLink's Terraform Deployment
 This directory contains a reference/starting point on creating a full GCP
-[terraform](https://www.terraform.io/downloads) deployment of Native Link's
+[terraform](https://www.terraform.io/downloads) deployment of NativeLink's
 cache and remote execution system.
 
 ## Prerequisites
@@ -49,7 +49,7 @@ terraform state show module.native_link.data.google_dns_managed_zone.dns_zone
 
 Setup and deploy the `native-link` servers and dependencies. The general
 configuration is laid out similar to
-[Native Link AWS Terraform Diagram](https://user-images.githubusercontent.com/1831202/176286845-ff683266-3f23-489c-b58a-3eda49e484be.png)
+[NativeLink AWS Terraform Diagram](https://user-images.githubusercontent.com/1831202/176286845-ff683266-3f23-489c-b58a-3eda49e484be.png)
 from
 [AWS deployment example](https://github.com/TraceMachina/native-link/blob/main/deployment-examples/terraform/experimental_AWS/README.md).
 Deployment has additional flags in `variables.tf` for controlling machine

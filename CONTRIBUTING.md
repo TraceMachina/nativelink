@@ -1,11 +1,11 @@
-# Contributing to Native Link
+# Contributing to NativeLink
 
-Native Link welcomes contribution from everyone. Here are the guidelines if you
+NativeLink welcomes contribution from everyone. Here are the guidelines if you
 are thinking of helping us:
 
 ## Contributions
 
-Contributions to Native Link or its dependencies should be made in the form of
+Contributions to NativeLink or its dependencies should be made in the form of
 GitHub pull requests. Each pull request will be reviewed by a core contributor
 (someone with permission to land patches) and either landed in the main tree or
 given feedback for changes that would be required. All contributions should
@@ -66,5 +66,5 @@ various Cloud CLIs for you:
 
 ## Conduct
 
-Native Link Code of Conduct is available in the
+NativeLink Code of Conduct is available in the
 [CODE_OF_CONDUCT](CODE_OF_CONDUCT.md) file.

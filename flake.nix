@@ -132,7 +132,7 @@
                 "org.opencontainers.image.licenses" = "Apache-2.0";
                 "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
                 "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
-                "org.opencontainers.image.title" = "Native Link";
+                "org.opencontainers.image.title" = "NativeLink";
                 "org.opencontainers.image.vendor" = "Trace Machina, Inc.";
               };
             };

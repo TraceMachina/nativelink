@@ -42,7 +42,7 @@ jobs:
         tags: trace_machina/nativelink:builder
         target: builder
 
-    - name: Compile Native Link with Native Link
+    - name: Compile NativeLink with NativeLink
       run: |
         mkdir -p ~/.cache && \
         cd deployment-examples/docker-compose && \
