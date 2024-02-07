@@ -1,6 +1,6 @@
-# Native Link's Docker Compose Deployment
+# NativeLink's Docker Compose Deployment
 
-This directory contains a reference/starting point on creating a full Docker Compose deployment of Native Link's cache and remote execution system.
+This directory contains a reference/starting point on creating a full Docker Compose deployment of NativeLink's cache and remote execution system.
 
 ## Docker Setup
 
@@ -31,7 +31,7 @@ All instances use the same Docker image, trace_machina/nativelink:latest, built 
 
 ### CAS
 
-The CAS (Content Addressable Storage) service is used as a local cache for the Native Link system. It is configured in the docker-compose.yml file under the nativelink_local_cas service.
+The CAS (Content Addressable Storage) service is used as a local cache for the NativeLink system. It is configured in the docker-compose.yml file under the nativelink_local_cas service.
 
 ```yml
   nativelink_local_cas:
@@ -62,7 +62,7 @@ The CAS (Content Addressable Storage) service is used as a local cache for the N
 ### Scheduler
 
 The scheduler is currently the only single point of failure in the system. We currently only support one scheduler at a time.
-The scheduler service is responsible for scheduling tasks in the Native Link system. It is configured in the docker-compose.yml file under the nativelink_scheduler service.
+The scheduler service is responsible for scheduling tasks in the NativeLink system. It is configured in the docker-compose.yml file under the nativelink_scheduler service.
 
 ```yml
   nativelink_scheduler:
