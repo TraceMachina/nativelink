@@ -19,6 +19,8 @@ use async_trait::async_trait;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::default_health_status_indicator;
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 
 #[derive(Default)]
@@ -71,3 +73,5 @@ impl Store for NoopStore {
         Box::new(self)
     }
 }
+
+default_health_status_indicator!(NoopStore);

@@ -21,6 +21,8 @@ use futures::stream::{FuturesUnordered, TryStreamExt};
 use nativelink_error::{error_if, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::default_health_status_indicator;
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 
@@ -191,3 +193,5 @@ impl Store for ShardStore {
         }
     }
 }
+
+default_health_status_indicator!(ShardStore);

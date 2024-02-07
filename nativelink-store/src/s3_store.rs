@@ -40,6 +40,8 @@ use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::default_health_status_indicator;
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use rand::rngs::OsRng;
@@ -534,3 +536,5 @@ impl Store for S3Store {
         Box::new(self)
     }
 }
+
+default_health_status_indicator!(S3Store);
