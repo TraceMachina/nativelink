@@ -24,6 +24,7 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
+use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
@@ -349,3 +350,5 @@ impl Store for DedupStore {
         Box::new(self)
     }
 }
+
+default_health_status_indicator!(DedupStore);
