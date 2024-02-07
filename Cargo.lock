@@ -1792,6 +1792,7 @@ dependencies = [
  "serde",
  "sha2",
  "shellexpand",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tokio-util",
