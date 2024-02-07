@@ -41,6 +41,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             &nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
             &store_manager,
             Some(&mut <Registry>::default()),
+            None,
         )
         .await?,
     );

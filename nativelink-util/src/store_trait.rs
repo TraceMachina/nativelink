@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
+use crate::health_utils::HealthRegistry;
 use crate::metrics_utils::Registry;
 
 #[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
@@ -180,4 +181,7 @@ pub trait Store: Sync + Send + Unpin {
 
     /// Register any metrics that this store wants to expose to the Prometheus.
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
+
+    // Register health checks used to monitor the store.
+    fn register_health(self: Arc<Self>, _registry: &mut HealthRegistry) {}
 }
