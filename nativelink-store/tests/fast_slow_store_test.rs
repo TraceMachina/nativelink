@@ -76,6 +76,7 @@ mod fast_slow_store_tests {
     use bytes::Bytes;
     use nativelink_error::{make_err, Code, ResultExt};
     use nativelink_util::buf_channel::make_buf_channel_pair;
+    use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -300,6 +301,8 @@ mod fast_slow_store_tests {
                 self.drop_flag.store(true, Ordering::Release);
             }
         }
+
+        default_health_status_indicator!(DropCheckStore);
 
         let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
         let (fast_store_read_tx, fast_store_read_rx) = tokio::sync::oneshot::channel();

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
@@ -29,6 +30,7 @@ use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
@@ -750,6 +752,10 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         registry.register_collector(Box::new(Collector::new(&self)));
     }
+
+    fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
+        registry.register_indicator(self);
+    }
 }
 
 impl<Fe: FileEntry> MetricsComponent for FilesystemStore<Fe> {
@@ -775,5 +781,16 @@ impl<Fe: FileEntry> MetricsComponent for FilesystemStore<Fe> {
             "Path to the configured content path",
         );
         c.publish("evicting_map", self.evicting_map.as_ref(), "");
+    }
+}
+
+#[async_trait]
+impl<Fe: FileEntry> HealthStatusIndicator for FilesystemStore<Fe> {
+    fn get_name(&self) -> &'static str {
+        "FilesystemStore"
+    }
+
+    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
+        Store::check_health(Pin::new(self), namespace).await
     }
 }
