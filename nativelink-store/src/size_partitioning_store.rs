@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use nativelink_error::{Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use tokio::join;
 
@@ -128,3 +129,6 @@ impl Store for SizePartitioningStore {
         Box::new(self)
     }
 }
+
+#[async_trait]
+impl HealthStatusIndicator for SizePartitioningStore {}

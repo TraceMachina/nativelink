@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use tracing::error;
 
@@ -137,3 +138,6 @@ impl Store for RefStore {
         Box::new(self)
     }
 }
+
+#[async_trait]
+impl HealthStatusIndicator for RefStore {}
