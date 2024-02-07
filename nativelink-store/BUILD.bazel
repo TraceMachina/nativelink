@@ -58,6 +58,7 @@ rust_library(
         "@crates//:serde",
         "@crates//:sha2",
         "@crates//:shellexpand",
+        "@crates//:tempfile",
         "@crates//:tokio",
         "@crates//:tokio-stream",
         "@crates//:tokio-util",

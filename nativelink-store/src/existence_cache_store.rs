@@ -22,7 +22,9 @@ use nativelink_config::stores::{EvictionPolicy, ExistenceCacheStore as Existence
 use nativelink_error::{error_if, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::default_health_status_indicator;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::metrics_utils::{CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 
@@ -198,3 +200,5 @@ impl MetricsComponent for ExistenceCacheStore {
         self.existence_cache.gather_metrics(c)
     }
 }
+
+default_health_status_indicator!(ExistenceCacheStore);

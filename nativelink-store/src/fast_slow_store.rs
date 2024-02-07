@@ -22,6 +22,8 @@ use futures::{join, FutureExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::default_health_status_indicator;
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 
@@ -268,3 +270,5 @@ impl Store for FastSlowStore {
         self.slow_store.clone().register_metrics(slow_store_registry);
     }
 }
+
+default_health_status_indicator!(FastSlowStore);

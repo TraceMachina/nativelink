@@ -22,7 +22,9 @@ use bytes::{Bytes, BytesMut};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::default_health_status_indicator;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 
@@ -170,3 +172,5 @@ impl MetricsComponent for MemoryStore {
         c.publish("evicting_map", &self.evicting_map, "");
     }
 }
+
+default_health_status_indicator!(MemoryStore);

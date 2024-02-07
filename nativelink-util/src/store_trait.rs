@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::marker::Send;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
+use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use crate::metrics_utils::Registry;
 
 #[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
@@ -40,7 +42,7 @@ pub enum UploadSizeInfo {
 }
 
 #[async_trait]
-pub trait Store: Sync + Send + Unpin {
+pub trait Store: Sync + Send + Unpin + HealthStatusIndicator {
     /// Look up a digest in the store and return None if it does not exist in
     /// the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
@@ -168,6 +170,59 @@ pub trait Store: Sync + Send + Unpin {
             .merge(data_res.err_tip(|| "Failed to read stream to completion in get_part_unchunked"))
     }
 
+    // Default implementation of the health check. Some stores may want to override this
+    // in situations where the default implementation is not sufficient.
+    async fn check_health(self: Pin<&Self>, _namespace: Cow<'static, str>) -> HealthStatus {
+        let bytes = _namespace.as_bytes();
+        let hash = blake3::hash(bytes).into();
+        let len = bytes.len();
+        let digest_info = DigestInfo::new(hash, len as i64);
+        let bytes_copy = bytes::Bytes::copy_from_slice(bytes);
+
+        match self.update_oneshot(digest_info, bytes_copy.clone()).await {
+            Ok(_) => {}
+            Err(e) => {
+                return HealthStatus::new_failed(
+                    self.get_ref(),
+                    format!("Store.update_oneshot() failed: {}", e).into(),
+                );
+            }
+        }
+
+        match self.get_part_unchunked(digest_info, 0, Some(len), Some(len)).await {
+            Ok(b) => {
+                if b != bytes_copy {
+                    return HealthStatus::new_failed(self.get_ref(), "Store.get_part_unchunked() data mismatch".into());
+                }
+            }
+            Err(e) => {
+                return HealthStatus::new_failed(
+                    self.get_ref(),
+                    format!("Store.get_part_unchunked() failed: {}", e).into(),
+                );
+            }
+        }
+
+        match self.has(digest_info).await {
+            Ok(Some(s)) => {
+                if s != len {
+                    return HealthStatus::new_failed(
+                        self.get_ref(),
+                        format!("Store.has() size mismatch {s} != {len}").into(),
+                    );
+                }
+            }
+            Ok(None) => {
+                return HealthStatus::new_failed(self.get_ref(), "Store.has() size not found".into());
+            }
+            Err(e) => {
+                return HealthStatus::new_failed(self.get_ref(), format!("Store.has() failed: {}", e).into());
+            }
+        }
+
+        HealthStatus::new_ok(self.get_ref(), "Successfully store health check".into())
+    }
+
     /// Gets the underlying store for the given digest. This can be used to find out
     /// what any underlying store is for a given digest will be and hand it to the caller.
     /// A caller might want to use this to obtain a reference to the "real" underlying store
@@ -180,4 +235,7 @@ pub trait Store: Sync + Send + Unpin {
 
     /// Register any metrics that this store wants to expose to the Prometheus.
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
+
+    // Register health checks used to monitor the store.
+    fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 }
