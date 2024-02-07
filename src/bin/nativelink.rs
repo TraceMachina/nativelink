@@ -21,7 +21,7 @@ use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
 use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use hyper::server::conn::Http;
 use hyper::{Response, StatusCode};
 use nativelink_config::cas_server::{
@@ -41,6 +41,7 @@ use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
 use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
+use nativelink_util::health_utils::{HealthRegistry, HealthStatusDescription};
 use nativelink_util::metrics_utils::{
     set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent, Registry,
 };
@@ -71,6 +72,9 @@ const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 /// Name of environment variable to disable metrics.
 const METRICS_DISABLE_ENV: &str = "NATIVELINK_DISABLE_METRICS";
 
+/// Content type header value for JSON.
+const JSON_CONTENT_TYPE: &str = "application/json; charset=utf-8";
+
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
 #[clap(
@@ -87,17 +91,27 @@ struct Args {
 
 async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), Box<dyn std::error::Error>> {
     let mut root_metrics_registry = <Registry>::with_prefix("nativelink");
+    let health_registry = Arc::new(AsyncMutex::new(HealthRegistry::new("nativelink".into())));
 
     let store_manager = Arc::new(StoreManager::new());
     {
+        let mut health_registry_lock = health_registry.lock().await;
         let root_store_metrics = root_metrics_registry.sub_registry_with_prefix("stores");
+
         for (name, store_cfg) in cfg.stores {
+            let health_component_name = format!("stores/{name}");
+            let health_register_store = health_registry_lock.sub_registry(health_component_name.into());
             let store_metrics = root_store_metrics.sub_registry_with_prefix(&name);
             store_manager.add_store(
                 &name,
-                store_factory(&store_cfg, &store_manager, Some(store_metrics))
-                    .await
-                    .err_tip(|| format!("Failed to create store '{name}'"))?,
+                store_factory(
+                    &store_cfg,
+                    &store_manager,
+                    Some(store_metrics),
+                    Some(health_register_store),
+                )
+                .await
+                .err_tip(|| format!("Failed to create store '{name}'"))?,
             );
         }
     }
@@ -349,12 +363,49 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             );
 
         let root_metrics_registry = root_metrics_registry.clone();
-
+        let health_registry_status = health_registry.clone();
         let mut svc = Router::new()
             // This is the default service that executes if no other endpoint matches.
             .fallback_service(tonic_services.into_service().map_err(|e| panic!("{e}")))
-            // This is a generic endpoint used to check if the server is up.
-            .route_service("/status", axum::routing::get(move || async move { "Ok".to_string() }));
+            .route_service(
+                "/status",
+                axum::routing::get(move || async move {
+                    fn error_to_response<E: std::error::Error>(e: E) -> Response<String> {
+                        let mut response = Response::new(format!("Error: {e:?}"));
+                        *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                        response
+                    }
+
+                    spawn_blocking(move || {
+                        futures::executor::block_on(async {
+                            let mut health_registry_status_guard = health_registry_status.lock().await;
+                            let health_status_descriptions: Vec<HealthStatusDescription> =
+                                health_registry_status_guard.get_health_status_report().collect().await;
+
+                            match serde_json5::to_string(&health_status_descriptions) {
+                                Ok(health_status_descriptions) => Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header(
+                                        hyper::header::CONTENT_TYPE,
+                                        hyper::header::HeaderValue::from_static(JSON_CONTENT_TYPE),
+                                    )
+                                    .body(health_status_descriptions)
+                                    .unwrap(),
+                                Err(e) => Response::builder()
+                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                    .header(
+                                        hyper::header::CONTENT_TYPE,
+                                        hyper::header::HeaderValue::from_static(JSON_CONTENT_TYPE),
+                                    )
+                                    .body(format!("Internal Failure: {e:?}"))
+                                    .unwrap(),
+                            }
+                        })
+                    })
+                    .await
+                    .unwrap_or_else(error_to_response)
+                }),
+            );
 
         if let Some(prometheus_cfg) = services.experimental_prometheus {
             fn error_to_response<E: std::error::Error>(e: E) -> Response<String> {
