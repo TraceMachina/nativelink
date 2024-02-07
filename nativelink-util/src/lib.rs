@@ -20,6 +20,7 @@ pub mod evicting_map;
 pub mod fastcdc;
 pub mod fs;
 pub mod grpc_utils;
+pub mod health_utils;
 pub mod metrics_utils;
 pub mod platform_properties;
 pub mod resource_info;

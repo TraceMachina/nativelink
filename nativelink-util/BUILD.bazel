@@ -17,6 +17,7 @@ rust_library(
         "src/fastcdc.rs",
         "src/fs.rs",
         "src/grpc_utils.rs",
+        "src/health_utils.rs",
         "src/lib.rs",
         "src/metrics_utils.rs",
         "src/platform_properties.rs",

@@ -19,6 +19,7 @@ use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
 use nativelink_config::stores::StoreConfig;
 use nativelink_error::Error;
+use nativelink_util::health_utils::HealthRegistry;
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::store_trait::Store;
 
@@ -44,6 +45,7 @@ pub fn store_factory<'a>(
     backend: &'a StoreConfig,
     store_manager: &'a Arc<StoreManager>,
     maybe_store_metrics: Option<&'a mut Registry>,
+    maybe_health_registry: Option<&'a mut HealthRegistry>,
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
         let store: Arc<dyn Store> = match backend {
@@ -51,36 +53,36 @@ pub fn store_factory<'a>(
             StoreConfig::experimental_s3_store(config) => Arc::new(S3Store::new(config).await?),
             StoreConfig::verify(config) => Arc::new(VerifyStore::new(
                 config,
-                store_factory(&config.backend, store_manager, None).await?,
+                store_factory(&config.backend, store_manager, None, None).await?,
             )),
             StoreConfig::compression(config) => Arc::new(CompressionStore::new(
                 *config.clone(),
-                store_factory(&config.backend, store_manager, None).await?,
+                store_factory(&config.backend, store_manager, None, None).await?,
             )?),
             StoreConfig::dedup(config) => Arc::new(DedupStore::new(
                 config,
-                store_factory(&config.index_store, store_manager, None).await?,
-                store_factory(&config.content_store, store_manager, None).await?,
+                store_factory(&config.index_store, store_manager, None, None).await?,
+                store_factory(&config.content_store, store_manager, None, None).await?,
             )),
             StoreConfig::existence_cache(config) => Arc::new(ExistenceCacheStore::new(
                 config,
-                store_factory(&config.backend, store_manager, None).await?,
+                store_factory(&config.backend, store_manager, None, None).await?,
             )),
             StoreConfig::completeness_checking(config) => Arc::new(CompletenessCheckingStore::new(
-                store_factory(&config.backend, store_manager, None).await?,
-                store_factory(&config.cas_store, store_manager, None).await?,
+                store_factory(&config.backend, store_manager, None, None).await?,
+                store_factory(&config.cas_store, store_manager, None, None).await?,
             )),
             StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
                 config,
-                store_factory(&config.fast, store_manager, None).await?,
-                store_factory(&config.slow, store_manager, None).await?,
+                store_factory(&config.fast, store_manager, None, None).await?,
+                store_factory(&config.slow, store_manager, None, None).await?,
             )),
             StoreConfig::filesystem(config) => Arc::new(<FilesystemStore>::new(config).await?),
             StoreConfig::ref_store(config) => Arc::new(RefStore::new(config, Arc::downgrade(store_manager))),
             StoreConfig::size_partitioning(config) => Arc::new(SizePartitioningStore::new(
                 config,
-                store_factory(&config.lower_store, store_manager, None).await?,
-                store_factory(&config.upper_store, store_manager, None).await?,
+                store_factory(&config.lower_store, store_manager, None, None).await?,
+                store_factory(&config.upper_store, store_manager, None, None).await?,
             )),
             StoreConfig::grpc(config) => Arc::new(GrpcStore::new(config).await?),
             StoreConfig::noop => Arc::new(NoopStore::new()),
@@ -88,7 +90,7 @@ pub fn store_factory<'a>(
                 let stores = config
                     .stores
                     .iter()
-                    .map(|store_config| store_factory(&store_config.store, store_manager, None))
+                    .map(|store_config| store_factory(&store_config.store, store_manager, None, None))
                     .collect::<FuturesOrdered<_>>()
                     .try_collect::<Vec<_>>()
                     .await?;
@@ -98,6 +100,11 @@ pub fn store_factory<'a>(
         if let Some(store_metrics) = maybe_store_metrics {
             store.clone().register_metrics(store_metrics);
         }
+
+        if let Some(health_registry) = maybe_health_registry {
+            store.clone().register_health(health_registry);
+        }
+
         Ok(store)
     })
 }
