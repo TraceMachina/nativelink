@@ -1,4 +1,4 @@
-# Copyright 2022 The Native Link Authors. All rights reserved.
+# Copyright 2022 The NativeLink Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,22 +13,22 @@
 # limitations under the License.
 
 variable "build_base_ami_arm" {
-  description = "Base AMI for building Native Link for ARM"
+  description = "Base AMI for building NativeLink for ARM"
   default     = "ami-0c79a55dda52434da"
 }
 
 variable "build_base_ami_x86" {
-  description = "Base AMI for building Native Link for x86"
+  description = "Base AMI for building NativeLink for x86"
   default     = "ami-03f65b8614a860c29"
 }
 
 variable "build_arm_instance_type" {
-  description = "Type of EC2 instance to build Native Link for ARM"
+  description = "Type of EC2 instance to build NativeLink for ARM"
   default     = "c6gd.2xlarge"
 }
 
 variable "build_x86_instance_type" {
-  description = "Type of EC2 instance to build Native Link for x86"
+  description = "Type of EC2 instance to build NativeLink for x86"
   default     = "c6id.2xlarge"
 }
 
@@ -38,7 +38,7 @@ variable "terminate_ami_builder" {
 }
 
 variable "scheduler_instance_type" {
-  description = "Type of EC2 instance to use for Native Link's scheduler"
+  description = "Type of EC2 instance to use for NativeLink's scheduler"
   default     = "c6g.xlarge"
 }
 

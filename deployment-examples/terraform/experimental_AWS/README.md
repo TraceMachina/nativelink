@@ -1,5 +1,5 @@
-# Native Link's Terraform Deployment
-This directory contains a reference/starting point on creating a full AWS terraform deployment of Native Link's cache and remote execution system.
+# NativeLink's Terraform Deployment
+This directory contains a reference/starting point on creating a full AWS terraform deployment of NativeLink's cache and remote execution system.
 
 ## Prerequisites - Setup Hosted Zone / Base Domain
 You are required to first setup a Route53 Hosted Zone in AWS. This is because we will generate SSL certificates and need a domain to register them under.
@@ -33,7 +33,7 @@ bazel test //... \
 ```
 
 ## Server configuration
-![Native Link AWS Terraform Diagram](https://user-images.githubusercontent.com/1831202/176286845-ff683266-3f23-489c-b58a-3eda49e484be.png)
+![NativeLink AWS Terraform Diagram](https://user-images.githubusercontent.com/1831202/176286845-ff683266-3f23-489c-b58a-3eda49e484be.png)
 
 ## Instances
 All instances use the same configuration for the AMI. There are technically two AMI's but only because by default this solution will spawn workers for x86 servers and ARM servers, so two AMIs are required.

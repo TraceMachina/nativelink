@@ -1,4 +1,4 @@
-# Copyright 2023 The Native Link Authors. All rights reserved.
+# Copyright 2023 The NativeLink Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 resource "google_dns_managed_zone" "default" {
   name        = "${var.project_prefix}-dns-zone"
   dns_name    = "${var.gcp_dns_zone}."
-  description = "Base DNS zone for Native Link resources"
+  description = "Base DNS zone for NativeLink resources"
   depends_on  = [google_project_service.dns_api]
 }
 

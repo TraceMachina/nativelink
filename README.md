@@ -1,18 +1,18 @@
-# Native Link
+# NativeLink
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
 
-Native Link is an extremely (blazingly?) fast and efficient build cache and
+NativeLink is an extremely (blazingly?) fast and efficient build cache and
 remote executor for systems that communicate using the [Remote execution
 protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/) and
 [Reclient](https://github.com/bazelbuild/reclient). NativeLink powers over one billion requests per month for customers using the system for their  production workloads.
 
 Supports Unix-based operating systems and Windows.
 
-## Getting Started with Native Link
+## Getting Started with NativeLink
 
-Below, you will find a few different options for getting started with Native Link.
+Below, you will find a few different options for getting started with NativeLink.
 
 
 ### 📦 Installing with Cargo
@@ -38,15 +38,15 @@ To grab the example in your current working directory, run:
 curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
 ```
 
-### Start Native Link
+### Start NativeLink
 
 ```bash
 nativelink basic_cas.json
 ```
 
-## 🧪 Evaluating Native Link
+## 🧪 Evaluating NativeLink
 
-Once you've built Native Link and have an instance running with the
+Once you've built NativeLink and have an instance running with the
 `basic_cas.json` configuration, launch a separate terminal session and run the
 following command to connect the running server launched above to Bazel or
 another RBE client:
@@ -72,7 +72,7 @@ This causes Bazel to run the commands through an all-in-one `CAS`, `scheduler`
 and `worker`.
 
 
-🎉 Tada 🎉 Native Link is working.
+🎉 Tada 🎉 NativeLink is working.
 
 
 ## ❄️ Installing with Nix
@@ -84,7 +84,7 @@ and `worker`.
 This build does not require cloning the repository, but you need to provide a
 config file, for instance the one at [nativelink-config/examples/basic_cas.json](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json).
 
-The following command builds and runs Native Link in release (optimized) mode:
+The following command builds and runs NativeLink in release (optimized) mode:
 
 ```sh
 nix run github:TraceMachina/nativelink ./basic_cas.json
