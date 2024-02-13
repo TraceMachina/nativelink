@@ -18,11 +18,11 @@ efforts from contributors on the same issue.
 ## Nix development flake
 
 You can use the Nix development flake to automatically set up Bazel, Cargo and
-various Cloud CLIs for you:
+various Cloud tools for you:
 
 1. Install the [nix package manger](https://nixos.org/download.html) and enable
    [flakes](https://nixos.wiki/wiki/Flakes).
-2. Optionally, install [direnv](https://direnv.net/docs/installation.html) and
+2. Optionally, install [`direnv`](https://direnv.net/docs/installation.html) and
    hook it into your shell.
 3. We currently don't ship a C++ toolchain as part of the flake. Make sure to
    install a recent version of Clang.
@@ -34,14 +34,14 @@ various Cloud CLIs for you:
   main you may be asked to rebase your changes.
 
 - Commits should be as small as possible, while ensuring that each commit is
-  correct independently (i.e., each commit should compile and pass tests).
+  correct independently (that is, each commit should compile and pass tests).
 
 - Commits should be accompanied by a [Developer Certificate of Origin](http://developercertificate.org)
   sign-off, which indicates that you (and your employer if applicable) agree to
   be bound by the terms of the [project license](LICENSE). In git, this is the
   `-s` option to `git commit`.
 
-- If your patch is not getting reviewed or you need a specific person to review
+- If your patch isn't getting reviewed or you need a specific person to review
   it, you can @-reply a reviewer asking for a review in the pull request or a
   comment.
 
@@ -56,13 +56,25 @@ various Cloud CLIs for you:
     @rules_rust//:rustfmt
   ```
 
-  For Windows Powershell;
+  For Windows PowerShell;
 
   ```powershell
   bazel run `
     --@rules_rust//:rustfmt.toml=//:.rustfmt.toml `
     @rules_rust//:rustfmt
   ```
+
+## Writing documentation
+
+NativeLink largely follows the [Microsoft Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/).
+
+NativeLink implements it's documentation style guide via Vale. The pre-commit
+hooks forbid errors but permit warnings and suggestions. To view all of Vale's
+suggestions invoke it directly:
+
+```
+vale somefile
+```
 
 ## Conduct
 

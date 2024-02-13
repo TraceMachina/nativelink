@@ -16,8 +16,10 @@ are released.
 
 Prefer reporting vulnerabilities via [GitHub](https://github.com/TraceMachina/nativelink/security).
 
+<!-- vale off -->
 If you'd rather communicate via email please contact <blaise@tracemachina.com>,
 <marcus@tracemachina.com>, <blake@tracemachina.com> or <aaron@tracemachina.com>.
+<!-- vale on -->
 
 ## Vulnerability disclosure and advisories
 

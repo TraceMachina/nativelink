@@ -1,9 +1,8 @@
 # Configuration
 
-This service uses a JSON file as the configuration format. The JSON format is
-compatible with how protobuf's JSON format is structed.
+NativeLink uses a JSON file as the configuration format.
 
-To view the available fields please refer to [stores.rs](https://github.com/tracemachina/nativelink/blob/master/nativelink-config/stores.rs) and [cas_server](https://github.com/tracemachina/nativelink/blob/master/nativelink-config/cas_server.rs).
+To view the available fields please refer to [stores.rs](https://github.com/tracemachina/nativelink/blob/master/nativelink-config/stores.rs) and [`cas_server`](https://github.com/tracemachina/nativelink/blob/master/nativelink-config/cas_server.rs).
 
 These two files should have enough documentation in them on what each field does
 and where each field goes.
@@ -12,7 +11,7 @@ and where each field goes.
 
 The [examples directory](https://github.com/tracemachina/nativelink/tree/master/nativelink-config/examples) contains a few examples of configuration files.
 
-A very basic configuration that is a pure in-memory store is:
+A very basic configuration that's a pure in-memory store is:
 
 ```js
 {
@@ -72,8 +71,8 @@ A very basic configuration that is a pure in-memory store is:
 The following configuration will cause the underlying data to be backed by the
 filesystem, and when the number of bytes reaches over 100mb for AC objects and
 10gb for CAS objects evict them, but apply lz4 compression on the data before
-sending it to to be stored. This will also automatically decompress the data
-when the data is retrieved.
+sending it to be stored. This will also automatically decompress the data when
+the data is retrieved.
 
 ```js
 {
@@ -110,7 +109,9 @@ when the data is retrieved.
 }
 ```
 
+<!-- vale off -->
 ### Dedup Store
+<!-- vale on -->
 
 In this example we will attempt to de-duplicate our data and compress it before
 storing it. This works by applying the [FastCDC](https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf)
@@ -118,12 +119,12 @@ window-based rolling checksum algorithm on the data, splitting the data into
 smaller pieces then storing each chunk as an individual entry in another store.
 
 This is very useful when large objects are stored and only parts of the
-object/file are modified. Examples, are multiple large builds that have have
-debug information in them. It is very common for large binary objects that
-contain debug information to be almost identical when only a subset of modules
-are changed. In enterprise level systems this will likely add up to huge
+object/file are modified. Examples, are multiple large builds that have debug
+information in them. It's very common for large binary objects that contain
+debug information to be almost identical when only a subset of modules are
+changed. In enterprise level systems this will likely add up to huge
 efficiencies, since if just a few bytes are added/removed or changed it will
-only transfer the the bytes around where the changes occurred.
+only transfer the bytes around where the changes occurred.
 
 ```js
 {
@@ -190,9 +191,9 @@ only transfer the the bytes around where the changes occurred.
 
 ### S3 Store
 
-Since Amazon's S3 service now has strong consistency, it is very reliable to use
-as a backend of a CAS. This pairs well with compression and dedup store, but to
-keep thing simple we'll store the raw files.
+Since Amazon's S3 service now has strong consistency, it's very reliable to use
+as a back end of a CAS. This pairs well with the `compression` and `dedup`
+stores, but in this example we'll store the raw files.
 
 ```js
 {
@@ -233,7 +234,7 @@ keep thing simple we'll store the raw files.
 ### Fast Slow Store
 
 This store will first attempt to read from the `fast` store when reading and if
-it does exist return it. If it does not exist, try to fetch it from the `slow`
+it does exist return it. If it doesn't exist, try to fetch it from the `slow`
 store and while streaming it to the client also populate the `fast` store with
 the requested object. When transferring (uploading) from client, the data will
 be placed into both `fast` and `slow` stores simultaneously.
@@ -289,12 +290,12 @@ the rest will be stored in AWS's S3:
 
 ### Verify Store
 
-This store is special. It's only job is to verify the content as it is fetched
+This store is special. It's only job is to verify the content as it's fetched
 and uploaded to ensure it meets some criteria or errors. This store should only
 be added to the CAS. If `hash_verification_function` is set, it will apply the
-hashing algorithm on the data as it is sent/received and at the end if it does
-not match the name of the digest it will cancel the upload/download and return
-an error. If it's not set, the hashing verification will be disabled.
+hashing algorithm on the data as it's sent/received and at the end if it
+doesn't not match the name of the digest it will cancel the upload/download and
+return an error. If it's not set, the hashing verification will be disabled.
 If `verify_size` is set, a similar item will happen, but count the bytes sent
 and check it against the digest instead.
 
