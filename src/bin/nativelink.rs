@@ -75,7 +75,7 @@ const METRICS_DISABLE_ENV: &str = "NATIVELINK_DISABLE_METRICS";
 #[derive(Parser, Debug)]
 #[clap(
     author = "Trace Machina, Inc. <nativelink@tracemachina.com>",
-    version = "0.0.1",
+    version,
     about,
     long_about = None
 )]
