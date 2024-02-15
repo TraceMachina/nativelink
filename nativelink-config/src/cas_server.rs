@@ -629,6 +629,15 @@ pub struct GlobalConfig {
     ///
     /// Default: ConfigDigestHashFunction::sha256
     pub default_digest_hash_function: Option<ConfigDigestHashFunction>,
+
+    /// Default digest size to use for health check when running
+    /// diagnostics checks. Health checks are expected to use this
+    /// size for filling a buffer that is used for creation of
+    /// digest.
+    ///
+    /// Default: 1024*1024 (1MiB)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub default_digest_size_health_check: usize,
 }
 
 #[derive(Deserialize, Debug)]

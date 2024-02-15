@@ -37,11 +37,12 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::grpc_utils::ConnectionManager;
+use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
-use nativelink_util::tls_utils;
 use nativelink_util::write_request_stream_wrapper::WriteRequestStreamWrapper;
+use nativelink_util::{default_health_status_indicator, tls_utils};
 use parking_lot::Mutex;
 use prost::Message;
 use rand::rngs::OsRng;
@@ -844,3 +845,5 @@ impl Store for GrpcStore {
         Box::new(self)
     }
 }
+
+default_health_status_indicator!(GrpcStore);

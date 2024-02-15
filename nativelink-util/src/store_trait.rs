@@ -12,19 +12,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher as StdHasher;
+use std::hash::{Hash, Hasher};
 use std::marker::Send;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{join, try_join};
-use nativelink_error::{Error, ResultExt};
+// use lru::DefaultHasher;
+use nativelink_error::{make_err, Code, Error, ResultExt};
+use rand::rngs::StdRng;
+use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
+use crate::digest_hasher::{default_digest_hasher_func, DigestHasher};
+use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use crate::metrics_utils::Registry;
+
+static DEFAULT_DIGEST_SIZE_HEALTH_CHECK: OnceLock<usize> = OnceLock::new();
+/// Default digest size for health check data. Any change in this value
+/// changes the default contract. `GlobalConfig` should be updated to reflect
+/// changes in this value.
+pub const DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG: usize = 1024 * 1024;
+
+// Get the default digest size for health check data, if value is unset a system wide default is used.
+pub fn default_digest_size_health_check() -> usize {
+    *DEFAULT_DIGEST_SIZE_HEALTH_CHECK.get_or_init(|| DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG)
+}
+
+/// Set the default digest size for health check data, this should be called once.
+pub fn set_default_digest_size_health_check(size: usize) -> Result<(), Error> {
+    DEFAULT_DIGEST_SIZE_HEALTH_CHECK
+        .set(size)
+        .map_err(|_| make_err!(Code::Internal, "set_default_digest_size_health_check already set"))
+}
 
 #[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum UploadSizeInfo {
@@ -40,7 +66,7 @@ pub enum UploadSizeInfo {
 }
 
 #[async_trait]
-pub trait Store: Sync + Send + Unpin {
+pub trait Store: Sync + Send + Unpin + HealthStatusIndicator {
     /// Look up a digest in the store and return None if it does not exist in
     /// the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
@@ -168,6 +194,73 @@ pub trait Store: Sync + Send + Unpin {
             .merge(data_res.err_tip(|| "Failed to read stream to completion in get_part_unchunked"))
     }
 
+    // Default implementation of the health check. Some stores may want to override this
+    // in situations where the default implementation is not sufficient.
+    async fn check_health(self: Pin<&Self>, namespace: Cow<'static, str>) -> HealthStatus {
+        let digest_data_size = default_digest_size_health_check();
+        let mut digest_data = vec![0u8; digest_data_size];
+
+        let mut namespace_hasher = StdHasher::new();
+        namespace.hash(&mut namespace_hasher);
+        self.get_name().hash(&mut namespace_hasher);
+        let hash_seed = namespace_hasher.finish();
+
+        // Fill the digest data with random data based on a stable
+        // hash of the namespace and store name. Intention is to
+        // have randomly filled data that is unique per store and
+        // does not change between health checks. This is to ensure
+        // we are not adding more data to store on each health check.
+        let mut rng: StdRng = StdRng::seed_from_u64(hash_seed);
+        rng.fill_bytes(&mut digest_data);
+
+        let mut digest_hasher = DigestHasher::from(default_digest_hasher_func());
+        digest_hasher.update(&digest_data);
+        let digest_data_len = digest_data.len();
+        let digest_info = digest_hasher.finalize_digest(digest_data_len as i64);
+
+        let digest_bytes = bytes::Bytes::copy_from_slice(&digest_data);
+
+        if let Err(e) = self.update_oneshot(digest_info, digest_bytes.clone()).await {
+            return HealthStatus::new_failed(self.get_ref(), format!("Store.update_oneshot() failed: {}", e).into());
+        }
+
+        match self.has(digest_info).await {
+            Ok(Some(s)) => {
+                if s != digest_data_len {
+                    return HealthStatus::new_failed(
+                        self.get_ref(),
+                        format!("Store.has() size mismatch {s} != {digest_data_len}").into(),
+                    );
+                }
+            }
+            Ok(None) => {
+                return HealthStatus::new_failed(self.get_ref(), "Store.has() size not found".into());
+            }
+            Err(e) => {
+                return HealthStatus::new_failed(self.get_ref(), format!("Store.has() failed: {}", e).into());
+            }
+        }
+
+        match self
+            .get_part_unchunked(digest_info, 0, Some(digest_data_len), Some(digest_data_len))
+            .await
+        {
+            Ok(b) => {
+                if b != digest_bytes {
+                    return HealthStatus::new_failed(self.get_ref(), "Store.get_part_unchunked() data mismatch".into());
+                }
+            }
+            Err(e) => {
+                return HealthStatus::new_failed(
+                    self.get_ref(),
+                    format!("Store.get_part_unchunked() failed: {}", e).into(),
+                );
+            }
+        }
+
+        HealthStatus::new_ok(self.get_ref(), "Successfully store health check".into())
+    }
+
     /// Gets the underlying store for the given digest. This can be used to find out
     /// what any underlying store is for a given digest will be and hand it to the caller.
     /// A caller might want to use this to obtain a reference to the "real" underlying store
@@ -180,4 +273,7 @@ pub trait Store: Sync + Send + Unpin {
 
     /// Register any metrics that this store wants to expose to the Prometheus.
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
+
+    // Register health checks used to monitor the store.
+    fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 }

@@ -26,6 +26,7 @@ use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
+use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
@@ -590,3 +591,5 @@ impl Store for CompressionStore {
         self.inner_store.clone().register_metrics(inner_store_registry);
     }
 }
+
+default_health_status_indicator!(CompressionStore);
