@@ -242,6 +242,13 @@ pub struct FilesystemStore {
     /// value will cause items to never be removed from the store causing
     /// infinite memory usage.
     pub eviction_policy: Option<EvictionPolicy>,
+
+    /// The block size of the filesystem for the running machine
+    /// value is used to determine an entry's actual size on disk consumed
+    /// For a 4KB block size filesystem, a 1B file actually consumes 4KB
+    /// Default: 4096
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub block_size: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
