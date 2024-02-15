@@ -67,17 +67,18 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hook
 
 #[async_trait]
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<Hooks> {
-    fn create(file_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
+    fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
         Self {
-            inner: Some(FileEntryImpl::create(file_size, encoded_file_path)),
+            inner: Some(FileEntryImpl::create(data_size, block_size, encoded_file_path)),
             _phantom: PhantomData,
         }
     }
 
     async fn make_and_open_file(
+        block_size: u64,
         encoded_file_path: EncodedFilePath,
     ) -> Result<(Self, fs::ResumeableFileSlot<'static>, OsString), Error> {
-        let (inner, file_slot, path) = FileEntryImpl::make_and_open_file(encoded_file_path).await?;
+        let (inner, file_slot, path) = FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
         Ok((
             Self {
                 inner: Some(inner),
@@ -88,8 +89,12 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         ))
     }
 
-    fn get_file_size(&mut self) -> &mut u64 {
-        self.inner.as_mut().unwrap().get_file_size()
+    fn data_size_mut(&mut self) -> &mut u64 {
+        self.inner.as_mut().unwrap().data_size_mut()
+    }
+
+    fn size_on_disk(&self) -> u64 {
+        self.inner.as_ref().unwrap().size_on_disk()
     }
 
     fn get_encoded_file_path(&self) -> &RwLock<EncodedFilePath> {
@@ -216,6 +221,7 @@ mod filesystem_store_tests {
                     content_path: content_path.clone(),
                     temp_path: temp_path.clone(),
                     eviction_policy: None,
+                    block_size: 1,
                     ..Default::default()
                 })
                 .await?,
@@ -223,6 +229,7 @@ mod filesystem_store_tests {
 
             // Insert dummy value into store.
             store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
+
             assert_eq!(
                 store.as_ref().has(digest).await,
                 Ok(Some(VALUE1.len())),
@@ -345,6 +352,7 @@ mod filesystem_store_tests {
                     max_count: 3,
                     ..Default::default()
                 }),
+                block_size: 1,
                 read_buffer_size: 1,
             })
             .await?,
@@ -449,6 +457,7 @@ mod filesystem_store_tests {
                     max_count: 1,
                     ..Default::default()
                 }),
+                block_size: 1,
                 read_buffer_size: 1,
             })
             .await?,
@@ -729,6 +738,7 @@ mod filesystem_store_tests {
                     max_bytes: 5,
                     ..Default::default()
                 }),
+                block_size: 1,
                 ..Default::default()
             })
             .await?,
@@ -1133,6 +1143,46 @@ mod filesystem_store_tests {
         let digest_result = store.as_ref().has(digest).await.err_tip(|| "Failed to execute has")?;
         assert!(digest_result.is_none());
 
+        Ok(())
+    }
+
+    // Ensure that get_file_size() returns the correct number
+    // ceil(content length / block_size) * block_size
+    // assume block size 4K
+    // 1B data size = 4K size on disk
+    // 5K data size = 8K size on disk
+    #[tokio::test]
+    async fn get_file_size_uses_block_size() -> Result<(), Error> {
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+
+        let value_1kb: String = "x".repeat(1024);
+        let value_5kb: String = "xabcd".repeat(1024);
+
+        let digest_1kb = DigestInfo::try_new(HASH1, value_1kb.len())?;
+        let digest_5kb = DigestInfo::try_new(HASH2, value_5kb.len())?;
+
+        let store = Box::pin(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    read_buffer_size: 1,
+                    ..Default::default()
+                },
+                |_| sleep(Duration::ZERO),
+                |from, to| std::fs::rename(from, to),
+            )
+            .await?,
+        );
+
+        store.as_ref().update_oneshot(digest_1kb, value_1kb.into()).await?;
+        let short_entry = store.as_ref().get_file_entry_for_digest(&digest_1kb).await?;
+        assert_eq!(short_entry.size_on_disk(), 4 * 1024);
+
+        store.as_ref().update_oneshot(digest_5kb, value_5kb.into()).await?;
+        let long_entry = store.as_ref().get_file_entry_for_digest(&digest_5kb).await?;
+        assert_eq!(long_entry.size_on_disk(), 8 * 1024);
         Ok(())
     }
 }
