@@ -82,7 +82,7 @@ const JSON_CONTENT_TYPE: &str = "application/json; charset=utf-8";
 #[derive(Parser, Debug)]
 #[clap(
     author = "Trace Machina, Inc. <nativelink@tracemachina.com>",
-    version = "0.0.1",
+    version,
     about,
     long_about = None
 )]
