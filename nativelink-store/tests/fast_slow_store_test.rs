@@ -18,6 +18,7 @@ use std::sync::Arc;
 use nativelink_error::Error;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::noop_store::NoopStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use rand::rngs::SmallRng;
@@ -379,6 +380,35 @@ mod fast_slow_store_tests {
             Pin::new(fast_slow_store.as_ref()).has(digest).await?.is_none(),
             "Expected data to not exist in store"
         );
+        Ok(())
+    }
+
+    // Regression test for https://github.com/TraceMachina/nativelink/issues/665
+    #[tokio::test]
+    async fn slow_store_replaced_by_fast_store_when_noop() -> Result<(), Error> {
+        let fast_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let slow_store = Arc::new(NoopStore::new());
+        let fast_slow_store_config = nativelink_config::stores::FastSlowStore {
+            fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+            slow: nativelink_config::stores::StoreConfig::noop,
+        };
+        let fast_slow_store = Arc::new(FastSlowStore::new(
+            &fast_slow_store_config,
+            fast_store.clone(),
+            slow_store.clone(),
+        ));
+
+        assert_eq!(
+            Arc::as_ptr(fast_slow_store.fast_store()),
+            Arc::as_ptr(&fast_store),
+            "Fast store should be the same as the fast_slow_store's fast store"
+        );
+        assert_eq!(
+            Arc::as_ptr(fast_slow_store.slow_store()),
+            Arc::as_ptr(&fast_store),
+            "Slow store should be replaced by fast store when configured as noop"
+        );
+
         Ok(())
     }
 }

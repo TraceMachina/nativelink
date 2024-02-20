@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{join, FutureExt};
+use nativelink_config::stores::StoreConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -44,11 +45,21 @@ impl FastSlowStore {
         fast_store: Arc<dyn Store>,
         slow_store: Arc<dyn Store>,
     ) -> Self {
+        let slow_store = if matches!(_config.slow, StoreConfig::noop) {
+            fast_store.clone()
+        } else {
+            slow_store
+        };
+
         Self { fast_store, slow_store }
     }
 
     pub fn fast_store(&self) -> &Arc<dyn Store> {
         &self.fast_store
+    }
+
+    pub fn slow_store(&self) -> &Arc<dyn Store> {
+        &self.slow_store
     }
 
     /// Ensure our fast store is populated. This should be kept as a low
