@@ -26,7 +26,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install --git https://github.com/TraceMachina/nativelink --tag v0.2.0
 ```
 
-### ⚙️ Configuration
+### ⚙️ Configure and 🦾 Start NativeLink
 
 The `nativelink` executable reads a JSON file as it's only parameter,
 `--config`. See [`nativelink-config`](./nativelink-config/examples/basic_cas.json)
@@ -36,11 +36,8 @@ To grab the example in your current working directory, run:
 
 ```bash
 curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json
-```
 
-### Start NativeLink
-
-```bash
+### you can modify the example above to replace the filesystem store with the memory store if you favor speed over data durability.
 nativelink basic_cas.json
 ```
 
