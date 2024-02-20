@@ -1,10 +1,12 @@
 {
   "stores": {
     "AC_MAIN_STORE": {
-      "memory": {
+      "filesystem": {
+        "content_path": "/tmp/nativelink/data-worker-test/content_path-ac",
+        "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-ac",
         "eviction_policy": {
-          // 100mb.
-          "max_bytes": 100000000,
+          // 1gb.
+          "max_bytes": 1000000000,
         }
       }
     },
