@@ -70,6 +70,7 @@ rust_test_suite(
         "//nativelink-util",
         "@crates//:async-lock",
         "@crates//:futures",
+        "@crates//:hex",
         "@crates//:hyper",
         "@crates//:once_cell",
         "@crates//:pretty_assertions",

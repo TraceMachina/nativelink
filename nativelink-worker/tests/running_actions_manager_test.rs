@@ -20,6 +20,7 @@ use std::fs::Permissions;
 use std::io::{Cursor, Write};
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Path;
 use std::pin::Pin;
 use std::str::from_utf8;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -61,20 +62,13 @@ use tokio::sync::oneshot;
 /// Get temporary path from either `TEST_TMPDIR` or best effort temp directory if
 /// not set.
 fn make_temp_path(data: &str) -> String {
-    #[cfg(target_family = "unix")]
-    return format!(
-        "{}/{}/{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
-        thread_rng().gen::<u64>(),
-        data
-    );
-    #[cfg(target_family = "windows")]
-    return format!(
-        "{}\\{}\\{}",
-        env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
-        thread_rng().gen::<u64>(),
-        data
-    );
+    Path::new(&env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()))
+        .join(thread_rng().gen::<u64>().to_string())
+        .join(data)
+        .as_os_str()
+        .to_str()
+        .unwrap()
+        .to_string()
 }
 
 async fn setup_stores() -> Result<
@@ -2553,6 +2547,106 @@ exit 1
             assert_eq!(err.code, Code::Aborted, "Expected Aborted : {action_result:?}");
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subdirectory_command_working_directory() -> Result<(), Box<dyn std::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const SALT: u64 = 66;
+        const ROOT_WORK_DIRECTORY_NAME: &str = "root_work_directory";
+        #[cfg(target_family = "unix")]
+        const SUB_DIR: &str = "dir1/dir2/dir3";
+        #[cfg(target_family = "windows")]
+        const SUB_DIR: &str = r#"dir1\dir2\dir3"#;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory_path = make_temp_path(ROOT_WORK_DIRECTORY_NAME);
+        fs::create_dir_all(&root_work_directory_path).await?;
+
+        // TODO(#527) Sleep to reduce flakey chances.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: root_work_directory_path.clone(),
+            execution_configuration: ExecutionConfiguration {
+                entrypoint: None,
+                additional_environment: None,
+            },
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
+                upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                ..Default::default()
+            },
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
+
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "printf ${PWD}".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["cmd".to_string(), "/C".to_string(), "echo %cd%".to_string()];
+
+        let command = Command {
+            arguments,
+            working_directory: SUB_DIR.to_string(),
+            ..Default::default()
+        };
+
+        let command_digest =
+            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.into(),
+        )
+        .await?;
+
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+
+        let action_digest =
+            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+
+        let running_action_impl = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: SALT,
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                },
+            )
+            .await?;
+
+        let action_id = hex::encode(running_action_impl.clone().test_action_id());
+
+        let result = run_action(running_action_impl).await?;
+        assert_eq!(result.exit_code, 0, "Exit code should be 0");
+
+        let expected_output_dir = Path::new(ROOT_WORK_DIRECTORY_NAME).join(&action_id).join(SUB_DIR);
+        let expected_output_dir_str = expected_output_dir.as_os_str().to_str().unwrap();
+
+        let stdout_content = cas_store
+            .as_ref()
+            .get_part_unchunked(result.stdout_digest, 0, None, None)
+            .await?;
+
+        let stdout_content = std::str::from_utf8(&stdout_content)
+            .unwrap()
+            .trim_end_matches(&['\n', '\r'][..])
+            .to_string();
+        assert!(stdout_content.ends_with(expected_output_dir_str));
         Ok(())
     }
 }

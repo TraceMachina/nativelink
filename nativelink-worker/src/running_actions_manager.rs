@@ -662,6 +662,12 @@ impl RunningActionImpl {
                 command_proto.arguments.iter().map(AsRef::as_ref).collect()
             };
         info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
+        let current_dir = &format!("{}/{}", self.work_directory, command_proto.working_directory);
+        // Ensure all directories of the current path exist. The base `work_directory`
+        // Is created within `RunningActionsManager.create_and_add_action`, the protocol
+        // Allows for `Command.working_directory` to specify a subdirectory that
+        // might not exist on the worker yet, we materialize that directory here.
+        fs::create_dir_all(current_dir).await?;
         let mut command_builder = process::Command::new(args[0]);
         command_builder
             .args(&args[1..])
@@ -669,7 +675,7 @@ impl RunningActionImpl {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(format!("{}/{}", self.work_directory, command_proto.working_directory))
+            .current_dir(current_dir)
             .env_clear();
 
         let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
@@ -1123,6 +1129,11 @@ impl RunningActionImpl {
             .action_result
             .take()
             .err_tip(|| "Expected action_result to exist in get_finished_result")
+    }
+
+    // Test only usage for accessing action id.
+    pub fn test_action_id(self: Arc<Self>) -> ActionId {
+        self.action_id
     }
 }
 
