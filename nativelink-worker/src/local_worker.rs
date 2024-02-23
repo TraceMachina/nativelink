@@ -333,12 +333,10 @@ pub async fn new_local_worker(
     ac_store: Option<Arc<dyn Store>>,
     historical_store: Arc<dyn Store>,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
-    let fast_slow_store = cas_store
-        .inner_store(None)
-        .as_any()
-        .downcast_ref::<Arc<FastSlowStore>>()
-        .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
-        .clone();
+    let any_store = cas_store.inner_store_arc(None).as_any_arc();
+    let fast_slow_store = any_store
+        .downcast::<FastSlowStore>()
+        .map_err(|_| make_input_err!("Expected store for LocalWorker's store to be a FastSlowStore"))?;
 
     if let Ok(path) = fs::canonicalize(&config.work_directory).await {
         fs::remove_dir_all(path)

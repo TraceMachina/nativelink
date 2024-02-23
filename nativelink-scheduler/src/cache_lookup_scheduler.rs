@@ -56,14 +56,13 @@ pub struct CacheLookupScheduler {
 }
 
 async fn get_action_from_store(
-    ac_store: &Arc<dyn Store>,
+    ac_store: Pin<&dyn Store>,
     action_digest: DigestInfo,
     instance_name: String,
 ) -> Option<ProtoActionResult> {
     // If we are a GrpcStore we shortcut here, as this is a special store.
-    let any_store = ac_store.clone().inner_store(Some(action_digest)).as_any();
-    let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
-    if let Some(grpc_store) = maybe_grpc_store {
+    let any_store = ac_store.inner_store(Some(action_digest)).as_any();
+    if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
         let action_result_request = GetActionResultRequest {
             instance_name,
             action_digest: Some(action_digest.into()),
@@ -78,7 +77,7 @@ async fn get_action_from_store(
             .map(|response| response.into_inner())
             .ok()
     } else {
-        get_and_decode_digest::<ProtoActionResult>(Pin::new(ac_store.as_ref()), &action_digest)
+        get_and_decode_digest::<ProtoActionResult>(ac_store, &action_digest)
             .await
             .ok()
     }
@@ -185,7 +184,9 @@ impl ActionScheduler for CacheLookupScheduler {
             // Perform cache check.
             let action_digest = current_state.action_digest();
             let instance_name = action_info.instance_name().clone();
-            if let Some(action_result) = get_action_from_store(&ac_store, *action_digest, instance_name).await {
+            if let Some(action_result) =
+                get_action_from_store(Pin::new(ac_store.as_ref()), *action_digest, instance_name).await
+            {
                 if validate_outputs_exist(&cas_store, &action_result).await {
                     // Found in the cache, return the result immediately.
                     Arc::make_mut(&mut current_state).stage = ActionStage::CompletedFromCache(action_result);

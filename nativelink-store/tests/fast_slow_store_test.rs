@@ -285,12 +285,20 @@ mod fast_slow_store_tests {
                 writer.send_eof().await
             }
 
-            fn inner_store(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+            fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
                 self
             }
 
-            fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
-                Box::new(self)
+            fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+                self
+            }
+
+            fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static) {
+                self
+            }
+
+            fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+                self
             }
 
             fn register_metrics(self: Arc<Self>, _registry: &mut nativelink_util::metrics_utils::Registry) {}
