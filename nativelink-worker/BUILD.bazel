@@ -69,6 +69,7 @@ rust_test_suite(
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:async-lock",
+        "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hyper",
         "@crates//:once_cell",

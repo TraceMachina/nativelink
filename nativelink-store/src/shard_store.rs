@@ -173,16 +173,28 @@ impl Store for ShardStore {
             .err_tip(|| "In ShardStore::get_part_ref()")
     }
 
-    fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
-        Box::new(self)
+    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+        self
     }
 
-    fn inner_store(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn Store {
         let Some(digest) = digest else {
             return self;
         };
         let index = self.get_store_index(&digest);
-        self.weights_and_stores[index].1.clone().inner_store(Some(digest))
+        self.weights_and_stores[index].1.inner_store(Some(digest))
+    }
+
+    fn inner_store_arc(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
+        let Some(digest) = digest else {
+            return self;
+        };
+        let index = self.get_store_index(&digest);
+        self.weights_and_stores[index].1.clone().inner_store_arc(Some(digest))
     }
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {

@@ -1320,11 +1320,12 @@ impl UploadActionResults {
         action_result: ProtoActionResult,
         hasher: DigestHasherFunc,
     ) -> Result<(), Error> {
-        let Some(ac_store) = &self.ac_store else { return Ok(()) };
+        let Some(ac_store) = self.ac_store.as_deref() else {
+            return Ok(());
+        };
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = ac_store.clone().inner_store(Some(action_digest)).as_any();
-        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
-        if let Some(grpc_store) = maybe_grpc_store {
+        let any_store = ac_store.inner_store(Some(action_digest)).as_any();
+        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
             let update_action_request = UpdateActionResultRequest {
                 // This is populated by `update_action_result`.
                 instance_name: String::new(),
@@ -1345,7 +1346,7 @@ impl UploadActionResults {
             .encode(&mut store_data)
             .err_tip(|| "Encoding ActionResult for caching")?;
 
-        Pin::new(ac_store.as_ref())
+        Pin::new(ac_store)
             .update_oneshot(action_digest, store_data.split().freeze())
             .await
             .err_tip(|| "Caching ActionResult")
@@ -1471,15 +1472,10 @@ pub struct RunningActionsManagerImpl {
 impl RunningActionsManagerImpl {
     pub fn new_with_callbacks(args: RunningActionsManagerArgs<'_>, callbacks: Callbacks) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
-        let filesystem_store = args
-            .cas_store
-            .fast_store()
-            .clone()
-            .inner_store(None)
-            .as_any()
-            .downcast_ref::<Arc<FilesystemStore>>()
-            .err_tip(|| "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl")?
-            .clone();
+        let any_store = args.cas_store.fast_store().clone().inner_store_arc(None).as_any_arc();
+        let filesystem_store = any_store.downcast::<FilesystemStore>().map_err(|_| {
+            make_input_err!("Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl")
+        })?;
         let (action_done_tx, _) = watch::channel(());
         Ok(Self {
             root_work_directory: args.root_work_directory,

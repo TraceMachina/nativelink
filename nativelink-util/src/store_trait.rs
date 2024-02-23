@@ -66,7 +66,7 @@ pub enum UploadSizeInfo {
 }
 
 #[async_trait]
-pub trait Store: Sync + Send + Unpin + HealthStatusIndicator {
+pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     /// Look up a digest in the store and return None if it does not exist in
     /// the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
@@ -266,10 +266,13 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator {
     /// A caller might want to use this to obtain a reference to the "real" underlying store
     /// (if applicable) and check if it implements some special traits that allow optimizations.
     /// Note: If the store performs complex operations on the data, it should return itself.
-    fn inner_store(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store>;
+    // fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ (dyn std::any::Any + Sync + Send + 'static);
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store;
+    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store>;
 
-    /// Expect the returned Any to be `Arc<Self>`.
-    fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send>;
+    /// Returns an Any variation of whatever Self is.
+    fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static);
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static>;
 
     /// Register any metrics that this store wants to expose to the Prometheus.
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}

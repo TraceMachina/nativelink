@@ -115,18 +115,32 @@ impl Store for SizePartitioningStore {
             .await
     }
 
-    fn inner_store(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn Store {
         let Some(digest) = digest else {
             return self;
         };
         if digest.size_bytes < self.size {
-            return self.lower_store.clone().inner_store(Some(digest));
+            return self.lower_store.inner_store(Some(digest));
         }
-        self.upper_store.clone().inner_store(Some(digest))
+        self.upper_store.inner_store(Some(digest))
     }
 
-    fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
-        Box::new(self)
+    fn inner_store_arc(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
+        let Some(digest) = digest else {
+            return self;
+        };
+        if digest.size_bytes < self.size {
+            return self.lower_store.clone().inner_store_arc(Some(digest));
+        }
+        self.upper_store.clone().inner_store_arc(Some(digest))
+    }
+
+    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
+        self
     }
 }
 
