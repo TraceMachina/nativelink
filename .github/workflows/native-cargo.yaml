@@ -31,7 +31,7 @@ jobs:
         shell: bash
 
       - name: Build on ${{ runner.os }}
-        run: cargo build --all
+        run: cargo build --all --profile=smol
 
       - name: Test on ${{ runner.os }}
-        run: cargo test --all
+        run: cargo test --all --profile=smol

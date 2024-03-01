@@ -10,6 +10,14 @@ edition = "2021"
 lto = true
 opt-level = 3
 
+# Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
+# It reduces the size of the `target` directory from ~12GB to ~1GB.
+[profile.smol]
+inherits = "release"
+lto = "thin"
+opt-level = "z"
+strip = true
+
 [[bin]]
 name = "nativelink"
 
