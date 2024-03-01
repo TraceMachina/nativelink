@@ -30,7 +30,7 @@ serde_json5 = "0.1.0"
 shlex = "1.2.0"
 tokio = { version = "1.35.1", features = ["sync", "rt", "process"] }
 tokio-stream = { version = "0.1.14", features = ["fs"] }
-tonic = { version = "0.10.2", features = ["gzip", "tls"] }
+tonic = { version = "0.11.0", features = ["gzip", "tls"] }
 tracing = "0.1.40"
 uuid = { version = "1.6.1", features = ["v4"] }
 

@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aws_sdk_s3::config::{Builder, Region};
+use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
 use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
 use bytes::Bytes;
@@ -53,6 +53,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -83,6 +84,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -136,6 +138,7 @@ mod s3_store_tests {
             ),
         ]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -188,6 +191,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client.clone())
             .build();
@@ -224,6 +228,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -268,6 +273,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client.clone())
             .build();
@@ -328,6 +334,7 @@ mod s3_store_tests {
             ),
         ]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -455,6 +462,7 @@ mod s3_store_tests {
             ),
         ]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client.clone())
             .build();
@@ -490,6 +498,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client.clone())
             .build();
@@ -536,6 +545,7 @@ mod s3_store_tests {
 
         let mock_client = StaticReplayClient::new(vec![]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -578,6 +588,7 @@ mod s3_store_tests {
 
         let mock_client = StaticReplayClient::new(vec![]);
         let test_config = Builder::new()
+            .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
