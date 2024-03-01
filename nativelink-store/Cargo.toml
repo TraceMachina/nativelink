@@ -21,7 +21,7 @@ bytes = "1.5.0"
 filetime = "0.2.23"
 futures = "0.3.29"
 hex = "0.4.3"
-hyper = { version = "0.14.27" }
+hyper = { version = "0.14.28" }
 hyper-rustls = { version = "0.24.2", features = ["webpki-tokio"] }
 lz4_flex = "0.11.1"
 parking_lot = "0.12.1"
