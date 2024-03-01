@@ -29,7 +29,7 @@ use_repo(zig_toolchains, "zig_sdk")
 bazel_dep(name = "rules_rust", version = "0.36.2")
 git_override(
     module_name = "rules_rust",
-    commit = "4136f6fedd033108294138a657b4ccd8ac57c8ef",
+    commit = "5d4dc3f3bf247a2ef0a42ae954444c9e4bc1351a",
     patch_strip = 1,
     patches = [
         # TODO(aaronmondal): Remove this after:
