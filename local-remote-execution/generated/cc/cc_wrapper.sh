@@ -1,4 +1,4 @@
-#!/nix/store/sjmg30gccfmiri83vlcwdixcb40pxbfk-bash/bin/bash
+#!/nix/store/xqi8qarda5vwn2zcp2yapqchnsi7mmax-bash/bin/bash
 #
 # Copyright 2015 The Bazel Authors. All rights reserved.
 #
@@ -22,4 +22,4 @@ set -eu
 
 
 # Call the C++ compiler
-/nix/store/3pdbqdvd89wvidk5xr2laqrw1nj27cz7-customClang/bin/customClang "$@"
+/nix/store/d26sh1qib07cwb68zgqg0c9qg4hlphfq-customClang/bin/customClang "$@"
