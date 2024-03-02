@@ -4,7 +4,7 @@ version = "0.4.0"
 edition = "2021"
 
 [lib]
-crate_type = ["proc-macro"]
+proc-macro = true
 
 [dependencies]
 # TODO(allada) We currently need to pin these to specific version.

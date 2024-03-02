@@ -96,7 +96,7 @@
         src = pkgs.lib.cleanSourceWith {
           src = craneLib.path ./.;
           filter = path: type:
-            (builtins.match "^.+/data/SekienAkashita\\.jpg" path != null)
+            (builtins.match "^.*(data/SekienSkashita\.jpg|nativelink-config/README\.md)" path != null)
             || (craneLib.filterCargoSources path type);
         };
 
@@ -141,6 +141,8 @@
         generate-toolchains = import ./tools/generate-toolchains.nix {inherit pkgs;};
 
         native-cli = import ./native-cli/default.nix {inherit pkgs;};
+
+        docs = pkgs.callPackage ./tools/docs.nix {rust = stable-rust.default;};
 
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
@@ -275,6 +277,7 @@
               generate-toolchains
               customClang
               native-cli
+              docs
             ]
             ++ maybeDarwinDeps;
           shellHook = ''

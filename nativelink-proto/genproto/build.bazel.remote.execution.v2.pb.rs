@@ -1566,11 +1566,13 @@ pub mod digest_function {
         ///    3. A single invocation is made to the SHA-256 block cipher with
         ///       the following parameters:
         ///
-        ///           M = Hash(left) || Hash(right)
-        ///           H = {
-        ///               0xcbbb9d5d, 0x629a292a, 0x9159015a, 0x152fecd8,
-        ///               0x67332667, 0x8eb44a87, 0xdb0c2e0d, 0x47b5481d,
-        ///           }
+        ///       ```text
+        ///       M = Hash(left) || Hash(right)
+        ///       H = {
+        ///           0xcbbb9d5d, 0x629a292a, 0x9159015a, 0x152fecd8,
+        ///           0x67332667, 0x8eb44a87, 0xdb0c2e0d, 0x47b5481d,
+        ///       }
+        ///       ```
         ///
         ///       The values of H are the leading fractional parts of the
         ///       square roots of the 9th to the 16th prime number (23 to 53).
@@ -1581,7 +1583,9 @@ pub mod digest_function {
         ///    4. The hash of the full blob can then be obtained by
         ///       concatenating the outputs of the block cipher:
         ///
-        ///           Hash(blob) = a || b || c || d || e || f || g || h
+        ///       ```text
+        ///       Hash(blob) = a || b || c || d || e || f || g || h
+        ///       ```
         ///
         ///       Addition of the original values of H, as normally done
         ///       through the use of the Davies-Meyer structure, is not

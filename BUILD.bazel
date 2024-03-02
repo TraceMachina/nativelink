@@ -41,6 +41,36 @@ rust_binary(
     ],
 )
 
+filegroup(
+    name = "docs",
+    srcs = [
+        "//nativelink-config:docs",
+        "//nativelink-error:docs",
+        "//nativelink-macro:docs",
+        "//nativelink-proto:docs",
+        "//nativelink-scheduler:docs",
+        "//nativelink-service:docs",
+        "//nativelink-store:docs",
+        "//nativelink-util:docs",
+        "//nativelink-worker:docs",
+    ],
+)
+
+test_suite(
+    name = "doctests",
+    tests = [
+        "//nativelink-config:doc_test",
+        "//nativelink-error:doc_test",
+        "//nativelink-macro:doc_test",
+        "//nativelink-proto:doc_test",
+        "//nativelink-scheduler:doc_test",
+        "//nativelink-service:doc_test",
+        "//nativelink-store:doc_test",
+        "//nativelink-util:doc_test",
+        "//nativelink-worker:doc_test",
+    ],
+)
+
 genrule(
     name = "dummy_test_sh",
     outs = ["dummy_test.sh"],

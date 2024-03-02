@@ -300,6 +300,32 @@ This will automatically apply some fixes like automated line fixes and format
 changes. Note that changed files aren't automatically staged. Use `git add` to
 add the changed files manually to the staging area.
 
+## Generating documentation
+
+Automatically generated documentation is still under construction. To view the
+documentation for the `nativelink-*` crates, run the `docs` command in the nix
+flake:
+
+```bash
+docs
+```
+
+To build individual crate-level docs:
+
+```bash
+# All docs
+bazel build docs
+
+# A single crate
+bazel build nativelink-config:docs
+```
+
+To run documentation tests with Bazel:
+
+```bash
+bazel test doctests
+```
+
 ## Writing documentation
 
 NativeLink largely follows the [Microsoft Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/).
