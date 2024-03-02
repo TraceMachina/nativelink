@@ -76,24 +76,23 @@ pub async fn get_size_and_decode_digest<T: Message + Default>(
 }
 
 /// Computes the digest of a message.
-pub fn message_to_digest<'a>(
+pub fn message_to_digest(
     message: &impl Message,
     mut buf: &mut BytesMut,
-    hasher: impl Into<&'a mut DigestHasher>,
+    hasher: &mut impl DigestHasher,
 ) -> Result<DigestInfo, Error> {
-    let hasher = hasher.into();
     message
         .encode(&mut buf)
         .err_tip(|| "Could not encode directory proto")?;
     hasher.update(buf);
-    Ok(hasher.finalize_digest(i64::try_from(buf.len())?))
+    Ok(hasher.finalize_digest())
 }
 
 /// Takes a proto message and will serialize it and upload it to the provided store.
 pub async fn serialize_and_upload_message<'a, T: Message>(
     message: &'a T,
     cas_store: Pin<&'a dyn Store>,
-    hasher: impl Into<&mut DigestHasher>,
+    hasher: &mut impl DigestHasher,
 ) -> Result<DigestInfo, Error> {
     let mut buffer = BytesMut::with_capacity(message.encoded_len());
     let digest = message_to_digest(message, &mut buffer, hasher).err_tip(|| "In serialize_and_upload_message")?;
@@ -104,20 +103,17 @@ pub async fn serialize_and_upload_message<'a, T: Message>(
 }
 
 /// Computes a digest of a given buffer.
-pub async fn compute_buf_digest(buf: &[u8], hasher: impl Into<&mut DigestHasher>) -> Result<DigestInfo, Error> {
-    let hasher = hasher.into();
+pub fn compute_buf_digest(buf: &[u8], hasher: &mut impl DigestHasher) -> DigestInfo {
     hasher.update(buf);
-    Ok(hasher.finalize_digest(i64::try_from(buf.len())?))
+    hasher.finalize_digest()
 }
 
 /// Given a bytestream computes the digest for the data.
 pub async fn compute_digest<R: AsyncRead + Unpin + Send>(
     mut reader: R,
-    hasher: impl Into<&mut DigestHasher>,
+    hasher: &mut impl DigestHasher,
 ) -> Result<(DigestInfo, R), Error> {
     let mut chunk = BytesMut::with_capacity(DEFAULT_READ_BUFF_SIZE);
-    let hasher = hasher.into();
-    let mut digest_size = 0;
     loop {
         reader
             .read_buf(&mut chunk)
@@ -126,12 +122,11 @@ pub async fn compute_digest<R: AsyncRead + Unpin + Send>(
         if chunk.is_empty() {
             break; // EOF.
         }
-        digest_size += chunk.len();
         hasher.update(&chunk);
         chunk.clear();
     }
 
-    Ok((hasher.finalize_digest(i64::try_from(digest_size)?), reader))
+    Ok((hasher.finalize_digest(), reader))
 }
 
 fn inner_upload_file_to_store<'a, Fut: Future<Output = Result<(), Error>> + 'a>(

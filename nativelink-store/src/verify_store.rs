@@ -51,13 +51,13 @@ impl VerifyStore {
         Pin::new(self.inner_store.as_ref())
     }
 
-    async fn inner_check_update(
+    async fn inner_check_update<D: DigestHasher>(
         &self,
         mut tx: DropCloserWriteHalf,
         mut rx: DropCloserReadHalf,
         size_info: UploadSizeInfo,
         original_hash: [u8; 32],
-        mut maybe_hasher: Option<DigestHasher>,
+        mut maybe_hasher: Option<&mut D>,
     ) -> Result<(), Error> {
         let mut sum_size: u64 = 0;
         loop {
@@ -79,9 +79,8 @@ impl VerifyStore {
                         ));
                     }
                 }
-                if let Some(hasher) = maybe_hasher.as_mut() {
-                    // We are passing -1 here because we just need to get the hashing result not the size.
-                    let hash_result: [u8; 32] = hasher.finalize_digest(-1).packed_hash;
+                if let Some(hasher) = maybe_hasher {
+                    let hash_result: [u8; 32] = hasher.finalize_digest().packed_hash;
                     if original_hash != hash_result {
                         self.hash_verification_failures.inc();
                         return Err(make_input_err!(
@@ -139,14 +138,14 @@ impl Store for VerifyStore {
             }
         }
 
-        let hasher = self
+        let mut hasher = self
             .hash_verification_function
-            .map(|v| DigestHasher::from(DigestHasherFunc::from(v)));
+            .map(|v| DigestHasherFunc::from(v).hasher());
 
         let (tx, rx) = make_buf_channel_pair();
 
         let update_fut = self.pin_inner().update(digest, rx, size_info);
-        let check_fut = self.inner_check_update(tx, reader, size_info, digest.packed_hash, hasher);
+        let check_fut = self.inner_check_update(tx, reader, size_info, digest.packed_hash, hasher.as_mut());
 
         let (update_res, check_res) = tokio::join!(update_fut, check_fut);
 

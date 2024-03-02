@@ -449,7 +449,7 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into())
+                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
                     .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory {
@@ -459,7 +459,7 @@ mod running_actions_manager_tests {
                             serialize_and_upload_message(
                                 &Directory::default(),
                                 cas_store.as_ref(),
-                                &mut DigestHasherFunc::Sha256.into(),
+                                &mut DigestHasherFunc::Sha256.hasher(),
                             )
                             .await?
                             .into(),
@@ -468,7 +468,7 @@ mod running_actions_manager_tests {
                     ..Default::default()
                 },
                 cas_store.as_ref(),
-                &mut DigestHasherFunc::Sha256.into(),
+                &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
             let action = Action {
@@ -477,7 +477,8 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
 
             let running_action = running_actions_manager
                 .create_and_add_action(
@@ -551,7 +552,7 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into())
+                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
                     .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory {
@@ -561,7 +562,7 @@ mod running_actions_manager_tests {
                             serialize_and_upload_message(
                                 &Directory::default(),
                                 cas_store.as_ref(),
-                                &mut DigestHasherFunc::Sha256.into(),
+                                &mut DigestHasherFunc::Sha256.hasher(),
                             )
                             .await?
                             .into(),
@@ -570,7 +571,7 @@ mod running_actions_manager_tests {
                     ..Default::default()
                 },
                 cas_store.as_ref(),
-                &mut DigestHasherFunc::Sha256.into(),
+                &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
             let action = Action {
@@ -579,7 +580,8 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
 
             let running_action = running_actions_manager
                 .create_and_add_action(
@@ -672,7 +674,7 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Blake3.into())
+                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Blake3.hasher())
                     .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory {
@@ -682,7 +684,7 @@ mod running_actions_manager_tests {
                             serialize_and_upload_message(
                                 &Directory::default(),
                                 cas_store.as_ref(),
-                                &mut DigestHasherFunc::Blake3.into(),
+                                &mut DigestHasherFunc::Blake3.hasher(),
                             )
                             .await?
                             .into(),
@@ -691,7 +693,7 @@ mod running_actions_manager_tests {
                     ..Default::default()
                 },
                 cas_store.as_ref(),
-                &mut DigestHasherFunc::Blake3.into(),
+                &mut DigestHasherFunc::Blake3.hasher(),
             )
             .await?;
             let action = Action {
@@ -700,7 +702,8 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Blake3.into()).await?;
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Blake3.hasher())
+                    .await?;
 
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
@@ -831,7 +834,7 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into())
+                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
                     .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory {
@@ -841,7 +844,7 @@ mod running_actions_manager_tests {
                             serialize_and_upload_message(
                                 &Directory::default(),
                                 cas_store.as_ref(),
-                                &mut DigestHasherFunc::Sha256.into(),
+                                &mut DigestHasherFunc::Sha256.hasher(),
                             )
                             .await?
                             .into(),
@@ -850,7 +853,7 @@ mod running_actions_manager_tests {
                     ..Default::default()
                 },
                 cas_store.as_ref(),
-                &mut DigestHasherFunc::Sha256.into(),
+                &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
             let action = Action {
@@ -859,7 +862,8 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
 
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
@@ -988,12 +992,12 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into())
+                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
                     .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory::default(),
                 cas_store.as_ref(),
-                &mut DigestHasherFunc::Sha256.into(),
+                &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
             let action = Action {
@@ -1002,7 +1006,8 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
 
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
@@ -1160,12 +1165,12 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into())
+                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
                     .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory::default(),
                 cas_store.as_ref(),
-                &mut DigestHasherFunc::Sha256.into(),
+                &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
             let action = Action {
@@ -1174,7 +1179,8 @@ mod running_actions_manager_tests {
                 ..Default::default()
             };
             let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
 
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
@@ -1275,11 +1281,11 @@ mod running_actions_manager_tests {
             ..Default::default()
         };
         let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
-            &mut DigestHasherFunc::Sha256.into(),
+            &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let action = Action {
@@ -1288,7 +1294,7 @@ mod running_actions_manager_tests {
             ..Default::default()
         };
         let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
 
         let running_action_impl = running_actions_manager
             .clone()
@@ -1405,11 +1411,11 @@ exit 0
             ..Default::default()
         };
         let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
-            &mut DigestHasherFunc::Sha256.into(),
+            &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let action = Action {
@@ -1418,7 +1424,7 @@ exit 0
             ..Default::default()
         };
         let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
 
         let running_action_impl = running_actions_manager
             .clone()
@@ -1438,13 +1444,13 @@ exit 0
         let result = run_action(running_action_impl).await?;
         assert_eq!(result.exit_code, 0, "Exit code should be 0");
 
-        let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT), &mut DigestHasherFunc::Sha256.into())
+        let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT), &mut DigestHasherFunc::Sha256.hasher())
             .await?
             .0;
         // Note: This string should match what is in worker_for_test.sh
         let expected_stderr = compute_digest(
             Cursor::new("Wrapper script did run"),
-            &mut DigestHasherFunc::Sha256.into(),
+            &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?
         .0;
@@ -1544,11 +1550,11 @@ exit 0
             ..Default::default()
         };
         let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
-            &mut DigestHasherFunc::Sha256.into(),
+            &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         const TASK_TIMEOUT: Duration = Duration::from_secs(122);
@@ -1568,7 +1574,7 @@ exit 0
             ..Default::default()
         };
         let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
 
         let running_action_impl = running_actions_manager
             .clone()
@@ -1588,14 +1594,15 @@ exit 0
         let result = run_action(running_action_impl).await?;
         assert_eq!(result.exit_code, 0, "Exit code should be 0");
 
-        let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT), &mut DigestHasherFunc::Sha256.into())
+        let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT), &mut DigestHasherFunc::Sha256.hasher())
             .await?
             .0;
         // Note: This string should match what is in worker_for_test.sh
         let expected_stderr = "Wrapper script did run with property property_value raw_value 122000";
-        let expected_stderr_digest = compute_digest(Cursor::new(expected_stderr), &mut DigestHasherFunc::Sha256.into())
-            .await?
-            .0;
+        let expected_stderr_digest =
+            compute_digest(Cursor::new(expected_stderr), &mut DigestHasherFunc::Sha256.hasher())
+                .await?
+                .0;
 
         let actual_stderr: prost::bytes::Bytes = cas_store
             .as_ref()
@@ -1681,11 +1688,11 @@ exit 1
             ..Default::default()
         };
         let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
-            &mut DigestHasherFunc::Sha256.into(),
+            &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let action = Action {
@@ -1694,7 +1701,7 @@ exit 1
             ..Default::default()
         };
         let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
 
         let running_action_impl = running_actions_manager
             .clone()
@@ -2086,11 +2093,11 @@ exit 1
             ..Default::default()
         };
         let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
-            &mut DigestHasherFunc::Sha256.into(),
+            &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
 
@@ -2110,7 +2117,8 @@ exit 1
                 ..Default::default()
             };
             let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 RunningActionsManagerArgs {
@@ -2178,7 +2186,8 @@ exit 1
                 ..Default::default()
             };
             let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 RunningActionsManagerArgs {
@@ -2249,7 +2258,8 @@ exit 1
                 ..Default::default()
             };
             let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 RunningActionsManagerArgs {
@@ -2366,11 +2376,11 @@ exit 1
             ..Default::default()
         };
         let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
-            &mut DigestHasherFunc::Sha256.into(),
+            &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let action = Action {
@@ -2379,7 +2389,7 @@ exit 1
             ..Default::default()
         };
         let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
 
         let execute_results_fut = running_actions_manager
             .create_and_add_action(
@@ -2469,11 +2479,11 @@ exit 1
             ..Default::default()
         };
         let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
-            &mut DigestHasherFunc::Sha256.into(),
+            &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let action = Action {
@@ -2482,7 +2492,7 @@ exit 1
             ..Default::default()
         };
         let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.into()).await?;
+            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
 
         let (cleanup_tx, cleanup_rx) = oneshot::channel();
         let cleanup_was_requested = AtomicBool::new(false);

@@ -77,9 +77,9 @@ async fn verify_weights(
     let data = make_random_data(MEGABYTE_SZ);
 
     for counter in 0..rounds {
-        let hasher = &mut DigestHasher::from(DigestHasherFunc::Blake3);
+        let mut hasher = DigestHasherFunc::Blake3.hasher();
         hasher.update(&counter.to_le_bytes());
-        let digest = hasher.finalize_digest(counter as i64);
+        let digest = hasher.finalize_digest();
         shard_store.update_oneshot(digest, data.clone().into()).await?;
     }
 

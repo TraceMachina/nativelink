@@ -243,7 +243,7 @@ async fn upload_file(
                 .as_reader()
                 .await
                 .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?;
-            let digest = compute_digest(file_handle, &mut hasher.into()).await?.0;
+            let digest = compute_digest(file_handle, &mut hasher.hasher()).await?.0;
             Ok::<_, Error>((digest, resumeable_file))
         }))
         .await
@@ -367,7 +367,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                                     })?
                                     .to_string();
 
-                                let digest = serialize_and_upload_message(&dir, cas_store, &mut hasher.into())
+                                let digest = serialize_and_upload_message(&dir, cas_store, &mut hasher.hasher())
                                     .await
                                     .err_tip(|| format!("for {full_path:?}"))?;
 
@@ -973,7 +973,7 @@ impl RunningActionImpl {
                                     root: Some(root_dir),
                                     children: children.into(),
                                 };
-                                let tree_digest = serialize_and_upload_message(&tree, cas_store, &mut hasher.into())
+                                let tree_digest = serialize_and_upload_message(&tree, cas_store, &mut hasher.hasher())
                                     .await
                                     .err_tip(|| format!("While processing {entry}"))?;
                                 Ok(DirectoryInfo {
@@ -1034,9 +1034,7 @@ impl RunningActionImpl {
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
             let data = execution_result.stdout;
-            let digest = compute_buf_digest(&data, &mut hasher.into())
-                .await
-                .err_tip(|| "Computing stdout digest")?;
+            let digest = compute_buf_digest(&data, &mut hasher.hasher());
             upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stdout")?;
@@ -1044,9 +1042,7 @@ impl RunningActionImpl {
         });
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
             let data = execution_result.stderr;
-            let digest = compute_buf_digest(&data, &mut hasher.into())
-                .await
-                .err_tip(|| "Computing stderr digest")?;
+            let digest = compute_buf_digest(&data, &mut hasher.hasher());
             upload_buf_to_store(cas_store, digest, data)
                 .await
                 .err_tip(|| "Uploading stderr")?;
@@ -1365,7 +1361,7 @@ impl UploadActionResults {
                 execute_response: Some(execute_response.clone()),
             },
             Pin::new(self.historical_store.as_ref()),
-            &mut hasher.into(),
+            &mut hasher.hasher(),
         )
         .await
         .err_tip(|| format!("Caching HistoricalExecuteResponse for digest: {action_digest:?}"))?;
