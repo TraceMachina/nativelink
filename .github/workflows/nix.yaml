@@ -81,4 +81,4 @@ jobs:
       - name: Invoke Cargo build in Nix shell
         run: >
           nix develop --impure --command
-          bash -c "cargo test --all"
+          bash -c "cargo test --all --profile=smol"

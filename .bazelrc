@@ -53,7 +53,7 @@ test --output_groups=+clippy_checks
 build:nightly --@rules_rust//rust/toolchain/channel=nightly
 
 # AddressSanitizer to detect memory leaks.
-build:asan --config=nightly -c dbg
+build:asan --config=nightly
 build:asan --@rules_rust//:extra_rustc_flags=-Zsanitizer=address
 
 # ThreadSanitizer to detect data races. Tests under tsan shouldn't be cached
