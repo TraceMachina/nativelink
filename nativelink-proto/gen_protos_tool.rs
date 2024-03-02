@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::vec::Vec;
 
 use clap::{Arg, ArgAction, Command};
 use prost_build::Config;

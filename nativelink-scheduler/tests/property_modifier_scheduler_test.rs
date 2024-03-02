@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 

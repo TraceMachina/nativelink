@@ -15,7 +15,6 @@
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher as StdHasher;
 use std::hash::{Hash, Hasher};
-use std::marker::Send;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 

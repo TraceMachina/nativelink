@@ -15,7 +15,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::marker::Send;
 use std::pin::Pin;
 use std::sync::Arc;
 

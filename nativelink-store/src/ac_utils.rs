@@ -17,7 +17,6 @@
 //                    THREADSAFETY. FIGURE OUT WHY AND MOVE IT TO UTILS.
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-use std::default::Default;
 use std::pin::Pin;
 
 use bytes::{Bytes, BytesMut};

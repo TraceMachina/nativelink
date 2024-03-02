@@ -14,7 +14,6 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::iter::FromIterator;
 use std::sync::Arc;
 
 use futures::StreamExt;

@@ -6,7 +6,7 @@ module(
 
 bazel_dep(name = "rules_cc", version = "0.0.9")
 bazel_dep(name = "platforms", version = "0.0.8")
-bazel_dep(name = "rules_python", version = "0.29.0")
+bazel_dep(name = "rules_python", version = "0.31.0")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
@@ -18,7 +18,7 @@ python.toolchain(
 )
 use_repo(python, python = "python_versions")
 
-bazel_dep(name = "hermetic_cc_toolchain", version = "2.2.1")
+bazel_dep(name = "hermetic_cc_toolchain", version = "3.0.1")
 
 zig_toolchains = use_extension(
     "@hermetic_cc_toolchain//toolchain:ext.bzl",
@@ -26,33 +26,19 @@ zig_toolchains = use_extension(
 )
 use_repo(zig_toolchains, "zig_sdk")
 
-bazel_dep(name = "rules_rust", version = "0.36.2")
-git_override(
-    module_name = "rules_rust",
-    commit = "4136f6fedd033108294138a657b4ccd8ac57c8ef",
-    patch_strip = 1,
-    patches = [
-        # TODO(aaronmondal): Remove this after:
-        # https://github.com/bazelbuild/rules_rust/pull/2428
-        "//tools:rules_rust_deduplicate_sysroot.diff",
-        # TODO(aaronmondal): Remove this after:
-        # https://github.com/bazelbuild/rules_rust/pull/2422
-        "//tools:rules_rust_bindgen_linkopts.diff",
-    ],
-    remote = "https://github.com/bazelbuild/rules_rust",
-)
+bazel_dep(name = "rules_rust", version = "0.40.0")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
     versions = [
-        "1.75.0",
-        "nightly/2024-01-01",
+        "1.76.0",
+        "nightly/2024-03-01",
     ],
 )
 rust.host_tools(
     edition = "2021",
-    version = "1.75.0",
+    version = "1.76.0",
 )
 use_repo(rust, "rust_toolchains")
 
