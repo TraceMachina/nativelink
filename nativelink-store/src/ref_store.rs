@@ -124,9 +124,9 @@ impl Store for RefStore {
             .await
     }
 
-    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn Store {
+    fn inner_store(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
         match self.get_store() {
-            Ok(store) => store.inner_store(digest),
+            Ok(store) => store.clone().inner_store(digest),
             Err(e) => {
                 error!("Failed to get store for digest: {e:?}");
                 self
@@ -134,22 +134,8 @@ impl Store for RefStore {
         }
     }
 
-    fn inner_store_arc(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        match self.get_store() {
-            Ok(store) => store.clone().inner_store_arc(digest),
-            Err(e) => {
-                error!("Failed to get store for digest: {e:?}");
-                self
-            }
-        }
-    }
-
-    fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
-        self
-    }
-
-    fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
-        self
+    fn as_any(self: Arc<Self>) -> Box<dyn std::any::Any + Send> {
+        Box::new(self)
     }
 }
 

@@ -107,8 +107,9 @@ impl CasServer {
         // If we are a GrpcStore we shortcut here, as this is a special store.
         // Note: We don't know the digests here, so we try perform a very shallow
         // check to see if it's a grpc store.
-        let any_store = store.inner_store(None).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        let any_store = store.clone().inner_store(None).as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store.batch_update_blobs(Request::new(inner_request)).await;
         }
 
@@ -161,8 +162,9 @@ impl CasServer {
         // If we are a GrpcStore we shortcut here, as this is a special store.
         // Note: We don't know the digests here, so we try perform a very shallow
         // check to see if it's a grpc store.
-        let any_store = store.inner_store(None).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        let any_store = store.clone().inner_store(None).as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store.batch_read_blobs(Request::new(inner_request)).await;
         }
 
@@ -219,8 +221,10 @@ impl CasServer {
         // If we are a GrpcStore we shortcut here, as this is a special store.
         // Note: We don't know the digests here, so we try perform a very shallow
         // check to see if it's a grpc store.
-        let any_store = store.inner_store(None).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        let any_store = store.clone().inner_store(None).as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+
+        if let Some(grpc_store) = maybe_grpc_store {
             let stream = grpc_store.get_tree(Request::new(inner_request)).await?.into_inner();
             return Ok(Response::new(Box::pin(stream)));
         }

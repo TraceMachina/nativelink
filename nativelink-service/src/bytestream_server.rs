@@ -260,8 +260,9 @@ impl ByteStreamServer {
         let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        let any_store = store.clone().inner_store(Some(digest)).as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
             let stream = grpc_store.read(Request::new(read_request)).await?;
             return Ok(Response::new(Box::pin(stream)));
         }
@@ -368,8 +369,9 @@ impl ByteStreamServer {
             .err_tip(|| "Invalid digest input in ByteStream::write")?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        let any_store = store.clone().inner_store(Some(digest)).as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store.write(stream).await;
         }
 
@@ -495,8 +497,9 @@ impl ByteStreamServer {
         let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store_clone.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        let any_store = store_clone.clone().inner_store(Some(digest)).as_any();
+        let maybe_grpc_store = any_store.downcast_ref::<Arc<GrpcStore>>();
+        if let Some(grpc_store) = maybe_grpc_store {
             return grpc_store.query_write_status(Request::new(query_request.clone())).await;
         }
 

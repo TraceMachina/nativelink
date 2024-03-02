@@ -150,7 +150,7 @@ mod ref_store_tests {
 
         // Ensure the result of inner_store() points to exact same memory store.
         assert_eq!(
-            Arc::as_ptr(&ref_store_outer.inner_store_arc(None)) as *const (),
+            Arc::as_ptr(&ref_store_outer.inner_store(None)) as *const (),
             Arc::as_ptr(&memory_store) as *const (),
             "Expected inner store to be memory store"
         );
