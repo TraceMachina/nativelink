@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 serde = { version = "1.0.197", features = ["derive"] }
 shellexpand = "3.1.0"
+
+[package.metadata.docs.rs]
+readme = "./README.md"
