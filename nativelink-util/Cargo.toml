@@ -32,4 +32,4 @@ tracing = "0.1.40"
 [dev-dependencies]
 pretty_assertions = "1.4.0"
 rand = "0.8.5"
-mock_instant = "0.3.1"
+mock_instant = "0.3.2"
