@@ -24,7 +24,7 @@ use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::completeness_checking_store::CompletenessCheckingStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::DigestHasherFunc::Blake3;
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::Store;
 
 #[cfg(test)]
@@ -73,14 +73,15 @@ mod completeness_checking_store_tests {
             }],
         };
 
-        let tree_digest = serialize_and_upload_message(&tree, pinned_cas, &mut Blake3.into()).await?;
+        let tree_digest =
+            serialize_and_upload_message(&tree, pinned_cas, &mut DigestHasherFunc::Blake3.hasher()).await?;
 
         let output_directory = OutputDirectory {
             tree_digest: Some(tree_digest.into()),
             ..Default::default()
         };
 
-        serialize_and_upload_message(&output_directory, pinned_cas, &mut Blake3.into()).await?;
+        serialize_and_upload_message(&output_directory, pinned_cas, &mut DigestHasherFunc::Blake3.hasher()).await?;
 
         let action_result = ProtoActionResult {
             output_files: vec![OutputFile {
@@ -94,7 +95,8 @@ mod completeness_checking_store_tests {
         };
 
         // The structure of the action result is not following the spec, but is simplified for testing purposes.
-        let action_result_digest = serialize_and_upload_message(&action_result, pinned_ac, &mut Blake3.into()).await?;
+        let action_result_digest =
+            serialize_and_upload_message(&action_result, pinned_ac, &mut DigestHasherFunc::Blake3.hasher()).await?;
 
         Ok((ac_owned, cas_store, action_result_digest))
     }

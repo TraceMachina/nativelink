@@ -44,6 +44,10 @@ pub enum DigestHasherFunc {
 }
 
 impl DigestHasherFunc {
+    pub fn hasher(&self) -> DigestHasherImpl {
+        self.into()
+    }
+
     #[must_use]
     pub const fn proto_digest_func(&self) -> ProtoDigestFunction {
         match self {
@@ -91,40 +95,57 @@ impl TryFrom<i32> for DigestHasherFunc {
     }
 }
 
-impl From<DigestHasherFunc> for DigestHasher {
-    fn from(value: DigestHasherFunc) -> Self {
-        match value {
-            DigestHasherFunc::Sha256 => Self::Sha256(Sha256::new()),
-            DigestHasherFunc::Blake3 => Self::Blake3(Box::new(Blake3Hasher::new())),
+impl From<&DigestHasherFunc> for DigestHasherImpl {
+    fn from(value: &DigestHasherFunc) -> Self {
+        let hash_func_impl = match value {
+            DigestHasherFunc::Sha256 => DigestHasherFuncImpl::Sha256(Sha256::new()),
+            DigestHasherFunc::Blake3 => DigestHasherFuncImpl::Blake3(Box::new(Blake3Hasher::new())),
+        };
+        Self {
+            hashed_size: 0,
+            hash_func_impl,
         }
     }
 }
 
-/// The individual implementation of the hash function.
-pub enum DigestHasher {
-    Sha256(Sha256),
-    Blake3(Box<Blake3Hasher>),
+/// Wrapper to compute a hash of arbitrary data.
+pub trait DigestHasher {
+    /// Update the hasher with some additional data.
+    fn update(&mut self, input: &[u8]);
+
+    /// Finalize the hash function and collect the results into a digest.
+    fn finalize_digest(&mut self) -> DigestInfo;
 }
 
-impl DigestHasher {
-    /// Update the hasher with some additional data.
+pub enum DigestHasherFuncImpl {
+    Sha256(Sha256),
+    Blake3(Box<Blake3Hasher>), // Box because Blake3Hasher is 1.3kb in size.
+}
+
+/// The individual implementation of the hash function.
+pub struct DigestHasherImpl {
+    hashed_size: i64,
+    hash_func_impl: DigestHasherFuncImpl,
+}
+
+impl DigestHasher for DigestHasherImpl {
     #[inline]
-    pub fn update(&mut self, input: &[u8]) {
-        match self {
-            Self::Sha256(h) => sha2::digest::Update::update(h, input),
-            Self::Blake3(h) => {
+    fn update(&mut self, input: &[u8]) {
+        self.hashed_size += input.len() as i64;
+        match &mut self.hash_func_impl {
+            DigestHasherFuncImpl::Sha256(h) => sha2::digest::Update::update(h, input),
+            DigestHasherFuncImpl::Blake3(h) => {
                 Blake3Hasher::update(h, input);
             }
         }
     }
 
-    /// Finalize the hash function and collect the results into a digest.
     #[inline]
-    pub fn finalize_digest(&mut self, size: impl Into<i64>) -> DigestInfo {
-        let hash = match self {
-            Self::Sha256(h) => h.finalize_reset().into(),
-            Self::Blake3(h) => h.finalize().into(),
+    fn finalize_digest(&mut self) -> DigestInfo {
+        let hash = match &mut self.hash_func_impl {
+            DigestHasherFuncImpl::Sha256(h) => h.finalize_reset().into(),
+            DigestHasherFuncImpl::Blake3(h) => h.finalize().into(),
         };
-        DigestInfo::new(hash, size.into())
+        DigestInfo::new(hash, self.hashed_size)
     }
 }

@@ -213,10 +213,10 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         let mut rng: StdRng = StdRng::seed_from_u64(hash_seed);
         rng.fill_bytes(&mut digest_data);
 
-        let mut digest_hasher = DigestHasher::from(default_digest_hasher_func());
+        let mut digest_hasher = default_digest_hasher_func().hasher();
         digest_hasher.update(&digest_data);
         let digest_data_len = digest_data.len();
-        let digest_info = digest_hasher.finalize_digest(digest_data_len as i64);
+        let digest_info = digest_hasher.finalize_digest();
 
         let digest_bytes = bytes::Bytes::copy_from_slice(&digest_data);
 
