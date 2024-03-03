@@ -68,6 +68,23 @@ bazel test //... `
 This causes Bazel to run the commands through an all-in-one `CAS`, `scheduler`
 and `worker`.
 
+## How it Works
+
+This diagram is a high-level overview of the data flow in the NativeLink system. It refers to NativeLink concepts like Scheduler pool, Worker pool, and CAS rather than the cloud concepts like functions, compute nodes, and object storage to which they correspond.
+
+```mermaid
+sequenceDiagram
+    participant build server (client)
+    participant scheduler pool
+    participant worker pool
+    participant cas
+    build server (client)->>scheduler pool: queue jobs
+    scheduler pool->>worker pool: route jobs
+    worker pool->>cas: compute digests
+    worker pool->>scheduler pool: result download instructions
+    scheduler pool->>build server (client): result download instructions
+    cas->>build server (client): service queries
+```
 ## ❄️ Installing with Nix
 
 **Installation requirements:**
