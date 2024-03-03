@@ -25,7 +25,7 @@ parking_lot = "0.12.1"
 prost = "0.12.3"
 relative-path = "1.9.0"
 scopeguard = "1.2.0"
-serde = "1.0.193"
+serde = "1.0.197"
 serde_json5 = "0.1.0"
 shlex = "1.2.0"
 tokio = { version = "1.35.1", features = ["sync", "rt", "process"] }
