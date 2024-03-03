@@ -78,4 +78,7 @@ in {
     entry = "${pkgs.bazel-buildtools}/bin/buildifier -lint=warn";
     types = ["bazel"];
   };
+
+  # Dockerfile
+  hadolint.enable = true;
 }
