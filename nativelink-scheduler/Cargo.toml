@@ -17,7 +17,7 @@ async-lock = "3.3.0"
 async-trait = "0.1.77"
 blake3 = "1.5.0"
 prost = "0.12.3"
-uuid = { version = "1.6.1", features = ["v4"] }
+uuid = { version = "1.7.0", features = ["v4"] }
 futures = "0.3.30"
 hashbrown = "0.14"
 lru = "0.12.3"
