@@ -9,7 +9,7 @@ nativelink-error = { path = "../nativelink-error" }
 nativelink-proto = { path = "../nativelink-proto" }
 
 async-lock = "3.3.0"
-async-trait = "0.1.74"
+async-trait = "0.1.77"
 blake3 = "1.5.0"
 bytes = "1.5.0"
 futures = "0.3.30"
