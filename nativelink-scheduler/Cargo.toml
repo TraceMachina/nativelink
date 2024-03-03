@@ -26,7 +26,7 @@ rand = "0.8.5"
 scopeguard = "1.2.0"
 tokio = { version = "1.35.1", features = ["sync", "rt", "parking_lot"] }
 tokio-stream = { version = "0.1.14", features = ["sync"] }
-tonic = { version = "0.10.2", features = ["gzip", "tls"] }
+tonic = { version = "0.11.0", features = ["gzip", "tls"] }
 tracing = "0.1.40"
 
 [dev-dependencies]

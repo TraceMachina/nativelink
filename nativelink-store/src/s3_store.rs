@@ -22,6 +22,7 @@ use std::{cmp, env};
 
 use async_trait::async_trait;
 use aws_config::default_provider::credentials;
+use aws_config::BehaviorVersion;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
@@ -149,7 +150,7 @@ impl S3Store {
         let s3_client = {
             let http_client = HyperClientBuilder::new().build(TlsConnector::new(config, jitter_fn.clone()));
             let credential_provider = credentials::default_provider().await;
-            let mut config_builder = aws_config::from_env()
+            let mut config_builder = aws_config::defaults(BehaviorVersion::v2023_11_09())
                 .credentials_provider(credential_provider)
                 .region(Region::new(Cow::Owned(config.region.clone())))
                 .http_client(http_client);
@@ -201,19 +202,26 @@ impl S3Store {
 
                 match result {
                     Ok(head_object_output) => {
-                        let sz = head_object_output.content_length;
-                        Some((RetryResult::Ok(Some(sz as usize)), state))
+                        let Some(length) = head_object_output.content_length else {
+                            return Some((RetryResult::Ok(None), state));
+                        };
+                        if length >= 0 {
+                            return Some((RetryResult::Ok(Some(length as usize)), state));
+                        }
+                        Some((
+                            RetryResult::Err(make_err!(
+                                Code::InvalidArgument,
+                                "Negative content length in S3: {length:?}",
+                            )),
+                            state,
+                        ))
                     }
                     Err(sdk_error) => match sdk_error.into_service_error() {
                         HeadObjectError::NotFound(_) => Some((RetryResult::Ok(None), state)),
-                        HeadObjectError::Unhandled(e) => Some((
-                            RetryResult::Retry(make_err!(Code::Unavailable, "Unhandled HeadObjectError in S3: {e:?}")),
-                            state,
-                        )),
                         other => Some((
-                            RetryResult::Err(make_err!(
+                            RetryResult::Retry(make_err!(
                                 Code::Unavailable,
-                                "Unkown error getting head_object in S3: {other:?}",
+                                "Unhandled HeadObjectError in S3: {other:?}"
                             )),
                             state,
                         )),
@@ -470,20 +478,11 @@ impl Store for S3Store {
                                 writer,
                             ));
                         }
-                        GetObjectError::Unhandled(e) => {
+                        other => {
                             return Some((
                                 RetryResult::Retry(make_err!(
                                     Code::Unavailable,
-                                    "Unhandled GetObjectError in S3: {e:?}",
-                                )),
-                                writer,
-                            ));
-                        }
-                        other => {
-                            return Some((
-                                RetryResult::Err(make_err!(
-                                    Code::Unavailable,
-                                    "Unkown error getting result in S3: {other:?}"
+                                    "Unhandled GetObjectError in S3: {other:?}",
                                 )),
                                 writer,
                             ));
