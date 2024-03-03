@@ -13,7 +13,7 @@ nativelink-scheduler = { path = "../nativelink-scheduler" }
 
 bytes = "1.5.0"
 futures = "0.3.30"
-log = "0.4.20"
+log = "0.4.21"
 parking_lot = "0.12.1"
 prost = "0.12.3"
 rand = "0.8.5"
