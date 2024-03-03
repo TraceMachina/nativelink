@@ -38,7 +38,7 @@ async-lock = "3.3.0"
 axum = "0.6.20"
 clap = { version = "4.4.11", features = ["derive"] }
 console-subscriber = { version = "0.2.0" }
-futures = "0.3.29"
+futures = "0.3.30"
 hyper = { version = "0.14.28" }
 parking_lot = "0.12.1"
 prometheus-client = "0.21.2"
