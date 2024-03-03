@@ -30,8 +30,8 @@ jobs:
           nix-installer-tag: v0.16.1
 
       - name: Cache Nix derivations
-        uses: >- # Custom commit, last pinned at 2023-11-17.
-          DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+        uses: >- # Custom commit, last pinned at 2024-03-03.
+          DeterminateSystems/magic-nix-cache-action@742d8701e54851d2136f71b61d31382a4f4d0788
 
       - name: Test image
         run: |

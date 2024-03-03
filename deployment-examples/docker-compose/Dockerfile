@@ -32,8 +32,9 @@ RUN apt update && \
         gcc \
         g++ \
         ca-certificates && \
-    npm install -g @bazel/bazelisk
-
+    npm install -g @bazel/bazelisk && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Build the binary.
 FROM dependencies AS builder
@@ -51,7 +52,9 @@ COPY --from=builder /root/nativelink-bin /usr/local/bin/nativelink
 # Install runtime packages.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-        ca-certificates
+        ca-certificates && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 ARG ADDITIONAL_SETUP_WORKER_CMD
 RUN bash -ueo pipefail -c "${ADDITIONAL_SETUP_WORKER_CMD}"
 

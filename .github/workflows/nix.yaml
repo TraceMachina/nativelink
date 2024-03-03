@@ -31,15 +31,16 @@ jobs:
           nix-installer-tag: v0.16.1
 
       - name: Cache Nix derivations
-        uses: >- # Custom commit, last pinned at 2023-11-17.
-          DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+        uses: >- # Custom commit, last pinned at 2024-03-03.
+          DeterminateSystems/magic-nix-cache-action@742d8701e54851d2136f71b61d31382a4f4d0788
 
-      - name: Mount bazel cache
-        uses: >- # v3.3.2
-          actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84
-        with:
-          path: "~/.cache/bazel"
-          key: ${{ runner.os }}-bazel-nix
+      # TODO(aaronmondal): Reenable after https://github.com/TraceMachina/nativelink/pull/690
+      # - name: Mount bazel cache
+      #   uses: >- # v3.3.2
+      #     actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84
+      #   with:
+      #     path: "~/.cache/bazel"
+      #     key: ${{ runner.os }}-bazel-nix
 
       - name: Invoke Bazel build in Nix shell
         run: |
@@ -75,8 +76,8 @@ jobs:
           nix-installer-tag: v0.16.1
 
       - name: Cache Nix derivations
-        uses: >- # Custom commit, last pinned at 2023-11-17.
-          DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
+        uses: >- # Custom commit, last pinned at 2024-03-03.
+          DeterminateSystems/magic-nix-cache-action@742d8701e54851d2136f71b61d31382a4f4d0788
 
       - name: Invoke Cargo build in Nix shell
         run: >
