@@ -14,7 +14,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
-use std::marker::Unpin;
 
 use bytes::Bytes;
 use futures::stream::StreamExt;

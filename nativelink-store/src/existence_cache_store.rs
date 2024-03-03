@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::mem::size_of;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -33,7 +32,7 @@ struct ExistanceItem(usize);
 impl LenEntry for ExistanceItem {
     #[inline]
     fn len(&self) -> usize {
-        size_of::<Self>()
+        self.0
     }
 
     #[inline]

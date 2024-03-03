@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bincode::config::{FixintEncoding, WithOtherIntEncoding};
-use bincode::{self, DefaultOptions, Options};
+use bincode::{DefaultOptions, Options};
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::future::FutureExt;
