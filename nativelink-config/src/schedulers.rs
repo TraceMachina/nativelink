@@ -122,7 +122,7 @@ pub struct SimpleScheduler {
 
     /// Remove action from queue after this much time has elapsed without a listener
     /// amount of time in seconds.
-    /// Default: 5 (seconds)
+    /// Default: 10 (seconds)
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub no_listener_timeout_s: u64,
 }
