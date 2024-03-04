@@ -517,16 +517,11 @@ impl ContinuousCounterWithTime {
 
         let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         if self.counter.fetch_add(1, Ordering::Relaxed) > 1 {
-            let total_time = self.total_time.load(Ordering::Relaxed) + (current_time - self.last_time.load(Ordering::Relaxed));
-            self.total_time.store(
-                total_time,
-                Ordering::Relaxed,
-            );
+            let total_time =
+                self.total_time.load(Ordering::Relaxed) + (current_time - self.last_time.load(Ordering::Relaxed));
+            self.total_time.store(total_time, Ordering::Relaxed);
         }
-        self.last_time.store(
-            current_time,
-            Ordering::Relaxed,
-        );
+        self.last_time.store(current_time, Ordering::Relaxed);
     }
 
     #[inline]
@@ -543,10 +538,7 @@ impl ContinuousCounterWithTime {
             return;
         }
         self.counter.store(0, Ordering::Relaxed);
-        self.total_time.store(
-            0,
-            Ordering::Relaxed,
-        );
+        self.total_time.store(0, Ordering::Relaxed);
     }
 }
 

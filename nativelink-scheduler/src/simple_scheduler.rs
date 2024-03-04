@@ -30,7 +30,8 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
 use nativelink_util::metrics_utils::{
-    AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent, Registry, ContinuousCounterWithTime,
+    AsyncCounterWrapper, Collector, CollectorState, ContinuousCounterWithTime, CounterWithTime, FuncCounterWrapper,
+    MetricsComponent, Registry,
 };
 use nativelink_util::platform_properties::PlatformPropertyValue;
 use parking_lot::{Mutex, MutexGuard};
@@ -1060,7 +1061,7 @@ struct Metrics {
     lock_stall_time: AtomicU64,
     lock_stall_time_counter: AtomicU64,
     do_try_match: AsyncCounterWrapper,
-    time_without_listeners: ContinuousCounterWithTime
+    time_without_listeners: ContinuousCounterWithTime,
 }
 
 impl Metrics {
