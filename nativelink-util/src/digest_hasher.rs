@@ -15,12 +15,16 @@
 use std::sync::OnceLock;
 
 use blake3::Hasher as Blake3Hasher;
+use bytes::BytesMut;
+use futures::Future;
 use nativelink_config::stores::ConfigDigestHashFunction;
-use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::common::DigestInfo;
+use crate::common::{DigestInfo, JoinHandleDropGuard};
+use crate::fs;
 
 static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
 
@@ -115,6 +119,38 @@ pub trait DigestHasher {
 
     /// Finalize the hash function and collect the results into a digest.
     fn finalize_digest(&mut self) -> DigestInfo;
+
+    /// Specialized version of the hashing function that is optimized for
+    /// handling files. These optimizations take into account things like,
+    /// the file size and the hasher algorithm to decide how to best process
+    /// the file and feed it into the hasher.
+    fn digest_for_file(
+        self,
+        file: fs::ResumeableFileSlot<'static>,
+        size_hint: Option<u64>,
+    ) -> impl Future<Output = Result<(DigestInfo, fs::ResumeableFileSlot<'static>), Error>>;
+
+    /// Utility function to compute a hash from a generic reader.
+    fn compute_from_reader<R: AsyncRead + Unpin + Send>(
+        &mut self,
+        mut reader: R,
+    ) -> impl Future<Output = Result<DigestInfo, Error>> {
+        async move {
+            let mut chunk = BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE);
+            loop {
+                reader
+                    .read_buf(&mut chunk)
+                    .await
+                    .err_tip(|| "Could not read chunk during compute_from_reader")?;
+                if chunk.is_empty() {
+                    break; // EOF.
+                }
+                DigestHasher::update(self, &chunk);
+                chunk.clear();
+            }
+            Ok(DigestHasher::finalize_digest(self))
+        }
+    }
 }
 
 pub enum DigestHasherFuncImpl {
@@ -126,6 +162,21 @@ pub enum DigestHasherFuncImpl {
 pub struct DigestHasherImpl {
     hashed_size: i64,
     hash_func_impl: DigestHasherFuncImpl,
+}
+
+impl DigestHasherImpl {
+    #[inline]
+    async fn hash_file(
+        &mut self,
+        mut file: fs::ResumeableFileSlot<'static>,
+    ) -> Result<(DigestInfo, fs::ResumeableFileSlot<'static>), Error> {
+        let reader = file.as_reader().await.err_tip(|| "In digest_for_file")?;
+        let digest = self
+            .compute_from_reader(reader)
+            .await
+            .err_tip(|| "In digest_for_file")?;
+        Ok((digest, file))
+    }
 }
 
 impl DigestHasher for DigestHasherImpl {
@@ -147,5 +198,39 @@ impl DigestHasher for DigestHasherImpl {
             DigestHasherFuncImpl::Blake3(h) => h.finalize().into(),
         };
         DigestInfo::new(hash, self.hashed_size)
+    }
+
+    async fn digest_for_file(
+        mut self,
+        mut file: fs::ResumeableFileSlot<'static>,
+        size_hint: Option<u64>,
+    ) -> Result<(DigestInfo, fs::ResumeableFileSlot<'static>), Error> {
+        let file_position = file
+            .stream_position()
+            .await
+            .err_tip(|| "Couldn't get stream position in digest_for_file")?;
+        if file_position != 0 {
+            return self.hash_file(file).await;
+        }
+        // If we are a small file, it's faster to just do it the "slow" way.
+        // We also don't need to deal with
+        if let Some(size_hint) = size_hint {
+            if size_hint <= fs::DEFAULT_READ_BUFF_SIZE as u64 {
+                return self.hash_file(file).await;
+            }
+        }
+        match self.hash_func_impl {
+            DigestHasherFuncImpl::Sha256(_) => self.hash_file(file).await,
+            DigestHasherFuncImpl::Blake3(mut hasher) => {
+                JoinHandleDropGuard::new(tokio::task::spawn_blocking(move || {
+                    hasher
+                        .update_mmap(file.get_path())
+                        .map_err(|e| make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}"))?;
+                    Result::<_, Error>::Ok((DigestInfo::new(hasher.finalize().into(), hasher.count() as i64), file))
+                }))
+                .await
+                .err_tip(|| "Could not spawn blocking task in digest_for_file")?
+            }
+        }
     }
 }
