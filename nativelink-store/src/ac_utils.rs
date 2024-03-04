@@ -28,7 +28,6 @@ use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::DigestHasher;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use prost::Message;
-use tokio::io::{AsyncRead, AsyncReadExt};
 
 // NOTE(blaise.bruer) From some local testing it looks like action cache items are rarely greater than
 // 1.2k. Giving a bit more just in case to reduce allocs.
@@ -38,9 +37,6 @@ pub const ESTIMATED_DIGEST_SIZE: usize = 2048;
 /// into memory. If we don't bound the max size of the object we enable users
 /// to use up all the memory on this machine.
 const MAX_ACTION_MSG_SIZE: usize = 10 << 20; // 10mb.
-
-/// Default read buffer size for reading from an AsyncReader.
-const DEFAULT_READ_BUFF_SIZE: usize = 4096;
 
 /// Attempts to fetch the digest contents from a store into the associated proto.
 pub async fn get_and_decode_digest<T: Message + Default>(
@@ -107,27 +103,6 @@ pub fn compute_buf_digest(buf: &[u8], hasher: &mut impl DigestHasher) -> DigestI
     hasher.finalize_digest()
 }
 
-/// Given a bytestream computes the digest for the data.
-pub async fn compute_digest<R: AsyncRead + Unpin + Send>(
-    mut reader: R,
-    hasher: &mut impl DigestHasher,
-) -> Result<(DigestInfo, R), Error> {
-    let mut chunk = BytesMut::with_capacity(DEFAULT_READ_BUFF_SIZE);
-    loop {
-        reader
-            .read_buf(&mut chunk)
-            .await
-            .err_tip(|| "Could not read chunk during compute_digest")?;
-        if chunk.is_empty() {
-            break; // EOF.
-        }
-        hasher.update(&chunk);
-        chunk.clear();
-    }
-
-    Ok((hasher.finalize_digest(), reader))
-}
-
 fn inner_upload_file_to_store<'a, Fut: Future<Output = Result<(), Error>> + 'a>(
     cas_store: Pin<&'a dyn Store>,
     digest: DigestInfo,
@@ -167,17 +142,17 @@ pub fn upload_buf_to_store(
 pub fn upload_file_to_store<'a>(
     cas_store: Pin<&'a dyn Store>,
     digest: DigestInfo,
-    mut file_reader: fs::ResumeableFileSlot<'a>,
+    mut file: fs::ResumeableFileSlot<'a>,
 ) -> impl Future<Output = Result<(), Error>> + 'a {
     inner_upload_file_to_store(cas_store, digest, move |tx| async move {
-        let (_, mut tx) = file_reader
+        let (_, mut tx) = file
             .read_buf_cb(
-                (BytesMut::with_capacity(DEFAULT_READ_BUFF_SIZE), tx),
+                (BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx),
                 move |(chunk, mut tx)| async move {
                     tx.send(chunk.freeze())
                         .await
                         .err_tip(|| "Failed to send in upload_file_to_store")?;
-                    Ok((BytesMut::with_capacity(DEFAULT_READ_BUFF_SIZE), tx))
+                    Ok((BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx))
                 },
             )
             .await
