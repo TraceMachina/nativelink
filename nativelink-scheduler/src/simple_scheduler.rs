@@ -364,9 +364,9 @@ impl SimpleSchedulerImpl {
                     // Otherwise, we keep them around for a bit just in case
                     // the client disconnected and will reconnect and ask for same job to be executed
                     // again.
-                    if self.metrics.time_without_listeners.get_total_time() > self.no_listener_timeout_s {
+                    if self.metrics.time_without_listeners.get_total_time() >= self.no_listener_timeout_s {
+                        self.queued_actions.remove(action_info.as_ref());
                         self.queued_actions_set.remove(&action_info.clone());
-                        self.queued_actions.remove(action_info);
                     }
                     warn!(
                         "Action {} has no more listeners during evict_worker()",
@@ -456,15 +456,6 @@ impl SimpleSchedulerImpl {
             Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
             let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
             if send_result.is_err() {
-                self.metrics.time_without_listeners.inc();
-                // Only remove action if total time without listeners exceeds the timout.
-                // Otherwise, we keep them around for a bit just in case
-                // the client disconnected and will reconnect and ask for same job to be executed
-                // again.
-                if self.metrics.time_without_listeners.get_total_time() > self.no_listener_timeout_s {
-                    self.queued_actions_set.remove(&action_info.clone());
-                    self.queued_actions.remove(&action_info.clone());
-                }
                 // Don't remove this task, instead we keep them around for a bit just in case
                 // the client disconnected and will reconnect and ask for same job to be executed
                 // again.
@@ -588,9 +579,9 @@ impl SimpleSchedulerImpl {
                 // Otherwise, we keep them around for a bit just in case
                 // the client disconnected and will reconnect and ask for same job to be executed
                 // again.
-                if self.metrics.time_without_listeners.get_total_time() > self.no_listener_timeout_s {
-                    self.queued_actions_set.remove(&action_info.clone());
+                if self.metrics.time_without_listeners.get_total_time() >= self.no_listener_timeout_s {
                     self.queued_actions.remove(&action_info);
+                    self.queued_actions_set.remove(&action_info.clone());
                 }
 
                 warn!(
