@@ -30,7 +30,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
 use nativelink_util::metrics_utils::{
-    AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent, Registry,
+    AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent, Registry, ContinuousCounterWithTime,
 };
 use nativelink_util::platform_properties::PlatformPropertyValue;
 use parking_lot::{Mutex, MutexGuard};
@@ -55,6 +55,10 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
+
+/// Default timeout for actions without any listeners
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_NO_LISTENERS_TIMEOUT_S: u64 = 10;
 
 /// An action that is being awaited on and last known state.
 struct AwaitedAction {
@@ -215,6 +219,8 @@ struct SimpleSchedulerImpl {
     /// Notify task<->worker matching engine that work needs to be done.
     tasks_or_workers_change_notify: Arc<Notify>,
     metrics: Arc<Metrics>,
+    /// After no_listener_timeout_s seconds, if the action has no listeners, it will be removed from the queue.
+    no_listener_timeout_s: u64,
 }
 
 impl SimpleSchedulerImpl {
@@ -346,14 +352,21 @@ impl SimpleSchedulerImpl {
                     let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
                     self.queued_actions_set.insert(action_info.clone());
                     self.queued_actions.insert(action_info.clone(), awaited_action);
+                    self.metrics.time_without_listeners.reset();
                     send_result
                 };
 
                 if send_result.is_err() {
                     self.metrics.retry_action_no_more_listeners.inc();
-                    // Don't remove this task, instead we keep them around for a bit just in case
+                    self.metrics.time_without_listeners.inc();
+                    // Only remove action if total time without listeners exceeds the timout.
+                    // Otherwise, we keep them around for a bit just in case
                     // the client disconnected and will reconnect and ask for same job to be executed
                     // again.
+                    if self.metrics.time_without_listeners.get_total_time() > self.no_listener_timeout_s {
+                        self.queued_actions_set.remove(&action_info.clone());
+                        self.queued_actions.remove(action_info);
+                    }
                     warn!(
                         "Action {} has no more listeners during evict_worker()",
                         action_info.digest().hash_str()
@@ -442,6 +455,15 @@ impl SimpleSchedulerImpl {
             Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
             let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
             if send_result.is_err() {
+                self.metrics.time_without_listeners.inc();
+                // Only remove action if total time without listeners exceeds the timout.
+                // Otherwise, we keep them around for a bit just in case
+                // the client disconnected and will reconnect and ask for same job to be executed
+                // again.
+                if self.metrics.time_without_listeners.get_total_time() > self.no_listener_timeout_s {
+                    self.queued_actions_set.remove(&action_info.clone());
+                    self.queued_actions.remove(&action_info.clone());
+                }
                 // Don't remove this task, instead we keep them around for a bit just in case
                 // the client disconnected and will reconnect and ask for same job to be executed
                 // again.
@@ -559,6 +581,17 @@ impl SimpleSchedulerImpl {
         if !running_action.action.current_state.stage.is_finished() {
             if send_result.is_err() {
                 self.metrics.update_action_no_more_listeners.inc();
+
+                self.metrics.time_without_listeners.inc();
+                // Only remove action if total time without listeners exceeds the timout.
+                // Otherwise, we keep them around for a bit just in case
+                // the client disconnected and will reconnect and ask for same job to be executed
+                // again.
+                if self.metrics.time_without_listeners.get_total_time() > self.no_listener_timeout_s {
+                    self.queued_actions_set.remove(&action_info.clone());
+                    self.queued_actions.remove(&action_info);
+                }
+
                 warn!(
                     "Action {} has no more listeners during update_action()",
                     action_info.digest().hash_str()
@@ -632,6 +665,11 @@ impl SimpleScheduler {
             retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
         }
 
+        let mut no_listener_timeout_s = scheduler_cfg.no_listener_timeout_s;
+        if no_listener_timeout_s == 0 {
+            no_listener_timeout_s = DEFAULT_NO_LISTENERS_TIMEOUT_S;
+        }
+
         let mut max_job_retries = scheduler_cfg.max_job_retries;
         if max_job_retries == 0 {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
@@ -652,6 +690,7 @@ impl SimpleScheduler {
             max_job_retries,
             tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
             metrics: metrics.clone(),
+            no_listener_timeout_s,
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
@@ -1021,6 +1060,7 @@ struct Metrics {
     lock_stall_time: AtomicU64,
     lock_stall_time_counter: AtomicU64,
     do_try_match: AsyncCounterWrapper,
+    time_without_listeners: ContinuousCounterWithTime
 }
 
 impl Metrics {
