@@ -35,6 +35,9 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::time::timeout;
 use tracing::error;
 
+/// Default read buffer size when reading to/from disk.
+pub const DEFAULT_READ_BUFF_SIZE: usize = 16384;
+
 type StreamPosition = u64;
 type BytesRemaining = u64;
 
@@ -78,6 +81,25 @@ impl<'a> ResumeableFileSlot<'a> {
         }
     }
 
+    /// Returns the path of the file.
+    pub fn get_path(&self) -> &Path {
+        Path::new(&self.path)
+    }
+
+    /// Returns the current read position of a file.
+    pub async fn stream_position(&mut self) -> Result<u64, Error> {
+        let file_slot = match &mut self.maybe_file_slot {
+            MaybeFileSlot::Open(file_slot) => file_slot,
+            MaybeFileSlot::Closed((pos, _)) => return Ok(*pos),
+        };
+        file_slot
+            .get_mut()
+            .inner
+            .stream_position()
+            .await
+            .err_tip(|| "Failed to get file position in digest_for_file")
+    }
+
     pub async fn close_file(&mut self) -> Result<(), Error> {
         let MaybeFileSlot::Open(file_slot) = &mut self.maybe_file_slot else {
             return Ok(());
@@ -113,7 +135,7 @@ impl<'a> ResumeableFileSlot<'a> {
             .inner
             .seek(SeekFrom::Start(stream_position))
             .await
-            .err_tip(|| format!("Failed to seek to position {:?} {:?}", stream_position, self.path))?;
+            .err_tip(|| format!("Failed to seek to position {stream_position} {:?}", self.path))?;
 
         self.maybe_file_slot = MaybeFileSlot::Open(file_slot.take(bytes_remaining));
         match &mut self.maybe_file_slot {

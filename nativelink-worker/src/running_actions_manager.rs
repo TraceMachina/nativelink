@@ -44,8 +44,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     HistoricalExecuteResponse, StartExecute,
 };
 use nativelink_store::ac_utils::{
-    compute_buf_digest, compute_digest, get_and_decode_digest, serialize_and_upload_message, upload_buf_to_store,
-    upload_file_to_store, ESTIMATED_DIGEST_SIZE,
+    compute_buf_digest, get_and_decode_digest, serialize_and_upload_message, upload_buf_to_store, upload_file_to_store,
+    ESTIMATED_DIGEST_SIZE,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
@@ -54,7 +54,7 @@ use nativelink_util::action_messages::{
     to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
 };
 use nativelink_util::common::{fs, DigestInfo, JoinHandleDropGuard};
-use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent};
 use nativelink_util::store_trait::Store;
 use parking_lot::Mutex;
@@ -214,21 +214,16 @@ pub fn download_to_directory<'a>(
 }
 
 #[cfg(target_family = "windows")]
-async fn is_executable(_file_handle: &fs::FileSlot, _full_path: &impl AsRef<Path>) -> Result<bool, Error> {
+fn is_executable(_metadata: &std::fs::Metadata, full_path: &impl AsRef<Path>) -> bool {
     static EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "bat", "com"];
-    Ok(EXECUTABLE_EXTENSIONS
+    EXECUTABLE_EXTENSIONS
         .iter()
-        .any(|ext| _full_path.as_ref().extension().map_or(false, |v| v == *ext)))
+        .any(|ext| full_path.as_ref().extension().map_or(false, |v| v == *ext))
 }
 
 #[cfg(target_family = "unix")]
-async fn is_executable(file_handle: &fs::FileSlot, full_path: &impl AsRef<Path>) -> Result<bool, Error> {
-    let metadata = file_handle
-        .as_ref()
-        .metadata()
-        .await
-        .err_tip(|| format!("While reading metadata for {:?}", full_path.as_ref()))?;
-    Ok((metadata.mode() & 0o001) != 0)
+fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) -> bool {
+    (metadata.mode() & 0o001) != 0
 }
 
 async fn upload_file(
@@ -237,33 +232,35 @@ async fn upload_file(
     full_path: impl AsRef<Path> + Debug,
     hasher: DigestHasherFunc,
 ) -> Result<FileInfo, Error> {
-    let (digest, is_executable, resumeable_file) = {
-        let (digest, mut resumeable_file) = JoinHandleDropGuard::new(tokio::spawn(async move {
-            let file_handle = resumeable_file
-                .as_reader()
-                .await
-                .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?;
-            let digest = compute_digest(file_handle, &mut hasher.hasher()).await?.0;
-            Ok::<_, Error>((digest, resumeable_file))
-        }))
-        .await
-        .err_tip(|| "Failed to launch spawn")?
-        .err_tip(|| format!("for {full_path:?}"))?;
-
-        // Sadly we to reaquire a `reader` from `resumeable_file` because `tokio::spawn` requires an owned
-        // version of the struct. Luckily acquireing a reader is cheap, but this code was dirtied up a bit
-        // from this.
+    let (is_executable, file_size) = {
         let file_handle = resumeable_file
             .as_reader()
             .await
             .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?;
-        let is_executable = is_executable(file_handle.get_ref(), &full_path).await?;
-        file_handle
+        let metadata = file_handle
+            .get_ref()
+            .as_ref()
+            .metadata()
+            .await
+            .err_tip(|| format!("While reading metadata for {:?}", full_path.as_ref()))?;
+        (is_executable(&metadata, &full_path), metadata.len())
+    };
+    let (digest, resumeable_file) = {
+        let (digest, mut resumeable_file) = hasher
+            .hasher()
+            .digest_for_file(resumeable_file, Some(file_size))
+            .await
+            .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
+
+        resumeable_file
+            .as_reader()
+            .await
+            .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?
             .get_mut()
             .rewind()
             .await
             .err_tip(|| "Could not rewind file")?;
-        (digest, is_executable, resumeable_file)
+        (digest, resumeable_file)
     };
     upload_file_to_store(cas_store, digest, resumeable_file)
         .await

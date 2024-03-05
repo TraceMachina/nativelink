@@ -38,7 +38,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     HistoricalExecuteResponse, StartExecute,
 };
-use nativelink_store::ac_utils::{compute_digest, get_and_decode_digest, serialize_and_upload_message};
+use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_message};
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
@@ -47,7 +47,7 @@ use nativelink_util::action_messages::{
     ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
 };
 use nativelink_util::common::{fs, DigestInfo};
-use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::Store;
 use nativelink_worker::running_actions_manager::{
     download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
@@ -1444,16 +1444,15 @@ exit 0
         let result = run_action(running_action_impl).await?;
         assert_eq!(result.exit_code, 0, "Exit code should be 0");
 
-        let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT), &mut DigestHasherFunc::Sha256.hasher())
-            .await?
-            .0;
+        let expected_stdout = DigestHasherFunc::Sha256
+            .hasher()
+            .compute_from_reader(Cursor::new(EXPECTED_STDOUT))
+            .await?;
         // Note: This string should match what is in worker_for_test.sh
-        let expected_stderr = compute_digest(
-            Cursor::new("Wrapper script did run"),
-            &mut DigestHasherFunc::Sha256.hasher(),
-        )
-        .await?
-        .0;
+        let expected_stderr = DigestHasherFunc::Sha256
+            .hasher()
+            .compute_from_reader(Cursor::new("Wrapper script did run"))
+            .await?;
         assert_eq!(expected_stdout, result.stdout_digest);
         assert_eq!(expected_stderr, result.stderr_digest);
 
@@ -1594,15 +1593,16 @@ exit 0
         let result = run_action(running_action_impl).await?;
         assert_eq!(result.exit_code, 0, "Exit code should be 0");
 
-        let expected_stdout = compute_digest(Cursor::new(EXPECTED_STDOUT), &mut DigestHasherFunc::Sha256.hasher())
-            .await?
-            .0;
+        let expected_stdout = DigestHasherFunc::Sha256
+            .hasher()
+            .compute_from_reader(Cursor::new(EXPECTED_STDOUT))
+            .await?;
         // Note: This string should match what is in worker_for_test.sh
         let expected_stderr = "Wrapper script did run with property property_value raw_value 122000";
-        let expected_stderr_digest =
-            compute_digest(Cursor::new(expected_stderr), &mut DigestHasherFunc::Sha256.hasher())
-                .await?
-                .0;
+        let expected_stderr_digest = DigestHasherFunc::Sha256
+            .hasher()
+            .compute_from_reader(Cursor::new(expected_stderr))
+            .await?;
 
         let actual_stderr: prost::bytes::Bytes = cas_store
             .as_ref()
