@@ -44,8 +44,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     HistoricalExecuteResponse, StartExecute,
 };
 use nativelink_store::ac_utils::{
-    compute_buf_digest, get_and_decode_digest, serialize_and_upload_message, upload_buf_to_store, upload_file_to_store,
-    ESTIMATED_DIGEST_SIZE,
+    compute_buf_digest, get_and_decode_digest, serialize_and_upload_message, ESTIMATED_DIGEST_SIZE,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
@@ -56,7 +55,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::{fs, DigestInfo, JoinHandleDropGuard};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent};
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
@@ -262,7 +261,12 @@ async fn upload_file(
             .err_tip(|| "Could not rewind file")?;
         (digest, resumeable_file)
     };
-    upload_file_to_store(cas_store, digest, resumeable_file)
+    cas_store
+        .update_with_whole_file(
+            digest,
+            resumeable_file,
+            UploadSizeInfo::ExactSize(digest.size_bytes as usize),
+        )
         .await
         .err_tip(|| format!("for {full_path:?}"))?;
 
@@ -1032,7 +1036,8 @@ impl RunningActionImpl {
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
             let data = execution_result.stdout;
             let digest = compute_buf_digest(&data, &mut hasher.hasher());
-            upload_buf_to_store(cas_store, digest, data)
+            cas_store
+                .update_oneshot(digest, data)
                 .await
                 .err_tip(|| "Uploading stdout")?;
             Result::<DigestInfo, Error>::Ok(digest)
@@ -1040,9 +1045,10 @@ impl RunningActionImpl {
         let stderr_digest_fut = self.metrics().upload_stderr.wrap(async {
             let data = execution_result.stderr;
             let digest = compute_buf_digest(&data, &mut hasher.hasher());
-            upload_buf_to_store(cas_store, digest, data)
+            cas_store
+                .update_oneshot(digest, data)
                 .await
-                .err_tip(|| "Uploading stderr")?;
+                .err_tip(|| "Uploading stdout")?;
             Result::<DigestInfo, Error>::Ok(digest)
         });
 

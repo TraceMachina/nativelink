@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::borrow::Cow;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,7 +32,7 @@ use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreOptimizations, UploadSizeInfo};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::task::spawn_blocking;
 use tokio::time::{sleep, timeout, Sleep};
@@ -61,6 +61,7 @@ pub struct SharedContext {
 enum PathType {
     Content,
     Temp,
+    Custom(OsString),
 }
 
 // Note: We don't store the full path of the file because it would cause
@@ -77,18 +78,23 @@ pub struct EncodedFilePath {
 
 impl EncodedFilePath {
     #[inline]
-    fn get_file_path(&self) -> OsString {
+    fn get_file_path(&self) -> Cow<'_, OsStr> {
         get_file_path_raw(&self.path_type, self.shared_context.as_ref(), &self.digest)
     }
 }
 
 #[inline]
-fn get_file_path_raw(path_type: &PathType, shared_context: &SharedContext, digest: &DigestInfo) -> OsString {
+fn get_file_path_raw<'a>(
+    path_type: &'a PathType,
+    shared_context: &SharedContext,
+    digest: &DigestInfo,
+) -> Cow<'a, OsStr> {
     let folder = match path_type {
         PathType::Content => &shared_context.content_path,
         PathType::Temp => &shared_context.temp_path,
+        PathType::Custom(path) => return Cow::Borrowed(path),
     };
-    to_full_path_from_digest(folder, digest)
+    Cow::Owned(to_full_path_from_digest(folder, digest))
 }
 
 impl Drop for EncodedFilePath {
@@ -99,7 +105,7 @@ impl Drop for EncodedFilePath {
             return;
         }
 
-        let file_path = self.get_file_path();
+        let file_path = self.get_file_path().to_os_string();
         let shared_context = self.shared_context.clone();
         shared_context.active_drop_spawns.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
@@ -186,7 +192,7 @@ impl FileEntry for FileEntryImpl {
         block_size: u64,
         encoded_file_path: EncodedFilePath,
     ) -> Result<(FileEntryImpl, fs::ResumeableFileSlot<'static>, OsString), Error> {
-        let temp_full_path = encoded_file_path.get_file_path();
+        let temp_full_path = encoded_file_path.get_file_path().to_os_string();
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
                 let remove_result = fs::remove_file(&temp_full_path)
@@ -252,7 +258,7 @@ impl FileEntry for FileEntryImpl {
         handler: F,
     ) -> Result<T, Error> {
         let encoded_file_path = self.get_encoded_file_path().read().await;
-        handler(encoded_file_path.get_file_path()).await
+        handler(encoded_file_path.get_file_path().to_os_string()).await
     }
 }
 
@@ -285,6 +291,7 @@ impl LenEntry for FileEntryImpl {
     async fn touch(&self) -> bool {
         let result = self
             .get_file_path_locked(move |full_content_path| async move {
+                let full_content_path = full_content_path.to_os_string();
                 spawn_blocking(move || {
                     set_file_atime(&full_content_path, FileTime::now())
                         .err_tip(|| format!("Failed to touch file in filesystem store {:?}", full_content_path))
@@ -471,7 +478,7 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     block_size: u64,
     read_buffer_size: usize,
     sleep_fn: fn(Duration) -> Sleep,
-    rename_fn: fn(&OsString, &OsString) -> Result<(), std::io::Error>,
+    rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
@@ -482,7 +489,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     pub async fn new_with_timeout_and_rename_fn(
         config: &nativelink_config::stores::FilesystemStore,
         sleep_fn: fn(Duration) -> Sleep,
-        rename_fn: fn(&OsString, &OsString) -> Result<(), std::io::Error>,
+        rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     ) -> Result<Self, Error> {
         let now = SystemTime::now();
 
@@ -583,8 +590,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         drop(resumeable_temp_file);
 
         *entry.data_size_mut() = data_size;
-        let entry = Arc::new(entry);
+        self.emplace_file(final_digest, Arc::new(entry)).await
+    }
 
+    async fn emplace_file(&self, digest: DigestInfo, entry: Arc<Fe>) -> Result<(), Error> {
         // This sequence of events is quite ticky to understand due to the amount of triggers that
         // happen, async'ness of it and the locking. So here is a breakdown of what happens:
         // 1. Here will hold a write lock on any file operations of this FileEntry.
@@ -609,20 +618,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // See: https://github.com/TraceMachina/nativelink/issues/495
         tokio::spawn(async move {
             let mut encoded_file_path = entry.get_encoded_file_path().write().await;
-            let final_path = get_file_path_raw(
-                &PathType::Content,
-                encoded_file_path.shared_context.as_ref(),
-                &final_digest,
-            );
+            let final_path = get_file_path_raw(&PathType::Content, encoded_file_path.shared_context.as_ref(), &digest);
 
-            evicting_map.insert(final_digest, entry.clone()).await;
+            evicting_map.insert(digest, entry.clone()).await;
 
             let from_path = encoded_file_path.get_file_path();
             // Internally tokio spawns fs commands onto a blocking thread anyways.
             // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
             // an open-file permit (ensure we don't open too many files at once).
             let result = fs::call_with_permit(|| {
-                (rename_fn)(&from_path, &final_path)
+                (rename_fn)(from_path.as_ref(), final_path.as_ref())
                     .err_tip(|| format!("Failed to rename temp file to final path {final_path:?}"))
             })
             .await;
@@ -639,12 +644,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 // It is possible that the item in our map is no longer the item we inserted,
                 // So, we need to conditionally remove it only if the pointers are the same.
                 evicting_map
-                    .remove_if(&final_digest, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
+                    .remove_if(&digest, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
                     .await;
                 return Err(err);
             }
             encoded_file_path.path_type = PathType::Content;
-            encoded_file_path.digest = final_digest;
+            encoded_file_path.digest = digest;
             Ok(())
         })
         .await
@@ -701,6 +706,45 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         self.update_file(entry, temp_file, digest, reader)
             .await
             .err_tip(|| format!("While processing with temp file {:?}", temp_full_path))
+    }
+
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        optimization == StoreOptimizations::FileUpdates
+    }
+
+    async fn update_with_whole_file(
+        self: Pin<&Self>,
+        digest: DigestInfo,
+        mut file: fs::ResumeableFileSlot<'static>,
+        upload_size: UploadSizeInfo,
+    ) -> Result<Option<fs::ResumeableFileSlot<'static>>, Error> {
+        let path = file.get_path().as_os_str().to_os_string();
+        let file_size = match upload_size {
+            UploadSizeInfo::ExactSize(size) => size as u64,
+            UploadSizeInfo::MaxSize(_) => file
+                .as_reader()
+                .await
+                .err_tip(|| format!("While getting metadata for {:?} in update_with_whole_file", path))?
+                .get_ref()
+                .as_ref()
+                .metadata()
+                .await
+                .err_tip(|| format!("While reading metadata for {:?}", path))?
+                .len(),
+        };
+        let entry = Fe::create(
+            file_size,
+            self.block_size,
+            RwLock::new(EncodedFilePath {
+                shared_context: self.shared_context.clone(),
+                path_type: PathType::Custom(path),
+                digest,
+            }),
+        );
+        self.emplace_file(digest, Arc::new(entry))
+            .await
+            .err_tip(|| "Could not move file into store in upload_file_to_store, maybe dest is on different volume?")?;
+        return Ok(None);
     }
 
     async fn get_part_ref(
