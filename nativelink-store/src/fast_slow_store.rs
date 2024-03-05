@@ -19,13 +19,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{join, FutureExt};
-use nativelink_config::stores::StoreConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::fs;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::Registry;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{slow_update_store_with_file, Store, StoreOptimizations, UploadSizeInfo};
 
 // TODO(blaise.bruer) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -45,12 +45,6 @@ impl FastSlowStore {
         fast_store: Arc<dyn Store>,
         slow_store: Arc<dyn Store>,
     ) -> Self {
-        let slow_store = if matches!(_config.slow, StoreConfig::noop) {
-            fast_store.clone()
-        } else {
-            slow_store
-        };
-
         Self { fast_store, slow_store }
     }
 
@@ -123,6 +117,12 @@ impl Store for FastSlowStore {
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
+        // If our slow store is a noop store, it'll always return a 404,
+        // so only check the fast store in such case.
+        let slow_store = self.slow_store.inner_store(None);
+        if slow_store.optimized_for(StoreOptimizations::NoopDownloads) {
+            return self.pin_fast_store().has_with_results(digests, results).await;
+        }
         // Only check the slow store because if it's not there, then something
         // down stream might be unable to get it.  This should not affect
         // workers as they only use get() and a CAS can use an
@@ -136,6 +136,17 @@ impl Store for FastSlowStore {
         mut reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        // If either one of our stores is a noop store, bypass the multiplexing
+        // and just use the store that is not a noop store.
+        let slow_store = self.slow_store.inner_store(Some(digest));
+        if slow_store.optimized_for(StoreOptimizations::NoopUpdates) {
+            return self.pin_fast_store().update(digest, reader, size_info).await;
+        }
+        let fast_store = self.fast_store.inner_store(Some(digest));
+        if fast_store.optimized_for(StoreOptimizations::NoopUpdates) {
+            return self.pin_slow_store().update(digest, reader, size_info).await;
+        }
+
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (mut slow_tx, slow_rx) = make_buf_channel_pair();
 
@@ -183,6 +194,50 @@ impl Store for FastSlowStore {
         let (data_stream_res, fast_res, slow_res) = join!(data_stream_fut, fast_store_fut, slow_store_fut);
         data_stream_res.merge(fast_res).merge(slow_res)?;
         Ok(())
+    }
+
+    /// FastSlowStore has optimiations for dealing with files.
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        optimization == StoreOptimizations::FileUpdates
+    }
+
+    /// Optimized variation to consume the file if one of the stores is a
+    /// filesystem store. This makes the operation a move instead of a copy
+    /// dramatically increasing performance for large files.
+    async fn update_with_whole_file(
+        self: Pin<&Self>,
+        digest: DigestInfo,
+        mut file: fs::ResumeableFileSlot<'static>,
+        upload_size: UploadSizeInfo,
+    ) -> Result<Option<fs::ResumeableFileSlot<'static>>, Error> {
+        let fast_store = self.fast_store.inner_store(Some(digest));
+        let slow_store = self.slow_store.inner_store(Some(digest));
+        if fast_store.optimized_for(StoreOptimizations::FileUpdates) {
+            if !slow_store.optimized_for(StoreOptimizations::NoopUpdates) {
+                slow_update_store_with_file(Pin::new(slow_store), digest, &mut file, upload_size)
+                    .await
+                    .err_tip(|| "In FastSlowStore::update_with_whole_file slow_store")?;
+            }
+            return Pin::new(fast_store)
+                .update_with_whole_file(digest, file, upload_size)
+                .await;
+        }
+
+        if slow_store.optimized_for(StoreOptimizations::FileUpdates) {
+            if !fast_store.optimized_for(StoreOptimizations::NoopUpdates) {
+                slow_update_store_with_file(Pin::new(fast_store), digest, &mut file, upload_size)
+                    .await
+                    .err_tip(|| "In FastSlowStore::update_with_whole_file fast_store")?;
+            }
+            return Pin::new(slow_store)
+                .update_with_whole_file(digest, file, upload_size)
+                .await;
+        }
+
+        slow_update_store_with_file(self, digest, &mut file, upload_size)
+            .await
+            .err_tip(|| "In FastSlowStore::update_with_whole_file")?;
+        Ok(Some(file))
     }
 
     async fn get_part_ref(

@@ -393,7 +393,7 @@ mod fast_slow_store_tests {
 
     // Regression test for https://github.com/TraceMachina/nativelink/issues/665
     #[tokio::test]
-    async fn slow_store_replaced_by_fast_store_when_noop() -> Result<(), Error> {
+    async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
         let fast_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
         let slow_store = Arc::new(NoopStore::new());
         let fast_slow_store_config = nativelink_config::stores::FastSlowStore {
@@ -406,17 +406,33 @@ mod fast_slow_store_tests {
             slow_store.clone(),
         ));
 
+        let data = make_random_data(100);
+        let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
         assert_eq!(
-            Arc::as_ptr(fast_slow_store.fast_store()),
-            Arc::as_ptr(&fast_store),
-            "Fast store should be the same as the fast_slow_store's fast store"
-        );
-        assert_eq!(
-            Arc::as_ptr(fast_slow_store.slow_store()),
-            Arc::as_ptr(&fast_store),
-            "Slow store should be replaced by fast store when configured as noop"
+            Pin::new(fast_slow_store.as_ref()).has(digest).await,
+            Ok(None),
+            "Expected data to not exist in store"
         );
 
+        // Upload some dummy data.
+        Pin::new(fast_store.as_ref())
+            .update_oneshot(digest, data.clone().into())
+            .await?;
+
+        assert_eq!(
+            Pin::new(fast_slow_store.as_ref()).has(digest).await,
+            Ok(Some(data.len())),
+            "Expected data to exist in store"
+        );
+
+        assert_eq!(
+            Pin::new(fast_slow_store.as_ref())
+                .get_part_unchunked(digest, 0, None, None)
+                .await,
+            Ok(data.into()),
+            "Data read from store is not correct"
+        );
         Ok(())
     }
 }

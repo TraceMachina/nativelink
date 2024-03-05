@@ -20,7 +20,7 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreOptimizations, UploadSizeInfo};
 
 #[derive(Default)]
 pub struct NoopStore;
@@ -52,6 +52,10 @@ impl Store for NoopStore {
         // the connection prematurely.
         reader.drain().await.err_tip(|| "In NoopStore::update")?;
         Ok(())
+    }
+
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        optimization == StoreOptimizations::NoopUpdates || optimization == StoreOptimizations::NoopDownloads
     }
 
     async fn get_part_ref(

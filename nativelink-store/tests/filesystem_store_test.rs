@@ -1185,4 +1185,55 @@ mod filesystem_store_tests {
         assert_eq!(long_entry.size_on_disk(), 8 * 1024);
         Ok(())
     }
+
+    // Ensure that update_with_whole_file() moves the file without making a copy.
+    #[cfg(target_family = "unix")]
+    #[tokio::test]
+    async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
+        use std::os::unix::fs::MetadataExt;
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+
+        let value: String = "x".repeat(1024);
+
+        let digest = DigestInfo::try_new(HASH1, value.len())?;
+
+        let store = Box::pin(
+            FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    read_buffer_size: 1,
+                    ..Default::default()
+                },
+                |_| sleep(Duration::ZERO),
+                |from, to| std::fs::rename(from, to),
+            )
+            .await?,
+        );
+
+        let mut file = fs::create_file(OsString::from(format!("{}/{}", temp_path, "dummy_file"))).await?;
+        let original_inode = file.as_reader().await?.get_ref().as_ref().metadata().await?.ino();
+
+        let result = store
+            .as_ref()
+            .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
+            .await?;
+        assert!(result.is_none(), "Expected filesystem store to consume the file");
+
+        let expected_file_name =
+            OsString::from(format!("{}/{}-{}", content_path, digest.hash_str(), digest.size_bytes));
+        let new_inode = fs::create_file(expected_file_name)
+            .await?
+            .as_reader()
+            .await?
+            .get_ref()
+            .as_ref()
+            .metadata()
+            .await?
+            .ino();
+        assert_eq!(original_inode, new_inode, "Expected the same inode for the file");
+
+        Ok(())
+    }
 }

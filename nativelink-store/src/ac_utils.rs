@@ -19,14 +19,12 @@
 
 use std::pin::Pin;
 
-use bytes::{Bytes, BytesMut};
-use futures::future::join;
-use futures::{Future, FutureExt, TryFutureExt};
+use bytes::BytesMut;
+use futures::TryFutureExt;
 use nativelink_error::{Code, Error, ResultExt};
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserWriteHalf};
-use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasher;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::Store;
 use prost::Message;
 
 // NOTE(blaise.bruer) From some local testing it looks like action cache items are rarely greater than
@@ -91,7 +89,8 @@ pub async fn serialize_and_upload_message<'a, T: Message>(
 ) -> Result<DigestInfo, Error> {
     let mut buffer = BytesMut::with_capacity(message.encoded_len());
     let digest = message_to_digest(message, &mut buffer, hasher).err_tip(|| "In serialize_and_upload_message")?;
-    upload_buf_to_store(cas_store, digest, buffer.freeze())
+    cas_store
+        .update_oneshot(digest, buffer.freeze())
         .await
         .err_tip(|| "In serialize_and_upload_message")?;
     Ok(digest)
@@ -101,65 +100,4 @@ pub async fn serialize_and_upload_message<'a, T: Message>(
 pub fn compute_buf_digest(buf: &[u8], hasher: &mut impl DigestHasher) -> DigestInfo {
     hasher.update(buf);
     hasher.finalize_digest()
-}
-
-fn inner_upload_file_to_store<'a, Fut: Future<Output = Result<(), Error>> + 'a>(
-    cas_store: Pin<&'a dyn Store>,
-    digest: DigestInfo,
-    read_data_fn: impl FnOnce(DropCloserWriteHalf) -> Fut,
-) -> impl Future<Output = Result<(), Error>> + 'a {
-    let (tx, rx) = make_buf_channel_pair();
-    join(
-        cas_store
-            .update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes as usize))
-            .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store")),
-        read_data_fn(tx),
-    )
-    // Ensure we get errors reported from both sides
-    .map(|(upload_result, read_result)| upload_result.merge(read_result))
-}
-
-/// Uploads data to our store for given digest.
-pub fn upload_buf_to_store(
-    cas_store: Pin<&dyn Store>,
-    digest: DigestInfo,
-    buf: Bytes,
-) -> impl Future<Output = Result<(), Error>> + '_ {
-    inner_upload_file_to_store(cas_store, digest, move |mut tx| async move {
-        if !buf.is_empty() {
-            tx.send(buf)
-                .await
-                .err_tip(|| "Could not send buffer data to store in upload_buf_to_store")?;
-        }
-        tx.send_eof()
-            .await
-            .err_tip(|| "Could not send EOF to store in upload_buf_to_store")
-    })
-}
-
-/// Same as `upload_buf_to_store`, however it specializes in dealing with a `ResumeableFileSlot`.
-/// This will close the reading file to close if writing the data takes a while.
-pub fn upload_file_to_store<'a>(
-    cas_store: Pin<&'a dyn Store>,
-    digest: DigestInfo,
-    mut file: fs::ResumeableFileSlot<'a>,
-) -> impl Future<Output = Result<(), Error>> + 'a {
-    inner_upload_file_to_store(cas_store, digest, move |tx| async move {
-        let (_, mut tx) = file
-            .read_buf_cb(
-                (BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx),
-                move |(chunk, mut tx)| async move {
-                    tx.send(chunk.freeze())
-                        .await
-                        .err_tip(|| "Failed to send in upload_file_to_store")?;
-                    Ok((BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx))
-                },
-            )
-            .await
-            .err_tip(|| "Error in upload_file_to_store::read_buf_cb section")?;
-        tx.send_eof()
-            .await
-            .err_tip(|| "Could not send EOF to store in upload_file_to_store")?;
-        Ok(())
-    })
 }

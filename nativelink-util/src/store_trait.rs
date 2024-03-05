@@ -15,14 +15,14 @@
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher as StdHasher;
 use std::hash::{Hash, Hasher};
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures::{join, try_join};
-// use lru::DefaultHasher;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use bytes::{Bytes, BytesMut};
+use futures::{future, join, try_join, FutureExt};
+use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
 use crate::digest_hasher::{default_digest_hasher_func, DigestHasher};
+use crate::fs;
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use crate::metrics_utils::Registry;
 
@@ -62,6 +63,64 @@ pub enum UploadSizeInfo {
     /// checks, but still provide useful information to the underlying store about the data being
     /// sent that it can then use to optimize the upload process.
     MaxSize(usize),
+}
+
+/// Utility to send all the data to the store from a file.
+// Note: This is not inlined because some code may want to bypass any underlying
+// optimizations that may be present in the inner store.
+pub async fn slow_update_store_with_file<S: Store + ?Sized>(
+    store: Pin<&S>,
+    digest: DigestInfo,
+    file: &mut fs::ResumeableFileSlot<'static>,
+    upload_size: UploadSizeInfo,
+) -> Result<(), Error> {
+    let (tx, rx) = make_buf_channel_pair();
+    future::join(
+        store
+            .update(digest, rx, upload_size)
+            .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store")),
+        async move {
+            let (_, mut tx) = file
+                .read_buf_cb(
+                    (BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx),
+                    move |(chunk, mut tx)| async move {
+                        tx.send(chunk.freeze())
+                            .await
+                            .err_tip(|| "Failed to send in upload_file_to_store")?;
+                        Ok((BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx))
+                    },
+                )
+                .await
+                .err_tip(|| "Error in upload_file_to_store::read_buf_cb section")?;
+            tx.send_eof()
+                .await
+                .err_tip(|| "Could not send EOF to store in upload_file_to_store")?;
+            Ok(())
+        },
+    )
+    // Ensure we get errors reported from both sides.
+    .map(|(upload_result, read_result)| upload_result.merge(read_result))
+    .await
+}
+
+// TODO(allada) When 1.76.0 stabalizes more we can use `core::ptr::addr_eq` instead.
+fn addr_eq<T: ?Sized, U: ?Sized>(p: *const T, q: *const U) -> bool {
+    std::ptr::eq(p as *const (), q as *const ())
+}
+
+/// Optimizations that stores may want to expose to the callers.
+/// This is useful for specific cases when the store can optimize the processing
+/// of the data being processed.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum StoreOptimizations {
+    /// The store can optimize the upload process when it knows the data is coming from a file.
+    FileUpdates,
+
+    /// If the store will ignore the data uploads.
+    NoopUpdates,
+
+    /// If the store will never serve downloads.
+    NoopDownloads,
 }
 
 #[async_trait]
@@ -101,6 +160,35 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error>;
+
+    /// Any optimizations the store might want to expose to the callers.
+    /// By default, no optimizations are exposed.
+    fn optimized_for(&self, _optimization: StoreOptimizations) -> bool {
+        false
+    }
+
+    /// Specialized version of `.update()` which takes a `ResumeableFileSlot`.
+    /// This is useful if the underlying store can optimize the upload process
+    /// when it knows the data is coming from a file.
+    async fn update_with_whole_file(
+        self: Pin<&Self>,
+        digest: DigestInfo,
+        mut file: fs::ResumeableFileSlot<'static>,
+        upload_size: UploadSizeInfo,
+    ) -> Result<Option<fs::ResumeableFileSlot<'static>>, Error> {
+        let inner_store = self.inner_store(Some(digest));
+        if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
+            error_if!(
+                addr_eq(inner_store, self.deref()),
+                "Store::inner_store() returned self when optimization present"
+            );
+            return Pin::new(inner_store)
+                .update_with_whole_file(digest, file, upload_size)
+                .await;
+        }
+        slow_update_store_with_file(self, digest, &mut file, upload_size).await?;
+        Ok(Some(file))
+    }
 
     // Utility to send all the data to the store when you have all the bytes.
     async fn update_oneshot(self: Pin<&Self>, digest: DigestInfo, data: Bytes) -> Result<(), Error> {

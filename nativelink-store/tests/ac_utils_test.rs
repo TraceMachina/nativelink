@@ -18,10 +18,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_error::{Error, ResultExt};
-use nativelink_store::ac_utils::upload_file_to_store;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::{fs, DigestInfo};
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncWriteExt;
 
@@ -70,7 +69,9 @@ mod ac_utils_tests {
         {
             // Upload our file.
             let resumeable_file = fs::open_file(filepath, u64::MAX).await?;
-            upload_file_to_store(store_pin, digest, resumeable_file).await?;
+            store_pin
+                .update_with_whole_file(digest, resumeable_file, UploadSizeInfo::ExactSize(expected_data.len()))
+                .await?;
         }
         {
             // Check to make sure the file was saved correctly to the store.
