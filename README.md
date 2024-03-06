@@ -30,7 +30,7 @@ cargo install --git https://github.com/TraceMachina/nativelink --tag v0.2.0
 
 The `nativelink` executable reads a JSON file as it's only parameter,
 `--config`. See [`nativelink-config`](./nativelink-config/examples/basic_cas.json)
-for more details and examples.
+for more details and examples on the config, and see [`nativelink.rs`](./src/bin/README.md) for more details and information on the NativeLink executable.
 
 To grab the example in your current working directory, run:
 
