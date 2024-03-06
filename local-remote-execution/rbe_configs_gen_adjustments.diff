@@ -1,8 +1,19 @@
 diff --git a/pkg/rbeconfigsgen/rbeconfigsgen.go b/pkg/rbeconfigsgen/rbeconfigsgen.go
-index a752642..b3d8206 100644
+index a752642..53b6b19 100644
 --- a/pkg/rbeconfigsgen/rbeconfigsgen.go
 +++ b/pkg/rbeconfigsgen/rbeconfigsgen.go
-@@ -260,16 +260,26 @@ func newDockerRunner(containerImage string, stopContainer bool) (*dockerRunner,
+@@ -228,7 +228,9 @@ func runCmd(cmd string, args ...string) (string, error) {
+ func workdir(os string) string {
+ 	switch os {
+ 	case OSLinux:
+-		return "/workdir"
++        // Changed from `/workdir` so that we don't require root permissions
++        // to generate the toolchains.
++		return "/tmp/workdir"
+ 	case OSWindows:
+ 		return "C:/workdir"
+ 	}
+@@ -260,16 +262,26 @@ func newDockerRunner(containerImage string, stopContainer bool) (*dockerRunner,
  		stopContainer:  stopContainer,
  		dockerPath:     "docker",
  	}

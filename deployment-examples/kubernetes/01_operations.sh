@@ -9,24 +9,20 @@ SRC_ROOT=$(git rev-parse --show-toplevel)
 
 kubectl apply -f ${SRC_ROOT}/deployment-examples/kubernetes/gateway.yaml
 
-IMAGE_TAG=$(nix eval .#image.imageTag --raw)
+# The image for the scheduler and CAS.
+nix run .#image.copyTo \
+    docker://localhost:5001/nativelink:local \
+    -- \
+    --dest-tls-verify=false
 
-$(nix build .#image --print-build-logs --verbose) \
-    && ./result \
-    | skopeo \
-      copy \
-      --dest-tls-verify=false \
-      docker-archive:/dev/stdin \
-      docker://localhost:5001/nativelink:local
+# The worker image for C++ actions.
+nix run .#nativelink-worker-lre-cc.copyTo \
+    docker://localhost:5001/nativelink-worker-lre-cc:local \
+    -- \
+    --dest-tls-verify=false
 
-IMAGE_TAG=$(nix eval .#lre.imageTag --raw)
-
-echo $IMAGE_TAG
-
-$(nix build .#lre --print-build-logs --verbose) \
-    && ./result \
-    | skopeo \
-      copy \
-      --dest-tls-verify=false \
-      docker-archive:/dev/stdin \
-      docker://localhost:5001/nativelink-toolchain:local
+# The worker image for Java actions.
+nix run .#nativelink-worker-lre-java.copyTo \
+    docker://localhost:5001/nativelink-worker-lre-java:local \
+    -- \
+    --dest-tls-verify=false

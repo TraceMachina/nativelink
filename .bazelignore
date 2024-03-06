@@ -9,4 +9,5 @@ bazel-remote-nativelink
 bazel-root
 bazel-testlogs
 bazel-nativelink
-local-remote-execution
+local-remote-execution/generated-cc
+local-remote-execution/generated-java

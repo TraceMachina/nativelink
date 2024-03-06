@@ -58,7 +58,9 @@
           "values": ["Linux"]
         },
         "container-image": {
-          "values": ["docker://nativelink-toolchain:__NATIVELINK_TOOLCHAIN_TAG__"]
+          "values": [
+            "docker://nativelink-worker-lre-cc:__LRE_CC_TOOLCHAIN_TAG__",
+          ]
         }
       }
     }
