@@ -1,6 +1,6 @@
 # Kubernetes example
 
-This deployment sets up a 3-container deployment with separate CAS, scheduler
+This deployment sets up a 4-container deployment with separate CAS, scheduler
 and worker. Don't use this example deployment in production. It's insecure.
 
 In this example we're using `kind` to set up the cluster `cilium` to provide a
@@ -19,7 +19,7 @@ execution containers and makes them available to the cluster:
 ./01_operations.sh
 ```
 
-Finally deploy NativeLink:
+Finally, deploy NativeLink:
 
 ```bash
 ./02_application.sh
