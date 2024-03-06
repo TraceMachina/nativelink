@@ -1,0 +1,35 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink-worker-lre-cc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nativelink-worker-lre-cc
+  template:
+    metadata:
+      labels:
+        app: nativelink-worker-lre-cc
+    spec:
+      containers:
+        - name: nativelink-worker-lre-cc
+          image: "localhost:5001/nativelink-worker-lre-cc:local"
+          env:
+            - name: RUST_LOG
+              value: warn
+            - name: CAS_ENDPOINT
+              value: nativelink-cas
+            - name: SCHEDULER_ENDPOINT
+              value: nativelink-scheduler
+          volumeMounts:
+            - name: worker-lre-cc-config
+              mountPath: /worker-lre-cc.json
+              subPath: worker-lre-cc.json
+          command: ["/bin/nativelink"]
+          args: ["/worker-lre-cc.json"]
+      volumes:
+        - name: worker-lre-cc-config
+          configMap:
+            name: worker-lre-cc

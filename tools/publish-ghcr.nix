@@ -19,12 +19,7 @@ pkgs.writeShellScriptBin "publish-ghcr" ''
 
   TAGGED_IMAGE=''${GHCR_REGISTRY}/''${GHCR_IMAGE_NAME,,}:''${IMAGE_TAG}
 
-  $(nix build .#image --print-build-logs --verbose) \
-    && ./result \
-    | ${pkgs.zstd}/bin/zstd \
-    | ${pkgs.skopeo}/bin/skopeo \
-      copy \
-      docker-archive:/dev/stdin \
+  nix run .#image.copyToRegistry \
       docker://''${TAGGED_IMAGE}
 
   echo $GHCR_PASSWORD | ${pkgs.cosign}/bin/cosign \
