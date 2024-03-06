@@ -19,7 +19,8 @@ pkgs.writeShellScriptBin "publish-ghcr" ''
 
   TAGGED_IMAGE=''${GHCR_REGISTRY}/''${GHCR_IMAGE_NAME,,}:''${IMAGE_TAG}
 
-  nix run .#image.copyTo docker://''${TAGGED_IMAGE}
+  nix run .#image.copyToRegistry \
+      docker://''${TAGGED_IMAGE}
 
   echo $GHCR_PASSWORD | ${pkgs.cosign}/bin/cosign \
     login \

@@ -24,48 +24,6 @@
     mkdir -p $out/usr/bin
     ln -s /bin/env $out/usr/bin/env
   '';
-
-  user = "nativelink";
-  group = "nativelink";
-  uid = "1000";
-  gid = "1000";
-
-  mkUser = pkgs.runCommand "mkUser" {} ''
-    mkdir -p $out/etc/pam.d
-
-    echo "root:x:0:0::/root:${pkgs.runtimeShell}" > $out/etc/passwd
-    echo "${user}:x:${uid}:${gid}:::" >> $out/etc/passwd
-
-    echo "root:!x:::::::" > $out/etc/shadow
-    echo "${user}:!x:::::::" >> $out/etc/shadow
-
-    echo "root:x:0:" > $out/etc/group
-    echo "${group}:x:${gid}:" >> $out/etc/group
-
-    echo "root:x::" > $out/etc/gshadow
-    echo "${group}:x::" >> $out/etc/gshadow
-
-    cat > $out/etc/pam.d/other <<EOF
-    account sufficient pam_unix.so
-    auth sufficient pam_rootok.so
-    password requisite pam_unix.so nullok sha512
-    session required pam_unix.so
-    EOF
-
-    touch $out/etc/login.defs
-    mkdir -p $out/home/${user}
-  '';
-
-  # Set permissions for the user's home directory.
-  mkUserPerms = {
-    path = mkUser;
-    regex = "/home/${user}";
-    mode = "0755";
-    uid = pkgs.lib.toInt uid;
-    gid = pkgs.lib.toInt gid;
-    uname = user;
-    gname = group;
-  };
 in
   # Create a container image from a base image with the nativelink executable
   # added and set as entrypoint. This allows arbitrary base images to be
@@ -76,7 +34,6 @@ in
       fromImage = image;
       maxLayers = 20;
       copyToRoot = [
-        mkUser
         mkTmp
         mkEnvSymlink
         (pkgs.buildEnv {
@@ -85,19 +42,10 @@ in
           pathsToLink = ["/bin"];
         })
       ];
-
-      perms = [
-        mkUserPerms
-        mkTmpPerms
-      ];
+      perms = [mkTmpPerms];
 
       # Override the final image tag with the one from the base image. This way
       # the nativelink executable doesn't influence this tag and and changes to
       # its codebase don't invalidate existing toolchain containers.
       tag = image.imageTag;
-
-      config = {
-        User = user;
-        WorkingDir = "/home/${user}";
-      };
     }
