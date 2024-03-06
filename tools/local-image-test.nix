@@ -9,12 +9,8 @@ pkgs.writeShellScriptBin "local-image-test" ''
   # didn't change.
   IMAGE_TAG=$(nix eval .#image.imageTag --raw)
 
-  $(nix build .#image --print-build-logs --verbose) \
-    && ./result \
-    | ${pkgs.skopeo}/bin/skopeo \
-      copy \
-      docker-archive:/dev/stdin \
-      docker-daemon:nativelink:''${IMAGE_TAG}
+  nix run .#image.copyTo \
+    docker-daemon:nativelink:''${IMAGE_TAG}
 
   # Ensure that the image has minimal closure size.
   CI=1 ${pkgs.dive}/bin/dive \

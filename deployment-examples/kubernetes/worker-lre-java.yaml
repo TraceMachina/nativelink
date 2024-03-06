@@ -1,0 +1,35 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink-worker-lre-java
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nativelink-worker-lre-java
+  template:
+    metadata:
+      labels:
+        app: nativelink-worker-lre-java
+    spec:
+      containers:
+        - name: nativelink-worker-lre-java
+          image: "localhost:5001/nativelink-worker-lre-java:local"
+          env:
+            - name: RUST_LOG
+              value: warn
+            - name: CAS_ENDPOINT
+              value: nativelink-cas
+            - name: SCHEDULER_ENDPOINT
+              value: nativelink-scheduler
+          volumeMounts:
+            - name: worker-lre-java-config
+              mountPath: /worker-lre-java.json
+              subPath: worker-lre-java.json
+          command: ["/bin/nativelink"]
+          args: ["/worker-lre-java.json"]
+      volumes:
+        - name: worker-lre-java-config
+          configMap:
+            name: worker-lre-java

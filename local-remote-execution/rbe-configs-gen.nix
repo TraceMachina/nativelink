@@ -4,7 +4,7 @@ pkgs.buildGoModule rec {
   version = "5.1.3-rc1";
 
   patches = [
-    ./rbe_configs_gen_skip_pull.diff
+    ./rbe_configs_gen_adjustments.diff
   ];
 
   src = pkgs.fetchFromGitHub {
