@@ -1,0 +1,71 @@
+# Chromium example
+
+This deployment sets up a 4-container deployment with separate CAS, scheduler
+and worker. Don't use this example deployment in production. It's insecure.
+
+> [!WARN]
+> The client build request is best done from a Ubuntu image, `./03_build_chrome_tests.sh`
+> will check if the image is Ubuntu and fail otherwise.
+
+
+In this example we're using `kind` to set up the cluster `cilium` to provide a
+`LoadBalancer` and `GatewayController`.
+
+First set up a local development cluster:
+
+```bash
+./00_infra.sh
+```
+
+Next start a few standard deployments. This part also builds the remote
+execution containers and makes them available to the cluster:
+
+```bash
+./01_operations.sh
+```
+
+Finally, deploy NativeLink:
+
+```bash
+./02_application.sh
+```
+
+> [!TIP]
+> You can use `./04_delete_application.sh` to remove just the `nativelink`
+> deployments but leave the rest of the cluster intact.
+
+This demo setup creates two gateways to expose the `cas` and `scheduler`
+deployments via your local docker network:
+
+```bash
+CACHE=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')
+SCHEDULER=$(kubectl get gtw scheduler -o=jsonpath='{.status.addresses[0].value}')
+
+echo "Cache IP: $CACHE"
+echo "Scheduler IP: $SCHEDULER"
+```
+
+Using `./03_build_chrome_tests.sh` example script will download needed dependencies
+for building chromium unit tests using NativeLink CAS and Scheduler. The initial part
+of the script checks if some dependencies exist, if not installs them, then moves on
+to downloading and building chromium tests. The script simplifies the setup described
+in [linux/build_instructions.md](https://chromium.googlesource.com/chromium/src/+/main/docs/linux/build_instructions.md)
+
+```bash
+./03_build_chrome_tests.sh
+```
+
+> [!TIP]
+> You can monitor the logs of container groups with `kubectl logs`:
+> ```bash
+> kubectl logs -f -l app=nativelink-cas
+> kubectl logs -f -l app=nativelink-scheduler
+> kubectl logs -f -l app=nativelink-worker-chromium --all-containers=true
+> watch $HOME/chromium/src/buildtools/reclient/reproxystatus
+> ```
+
+When you're done testing, delete the cluster:
+
+```bash
+kind delete cluster
+```
