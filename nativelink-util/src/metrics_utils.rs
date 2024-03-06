@@ -501,66 +501,6 @@ impl MetricPublisher for &CounterWithTime {
     }
 }
 
-#[derive(Default)]
-pub struct ContinuousCounterWithTime {
-    counter: AtomicU64,
-    last_time: AtomicU64,
-    total_time: AtomicU64,
-}
-
-impl ContinuousCounterWithTime {
-    #[inline]
-    pub fn inc(&self) {
-        if !metrics_enabled() {
-            return;
-        }
-
-        let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        if self.counter.fetch_add(1, Ordering::Relaxed) > 1 {
-            let total_time =
-                self.total_time.load(Ordering::Relaxed) + (current_time - self.last_time.load(Ordering::Relaxed));
-            self.total_time.store(total_time, Ordering::Relaxed);
-        }
-        self.last_time.store(current_time, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub fn get_total_time(&self) -> u64 {
-        if !metrics_enabled() {
-            return 0;
-        }
-        self.total_time.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub fn reset(&self) {
-        if !metrics_enabled() {
-            return;
-        }
-        self.counter.store(0, Ordering::Relaxed);
-        self.total_time.store(0, Ordering::Relaxed);
-    }
-}
-
-impl MetricPublisher for &ContinuousCounterWithTime {
-    #[inline]
-    fn publish(&self, state: &mut CollectorState, name: String, help: String, labels: Labels) {
-        state.publish_with_labels(
-            format!("{name}_last_ts"),
-            &self.last_time,
-            format!("The timestamp of when {name} was last published"),
-            labels.clone(),
-        );
-        state.publish_with_labels(
-            format!("{name}_total_time"),
-            &self.last_time,
-            format!("The total time spent since {name} was last reset"),
-            labels.clone(),
-        );
-        state.publish_with_labels(name, &self.counter, help, labels);
-    }
-}
-
 pub struct Collector<T>
 where
     T: Sync + Send + 'static,

@@ -124,7 +124,7 @@ pub struct SimpleScheduler {
     /// amount of time in seconds.
     /// Default: 10 (seconds)
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
-    pub no_listener_timeout_s: u64,
+    pub disconnect_timeout_s: u64,
 }
 
 /// A scheduler that simply forwards requests to an upstream scheduler.  This

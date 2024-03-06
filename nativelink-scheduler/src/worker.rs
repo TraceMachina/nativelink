@@ -21,7 +21,7 @@ use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
-use nativelink_util::action_messages::ActionInfo;
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey};
 use nativelink_util::metrics_utils::{CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent};
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;
@@ -203,6 +203,12 @@ impl Worker {
         self.restore_platform_properties(&action_info.platform_properties);
         self.is_paused = false;
         self.metrics.actions_completed.inc();
+    }
+
+    pub fn drop_action(&mut self, action_info: &Arc<ActionInfo>) {
+        self.running_action_infos.remove(action_info);
+        self.restore_platform_properties(&action_info.platform_properties);
+        self.is_paused = false;
     }
 
     pub fn has_actions(&self) -> bool {

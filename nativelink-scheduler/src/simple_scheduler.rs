@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
@@ -30,7 +31,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
 use nativelink_util::metrics_utils::{
-    AsyncCounterWrapper, Collector, CollectorState, ContinuousCounterWithTime, CounterWithTime, FuncCounterWrapper,
+    AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper,
     MetricsComponent, Registry,
 };
 use nativelink_util::platform_properties::PlatformPropertyValue;
@@ -59,7 +60,7 @@ const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
 /// Default timeout for actions without any listeners
 /// If this changes, remember to change the documentation in the config.
-const DEFAULT_NO_LISTENERS_TIMEOUT_S: u64 = 10;
+const DEFAULT_DISCONNECT_TIMEOUT_S: u64 = 10;
 
 /// An action that is being awaited on and last known state.
 struct AwaitedAction {
@@ -206,6 +207,7 @@ struct SimpleSchedulerImpl {
     queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction>,
     workers: Workers,
     active_actions: HashMap<Arc<ActionInfo>, RunningAction>,
+    actions_no_listeners: HashMap<Arc<ActionInfoHashKey>, SystemTime>,
     // These actions completed recently but had no listener, they might have
     // completed while the caller was thinking about calling wait_execution, so
     // keep their completion state around for a while to send back.
@@ -221,7 +223,7 @@ struct SimpleSchedulerImpl {
     tasks_or_workers_change_notify: Arc<Notify>,
     metrics: Arc<Metrics>,
     /// After no_listener_timeout_s seconds, if the action has no listeners, it will be removed from the queue.
-    no_listener_timeout_s: u64,
+    disconnect_timeout_s: u64,
 }
 
 impl SimpleSchedulerImpl {
@@ -353,21 +355,15 @@ impl SimpleSchedulerImpl {
                     let send_result = awaited_action.notify_channel.send(awaited_action.current_state.clone());
                     self.queued_actions_set.insert(action_info.clone());
                     self.queued_actions.insert(action_info.clone(), awaited_action);
-                    self.metrics.time_without_listeners.reset();
                     send_result
                 };
 
                 if send_result.is_err() {
                     self.metrics.retry_action_no_more_listeners.inc();
-                    self.metrics.time_without_listeners.inc();
                     // Only remove action if total time without listeners exceeds the timout.
                     // Otherwise, we keep them around for a bit just in case
                     // the client disconnected and will reconnect and ask for same job to be executed
                     // again.
-                    if self.metrics.time_without_listeners.get_total_time() >= self.no_listener_timeout_s {
-                        self.queued_actions.remove(action_info.as_ref());
-                        self.queued_actions_set.remove(&action_info.clone());
-                    }
                     warn!(
                         "Action {} has no more listeners during evict_worker()",
                         action_info.digest().hash_str()
@@ -409,6 +405,44 @@ impl SimpleSchedulerImpl {
         worker.is_draining = is_draining;
         self.tasks_or_workers_change_notify.notify_one();
         Ok(())
+    }
+
+    fn drop_action(&mut self, action_info: &Arc<ActionInfo>) {
+        if let Some(running_action) = self.active_actions.remove(action_info) {
+            let worker_id = running_action.worker_id;
+            if let Some(worker) = self.workers.workers.get_mut(&worker_id) {
+                worker.drop_action(action_info);
+            }
+        } else {
+            self.queued_actions.remove(action_info);
+            self.queued_actions_set.remove(action_info);
+        }
+        self.tasks_or_workers_change_notify.notify_one();
+    }
+
+    fn detect_disconnected_listeners(&mut self) {
+        let queued_action_infos: Vec<Arc<ActionInfo>> = self.queued_actions.keys().cloned().collect();
+        for action_info in queued_action_infos {
+            let action = self.queued_actions.get(action_info.as_ref()).unwrap();
+            // If the receiver count is greater than 0 we need to
+            // remove it from the disconnect tracker or skip it
+            if action.notify_channel.receiver_count() > 0 {
+                match self.actions_no_listeners.get(&action_info.unique_qualifier) {
+                    Some(..) => self.actions_no_listeners.remove(&action_info.unique_qualifier),
+                    None => { continue; }
+                };
+            } else {
+                match self.actions_no_listeners.get(&action_info.unique_qualifier) {
+                    Some(last_time) => {
+                        if last_time.elapsed().unwrap() > Duration::from_secs(self.disconnect_timeout_s) {
+                            self.drop_action(&action_info);
+                            self.actions_no_listeners.remove(&action_info.unique_qualifier);
+                        }
+                    },
+                    None => { self.actions_no_listeners.insert(action_info.unique_qualifier.clone().into(), SystemTime::now()); }
+                };
+            }
+        }
     }
 
     // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we can create a map
@@ -573,17 +607,10 @@ impl SimpleSchedulerImpl {
         if !running_action.action.current_state.stage.is_finished() {
             if send_result.is_err() {
                 self.metrics.update_action_no_more_listeners.inc();
-
-                self.metrics.time_without_listeners.inc();
                 // Only remove action if total time without listeners exceeds the timout.
                 // Otherwise, we keep them around for a bit just in case
                 // the client disconnected and will reconnect and ask for same job to be executed
                 // again.
-                if self.metrics.time_without_listeners.get_total_time() >= self.no_listener_timeout_s {
-                    self.queued_actions.remove(&action_info);
-                    self.queued_actions_set.remove(&action_info.clone());
-                }
-
                 warn!(
                     "Action {} has no more listeners during update_action()",
                     action_info.digest().hash_str()
@@ -657,9 +684,9 @@ impl SimpleScheduler {
             retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
         }
 
-        let mut no_listener_timeout_s = scheduler_cfg.no_listener_timeout_s;
-        if no_listener_timeout_s == 0 {
-            no_listener_timeout_s = DEFAULT_NO_LISTENERS_TIMEOUT_S;
+        let mut disconnect_timeout_s = scheduler_cfg.disconnect_timeout_s;
+        if disconnect_timeout_s == 0 {
+            disconnect_timeout_s = DEFAULT_DISCONNECT_TIMEOUT_S;
         }
 
         let mut max_job_retries = scheduler_cfg.max_job_retries;
@@ -668,7 +695,6 @@ impl SimpleScheduler {
         }
 
         let tasks_or_workers_change_notify = Arc::new(Notify::new());
-
         let metrics = Arc::new(Metrics::default());
         let metrics_for_do_try_match = metrics.clone();
         let inner = Arc::new(Mutex::new(SimpleSchedulerImpl {
@@ -676,13 +702,14 @@ impl SimpleScheduler {
             queued_actions: BTreeMap::new(),
             workers: Workers::new(scheduler_cfg.allocation_strategy),
             active_actions: HashMap::new(),
+            actions_no_listeners: HashMap::new(),
             recently_completed_actions: HashSet::new(),
             retain_completed_for: Duration::new(retain_completed_for_s, 0),
             worker_timeout_s,
             max_job_retries,
             tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
             metrics: metrics.clone(),
-            no_listener_timeout_s,
+            disconnect_timeout_s,
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
@@ -702,6 +729,7 @@ impl SimpleScheduler {
                             let timer = metrics_for_do_try_match.do_try_match.begin_timer();
                             inner.do_try_match();
                             timer.measure();
+                            inner.detect_disconnected_listeners();
                         }
                         // If the inner went away it means the scheduler is shutting
                         // down, so we need to resolve our future.
@@ -1052,7 +1080,7 @@ struct Metrics {
     lock_stall_time: AtomicU64,
     lock_stall_time_counter: AtomicU64,
     do_try_match: AsyncCounterWrapper,
-    time_without_listeners: ContinuousCounterWithTime,
+    detect_disconnected_listeners: AsyncCounterWrapper,
 }
 
 impl Metrics {
