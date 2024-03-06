@@ -228,7 +228,7 @@ async fn is_executable(file_handle: &fs::FileSlot, full_path: &impl AsRef<Path>)
         .metadata()
         .await
         .err_tip(|| format!("While reading metadata for {:?}", full_path.as_ref()))?;
-    Ok((metadata.mode() & 0o001) != 0)
+    Ok((metadata.mode() & 0o111) != 0)
 }
 
 async fn upload_file(
