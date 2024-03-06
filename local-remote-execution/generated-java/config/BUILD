@@ -17,21 +17,6 @@
 
 package(default_visibility = ["//visibility:public"])
 
-toolchain(
-    name = "cc-toolchain",
-    exec_compatible_with = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-        "@bazel_tools//tools/cpp:clang",
-    ],
-    target_compatible_with = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-    ],
-    toolchain = "//generated/cc:cc-compiler-k8",
-    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
-)
-
 platform(
     name = "platform",
     constraint_values = [
@@ -40,7 +25,7 @@ platform(
         "@bazel_tools//tools/cpp:clang",
     ],
     exec_properties = {
-        "container-image": "docker://nativelink-toolchain:zwzsz9ba6nfvxqmqlpwbv894mb3yklb7",
+        "container-image": "docker://lre-java:scvf2sy5n6l3mn9rc3p1r7q9cp589jjw",
         "OSFamily": "Linux",
     },
     parents = ["@local_config_platform//:host"],
