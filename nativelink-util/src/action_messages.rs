@@ -631,6 +631,7 @@ pub enum ActionStage {
     // execution yet.
     /// Worker is executing the action.
     Executing,
+    // TODO(zbirenbaum) Add dropped status and rpc handling for actions which were cancelled due to disconnection
     /// Worker completed the work with result.
     Completed(ActionResult),
     /// Result was found from cache, don't decode the proto just to re-encode it.

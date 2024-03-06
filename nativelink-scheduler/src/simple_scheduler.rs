@@ -435,6 +435,7 @@ impl SimpleSchedulerImpl {
                 match self.actions_no_listeners.get(&action_info.unique_qualifier) {
                     Some(last_time) => {
                         if last_time.elapsed().unwrap() > Duration::from_secs(self.disconnect_timeout_s) {
+                            // TODO: use notify_channel.send() to let worker know to terminate job
                             self.drop_action(&action_info);
                             self.actions_no_listeners.remove(&action_info.unique_qualifier);
                         }
