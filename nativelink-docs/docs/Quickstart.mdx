@@ -32,8 +32,8 @@ cargo install --git https://github.com/TraceMachina/nativelink --tag v0.2.0
 
 ### ⚙️ Configuration
 
-The `cas` executable reads a JSON file as it's only parameter,
-`--config`. See [nativelink-config](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json)
+The `nativelink` executable reads a JSON file as it's only parameter,
+`--config`. See the [configuration docs](https://docs.nativelink.dev/Configuration)
 for more details and examples.
 
 To grab the example in your current working directory, run:
@@ -184,21 +184,21 @@ This build supports Nix/direnv which provides Bazel but no C++ toolchain
 
 :::
 
-The following commands place an executable in `./bazel-bin/cas/cas` and start
+The following commands place an executable in `./bazel-bin/nativelink` and start
 the service:
 
 ```sh
 # Unoptimized development build on Unix
-bazel run cas -- ./nativelink-config/examples/basic_cas.json
+bazel run nativelink -- ./nativelink-config/examples/basic_cas.json
 
 # Optimized release build on Unix
-bazel run -c opt cas -- ./nativelink-config/examples/basic_cas.json
+bazel run -c opt nativelink -- ./nativelink-config/examples/basic_cas.json
 
 # Unoptimized development build on Windows
-bazel run --config=windows cas -- ./nativelink-config/examples/basic_cas.json
+bazel run --config=windows nativelink -- ./nativelink-config/examples/basic_cas.json
 
 # Optimized release build on Windows
-bazel run --config=windows -c opt cas -- ./nativelink-config/examples/basic_cas.json
+bazel run --config=windows -c opt nativelink -- ./nativelink-config/examples/basic_cas.json
 ```
 
 :::note
@@ -239,10 +239,10 @@ toolchain/stdenv (yet).
 
 ```sh
 # Unoptimized development build
-cargo run --bin cas -- ./nativelink-config/examples/basic_cas.json
+cargo run --bin nativelink -- ./nativelink-config/examples/basic_cas.json
 
 # Optimized release build
-cargo run --release --bin cas -- ./nativelink-config/examples/basic_cas.json
+cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.json
 ```
 
 :::warning
