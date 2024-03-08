@@ -126,9 +126,9 @@ pub trait DigestHasher {
     /// the file and feed it into the hasher.
     fn digest_for_file(
         self,
-        file: fs::ResumeableFileSlot<'static>,
+        file: fs::ResumeableFileSlot,
         size_hint: Option<u64>,
-    ) -> impl Future<Output = Result<(DigestInfo, fs::ResumeableFileSlot<'static>), Error>>;
+    ) -> impl Future<Output = Result<(DigestInfo, fs::ResumeableFileSlot), Error>>;
 
     /// Utility function to compute a hash from a generic reader.
     fn compute_from_reader<R: AsyncRead + Unpin + Send>(
@@ -168,8 +168,8 @@ impl DigestHasherImpl {
     #[inline]
     async fn hash_file(
         &mut self,
-        mut file: fs::ResumeableFileSlot<'static>,
-    ) -> Result<(DigestInfo, fs::ResumeableFileSlot<'static>), Error> {
+        mut file: fs::ResumeableFileSlot,
+    ) -> Result<(DigestInfo, fs::ResumeableFileSlot), Error> {
         let reader = file.as_reader().await.err_tip(|| "In digest_for_file")?;
         let digest = self
             .compute_from_reader(reader)
@@ -202,9 +202,9 @@ impl DigestHasher for DigestHasherImpl {
 
     async fn digest_for_file(
         mut self,
-        mut file: fs::ResumeableFileSlot<'static>,
+        mut file: fs::ResumeableFileSlot,
         size_hint: Option<u64>,
-    ) -> Result<(DigestInfo, fs::ResumeableFileSlot<'static>), Error> {
+    ) -> Result<(DigestInfo, fs::ResumeableFileSlot), Error> {
         let file_position = file
             .stream_position()
             .await
