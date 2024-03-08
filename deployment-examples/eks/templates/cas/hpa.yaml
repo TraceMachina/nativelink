@@ -1,0 +1,32 @@
+{{- if .Values.cas.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "nativelink.fullname" . }}-cas-hpa
+  labels:
+    {{- include "nativelink.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "nativelink.fullname" . }}-cas
+  minReplicas: {{ .Values.cas.hpa.minReplicas }}
+  maxReplicas: {{ .Values.cas.hpa.maxReplicas }}
+  metrics:
+    {{- if .Values.cas.hpa.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.cas.hpa.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.cas.hpa.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.cas.hpa.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

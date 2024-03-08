@@ -1,0 +1,125 @@
+# Default values for nativelink.
+image:
+  repository: ghcr.io/tracemachina/nativelink
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "v0.2.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  name: "nativelink"
+  # Automatically mount a ServiceAccount's API credentials?
+  automount: true
+  # Annotations to add to the service account
+  # Specify a role-arn for IRSA to grant the CAS service account access to the S3 bucket (see cas.aws.s3Bucket below)
+  # You'll need to create the IAM role; it should allow full access to the S3 bucket
+  # See: https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::AWS_ACCOUNT_ID:role/IAM_ROLE_NAME"
+
+# Configure the NativeLink Remote Cache service
+cas:
+  replicaCount: 1 # see HPA config below
+  aws:
+    region: us-east-2
+    # set to a pre-existing bucket in the AWS region where your cluster is running
+    # please sure the service account can assume an IAM role that has read/write access to the specified bucket
+    # s3Bucket: ""
+  resources:
+    # Adjust these as needed for the CAS service
+    limits:
+      cpu: "3"
+      memory: 5Gi
+    requests:
+      cpu: "2"
+      memory: 3Gi
+  podAnnotations:
+    karpenter.sh/do-not-disrupt: "true" # Prevent the CAS pod from getting evicted by Karpenter / Cluster Autoscaler
+    "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
+  podLabels: {}
+
+  service:
+    type: ClusterIP # See Ingress section below for exposing outside the cluster
+    grpcPort: 50051
+
+  # Enable a Prometheus service monitor to scrape the CAS metrics endpoint
+  # The Prometheus operator and ServiceMonitor CRD must be installed before enabling this feature
+  serviceMonitor:
+    enabled: false
+    additionalLabels: {}
+    ## Default: scrape .Release.Namespace or namespaceOverride only
+    ## To scrape all, use the following:
+    ## namespaceSelector:
+    ##   any: true
+    scrapeInterval: 30s
+    # honorLabels: true
+    targetLabels: []
+    relabelings: []
+    metricRelabelings: []
+
+  # Horizontal Pod Autoscaler to add more CAS pods as load increases
+  hpa:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 120
+
+  # Additional volumes on the CAS Deployment definition. (uncommon)
+  volumes: []
+  # - name: foo
+  #   secret:
+  #     secretName: mysecret
+  #     optional: false
+
+  # Additional volumeMounts on the CAS Deployment definition. (uncommon)
+  volumeMounts: []
+  # - name: foo
+  #   mountPath: "/etc/foo"
+  #   readOnly: true
+  podSecurityContext:
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+
+  nodeSelector:
+    kubernetes.io/arch: amd64
+    kubernetes.io/os: linux
+  tolerations: []
+  affinity: {}
+
+# TODO: create the K8s resources for scheduler when needed
+scheduler:
+  enabled: false
+
+# Using a single ingress for CAS and Scheduler is most common
+# We recommend either https://github.com/kubernetes/ingress-nginx or
+# ALB Controller: https://github.com/kubernetes-sigs/aws-load-balancer-controller
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-tls-issuer
+    nginx.ingress.kubernetes.io/backend-protocol: GRPC
+  hosts:
+    - host: cas.nativelink.some-domain.com # DNS name to expose for the CAS service
+      paths:
+        - path: /
+          pathType: Prefix
+          service: cas
+#    - host: cas.nativelink.some-domain.com # DNS name to expose for the Remote Execution Scheduler service
+#      paths:
+#        - path: /
+#          pathType: Prefix
+#          service: scheduler
+#  tls: []
+#    - hosts:
+#        - cas-tim.build-faster.nativelink.net
+#      secretName: nativelink-tls

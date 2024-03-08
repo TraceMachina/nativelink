@@ -1,0 +1,127 @@
+apiVersion: v1
+data:
+  cas.json: |
+    {
+      "stores": {
+        "AC_FAST_SLOW_STORE": {
+          "fast_slow": {
+            "fast": {
+              "memory": {
+                "eviction_policy": {
+                  "max_bytes": 1000000000
+                }
+              }
+            },
+            "slow": {
+              "experimental_s3_store": {
+                "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
+                "bucket": "${NATIVE_LINK_AWS_S3_CAS_BUCKET:-not_set}",
+                "key_prefix": "ac/",
+                "retry": {
+                  "max_retries": 6,
+                  "delay": 0.3,
+                  "jitter": 0.5
+                },
+                "additional_max_concurrent_requests": 10
+              }
+            }
+          }
+        },
+        "AC_S3_STORE": {
+          "completeness_checking": {
+            "backend": {
+              "ref_store": {
+                "name": "AC_FAST_SLOW_STORE"
+              }
+            },
+            "cas_store": {
+              "ref_store": {
+                "name": "CAS_S3_STORE"
+              }
+            }
+          }
+        },
+        "CAS_FAST_SLOW_STORE": {
+          "fast_slow": {
+            "fast": {
+              "memory": {
+                "eviction_policy": {
+                  "max_bytes": 1000000000
+                }
+              }
+            },
+            "slow": {
+              "experimental_s3_store": {
+                "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
+                "bucket": "${NATIVE_LINK_AWS_S3_CAS_BUCKET:-not_set}",
+                "key_prefix": "cas/",
+                "retry": {
+                  "max_retries": 6,
+                  "delay": 0.3,
+                  "jitter": 0.5
+                },
+                "additional_max_concurrent_requests": 10
+              }
+            }
+          }
+        },
+        "CAS_S3_STORE": {
+          "existence_cache": {
+            "backend": {
+              "compression": {
+                "compression_algorithm": {
+                  "lz4": {}
+                },
+                "backend": {
+                  "ref_store": {
+                    "name": "CAS_FAST_SLOW_STORE"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "servers": [
+        {
+          "listener": {
+            "http": {
+              "socket_address": "0.0.0.0:{{ .Values.cas.service.grpcPort }}"
+            }
+          },
+          "services": {
+            "cas": {
+              "main": {
+                "cas_store": "CAS_S3_STORE"
+              }
+            },
+            "ac": {
+              "main": {
+                "ac_store": "AC_S3_STORE"
+              }
+            },
+            "capabilities": {},
+            "bytestream": {
+              "cas_stores": {
+                "main": "CAS_S3_STORE"
+              }
+            }
+          }
+        },
+        {
+          "listener": {
+            "http": {
+              "socket_address": "0.0.0.0:50061"
+            }
+          },
+          "services": {
+            "experimental_prometheus": {
+              "path": "/metrics"
+            }
+          }
+        }
+      ]
+    }
+kind: ConfigMap
+metadata:
+  name: {{ include "nativelink.fullname" . }}-cas-config

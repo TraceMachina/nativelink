@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nativelink.fullname" . }}-cas
+  labels:
+{{- include "nativelink.casSelectorLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.cas.service.type }}
+  ports:
+    - name: grpc
+      port: {{ .Values.cas.service.grpcPort }}
+      protocol: TCP
+      targetPort: {{ .Values.cas.service.grpcPort }}
+    - name: metrics
+      port: 50061
+      protocol: TCP
+      targetPort: 50061
+  selector:
+    {{- include "nativelink.casSelectorLabels" . | nindent 4 }}

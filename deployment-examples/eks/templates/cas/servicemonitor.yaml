@@ -1,0 +1,41 @@
+{{- if .Values.cas.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "nativelink.fullname" . }}-cas-monitor
+labels:
+  labels:
+{{- include "nativelink.labels" . | nindent 4 }}
+{{- if .Values.cas.serviceMonitor.additionalLabels }}
+{{- toYaml .Values.cas.serviceMonitor.additionalLabels | nindent 4 }}
+{{- end }}
+spec:
+  endpoints:
+    - path: /metrics
+      port: metrics
+      interval: {{ .Values.cas.serviceMonitor.scrapeInterval }}
+    {{- if .Values.cas.serviceMonitor.honorLabels }}
+      honorLabels: true
+    {{- end }}
+    {{- if .Values.cas.serviceMonitor.relabelings }}
+      relabelings: {{ toYaml .Values.cas.serviceMonitor.relabelings | nindent 8 }}
+    {{- end }}
+    {{- if .Values.cas.serviceMonitor.metricRelabelings }}
+      metricRelabelings: {{ toYaml .Values.cas.serviceMonitor.metricRelabelings | nindent 8 }}
+    {{- end }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+{{- include "nativelink.casSelectorLabels" . | nindent 6 }}
+{{- if .Values.cas.serviceMonitor.jobLabel }}
+  jobLabel: {{ .Values.cas.serviceMonitor.jobLabel | quote }}
+{{- end }}
+{{- if .Values.cas.serviceMonitor.targetLabels }}
+  targetLabels:
+  {{- range .Values.cas.serviceMonitor.targetLabels }}
+    - {{ . }}
+  {{- end }}
+{{- end }}
+{{- end }}

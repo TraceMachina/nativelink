@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nativelink.fullname" . }}-cas
+  labels:
+    {{- include "nativelink.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.cas.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "nativelink.casSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.cas.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "nativelink.casSelectorLabels" . | nindent 8 }}
+        {{- with .Values.cas.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.cas.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nativelink.serviceAccountName" . }}
+      containers:
+        - name: cas
+          args:
+            - /etc/config/cas.json
+          env:
+            - name: NATIVE_LINK_AWS_S3_CAS_BUCKET
+              value: {{ .Values.cas.aws.s3Bucket }}
+            - name: NATIVE_LINK_AWS_REGION
+              value: {{ .Values.cas.aws.region }}
+            - name: RUST_LOG
+              value: warn
+          securityContext:
+            {{- toYaml .Values.cas.podSecurityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+          - containerPort: {{ .Values.cas.service.grpcPort }}
+            protocol: TCP
+          - containerPort: 50061
+            protocol: TCP
+          resources:
+            {{- toYaml .Values.cas.resources | nindent 12 }}
+          volumeMounts:
+            - mountPath: /etc/config
+              name: config-json
+            - mountPath: /tmp/nativelink/data
+              name: local-data
+            {{- with .Values.cas.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - emptyDir: {}
+          name: local-data
+        - configMap:
+            defaultMode: 420
+            name: {{ include "nativelink.fullname" . }}-cas-config
+          name: config-json
+        {{- with .Values.cas.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.cas.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - {{ include "nativelink.name" . }}
+                topologyKey: topology.kubernetes.io/zone
+              weight: 100
+      {{- with .Values.cas.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
