@@ -40,8 +40,8 @@
         system,
         ...
       }: let
-        stable-rust = pkgs.rust-bin.stable."1.75.0";
-        nightly-rust = pkgs.rust-bin.nightly."2024-01-01";
+        stable-rust = pkgs.rust-bin.stable."1.76.0";
+        nightly-rust = pkgs.rust-bin.nightly."2024-03-01";
 
         maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
           pkgs.darwin.apple_sdk.frameworks.Security
