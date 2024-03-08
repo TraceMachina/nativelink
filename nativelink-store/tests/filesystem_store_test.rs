@@ -77,7 +77,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(Self, fs::ResumeableFileSlot<'static>, OsString), Error> {
+    ) -> Result<(Self, fs::ResumeableFileSlot, OsString), Error> {
         let (inner, file_slot, path) = FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
         Ok((
             Self {
@@ -101,7 +101,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         self.inner.as_ref().unwrap().get_encoded_file_path()
     }
 
-    async fn read_file_part<'a>(&'a self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot<'a>, Error> {
+    async fn read_file_part(&self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot, Error> {
         self.inner.as_ref().unwrap().read_file_part(offset, length).await
     }
 
