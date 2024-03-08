@@ -38,7 +38,12 @@ rust_binary(
         "@crates//:tower",
         "@crates//:tracing",
         "@crates//:tracing-subscriber",
-    ],
+    ] + select({
+        "@platforms//os:windows": [],
+        "//conditions:default": [
+            "@crates//:tikv-jemallocator",
+        ],
+    }),
 )
 
 genrule(

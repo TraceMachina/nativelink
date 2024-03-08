@@ -66,6 +66,13 @@ use tower::util::ServiceExt;
 use tracing::{error, warn};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
+// We use jemalloc because our program is frequently long-lived and memory fragmentation
+// happens often with memory store. Jemalloc nearly completely removes memory fragmentation
+// issues.
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 /// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
 const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
 
