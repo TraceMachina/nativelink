@@ -207,9 +207,9 @@ impl Store for FastSlowStore {
     async fn update_with_whole_file(
         self: Pin<&Self>,
         digest: DigestInfo,
-        mut file: fs::ResumeableFileSlot<'static>,
+        mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::ResumeableFileSlot<'static>>, Error> {
+    ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
         let fast_store = self.fast_store.inner_store(Some(digest));
         let slow_store = self.slow_store.inner_store(Some(digest));
         if fast_store.optimized_for(StoreOptimizations::FileUpdates) {

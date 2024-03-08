@@ -77,7 +77,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(Self, fs::ResumeableFileSlot<'static>, OsString), Error> {
+    ) -> Result<(Self, fs::ResumeableFileSlot, OsString), Error> {
         let (inner, file_slot, path) = FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
         Ok((
             Self {
@@ -101,7 +101,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         self.inner.as_ref().unwrap().get_encoded_file_path()
     }
 
-    async fn read_file_part<'a>(&'a self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot<'a>, Error> {
+    async fn read_file_part(&self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot, Error> {
         self.inner.as_ref().unwrap().read_file_part(offset, length).await
     }
 
@@ -1030,7 +1030,9 @@ mod filesystem_store_tests {
     }
 
     /// Regression test for: https://github.com/TraceMachina/nativelink/issues/495.
-    #[tokio::test(flavor = "multi_thread")]
+    /// This test requires multiple worker threads due to multiple file operations
+    /// blocking worker threads at a time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn update_file_future_drops_before_rename() -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
@@ -1049,15 +1051,16 @@ mod filesystem_store_tests {
                     ..Default::default()
                 },
                 |_| sleep(Duration::ZERO),
-                |from, to| {
+                |_, _| {
                     // If someone locked our mutex, it means we need to pause, so we
                     // simply request a lock on the same mutex.
-                    if RENAME_REQUEST_PAUSE_MUX.try_lock().is_err() {
+                    let Ok(_) = RENAME_REQUEST_PAUSE_MUX.try_lock() else {
                         RENAME_IS_PAUSED.store(true, Ordering::Release);
                         let _lock = RENAME_REQUEST_PAUSE_MUX.lock();
                         RENAME_IS_PAUSED.store(false, Ordering::Release);
-                    }
-                    std::fs::rename(from, to)
+                        return Ok(());
+                    };
+                    Ok(())
                 },
             )
             .await?,
@@ -1094,6 +1097,7 @@ mod filesystem_store_tests {
             drop(update_fut);
             drop(rename_pause_request_lock);
         }
+
         // Grab the newly inserted item in our store.
         let new_file_entry = store.get_file_entry_for_digest(&digest).await?;
         assert!(

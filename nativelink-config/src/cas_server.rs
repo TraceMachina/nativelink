@@ -421,6 +421,12 @@ pub enum EnvironmentSource {
     /// All fields are optional, file does not need to be created and may be
     /// empty.
     side_channel_file,
+
+    /// A "root" directory for the action. This directory can be used to
+    /// store temporary files that are not needed after the action has
+    /// completed. This directory will be purged after the action has
+    /// completed.
+    action_directory,
 }
 
 #[derive(Deserialize, Debug, Default)]
