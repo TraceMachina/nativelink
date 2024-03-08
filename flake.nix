@@ -40,8 +40,25 @@
         system,
         ...
       }: let
-        stable-rust = pkgs.rust-bin.stable."1.76.0";
-        nightly-rust = pkgs.rust-bin.nightly."2024-03-01";
+        stable-rust-version = "1.76.0";
+        nightly-rust-version = "2024-03-01";
+
+        # TODO(aaronmondal): Make musl builds work on Darwin.
+        # See: https://github.com/TraceMachina/nativelink/issues/751
+        stable-rust =
+          if pkgs.stdenv.isDarwin
+          then pkgs.rust-bin.stable.${stable-rust-version}
+          else pkgs.pkgsMusl.rust-bin.stable.${stable-rust-version};
+        nightly-rust =
+          if pkgs.stdenv.isDarwin
+          then pkgs.rust-bin.nightly.${nightly-rust-version}
+          else pkgs.pkgsMusl.rust-bin.nightly.${nightly-rust-version};
+
+        # TODO(aaronmondal): Tools like rustdoc don't work with the `pkgsMusl`
+        # package set because of missing libgcc_s. Fix this upstream and use the
+        # `stable-rust` toolchain in the devShell as well.
+        # See: https://github.com/oxalica/rust-overlay/issues/161
+        stable-rust-native = pkgs.rust-bin.stable.${stable-rust-version};
 
         maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
           pkgs.darwin.apple_sdk.frameworks.Security
@@ -61,7 +78,7 @@
           if pkgs.stdenv.isDarwin
           then crane.lib.${system}
           else
-            (crane.mkLib pkgs).overrideToolchain (pkgs.rust-bin.stable.latest.default.override {
+            (crane.mkLib pkgs).overrideToolchain (stable-rust.default.override {
               targets = ["x86_64-unknown-linux-musl"];
             });
 
@@ -161,7 +178,7 @@
           nativeBuildInputs =
             [
               # Development tooling goes here.
-              stable-rust.default
+              stable-rust-native.default
               pkgs.pre-commit
               pkgs.bazel_7
               pkgs.awscli2
