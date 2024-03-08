@@ -40,8 +40,8 @@
         system,
         ...
       }: let
-        stable-rust = pkgs.rust-bin.stable."1.76.0";
-        nightly-rust = pkgs.rust-bin.nightly."2024-03-01";
+        stable-rust = pkgs.pkgsMusl.rust-bin.stable."1.76.0";
+        nightly-rust = pkgs.pkgsMusl.rust-bin.nightly."2024-03-01";
 
         maybeDarwinDeps = pkgs.lib.optionals pkgs.stdenv.isDarwin [
           pkgs.darwin.apple_sdk.frameworks.Security
@@ -61,7 +61,7 @@
           if pkgs.stdenv.isDarwin
           then crane.lib.${system}
           else
-            (crane.mkLib pkgs).overrideToolchain (pkgs.rust-bin.stable.latest.default.override {
+            (crane.mkLib pkgs).overrideToolchain (stable-rust.default.override {
               targets = ["x86_64-unknown-linux-musl"];
             });
 

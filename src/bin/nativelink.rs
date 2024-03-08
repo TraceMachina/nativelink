@@ -24,6 +24,7 @@ use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
 use futures::{FutureExt, StreamExt};
 use hyper::server::conn::Http;
 use hyper::{Response, StatusCode};
+use mimalloc::MiMalloc;
 use nativelink_config::cas_server::{
     CasConfig, CompressionAlgorithm, GlobalConfig, ListenerConfig, ServerConfig, WorkerConfig,
 };
@@ -65,6 +66,9 @@ use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
 use tracing::{error, warn};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 /// Note: This must be kept in sync with the documentation in `PrometheusConfig::path`.
 const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";

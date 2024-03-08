@@ -27,6 +27,7 @@ rust_binary(
         "@crates//:console-subscriber",
         "@crates//:futures",
         "@crates//:hyper",
+        "@crates//:mimalloc",
         "@crates//:parking_lot",
         "@crates//:prometheus-client",
         "@crates//:rustls-pemfile",
