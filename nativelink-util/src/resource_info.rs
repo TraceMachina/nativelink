@@ -95,7 +95,8 @@ impl<'a> ResourceInfo<'a> {
         let mut rparts = resource_name.rsplitn(7, '/');
         let mut output = ResourceInfo::default();
         let mut end_bytes_processed = 0;
-        let end_state = recursive_parse(&mut rparts, &mut output, State::Unknown, &mut end_bytes_processed)?;
+        let end_state = recursive_parse(&mut rparts, &mut output, State::Unknown, &mut end_bytes_processed)
+            .err_tip(|| format!("{} in {}", ERROR_MSG, resource_name))?;
         error_if!(
             end_state != State::OptionalMetadata,
             "Expected the final state to be OptionalMetadata. Got: {end_state:?}"
@@ -117,10 +118,10 @@ impl<'a> ResourceInfo<'a> {
         // Remember, `instance_name` can contain slashes and/or special names
         // like "blobs" or "uploads".
         let mut parts = beginning_part.rsplitn(3, '/');
-        output.uuid = Some(parts.next().err_tip(|| ERROR_MSG)?);
+        output.uuid = Some(parts.next().err_tip(|| format!("{} in {}", ERROR_MSG, resource_name))?);
         {
             // Sanity check that our next item is "uploads".
-            let uploads = parts.next().err_tip(|| ERROR_MSG)?;
+            let uploads = parts.next().err_tip(|| format!("{} in {}", ERROR_MSG, resource_name))?;
             error_if!(uploads != "uploads", "Expected part to be 'uploads'. Got: {uploads}");
         }
 
@@ -171,7 +172,7 @@ fn recursive_parse<'a>(
     mut state: State,
     bytes_processed: &mut usize,
 ) -> Result<State, Error> {
-    let part = rparts.next().err_tip(|| ERROR_MSG)?;
+    let part = rparts.next().err_tip(|| "on rparts.next()")?;
     if state == State::Unknown {
         if part == "blobs" {
             *bytes_processed = part.len() + SLASH_SIZE;
