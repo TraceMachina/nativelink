@@ -71,7 +71,7 @@ pub enum UploadSizeInfo {
 pub async fn slow_update_store_with_file<S: Store + ?Sized>(
     store: Pin<&S>,
     digest: DigestInfo,
-    file: &mut fs::ResumeableFileSlot<'static>,
+    file: &mut fs::ResumeableFileSlot,
     upload_size: UploadSizeInfo,
 ) -> Result<(), Error> {
     let (tx, rx) = make_buf_channel_pair();
@@ -173,9 +173,9 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     async fn update_with_whole_file(
         self: Pin<&Self>,
         digest: DigestInfo,
-        mut file: fs::ResumeableFileSlot<'static>,
+        mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::ResumeableFileSlot<'static>>, Error> {
+    ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
         let inner_store = self.inner_store(Some(digest));
         if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
             error_if!(

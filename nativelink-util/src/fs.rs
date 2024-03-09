@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Cow;
-use std::ffi::OsStr;
 use std::fs::Metadata;
 use std::io::IoSlice;
 use std::path::{Path, PathBuf};
@@ -58,25 +56,25 @@ enum MaybeFileSlot {
 /// the file. To simplify the code significantly we always require the
 /// file to be a `Take<FileSlot>`.
 #[derive(Debug)]
-pub struct ResumeableFileSlot<'a> {
+pub struct ResumeableFileSlot {
     maybe_file_slot: MaybeFileSlot,
-    path: Cow<'a, OsStr>,
+    path: PathBuf,
     is_write: bool,
 }
 
-impl<'a> ResumeableFileSlot<'a> {
-    pub fn new(file: FileSlot, path: impl Into<Cow<'a, OsStr>>, is_write: bool) -> Self {
+impl ResumeableFileSlot {
+    pub fn new(file: FileSlot, path: PathBuf, is_write: bool) -> Self {
         Self {
             maybe_file_slot: MaybeFileSlot::Open(file.take(u64::MAX)),
-            path: path.into(),
+            path,
             is_write,
         }
     }
 
-    pub fn new_with_take(file: Take<FileSlot>, path: impl Into<Cow<'a, OsStr>>, is_write: bool) -> Self {
+    pub fn new_with_take(file: Take<FileSlot>, path: PathBuf, is_write: bool) -> Self {
         Self {
             maybe_file_slot: MaybeFileSlot::Open(file),
-            path: path.into(),
+            path,
             is_write,
         }
     }
@@ -263,14 +261,28 @@ const DEFAULT_OPEN_FILE_PERMITS: usize = 10;
 static TOTAL_FILE_SEMAPHORES: AtomicUsize = AtomicUsize::new(DEFAULT_OPEN_FILE_PERMITS);
 pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FILE_PERMITS);
 
-/// Acquire a permit from the open file semaphore and call a raw function.
+/// Try to acquire a permit from the open file semaphore.
+/// This function will block, so it must be run from a thread that
+/// can be blocked.
 #[inline]
-pub async fn call_with_permit<R>(func: impl FnOnce() -> Result<R, Error>) -> Result<R, Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
+async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
+    OPEN_FILE_SEMAPHORE
         .acquire()
         .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    (func)()
+        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))
+}
+/// Acquire a permit from the open file semaphore and call a raw function.
+#[inline]
+pub async fn call_with_permit<F, T>(f: F) -> Result<T, Error>
+where
+    F: FnOnce(SemaphorePermit<'static>) -> Result<T, Error> + Send + 'static,
+    T: Send + 'static,
+{
+    let permit = get_permit().await?;
+    match tokio::task::spawn_blocking(move || (f)(permit)).await {
+        Ok(res) => res,
+        Err(_) => Err(make_err!(Code::Internal, "background task failed")),
+    }
 }
 
 pub fn set_open_file_limit(limit: usize) {
@@ -302,18 +314,20 @@ pub fn set_idle_file_descriptor_timeout(timeout: Duration) -> Result<(), Error> 
         .map_err(|_| make_err!(Code::Internal, "idle_file_descriptor_timeout already set"))
 }
 
-pub async fn open_file<'a>(path: impl Into<Cow<'a, OsStr>>, limit: u64) -> Result<ResumeableFileSlot<'a>, Error> {
-    let permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    let path = path.into();
+pub async fn open_file(path: impl AsRef<Path>, limit: u64) -> Result<ResumeableFileSlot, Error> {
+    let path = path.as_ref().to_owned();
+    let (permit, os_file, path) = call_with_permit(move |permit| {
+        Ok((
+            permit,
+            std::fs::File::open(&path).err_tip(|| format!("Could not open {:?}", path))?,
+            path,
+        ))
+    })
+    .await?;
     Ok(ResumeableFileSlot::new_with_take(
         FileSlot {
             _permit: permit,
-            inner: tokio::fs::File::open(&path)
-                .await
-                .err_tip(|| format!("Could not open {:?}", path))?,
+            inner: tokio::fs::File::from_std(os_file),
         }
         .take(limit),
         path,
@@ -321,18 +335,20 @@ pub async fn open_file<'a>(path: impl Into<Cow<'a, OsStr>>, limit: u64) -> Resul
     ))
 }
 
-pub async fn create_file<'a>(path: impl Into<Cow<'a, OsStr>>) -> Result<ResumeableFileSlot<'a>, Error> {
-    let permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    let path = path.into();
+pub async fn create_file(path: impl AsRef<Path>) -> Result<ResumeableFileSlot, Error> {
+    let path = path.as_ref().to_owned();
+    let (permit, os_file, path) = call_with_permit(move |permit| {
+        Ok((
+            permit,
+            std::fs::File::create(&path).err_tip(|| format!("Could not open {:?}", path))?,
+            path,
+        ))
+    })
+    .await?;
     Ok(ResumeableFileSlot::new(
         FileSlot {
             _permit: permit,
-            inner: tokio::fs::File::create(&path)
-                .await
-                .err_tip(|| format!("Could not open {:?}", path))?,
+            inner: tokio::fs::File::from_std(os_file),
         },
         path,
         true, /* is_write */
@@ -340,141 +356,113 @@ pub async fn create_file<'a>(path: impl Into<Cow<'a, OsStr>>) -> Result<Resumeab
 }
 
 pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::hard_link(src, dst).await.map_err(|e| e.into())
+    let src = src.as_ref().to_owned();
+    let dst = dst.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(|e| e.into())).await
 }
 
 pub async fn set_permissions(src: impl AsRef<Path>, perm: std::fs::Permissions) -> Result<(), Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::set_permissions(src, perm).await.map_err(|e| e.into())
+    let src = src.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(|e| e.into())).await
 }
 
 pub async fn create_dir(path: impl AsRef<Path>) -> Result<(), Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::create_dir(path).await.map_err(|e| e.into())
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::create_dir(path).map_err(|e| e.into())).await
 }
 
 pub async fn create_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::create_dir_all(path).await.map_err(|e| e.into())
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::create_dir_all(path).map_err(|e| e.into())).await
 }
 
 #[cfg(target_family = "unix")]
 pub async fn symlink(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::symlink(src, dst).await.map_err(|e| e.into())
+    let src = src.as_ref().to_owned();
+    let dst = dst.as_ref().to_owned();
+    call_with_permit(move |_| {
+        tokio::runtime::Handle::current()
+            .block_on(tokio::fs::symlink(src, dst))
+            .map_err(|e| e.into())
+    })
+    .await
 }
 
 pub async fn read_link(path: impl AsRef<Path>) -> Result<std::path::PathBuf, Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::read_link(path).await.map_err(|e| e.into())
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::read_link(path).map_err(|e| e.into())).await
 }
 
-pub struct ReadDir<'a> {
+pub struct ReadDir {
     // We hold the permit because once it is dropped it goes back into the queue.
-    permit: SemaphorePermit<'a>,
+    permit: SemaphorePermit<'static>,
     inner: tokio::fs::ReadDir,
 }
 
-impl<'a> ReadDir<'a> {
-    pub fn into_inner(self) -> (SemaphorePermit<'a>, tokio::fs::ReadDir) {
+impl ReadDir {
+    pub fn into_inner(self) -> (SemaphorePermit<'static>, tokio::fs::ReadDir) {
         (self.permit, self.inner)
     }
 }
 
-impl<'a> AsRef<tokio::fs::ReadDir> for ReadDir<'a> {
+impl AsRef<tokio::fs::ReadDir> for ReadDir {
     fn as_ref(&self) -> &tokio::fs::ReadDir {
         &self.inner
     }
 }
 
-impl<'a> AsMut<tokio::fs::ReadDir> for ReadDir<'a> {
+impl AsMut<tokio::fs::ReadDir> for ReadDir {
     fn as_mut(&mut self) -> &mut tokio::fs::ReadDir {
         &mut self.inner
     }
 }
 
-pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir<'static>, Error> {
-    let permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    Ok(ReadDir {
-        permit,
-        inner: tokio::fs::read_dir(path).await.map_err(Into::<Error>::into)?,
+pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir, Error> {
+    let path = path.as_ref().to_owned();
+    let (permit, inner) = call_with_permit(move |permit| {
+        Ok((
+            permit,
+            tokio::runtime::Handle::current()
+                .block_on(tokio::fs::read_dir(path))
+                .map_err(Into::<Error>::into)?,
+        ))
     })
+    .await?;
+    Ok(ReadDir { permit, inner })
 }
 
 pub async fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<(), Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::rename(from, to).await.map_err(|e| e.into())
+    let from = from.as_ref().to_owned();
+    let to = to.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::rename(from, to).map_err(|e| e.into())).await
 }
 
 pub async fn remove_file(path: impl AsRef<Path>) -> Result<(), Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::remove_file(path).await.map_err(|e| e.into())
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::remove_file(path).map_err(|e| e.into())).await
 }
 
 pub async fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::canonicalize(path).await.map_err(|e| e.into())
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::canonicalize(path).map_err(|e| e.into())).await
 }
 
 pub async fn metadata(path: impl AsRef<Path>) -> Result<Metadata, Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::metadata(path).await.map_err(|e| e.into())
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::metadata(path).map_err(|e| e.into())).await
 }
 
 pub async fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::read(path).await.map_err(|e| e.into())
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::read(path).map_err(|e| e.into())).await
 }
 
 pub async fn symlink_metadata(path: impl AsRef<Path>) -> Result<Metadata, Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::symlink_metadata(path).await.map_err(|e| e.into())
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::symlink_metadata(path).map_err(|e| e.into())).await
 }
 
 pub async fn remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
-    let _permit = OPEN_FILE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))?;
-    tokio::fs::remove_dir_all(path).await.map_err(|e| e.into())
+    let path = path.as_ref().to_owned();
+    call_with_permit(move |_| std::fs::remove_dir_all(path).map_err(|e| e.into())).await
 }

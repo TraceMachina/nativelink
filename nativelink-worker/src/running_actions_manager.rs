@@ -226,7 +226,7 @@ fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) ->
 }
 
 async fn upload_file(
-    mut resumeable_file: fs::ResumeableFileSlot<'static>,
+    mut resumeable_file: fs::ResumeableFileSlot,
     cas_store: Pin<&dyn Store>,
     full_path: impl AsRef<Path> + Debug,
     hasher: DigestHasherFunc,
