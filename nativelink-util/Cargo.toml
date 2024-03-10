@@ -25,6 +25,7 @@ rand = "0.8.5"
 serde = { version = "1.0.197", features = ["derive"] }
 sha2 = "0.10.8"
 tokio = { version = "1.36.0", features = [ "sync", "fs", "rt", "time", "io-util", "macros" ] }
+tokio-stream = { version = "0.1.14", features = ["sync"] }
 tokio-util = { version = "0.7.10" }
 tonic = { version = "0.11.0", features = ["tls"] }
 tracing = "0.1.40"
