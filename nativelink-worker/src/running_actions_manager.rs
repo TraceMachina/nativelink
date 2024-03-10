@@ -768,6 +768,12 @@ impl RunningActionImpl {
             ))
             .env_clear();
 
+        let requested_timeout = if self.action_info.timeout.is_zero() {
+            self.running_actions_manager.max_action_timeout
+        } else {
+            self.action_info.timeout
+        };
+
         let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
         if let Some(additional_environment) = &self
             .running_actions_manager
@@ -784,7 +790,7 @@ impl RunningActionImpl {
                         .map_or_else(|| Cow::Borrowed(""), |v| v.as_str()),
                     EnvironmentSource::value(value) => Cow::Borrowed(value.as_str()),
                     EnvironmentSource::timeout_millis => {
-                        Cow::Owned(self.timeout.as_millis().to_string())
+                        Cow::Owned(requested_timeout.as_millis().to_string())
                     }
                     EnvironmentSource::side_channel_file => {
                         let file_cow =
@@ -929,7 +935,7 @@ impl RunningActionImpl {
                     };
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
-                        process_side_channel_file(side_channel_file.clone(), &args, self.timeout).await
+                        process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
                         .err_tip(|| format!("Error processing side channel file: {side_channel_file:?}"))?
                     } else {
                         None
@@ -1777,7 +1783,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
                     output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
                 };
-                let timeout = if action_info.timeout == Duration::ZERO || self.timeout_handled_externally {
+                let timeout = if action_info.timeout.is_zero() || self.timeout_handled_externally {
                     self.max_action_timeout
                 } else {
                     action_info.timeout
