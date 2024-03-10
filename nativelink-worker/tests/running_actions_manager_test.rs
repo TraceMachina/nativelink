@@ -2565,4 +2565,93 @@ exit 1
 
         Ok(())
     }
+
+    /// Regression Test for Issue #675
+    #[cfg(target_family = "unix")]
+    #[tokio::test]
+    async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const FILE_1_NAME: &str = "file1";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_work_directory,
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                execution_configuration: ExecutionConfiguration::default(),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
+                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(futures::future::pending()),
+            },
+        )?);
+        // Create and run an action which
+        // creates a file with owner executable permissions.
+        let action_result = {
+            let command = Command {
+                arguments: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!("touch {FILE_1_NAME} && chmod 700 {FILE_1_NAME}").to_string(),
+                ],
+                output_paths: vec![FILE_1_NAME.to_string()],
+                working_directory: ".".to_string(),
+                ..Default::default()
+            };
+            let command_digest =
+                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory::default(),
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            };
+            let action_digest =
+                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
+                    .await?;
+
+            let running_action_impl = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+            run_action(running_action_impl.clone()).await?
+        };
+        // Ensure the file copied from worker to CAS is executable.
+        assert!(
+            action_result.output_files[0].is_executable,
+            "Expected output file to be executable"
+        );
+        Ok(())
+    }
 }
