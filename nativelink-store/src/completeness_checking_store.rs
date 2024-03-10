@@ -90,11 +90,6 @@ async fn check_output_directories(
                 dir.files
                     .into_iter()
                     .filter_map(|f| f.digest.map(DigestInfo::try_from))
-                    .chain(
-                        dir.directories
-                            .into_iter()
-                            .filter_map(|d| d.digest.map(DigestInfo::try_from)),
-                    )
             });
 
             let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
