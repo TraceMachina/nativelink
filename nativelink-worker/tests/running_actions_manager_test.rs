@@ -2654,4 +2654,83 @@ exit 1
         );
         Ok(())
     }
+
+    #[tokio::test]
+    async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(target_family = "unix")]
+        const WORKER_ID: &str = "foo_worker_id";
+        const SALT: u64 = 66;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_work_directory = make_temp_path("root_work_directory");
+        fs::create_dir_all(&root_work_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: root_work_directory.clone(),
+            execution_configuration: Default::default(),
+            cas_store: Pin::into_inner(cas_store.clone()),
+            ac_store: Some(Pin::into_inner(ac_store.clone())),
+            historical_store: Pin::into_inner(cas_store.clone()),
+            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
+                upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                ..Default::default()
+            },
+            max_action_timeout: Duration::MAX,
+            timeout_handled_externally: false,
+        })?);
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["sleep".to_string(), "2".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["timeout".to_string(), "2".to_string()];
+        let command = Command {
+            arguments,
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest =
+            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        const TASK_TIMEOUT: Duration = Duration::from_secs(1);
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            platform: Some(Platform {
+                properties: vec![Property {
+                    name: "property_name".into(),
+                    value: "property_value".into(),
+                }],
+            }),
+            timeout: Some(prost_types::Duration {
+                seconds: TASK_TIMEOUT.as_secs() as i64,
+                nanos: 0,
+            }),
+            ..Default::default()
+        };
+        let action_digest =
+            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+
+        let running_action_impl = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: SALT,
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                },
+            )
+            .await?;
+
+        let result = run_action(running_action_impl).await?;
+        assert_eq!(result.exit_code, 9, "Action process should be been killed");
+        Ok(())
+    }
 }
