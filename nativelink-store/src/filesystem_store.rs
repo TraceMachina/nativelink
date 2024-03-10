@@ -135,7 +135,7 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(Self, fs::ResumeableFileSlot<'static>, OsString), Error>
+    ) -> Result<(Self, fs::ResumeableFileSlot, OsString), Error>
     where
         Self: Sized;
 
@@ -149,7 +149,7 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     fn get_encoded_file_path(&self) -> &RwLock<EncodedFilePath>;
 
     /// Returns a reader that will read part of the underlying file.
-    async fn read_file_part<'a>(&'a self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot<'a>, Error>;
+    async fn read_file_part(&self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot, Error>;
 
     /// This function is a safe way to extract the file name of the underlying file. To protect users from
     /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
@@ -191,7 +191,7 @@ impl FileEntry for FileEntryImpl {
     async fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(FileEntryImpl, fs::ResumeableFileSlot<'static>, OsString), Error> {
+    ) -> Result<(FileEntryImpl, fs::ResumeableFileSlot, OsString), Error> {
         let temp_full_path = encoded_file_path.get_file_path().to_os_string();
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
@@ -229,7 +229,7 @@ impl FileEntry for FileEntryImpl {
         &self.encoded_file_path
     }
 
-    async fn read_file_part<'a>(&'a self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot<'a>, Error> {
+    async fn read_file_part(&self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot, Error> {
         let (mut file, full_content_path_for_debug_only) = self
             .get_file_path_locked(|full_content_path| async move {
                 let file = fs::open_file(full_content_path.clone(), length)
@@ -544,7 +544,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     async fn update_file<'a>(
         self: Pin<&'a Self>,
         mut entry: Fe,
-        mut resumeable_temp_file: fs::ResumeableFileSlot<'a>,
+        mut resumeable_temp_file: fs::ResumeableFileSlot,
         final_digest: DigestInfo,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
@@ -626,11 +626,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             // Internally tokio spawns fs commands onto a blocking thread anyways.
             // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
             // an open-file permit (ensure we don't open too many files at once).
-            let result = fs::call_with_permit(|| {
-                (rename_fn)(from_path.as_ref(), final_path.as_ref())
-                    .err_tip(|| format!("Failed to rename temp file to final path {final_path:?}"))
-            })
-            .await;
+            let result = (rename_fn)(&from_path, &final_path)
+                .err_tip(|| format!("Failed to rename temp file to final path {final_path:?}"));
 
             // In the event our move from temp file to final file fails we need to ensure we remove
             // the entry from our map.
@@ -715,9 +712,9 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
     async fn update_with_whole_file(
         self: Pin<&Self>,
         digest: DigestInfo,
-        mut file: fs::ResumeableFileSlot<'static>,
+        mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
-    ) -> Result<Option<fs::ResumeableFileSlot<'static>>, Error> {
+    ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
         let path = file.get_path().as_os_str().to_os_string();
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size as u64,
