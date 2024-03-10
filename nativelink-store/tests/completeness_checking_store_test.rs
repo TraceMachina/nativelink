@@ -46,7 +46,7 @@ mod completeness_checking_store_tests {
         let pinned_cas: Pin<&dyn Store> = Pin::new(cas_store.as_ref());
 
         pinned_cas.update_oneshot(ROOT_FILE, "".into()).await?;
-        pinned_cas.update_oneshot(ROOT_DIRECTORY, "".into()).await?;
+        // Note: Explicitly not uploading `ROOT_DIRECTORY`. See: TraceMachina/nativelink#747.
         pinned_cas.update_oneshot(CHILD_FILE, "".into()).await?;
         pinned_cas.update_oneshot(OUTPUT_FILE, "".into()).await?;
         pinned_cas.update_oneshot(STDOUT, "".into()).await?;
