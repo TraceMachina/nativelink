@@ -26,9 +26,9 @@ use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_s
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    batch_read_blobs_response, batch_update_blobs_response, compressor, BatchReadBlobsRequest, BatchReadBlobsResponse,
-    BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
-    GetTreeRequest, GetTreeResponse,
+    batch_read_blobs_response, batch_update_blobs_response, compressor, BatchReadBlobsRequest,
+    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
+    FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_store::grpc_store::GrpcStore;
@@ -45,12 +45,15 @@ pub struct CasServer {
 type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
 
 impl CasServer {
-    pub fn new(config: &HashMap<InstanceName, CasStoreConfig>, store_manager: &StoreManager) -> Result<Self, Error> {
+    pub fn new(
+        config: &HashMap<InstanceName, CasStoreConfig>,
+        store_manager: &StoreManager,
+    ) -> Result<Self, Error> {
         let mut stores = HashMap::with_capacity(config.len());
         for (instance_name, cas_cfg) in config {
-            let store = store_manager
-                .get_store(&cas_cfg.cas_store)
-                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", cas_cfg.cas_store))?;
+            let store = store_manager.get_store(&cas_cfg.cas_store).ok_or_else(|| {
+                make_input_err!("'cas_store': '{}' does not exist", cas_cfg.cas_store)
+            })?;
             stores.insert(instance_name.to_string(), store);
         }
         Ok(CasServer { stores })
@@ -87,7 +90,9 @@ impl CasServer {
             .filter_map(|(maybe_size, digest)| maybe_size.map_or_else(|| Some(digest), |_| None))
             .collect();
 
-        Ok(Response::new(FindMissingBlobsResponse { missing_blob_digests }))
+        Ok(Response::new(FindMissingBlobsResponse {
+            missing_blob_digests,
+        }))
     }
 
     async fn inner_batch_update_blobs(
@@ -108,7 +113,9 @@ impl CasServer {
         // check to see if it's a grpc store.
         let any_store = store.inner_store(None).as_any();
         if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
-            return grpc_store.batch_update_blobs(Request::new(inner_request)).await;
+            return grpc_store
+                .batch_update_blobs(Request::new(inner_request))
+                .await;
         }
 
         let store_pin = Pin::new(store.as_ref());
@@ -116,7 +123,10 @@ impl CasServer {
             .requests
             .into_iter()
             .map(|request| async move {
-                let digest = request.digest.clone().err_tip(|| "Digest not found in request")?;
+                let digest = request
+                    .digest
+                    .clone()
+                    .err_tip(|| "Digest not found in request")?;
                 let request_data = request.data;
                 let digest_info = DigestInfo::try_from(digest.clone())?;
                 let size_bytes = usize::try_from(digest_info.size_bytes)
@@ -162,7 +172,9 @@ impl CasServer {
         // check to see if it's a grpc store.
         let any_store = store.inner_store(None).as_any();
         if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
-            return grpc_store.batch_read_blobs(Request::new(inner_request)).await;
+            return grpc_store
+                .batch_read_blobs(Request::new(inner_request))
+                .await;
         }
 
         let store_pin = Pin::new(store.as_ref());
@@ -205,7 +217,10 @@ impl CasServer {
         Ok(Response::new(BatchReadBlobsResponse { responses }))
     }
 
-    async fn inner_get_tree(&self, grpc_request: Request<GetTreeRequest>) -> Result<Response<GetTreeStream>, Error> {
+    async fn inner_get_tree(
+        &self,
+        grpc_request: Request<GetTreeRequest>,
+    ) -> Result<Response<GetTreeStream>, Error> {
         let inner_request = grpc_request.into_inner();
         let instance_name = &inner_request.instance_name;
 
@@ -220,10 +235,16 @@ impl CasServer {
         // check to see if it's a grpc store.
         let any_store = store.inner_store(None).as_any();
         if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
-            let stream = grpc_store.get_tree(Request::new(inner_request)).await?.into_inner();
+            let stream = grpc_store
+                .get_tree(Request::new(inner_request))
+                .await?
+                .into_inner();
             return Ok(Response::new(Box::pin(stream)));
         }
-        Err(make_err!(Code::Unimplemented, "get_tree is not implemented"))
+        Err(make_err!(
+            Code::Unimplemented,
+            "get_tree is not implemented"
+        ))
     }
 }
 
@@ -233,7 +254,10 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        info!("\x1b[0;31mfind_missing_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!(
+            "\x1b[0;31mfind_missing_blobs Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let now = Instant::now();
         let resp = self
             .inner_find_missing_blobs(grpc_request)
@@ -253,7 +277,10 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        info!("\x1b[0;31mbatch_update_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!(
+            "\x1b[0;31mbatch_update_blobs Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let now = Instant::now();
         let resp = self
             .inner_batch_update_blobs(grpc_request)
@@ -273,7 +300,10 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        info!("\x1b[0;31mbatch_read_blobs Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!(
+            "\x1b[0;31mbatch_read_blobs Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let now = Instant::now();
         let resp = self
             .inner_batch_read_blobs(grpc_request)
@@ -290,8 +320,14 @@ impl ContentAddressableStorage for CasServer {
     }
 
     type GetTreeStream = GetTreeStream;
-    async fn get_tree(&self, grpc_request: Request<GetTreeRequest>) -> Result<Response<Self::GetTreeStream>, Status> {
-        info!("\x1b[0;31mget_tree Req\x1b[0m: {:?}", grpc_request.get_ref());
+    async fn get_tree(
+        &self,
+        grpc_request: Request<GetTreeRequest>,
+    ) -> Result<Response<Self::GetTreeStream>, Status> {
+        info!(
+            "\x1b[0;31mget_tree Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let now = Instant::now();
         let resp: Result<Response<Self::GetTreeStream>, Status> = self
             .inner_get_tree(grpc_request)

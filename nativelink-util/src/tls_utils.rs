@@ -23,12 +23,15 @@ pub fn load_client_config(
         return Ok(None);
     };
 
-    let read_config = tonic::transport::ClientTlsConfig::new().ca_certificate(tonic::transport::Certificate::from_pem(
-        std::fs::read_to_string(&config.ca_file)?,
-    ));
+    let read_config = tonic::transport::ClientTlsConfig::new().ca_certificate(
+        tonic::transport::Certificate::from_pem(std::fs::read_to_string(&config.ca_file)?),
+    );
     let config = if let Some(client_certificate) = &config.cert_file {
         let Some(client_key) = &config.key_file else {
-            return Err(make_err!(Code::Internal, "Client certificate specified, but no key"));
+            return Err(make_err!(
+                Code::Internal,
+                "Client certificate specified, but no key"
+            ));
         };
         read_config.identity(tonic::transport::Identity::from_pem(
             std::fs::read_to_string(client_certificate)?,
@@ -36,7 +39,10 @@ pub fn load_client_config(
         ))
     } else {
         if config.key_file.is_some() {
-            return Err(make_err!(Code::Internal, "Client key specified, but no certificate"));
+            return Err(make_err!(
+                Code::Internal,
+                "Client key specified, but no certificate"
+            ));
         }
         read_config
     };
@@ -48,28 +54,34 @@ pub fn endpoint_from(
     endpoint: &str,
     tls_config: Option<tonic::transport::ClientTlsConfig>,
 ) -> Result<tonic::transport::Endpoint, Error> {
-    let endpoint =
-        Uri::try_from(endpoint).map_err(|e| make_err!(Code::Internal, "Unable to parse endpoint {endpoint}: {e:?}"))?;
+    let endpoint = Uri::try_from(endpoint)
+        .map_err(|e| make_err!(Code::Internal, "Unable to parse endpoint {endpoint}: {e:?}"))?;
 
     // Tonic uses the TLS configuration if the scheme is "https", so replace
     // grpcs with https.
     let endpoint = if endpoint.scheme_str() == Some("grpcs") {
         let mut parts = endpoint.into_parts();
-        parts.scheme = Some(
-            "https"
-                .parse()
-                .map_err(|e| make_err!(Code::Internal, "https is an invalid scheme apparently? {e:?}"))?,
-        );
-        parts
-            .try_into()
-            .map_err(|e| make_err!(Code::Internal, "Error changing Uri from grpcs to https: {e:?}"))?
+        parts.scheme = Some("https".parse().map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "https is an invalid scheme apparently? {e:?}"
+            )
+        })?);
+        parts.try_into().map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Error changing Uri from grpcs to https: {e:?}"
+            )
+        })?
     } else {
         endpoint
     };
 
     let endpoint_transport = if let Some(tls_config) = tls_config {
         let Some(authority) = endpoint.authority() else {
-            return Err(make_input_err!("Unable to determine authority of endpont: {endpoint}"));
+            return Err(make_input_err!(
+                "Unable to determine authority of endpont: {endpoint}"
+            ));
         };
         if endpoint.scheme_str() != Some("https") {
             return Err(make_input_err!(

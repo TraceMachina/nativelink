@@ -27,10 +27,16 @@ use crate::platform_property_manager::PlatformPropertyManager;
 #[async_trait]
 pub trait ActionScheduler: Sync + Send + Unpin {
     /// Returns the platform property manager.
-    async fn get_platform_property_manager(&self, instance_name: &str) -> Result<Arc<PlatformPropertyManager>, Error>;
+    async fn get_platform_property_manager(
+        &self,
+        instance_name: &str,
+    ) -> Result<Arc<PlatformPropertyManager>, Error>;
 
     /// Adds an action to the scheduler for remote execution.
-    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
+    async fn add_action(
+        &self,
+        action_info: ActionInfo,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
 
     /// Find an existing action by its name.
     async fn find_existing_action(

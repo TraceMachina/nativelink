@@ -18,7 +18,8 @@ use std::sync::Arc;
 use nativelink_config::stores::MemoryStore as MemoryStoreConfig;
 use nativelink_error::Error;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ActionResult as ProtoActionResult, Directory, DirectoryNode, FileNode, OutputDirectory, OutputFile, Tree,
+    ActionResult as ProtoActionResult, Directory, DirectoryNode, FileNode, OutputDirectory,
+    OutputFile, Tree,
 };
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::completeness_checking_store::CompletenessCheckingStore;
@@ -38,10 +39,14 @@ mod completeness_checking_store_tests {
     const STDOUT: DigestInfo = DigestInfo::new([5u8; 32], 0);
     const STDERR: DigestInfo = DigestInfo::new([6u8; 32], 0);
 
-    async fn setup() -> Result<(Arc<CompletenessCheckingStore>, Arc<MemoryStore>, DigestInfo), Error> {
+    async fn setup() -> Result<(Arc<CompletenessCheckingStore>, Arc<MemoryStore>, DigestInfo), Error>
+    {
         let backend_store = Arc::new(MemoryStore::new(&MemoryStoreConfig::default()));
         let cas_store = Arc::new(MemoryStore::new(&MemoryStoreConfig::default()));
-        let ac_owned = Arc::new(CompletenessCheckingStore::new(backend_store.clone(), cas_store.clone()));
+        let ac_owned = Arc::new(CompletenessCheckingStore::new(
+            backend_store.clone(),
+            cas_store.clone(),
+        ));
         let pinned_ac: Pin<&dyn Store> = Pin::new(backend_store.as_ref());
         let pinned_cas: Pin<&dyn Store> = Pin::new(cas_store.as_ref());
 
@@ -74,14 +79,20 @@ mod completeness_checking_store_tests {
         };
 
         let tree_digest =
-            serialize_and_upload_message(&tree, pinned_cas, &mut DigestHasherFunc::Blake3.hasher()).await?;
+            serialize_and_upload_message(&tree, pinned_cas, &mut DigestHasherFunc::Blake3.hasher())
+                .await?;
 
         let output_directory = OutputDirectory {
             tree_digest: Some(tree_digest.into()),
             ..Default::default()
         };
 
-        serialize_and_upload_message(&output_directory, pinned_cas, &mut DigestHasherFunc::Blake3.hasher()).await?;
+        serialize_and_upload_message(
+            &output_directory,
+            pinned_cas,
+            &mut DigestHasherFunc::Blake3.hasher(),
+        )
+        .await?;
 
         let action_result = ProtoActionResult {
             output_files: vec![OutputFile {
@@ -95,8 +106,12 @@ mod completeness_checking_store_tests {
         };
 
         // The structure of the action result is not following the spec, but is simplified for testing purposes.
-        let action_result_digest =
-            serialize_and_upload_message(&action_result, pinned_ac, &mut DigestHasherFunc::Blake3.hasher()).await?;
+        let action_result_digest = serialize_and_upload_message(
+            &action_result,
+            pinned_ac,
+            &mut DigestHasherFunc::Blake3.hasher(),
+        )
+        .await?;
 
         Ok((ac_owned, cas_store, action_result_digest))
     }
@@ -110,8 +125,14 @@ mod completeness_checking_store_tests {
 
             let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
 
-            let res = pinned_store.has_many(&[action_result_digest]).await.unwrap();
-            assert!(res[0].is_some(), "Results should be some with all items in CAS.");
+            let res = pinned_store
+                .has_many(&[action_result_digest])
+                .await
+                .unwrap();
+            assert!(
+                res[0].is_some(),
+                "Results should be some with all items in CAS."
+            );
         }
 
         {
@@ -123,8 +144,14 @@ mod completeness_checking_store_tests {
 
             cas_store.remove_entry(&ROOT_FILE).await;
 
-            let res = pinned_store.has_many(&[action_result_digest]).await.unwrap();
-            assert!(res[0].is_none(), "Results should be none with missing root file.");
+            let res = pinned_store
+                .has_many(&[action_result_digest])
+                .await
+                .unwrap();
+            assert!(
+                res[0].is_none(),
+                "Results should be none with missing root file."
+            );
         }
 
         {
@@ -135,8 +162,14 @@ mod completeness_checking_store_tests {
             let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
 
             cas_store.remove_entry(&CHILD_FILE).await;
-            let res = pinned_store.has_many(&[action_result_digest]).await.unwrap();
-            assert!(res[0].is_none(), "Results should be none with missing root file.");
+            let res = pinned_store
+                .has_many(&[action_result_digest])
+                .await
+                .unwrap();
+            assert!(
+                res[0].is_none(),
+                "Results should be none with missing root file."
+            );
         }
 
         {
@@ -147,8 +180,14 @@ mod completeness_checking_store_tests {
             let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
 
             cas_store.remove_entry(&OUTPUT_FILE).await;
-            let res = pinned_store.has_many(&[action_result_digest]).await.unwrap();
-            assert!(res[0].is_none(), "Results should be none with missing root file.");
+            let res = pinned_store
+                .has_many(&[action_result_digest])
+                .await
+                .unwrap();
+            assert!(
+                res[0].is_none(),
+                "Results should be none with missing root file."
+            );
         }
 
         {
@@ -159,8 +198,14 @@ mod completeness_checking_store_tests {
             let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
 
             cas_store.remove_entry(&STDOUT).await;
-            let res = pinned_store.has_many(&[action_result_digest]).await.unwrap();
-            assert!(res[0].is_none(), "Results should be none with missing root file.");
+            let res = pinned_store
+                .has_many(&[action_result_digest])
+                .await
+                .unwrap();
+            assert!(
+                res[0].is_none(),
+                "Results should be none with missing root file."
+            );
         }
 
         {
@@ -171,8 +216,14 @@ mod completeness_checking_store_tests {
             let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
 
             cas_store.remove_entry(&STDERR).await;
-            let res = pinned_store.has_many(&[action_result_digest]).await.unwrap();
-            assert!(res[0].is_none(), "Results should be none with missing root file.");
+            let res = pinned_store
+                .has_many(&[action_result_digest])
+                .await
+                .unwrap();
+            assert!(
+                res[0].is_none(),
+                "Results should be none with missing root file."
+            );
         }
 
         Ok(())

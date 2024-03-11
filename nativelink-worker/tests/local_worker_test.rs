@@ -34,12 +34,15 @@ use nativelink_error::{make_err, make_input_err, Code, Error};
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ConnectionResult, ExecuteResult, StartExecute, SupportedProperties, UpdateForWorker,
+    execute_result, ConnectionResult, ExecuteResult, StartExecute, SupportedProperties,
+    UpdateForWorker,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata};
+use nativelink_util::action_messages::{
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata,
+};
 use nativelink_util::common::{encode_stream_proto, fs, DigestInfo};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;
@@ -48,7 +51,9 @@ use prost::Message;
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncWriteExt;
 use tonic::Response;
-use utils::local_worker_test_utils::{setup_grpc_stream, setup_local_worker, setup_local_worker_with_config};
+use utils::local_worker_test_utils::{
+    setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
+};
 use utils::mock_running_actions_manager::MockRunningAction;
 
 const INSTANCE_NAME: &str = "foo";
@@ -89,9 +94,14 @@ mod local_worker_tests {
         let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
         // Now wait for our client to send `.connect_worker()` (which has our platform properties).
-        let mut supported_properties = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+        let mut supported_properties = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
         // It is undefined which order these will be returned in, so we sort it.
-        supported_properties.properties.sort_by_key(Message::encode_to_vec);
+        supported_properties
+            .properties
+            .sort_by_key(Message::encode_to_vec);
         assert_eq!(
             supported_properties,
             SupportedProperties {
@@ -126,7 +136,10 @@ mod local_worker_tests {
 
         {
             // Ensure our worker connects and properties were sent.
-            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            let props = test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response))
+                .await;
             assert_eq!(props, SupportedProperties::default());
         }
 
@@ -136,7 +149,10 @@ mod local_worker_tests {
         {
             // Client should try to auto reconnect and check our properties again.
             let (_, streaming_response) = setup_grpc_stream();
-            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            let props = test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response))
+                .await;
             assert_eq!(props, SupportedProperties::default());
         }
 
@@ -150,7 +166,10 @@ mod local_worker_tests {
 
         {
             // Ensure our worker connects and properties were sent.
-            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            let props = test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response))
+                .await;
             assert_eq!(props, SupportedProperties::default());
         }
 
@@ -185,7 +204,10 @@ mod local_worker_tests {
 
         {
             // Ensure our worker connects and properties were sent.
-            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            let props = test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response))
+                .await;
             assert_eq!(props, SupportedProperties::default());
         }
 
@@ -250,8 +272,10 @@ mod local_worker_tests {
             .await?;
 
         // Expect the action to be updated in the action cache.
-        let (_stored_digest, _stored_result, digest_hasher) =
-            test_context.actions_manager.expect_cache_action_result().await;
+        let (_stored_digest, _stored_result, digest_hasher) = test_context
+            .actions_manager
+            .expect_cache_action_result()
+            .await;
         assert_eq!(digest_hasher, DigestHasherFunc::Blake3);
 
         Ok(())
@@ -266,7 +290,10 @@ mod local_worker_tests {
 
         {
             // Ensure our worker connects and properties were sent.
-            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            let props = test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response))
+                .await;
             assert_eq!(props, SupportedProperties::default());
         }
 
@@ -355,8 +382,10 @@ mod local_worker_tests {
             .await?;
 
         // Expect the action to be updated in the action cache.
-        let (stored_digest, stored_result, digest_hasher) =
-            test_context.actions_manager.expect_cache_action_result().await;
+        let (stored_digest, stored_result, digest_hasher) = test_context
+            .actions_manager
+            .expect_cache_action_result()
+            .await;
         assert_eq!(stored_digest, action_digest);
         assert_eq!(stored_result, action_result.clone());
         assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
@@ -385,12 +414,17 @@ mod local_worker_tests {
     }
 
     #[tokio::test]
-    async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn std::error::Error>> {
+    async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn std::error::Error>>
+    {
         let cas_store = Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
-                fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
-                slow: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+                fast: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
+                slow: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
             },
             Arc::new(
                 <FilesystemStore>::new(&nativelink_config::stores::FilesystemStore {
@@ -400,9 +434,13 @@ mod local_worker_tests {
                 })
                 .await?,
             ),
-            Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default())),
+            Arc::new(MemoryStore::new(
+                &nativelink_config::stores::MemoryStore::default(),
+            )),
         ));
-        let ac_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let ac_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let work_directory = make_temp_path("foo");
         new_local_worker(
             Arc::new(LocalWorkerConfig {
@@ -424,12 +462,17 @@ mod local_worker_tests {
     }
 
     #[tokio::test]
-    async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(), Box<dyn std::error::Error>> {
+    async fn new_local_worker_removes_work_directory_before_start_test(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let cas_store = Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
-                fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
-                slow: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+                fast: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
+                slow: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
             },
             Arc::new(
                 <FilesystemStore>::new(&nativelink_config::stores::FilesystemStore {
@@ -439,12 +482,17 @@ mod local_worker_tests {
                 })
                 .await?,
             ),
-            Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default())),
+            Arc::new(MemoryStore::new(
+                &nativelink_config::stores::MemoryStore::default(),
+            )),
         ));
-        let ac_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let ac_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let work_directory = make_temp_path("foo");
         fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
-        let mut file = fs::create_file(OsString::from(format!("{}/{}", work_directory, "foo.txt"))).await?;
+        let mut file =
+            fs::create_file(OsString::from(format!("{}/{}", work_directory, "foo.txt"))).await?;
         file.as_writer().await?.write_all(b"Hello, world!").await?;
         file.as_writer().await?.as_mut().sync_all().await?;
         drop(file);
@@ -508,7 +556,10 @@ mod local_worker_tests {
 
         {
             // Ensure our worker connects and properties were sent.
-            let props = test_context.client.expect_connect_worker(Ok(streaming_response)).await;
+            let props = test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response))
+                .await;
             assert_eq!(props, SupportedProperties::default());
         }
 

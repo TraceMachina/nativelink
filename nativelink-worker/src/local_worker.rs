@@ -46,8 +46,8 @@ use tonic::Streaming;
 use tracing::{error, warn};
 
 use crate::running_actions_manager::{
-    ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction, RunningActionsManager,
-    RunningActionsManagerArgs, RunningActionsManagerImpl,
+    ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
+    RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
 };
 use crate::worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use crate::worker_utils::make_supported_properties;
@@ -100,7 +100,12 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
         .stderr(Stdio::null())
         .env_clear()
         .spawn()
-        .err_tip(|| format!("Could not execute precondition command {:?}", precondition_script))?;
+        .err_tip(|| {
+            format!(
+                "Could not execute precondition command {:?}",
+                precondition_script
+            )
+        })?;
     let output = precondition_process.wait_with_output().await?;
     if output.status.code() == Some(0) {
         Ok(())
@@ -165,7 +170,10 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
         }
     }
 
-    async fn run(&mut self, update_for_worker_stream: Streaming<UpdateForWorker>) -> Result<(), Error> {
+    async fn run(
+        &mut self,
+        update_for_worker_stream: Streaming<UpdateForWorker>,
+    ) -> Result<(), Error> {
         // This big block of logic is designed to help simplify upstream components. Upstream
         // components can write standard futures that return a `Result<(), Error>` and this block
         // will forward the error up to the client and disconnect from the scheduler.
@@ -334,9 +342,9 @@ pub async fn new_local_worker(
     historical_store: Arc<dyn Store>,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
     let any_store = cas_store.inner_store_arc(None).as_any_arc();
-    let fast_slow_store = any_store
-        .downcast::<FastSlowStore>()
-        .map_err(|_| make_input_err!("Expected store for LocalWorker's store to be a FastSlowStore"))?;
+    let fast_slow_store = any_store.downcast::<FastSlowStore>().map_err(|_| {
+        make_input_err!("Expected store for LocalWorker's store to be a FastSlowStore")
+    })?;
 
     if let Ok(path) = fs::canonicalize(&config.work_directory).await {
         fs::remove_dir_all(path)
@@ -357,47 +365,57 @@ pub async fn new_local_worker(
     } else {
         Duration::from_secs(config.max_action_timeout as u64)
     };
-    let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-        root_work_directory: config.work_directory.clone(),
-        execution_configuration: ExecutionConfiguration {
-            entrypoint,
-            additional_environment: config.additional_environment.clone(),
-        },
-        cas_store: fast_slow_store,
-        ac_store,
-        historical_store,
-        upload_action_result_config: &config.upload_action_result,
-        max_action_timeout,
-        timeout_handled_externally: config.timeout_handled_externally,
-    })?);
-    Ok(LocalWorker::new_with_connection_factory_and_actions_manager(
-        config.clone(),
-        running_actions_manager,
-        Box::new(move || {
-            let config = config.clone();
-            Box::pin(async move {
-                let timeout = config.worker_api_endpoint.timeout.unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
-                let timeout_duration = Duration::from_secs_f32(timeout);
+    let running_actions_manager =
+        Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_work_directory: config.work_directory.clone(),
+            execution_configuration: ExecutionConfiguration {
+                entrypoint,
+                additional_environment: config.additional_environment.clone(),
+            },
+            cas_store: fast_slow_store,
+            ac_store,
+            historical_store,
+            upload_action_result_config: &config.upload_action_result,
+            max_action_timeout,
+            timeout_handled_externally: config.timeout_handled_externally,
+        })?);
+    Ok(
+        LocalWorker::new_with_connection_factory_and_actions_manager(
+            config.clone(),
+            running_actions_manager,
+            Box::new(move || {
+                let config = config.clone();
+                Box::pin(async move {
+                    let timeout = config
+                        .worker_api_endpoint
+                        .timeout
+                        .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
+                    let timeout_duration = Duration::from_secs_f32(timeout);
 
-                let tls_config = tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)
-                    .err_tip(|| "Parsing local worker TLS configuration")?;
-                let endpoint = tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
-                    .map_err(|e| make_input_err!("Invalid URI for worker endpoint : {e:?}"))?
-                    .connect_timeout(timeout_duration)
-                    .timeout(timeout_duration);
+                    let tls_config =
+                        tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)
+                            .err_tip(|| "Parsing local worker TLS configuration")?;
+                    let endpoint =
+                        tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
+                            .map_err(|e| {
+                                make_input_err!("Invalid URI for worker endpoint : {e:?}")
+                            })?
+                            .connect_timeout(timeout_duration)
+                            .timeout(timeout_duration);
 
-                let transport = endpoint.connect().await.map_err(|e| {
-                    make_err!(
-                        Code::Internal,
-                        "Could not connect to endpoint {}: {e:?}",
-                        config.worker_api_endpoint.uri
-                    )
-                })?;
-                Ok(WorkerApiClient::new(transport).into())
-            })
-        }),
-        Box::new(move |d| Box::pin(sleep(d))),
-    ))
+                    let transport = endpoint.connect().await.map_err(|e| {
+                        make_err!(
+                            Code::Internal,
+                            "Could not connect to endpoint {}: {e:?}",
+                            config.worker_api_endpoint.uri
+                        )
+                    })?;
+                    Ok(WorkerApiClient::new(transport).into())
+                })
+            }),
+            Box::new(move |d| Box::pin(sleep(d))),
+        ),
+    )
 }
 
 impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
@@ -407,7 +425,9 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         connection_factory: ConnectionFactory<T>,
         sleep_fn: Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>,
     ) -> Self {
-        let metrics = Arc::new(Metrics::new(Arc::downgrade(running_actions_manager.metrics())));
+        let metrics = Arc::new(Metrics::new(Arc::downgrade(
+            running_actions_manager.metrics(),
+        )));
         Self {
             config,
             running_actions_manager,
@@ -421,8 +441,12 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         &self.config.name
     }
 
-    async fn register_worker(&mut self, client: &mut T) -> Result<(String, Streaming<UpdateForWorker>), Error> {
-        let supported_properties = make_supported_properties(&self.config.platform_properties).await?;
+    async fn register_worker(
+        &mut self,
+        client: &mut T,
+    ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
+        let supported_properties =
+            make_supported_properties(&self.config.platform_properties).await?;
         let mut update_for_worker_stream = client
             .connect_worker(supported_properties)
             .await
@@ -470,22 +494,23 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
             };
 
             // Next register our worker with the scheduler.
-            let (mut inner, update_for_worker_stream) = match self.register_worker(&mut client).await {
-                Err(e) => {
-                    (error_handler)(e).await;
-                    continue; // Try to connect again.
-                }
-                Ok((worker_id, update_for_worker_stream)) => (
-                    LocalWorkerImpl::new(
-                        &self.config,
-                        client,
-                        worker_id,
-                        self.running_actions_manager.clone(),
-                        self.metrics.clone(),
+            let (mut inner, update_for_worker_stream) =
+                match self.register_worker(&mut client).await {
+                    Err(e) => {
+                        (error_handler)(e).await;
+                        continue; // Try to connect again.
+                    }
+                    Ok((worker_id, update_for_worker_stream)) => (
+                        LocalWorkerImpl::new(
+                            &self.config,
+                            client,
+                            worker_id,
+                            self.running_actions_manager.clone(),
+                            self.metrics.clone(),
+                        ),
+                        update_for_worker_stream,
                     ),
-                    update_for_worker_stream,
-                ),
-            };
+                };
             warn!("Worker {} connected to scheduler", inner.worker_id);
 
             // Now listen for connections and run all other services.
@@ -545,7 +570,10 @@ impl Metrics {
 }
 
 impl Metrics {
-    async fn wrap<U, T: Future<Output = U>, F: FnOnce(Arc<Self>) -> T>(self: Arc<Self>, fut: F) -> U {
+    async fn wrap<U, T: Future<Output = U>, F: FnOnce(Arc<Self>) -> T>(
+        self: Arc<Self>,
+        fut: F,
+    ) -> U {
         fut(self).await
     }
 }
@@ -576,7 +604,9 @@ impl MetricsComponent for Metrics {
             &self.preconditions,
             "Stats about the calls to check if an action satisfies the config supplied script.", // Data is appended to this.
         );
-        if let Some(running_actions_manager_metrics) = self.running_actions_manager_metrics.upgrade() {
+        if let Some(running_actions_manager_metrics) =
+            self.running_actions_manager_metrics.upgrade()
+        {
             c.publish("", running_actions_manager_metrics.as_ref(), "");
         }
     }

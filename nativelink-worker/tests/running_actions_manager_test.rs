@@ -31,9 +31,9 @@ use nativelink_config::cas_server::EnvironmentSource;
 use nativelink_error::{make_input_err, Code, Error, ResultExt};
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function::Value as ProtoDigestFunction, platform::Property, Action, ActionResult as ProtoActionResult,
-    Command, Directory, DirectoryNode, ExecuteRequest, ExecuteResponse, FileNode, NodeProperties, Platform,
-    SymlinkNode, Tree,
+    digest_function::Value as ProtoDigestFunction, platform::Property, Action,
+    ActionResult as ProtoActionResult, Command, Directory, DirectoryNode, ExecuteRequest,
+    ExecuteResponse, FileNode, NodeProperties, Platform, SymlinkNode, Tree,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     HistoricalExecuteResponse, StartExecute,
@@ -50,8 +50,8 @@ use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::Store;
 use nativelink_worker::running_actions_manager::{
-    download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
-    RunningActionsManagerArgs, RunningActionsManagerImpl,
+    download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl,
+    RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
 };
 use once_cell::sync::Lazy;
 use prost::Message;
@@ -245,7 +245,8 @@ mod running_actions_manager_tests {
     }
 
     #[tokio::test]
-    async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std::error::Error>> {
+    async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std::error::Error>>
+    {
         const DIRECTORY1_NAME: &str = "folder1";
         const FILE1_NAME: &str = "file1.txt";
         const FILE1_CONTENT: &str = "HELLOFILE1";
@@ -280,7 +281,10 @@ mod running_actions_manager_tests {
                 // Now upload an empty directory.
                 slow_store
                     .as_ref()
-                    .update_oneshot(directory2_digest, Directory::default().encode_to_vec().into())
+                    .update_oneshot(
+                        directory2_digest,
+                        Directory::default().encode_to_vec().into(),
+                    )
                     .await?;
             }
             let root_directory_digest = DigestInfo::new([5u8; 32], 32);
@@ -340,7 +344,8 @@ mod running_actions_manager_tests {
     // Windows does not support symlinks.
     #[cfg(not(target_family = "windows"))]
     #[tokio::test]
-    async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std::error::Error>> {
+    async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std::error::Error>>
+    {
         const FILE_NAME: &str = "file.txt";
         const FILE_CONTENT: &str = "HELLOFILE";
         const SYMLINK_NAME: &str = "symlink_file.txt";
@@ -397,7 +402,9 @@ mod running_actions_manager_tests {
         {
             // Now ensure that our download_dir has the files.
             let symlink_path = format!("{download_dir}/{SYMLINK_NAME}");
-            let symlink_content = fs::read(&symlink_path).await.err_tip(|| "On symlink read")?;
+            let symlink_content = fs::read(&symlink_path)
+                .await
+                .err_tip(|| "On symlink read")?;
             assert_eq!(std::str::from_utf8(&symlink_content)?, FILE_CONTENT);
 
             let symlink_metadata = fs::symlink_metadata(&symlink_path)
@@ -429,10 +436,12 @@ mod running_actions_manager_tests {
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
-                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                    ..Default::default()
-                },
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
             },
@@ -448,9 +457,12 @@ mod running_actions_manager_tests {
                 output_files: vec!["some/path/test.txt".to_string()],
                 ..Default::default()
             };
-            let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory {
                     directories: vec![DirectoryNode {
@@ -476,9 +488,12 @@ mod running_actions_manager_tests {
                 input_root_digest: Some(input_root_digest.into()),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
 
             let running_action = running_actions_manager
                 .create_and_add_action(
@@ -498,9 +513,13 @@ mod running_actions_manager_tests {
 
             // The folder should have been created for our output file.
             assert_eq!(
-                fs::metadata(format!("{}/{}", running_action.get_work_directory(), "some/path"))
-                    .await
-                    .is_ok(),
+                fs::metadata(format!(
+                    "{}/{}",
+                    running_action.get_work_directory(),
+                    "some/path"
+                ))
+                .await
+                .is_ok(),
                 true,
                 "Expected path to exist"
             );
@@ -511,7 +530,8 @@ mod running_actions_manager_tests {
     }
 
     #[tokio::test]
-    async fn ensure_output_files_full_directories_are_created_test() -> Result<(), Box<dyn std::error::Error>> {
+    async fn ensure_output_files_full_directories_are_created_test(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
         fn test_monotonic_clock() -> SystemTime {
@@ -530,10 +550,12 @@ mod running_actions_manager_tests {
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
-                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                    ..Default::default()
-                },
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
             },
@@ -551,9 +573,12 @@ mod running_actions_manager_tests {
                 working_directory: working_directory.to_string(),
                 ..Default::default()
             };
-            let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory {
                     directories: vec![DirectoryNode {
@@ -579,9 +604,12 @@ mod running_actions_manager_tests {
                 input_root_digest: Some(input_root_digest.into()),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
 
             let running_action = running_actions_manager
                 .create_and_add_action(
@@ -638,10 +666,12 @@ mod running_actions_manager_tests {
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
-                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                    ..Default::default()
-                },
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
             },
@@ -656,7 +686,8 @@ mod running_actions_manager_tests {
             let arguments = vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "printf '123 ' > ./test.txt; printf 'foo-stdout '; >&2 printf 'bar-stderr  '".to_string(),
+                "printf '123 ' > ./test.txt; printf 'foo-stdout '; >&2 printf 'bar-stderr  '"
+                    .to_string(),
             ];
             #[cfg(target_family = "windows")]
             let arguments = vec![
@@ -673,9 +704,12 @@ mod running_actions_manager_tests {
                 working_directory: working_directory.to_string(),
                 ..Default::default()
             };
-            let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Blake3.hasher())
-                    .await?;
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Blake3.hasher(),
+            )
+            .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory {
                     directories: vec![DirectoryNode {
@@ -701,9 +735,12 @@ mod running_actions_manager_tests {
                 input_root_digest: Some(input_root_digest.into()),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Blake3.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Blake3.hasher(),
+            )
+            .await?;
 
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
@@ -743,7 +780,10 @@ mod running_actions_manager_tests {
             ActionResult {
                 output_files: vec![FileInfo {
                     name_or_path: NameOrPath::Path("test.txt".to_string()),
-                    digest: DigestInfo::try_new("3f488ba478fc6716c756922c9f34ebd7e84b85c3e03e33e22e7a3736cafdc6d8", 4)?,
+                    digest: DigestInfo::try_new(
+                        "3f488ba478fc6716c756922c9f34ebd7e84b85c3e03e33e22e7a3736cafdc6d8",
+                        4
+                    )?,
                     is_executable: false,
                 }],
                 stdout_digest: DigestInfo::try_new(
@@ -798,10 +838,12 @@ mod running_actions_manager_tests {
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
-                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                    ..Default::default()
-                },
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
             },
@@ -816,7 +858,8 @@ mod running_actions_manager_tests {
             let arguments = vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "printf '123 ' > ./test.txt; printf 'foo-stdout '; >&2 printf 'bar-stderr  '".to_string(),
+                "printf '123 ' > ./test.txt; printf 'foo-stdout '; >&2 printf 'bar-stderr  '"
+                    .to_string(),
             ];
             #[cfg(target_family = "windows")]
             let arguments = vec![
@@ -833,9 +876,12 @@ mod running_actions_manager_tests {
                 working_directory: working_directory.to_string(),
                 ..Default::default()
             };
-            let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory {
                     directories: vec![DirectoryNode {
@@ -861,9 +907,12 @@ mod running_actions_manager_tests {
                 input_root_digest: Some(input_root_digest.into()),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
 
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
@@ -902,7 +951,10 @@ mod running_actions_manager_tests {
             ActionResult {
                 output_files: vec![FileInfo {
                     name_or_path: NameOrPath::Path("test.txt".to_string()),
-                    digest: DigestInfo::try_new("c69e10a5f54f4e28e33897fbd4f8701595443fa8c3004aeaa20dd4d9a463483b", 4)?,
+                    digest: DigestInfo::try_new(
+                        "c69e10a5f54f4e28e33897fbd4f8701595443fa8c3004aeaa20dd4d9a463483b",
+                        4
+                    )?,
                     is_executable: false,
                 }],
                 stdout_digest: DigestInfo::try_new(
@@ -959,10 +1011,12 @@ mod running_actions_manager_tests {
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
-                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                    ..Default::default()
-                },
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
             },
@@ -991,9 +1045,12 @@ mod running_actions_manager_tests {
                 working_directory: ".".to_string(),
                 ..Default::default()
             };
-            let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory::default(),
                 cas_store.as_ref(),
@@ -1005,9 +1062,12 @@ mod running_actions_manager_tests {
                 input_root_digest: Some(input_root_digest.into()),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
 
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
@@ -1025,23 +1085,32 @@ mod running_actions_manager_tests {
 
             run_action(running_action_impl.clone()).await?
         };
-        let tree =
-            get_and_decode_digest::<Tree>(slow_store.as_ref(), &action_result.output_folders[0].tree_digest).await?;
+        let tree = get_and_decode_digest::<Tree>(
+            slow_store.as_ref(),
+            &action_result.output_folders[0].tree_digest,
+        )
+        .await?;
         let root_directory = Directory {
             files: vec![
                 FileNode {
                     name: "file".to_string(),
                     digest: Some(
-                        DigestInfo::try_new("b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c", 4)?
-                            .into(),
+                        DigestInfo::try_new(
+                            "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
+                            4,
+                        )?
+                        .into(),
                     ),
                     ..Default::default()
                 },
                 FileNode {
                     name: "file2".to_string(),
                     digest: Some(
-                        DigestInfo::try_new("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 0)?
-                            .into(),
+                        DigestInfo::try_new(
+                            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                            0,
+                        )?
+                        .into(),
                     ),
                     ..Default::default()
                 },
@@ -1049,7 +1118,11 @@ mod running_actions_manager_tests {
             directories: vec![DirectoryNode {
                 name: "dir2".to_string(),
                 digest: Some(
-                    DigestInfo::try_new("cce0098e0b0f1d785edb0da50beedb13e27dcd459b091b2f8f82543cb7cd0527", 16)?.into(),
+                    DigestInfo::try_new(
+                        "cce0098e0b0f1d785edb0da50beedb13e27dcd459b091b2f8f82543cb7cd0527",
+                        16,
+                    )?
+                    .into(),
                 ),
             }],
             ..Default::default()
@@ -1137,10 +1210,12 @@ mod running_actions_manager_tests {
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
-                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                    ..Default::default()
-                },
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
             },
@@ -1164,9 +1239,12 @@ mod running_actions_manager_tests {
                 working_directory: ".".to_string(),
                 ..Default::default()
             };
-            let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory::default(),
                 cas_store.as_ref(),
@@ -1178,9 +1256,12 @@ mod running_actions_manager_tests {
                 input_root_digest: Some(input_root_digest.into()),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
 
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
@@ -1249,22 +1330,29 @@ mod running_actions_manager_tests {
         let root_work_directory = make_temp_path("root_work_directory");
         fs::create_dir_all(&root_work_directory).await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: root_work_directory.clone(),
-            execution_configuration: ExecutionConfiguration::default(),
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
-            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                ..Default::default()
-            },
-            max_action_timeout: Duration::MAX,
-            timeout_handled_externally: false,
-        })?);
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_work_directory: root_work_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
 
         #[cfg(target_family = "unix")]
-        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
+        let arguments = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "sleep infinity".to_string(),
+        ];
         #[cfg(target_family = "windows")]
         // Windows is weird with timeout, so we use ping. See:
         // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately
@@ -1280,8 +1368,12 @@ mod running_actions_manager_tests {
             working_directory: ".".to_string(),
             ..Default::default()
         };
-        let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
@@ -1293,8 +1385,12 @@ mod running_actions_manager_tests {
             input_root_digest: Some(input_root_digest.into()),
             ..Default::default()
         };
-        let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
 
         let running_action_impl = running_actions_manager
             .clone()
@@ -1312,7 +1408,11 @@ mod running_actions_manager_tests {
             .await?;
 
         // Start the action and kill it at the same time.
-        let result = futures::join!(run_action(running_action_impl), running_actions_manager.kill_all()).0?;
+        let result = futures::join!(
+            run_action(running_action_impl),
+            running_actions_manager.kill_all()
+        )
+        .0?;
 
         // Check that the action was killed.
         #[cfg(target_family = "unix")]
@@ -1366,7 +1466,8 @@ exit 0
             #[cfg(target_family = "unix")]
             let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
             #[cfg(target_family = "windows")]
-            let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
+            let test_wrapper_script =
+                OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
 
             // We use std::fs::File here because we sometimes get strange bugs here
             // that result in: "Text file busy (os error 26)" if it is an executeable.
@@ -1385,22 +1486,25 @@ exit 0
         // TODO(#527) Sleep to reduce flakey chances.
         tokio::time::sleep(Duration::from_millis(250)).await;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: root_work_directory.clone(),
-            execution_configuration: ExecutionConfiguration {
-                entrypoint: Some(test_wrapper_script.into_string().unwrap()),
-                additional_environment: None,
-            },
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
-            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                ..Default::default()
-            },
-            max_action_timeout: Duration::MAX,
-            timeout_handled_externally: false,
-        })?);
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_work_directory: root_work_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    entrypoint: Some(test_wrapper_script.into_string().unwrap()),
+                    additional_environment: None,
+                },
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
         #[cfg(target_family = "windows")]
@@ -1410,8 +1514,12 @@ exit 0
             working_directory: ".".to_string(),
             ..Default::default()
         };
-        let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
@@ -1423,8 +1531,12 @@ exit 0
             input_root_digest: Some(input_root_digest.into()),
             ..Default::default()
         };
-        let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
 
         let running_action_impl = running_actions_manager
             .clone()
@@ -1497,7 +1609,8 @@ exit 0
             #[cfg(target_family = "unix")]
             let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
             #[cfg(target_family = "windows")]
-            let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
+            let test_wrapper_script =
+                OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
 
             // We use std::fs::File here because we sometimes get strange bugs here
             // that result in: "Text file busy (os error 26)" if it is an executeable.
@@ -1516,29 +1629,38 @@ exit 0
         // TODO(#527) Sleep to reduce flakey chances.
         tokio::time::sleep(Duration::from_millis(250)).await;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: root_work_directory.clone(),
-            execution_configuration: ExecutionConfiguration {
-                entrypoint: Some(test_wrapper_script.into_string().unwrap()),
-                additional_environment: Some(HashMap::from([
-                    (
-                        "PROPERTY".to_string(),
-                        EnvironmentSource::property("property_name".to_string()),
-                    ),
-                    ("VALUE".to_string(), EnvironmentSource::value("raw_value".to_string())),
-                    ("INNER_TIMEOUT".to_string(), EnvironmentSource::timeout_millis),
-                ])),
-            },
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
-            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                ..Default::default()
-            },
-            max_action_timeout: Duration::MAX,
-            timeout_handled_externally: false,
-        })?);
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_work_directory: root_work_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    entrypoint: Some(test_wrapper_script.into_string().unwrap()),
+                    additional_environment: Some(HashMap::from([
+                        (
+                            "PROPERTY".to_string(),
+                            EnvironmentSource::property("property_name".to_string()),
+                        ),
+                        (
+                            "VALUE".to_string(),
+                            EnvironmentSource::value("raw_value".to_string()),
+                        ),
+                        (
+                            "INNER_TIMEOUT".to_string(),
+                            EnvironmentSource::timeout_millis,
+                        ),
+                    ])),
+                },
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
         #[cfg(target_family = "unix")]
         let arguments = vec!["printf".to_string(), EXPECTED_STDOUT.to_string()];
         #[cfg(target_family = "windows")]
@@ -1548,8 +1670,12 @@ exit 0
             working_directory: ".".to_string(),
             ..Default::default()
         };
-        let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
@@ -1572,8 +1698,12 @@ exit 0
             }),
             ..Default::default()
         };
-        let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
 
         let running_action_impl = running_actions_manager
             .clone()
@@ -1598,7 +1728,8 @@ exit 0
             .compute_from_reader(Cursor::new(EXPECTED_STDOUT))
             .await?;
         // Note: This string should match what is in worker_for_test.sh
-        let expected_stderr = "Wrapper script did run with property property_value raw_value 122000";
+        let expected_stderr =
+            "Wrapper script did run with property property_value raw_value 122000";
         let expected_stderr_digest = DigestHasherFunc::Sha256
             .hasher()
             .compute_from_reader(Cursor::new(expected_stderr))
@@ -1643,7 +1774,8 @@ exit 1
             #[cfg(target_family = "unix")]
             let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
             #[cfg(target_family = "windows")]
-            let test_wrapper_script = OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
+            let test_wrapper_script =
+                OsString::from(test_wrapper_dir + "\\test_wrapper_script.bat");
 
             // We use std::fs::File here because we sometimes get strange bugs here
             // that result in: "Text file busy (os error 26)" if it is an executeable.
@@ -1662,33 +1794,40 @@ exit 1
         // TODO(#527) Sleep to reduce flakey chances.
         tokio::time::sleep(Duration::from_millis(250)).await;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: root_work_directory.clone(),
-            execution_configuration: ExecutionConfiguration {
-                entrypoint: Some(test_wrapper_script.into_string().unwrap()),
-                additional_environment: Some(HashMap::from([(
-                    "SIDE_CHANNEL_FILE".to_string(),
-                    EnvironmentSource::side_channel_file,
-                )])),
-            },
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
-            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                ..Default::default()
-            },
-            max_action_timeout: Duration::MAX,
-            timeout_handled_externally: false,
-        })?);
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_work_directory: root_work_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    entrypoint: Some(test_wrapper_script.into_string().unwrap()),
+                    additional_environment: Some(HashMap::from([(
+                        "SIDE_CHANNEL_FILE".to_string(),
+                        EnvironmentSource::side_channel_file,
+                    )])),
+                },
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
         let arguments = vec!["true".to_string()];
         let command = Command {
             arguments,
             working_directory: ".".to_string(),
             ..Default::default()
         };
-        let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
@@ -1700,8 +1839,12 @@ exit 1
             input_root_digest: Some(input_root_digest.into()),
             ..Default::default()
         };
-        let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
 
         let running_action_impl = running_actions_manager
             .clone()
@@ -1731,29 +1874,41 @@ exit 1
     async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: String::new(),
-            execution_configuration: ExecutionConfiguration::default(),
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
-            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
-                ..Default::default()
-            },
-            max_action_timeout: Duration::MAX,
-            timeout_handled_externally: false,
-        })?);
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_work_directory: String::new(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
             output_files: vec![FileInfo {
                 name_or_path: NameOrPath::Path("test.txt".to_string()),
-                digest: DigestInfo::try_new("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3", 3)?,
+                digest: DigestInfo::try_new(
+                    "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+                    3,
+                )?,
                 is_executable: false,
             }],
-            stdout_digest: DigestInfo::try_new("426afaf613d8cfdd9fa8addcc030ae6c95a7950ae0301164af1d5851012081d5", 10)?,
-            stderr_digest: DigestInfo::try_new("7b2e400d08b8e334e3172d105be308b506c6036c62a9bde5c509d7808b28b213", 10)?,
+            stdout_digest: DigestInfo::try_new(
+                "426afaf613d8cfdd9fa8addcc030ae6c95a7950ae0301164af1d5851012081d5",
+                10,
+            )?,
+            stderr_digest: DigestInfo::try_new(
+                "7b2e400d08b8e334e3172d105be308b506c6036c62a9bde5c509d7808b28b213",
+                10,
+            )?,
             exit_code: 0,
             output_folders: vec![],
             output_file_symlinks: vec![],
@@ -1778,7 +1933,8 @@ exit 1
             .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
             .await?;
 
-        let retrieved_result = get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
+        let retrieved_result =
+            get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
 
         let proto_result: ProtoActionResult = action_result.into();
         assert_eq!(proto_result, retrieved_result);
@@ -1787,32 +1943,45 @@ exit 1
     }
 
     #[tokio::test]
-    async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn std::error::Error>> {
+    async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn std::error::Error>>
+    {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: String::new(),
-            execution_configuration: ExecutionConfiguration::default(),
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
-            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::everything,
-                ..Default::default()
-            },
-            max_action_timeout: Duration::MAX,
-            timeout_handled_externally: false,
-        })?);
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_work_directory: String::new(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::everything,
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
             output_files: vec![FileInfo {
                 name_or_path: NameOrPath::Path("test.txt".to_string()),
-                digest: DigestInfo::try_new("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3", 3)?,
+                digest: DigestInfo::try_new(
+                    "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+                    3,
+                )?,
                 is_executable: false,
             }],
-            stdout_digest: DigestInfo::try_new("426afaf613d8cfdd9fa8addcc030ae6c95a7950ae0301164af1d5851012081d5", 10)?,
-            stderr_digest: DigestInfo::try_new("7b2e400d08b8e334e3172d105be308b506c6036c62a9bde5c509d7808b28b213", 10)?,
+            stdout_digest: DigestInfo::try_new(
+                "426afaf613d8cfdd9fa8addcc030ae6c95a7950ae0301164af1d5851012081d5",
+                10,
+            )?,
+            stderr_digest: DigestInfo::try_new(
+                "7b2e400d08b8e334e3172d105be308b506c6036c62a9bde5c509d7808b28b213",
+                10,
+            )?,
             exit_code: 1,
             output_folders: vec![],
             output_file_symlinks: vec![],
@@ -1837,7 +2006,8 @@ exit 1
             .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
             .await?;
 
-        let retrieved_result = get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
+        let retrieved_result =
+            get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
 
         let proto_result: ProtoActionResult = action_result.into();
         assert_eq!(proto_result, retrieved_result);
@@ -1849,32 +2019,44 @@ exit 1
     async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: String::new(),
-            execution_configuration: ExecutionConfiguration::default(),
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
-            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                upload_historical_results_strategy: Some(
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
-                ),
-                success_message_template: "{historical_results_hash}-{historical_results_size}".to_string(),
-                ..Default::default()
-            },
-            max_action_timeout: Duration::MAX,
-            timeout_handled_externally: false,
-        })?);
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_work_directory: String::new(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_historical_results_strategy: Some(
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                        ),
+                        success_message_template:
+                            "{historical_results_hash}-{historical_results_size}".to_string(),
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
             output_files: vec![FileInfo {
                 name_or_path: NameOrPath::Path("test.txt".to_string()),
-                digest: DigestInfo::try_new("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3", 3)?,
+                digest: DigestInfo::try_new(
+                    "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+                    3,
+                )?,
                 is_executable: false,
             }],
-            stdout_digest: DigestInfo::try_new("426afaf613d8cfdd9fa8addcc030ae6c95a7950ae0301164af1d5851012081d5", 10)?,
-            stderr_digest: DigestInfo::try_new("7b2e400d08b8e334e3172d105be308b506c6036c62a9bde5c509d7808b28b213", 10)?,
+            stdout_digest: DigestInfo::try_new(
+                "426afaf613d8cfdd9fa8addcc030ae6c95a7950ae0301164af1d5851012081d5",
+                10,
+            )?,
+            stderr_digest: DigestInfo::try_new(
+                "7b2e400d08b8e334e3172d105be308b506c6036c62a9bde5c509d7808b28b213",
+                10,
+            )?,
             exit_code: 0,
             output_folders: vec![],
             output_file_symlinks: vec![],
@@ -1907,10 +2089,16 @@ exit 1
                 .split_once('-')
                 .expect("Message should be in format {hash}-{size}");
 
-            DigestInfo::try_new(historical_results_hash, historical_results_size.parse::<i64>()?)?
+            DigestInfo::try_new(
+                historical_results_hash,
+                historical_results_size.parse::<i64>()?,
+            )?
         };
-        let retrieved_result =
-            get_and_decode_digest::<HistoricalExecuteResponse>(cas_store.as_ref(), &historical_digest).await?;
+        let retrieved_result = get_and_decode_digest::<HistoricalExecuteResponse>(
+            cas_store.as_ref(),
+            &historical_digest,
+        )
+        .await?;
 
         assert_eq!(
             HistoricalExecuteResponse {
@@ -1928,25 +2116,29 @@ exit 1
     }
 
     #[tokio::test]
-    async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
+    async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>>
+    {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: String::new(),
-            execution_configuration: ExecutionConfiguration::default(),
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
-            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                upload_historical_results_strategy: Some(
-                    nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
-                ),
-                success_message_template: "{historical_results_hash}-{historical_results_size}".to_string(),
-                ..Default::default()
-            },
-            max_action_timeout: Duration::MAX,
-            timeout_handled_externally: false,
-        })?);
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_work_directory: String::new(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_historical_results_strategy: Some(
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                        ),
+                        success_message_template:
+                            "{historical_results_hash}-{historical_results_size}".to_string(),
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
@@ -1957,12 +2149,16 @@ exit 1
             .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
             .await?;
 
-        assert!(action_result.message.is_empty(), "Message should not be set");
+        assert!(
+            action_result.message.is_empty(),
+            "Message should not be set"
+        );
         Ok(())
     }
 
     #[tokio::test]
-    async fn infra_failure_does_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
+    async fn infra_failure_does_cache_in_historical_results(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
@@ -2000,11 +2196,17 @@ exit 1
                 .split_once('-')
                 .expect("Message should be in format {hash}-{size}");
 
-            DigestInfo::try_new(historical_results_hash, historical_results_size.parse::<i64>()?)?
+            DigestInfo::try_new(
+                historical_results_hash,
+                historical_results_size.parse::<i64>()?,
+            )?
         };
 
-        let retrieved_result =
-            get_and_decode_digest::<HistoricalExecuteResponse>(cas_store.as_ref(), &historical_digest).await?;
+        let retrieved_result = get_and_decode_digest::<HistoricalExecuteResponse>(
+            cas_store.as_ref(),
+            &historical_digest,
+        )
+        .await?;
 
         assert_eq!(
             HistoricalExecuteResponse {
@@ -2024,20 +2226,24 @@ exit 1
     async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
-        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: String::new(),
-            execution_configuration: ExecutionConfiguration::default(),
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
-            upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
-                success_message_template: "{action_digest_hash}-{action_digest_size}".to_string(),
-                ..Default::default()
-            },
-            max_action_timeout: Duration::MAX,
-            timeout_handled_externally: false,
-        })?);
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_work_directory: String::new(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::success_only,
+                        success_message_template: "{action_digest_hash}-{action_digest_size}"
+                            .to_string(),
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
 
         let action_digest = DigestInfo::new([2u8; 32], 32);
         let mut action_result = ActionResult {
@@ -2060,7 +2266,8 @@ exit 1
         };
 
         let retrieved_result =
-            get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_result_digest).await?;
+            get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_result_digest)
+                .await?;
 
         let proto_result: ProtoActionResult = action_result.into();
         assert_eq!(proto_result, retrieved_result);
@@ -2068,7 +2275,8 @@ exit 1
     }
 
     #[tokio::test]
-    async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn std::error::Error>> {
+    async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn std::error::Error>>
+    {
         const WORKER_ID: &str = "foo_worker_id";
 
         fn test_monotonic_clock() -> SystemTime {
@@ -2084,7 +2292,12 @@ exit 1
         #[cfg(target_family = "unix")]
         let arguments = vec!["true".to_string()];
         #[cfg(target_family = "windows")]
-        let arguments = vec!["cmd".to_string(), "/C".to_string(), "exit".to_string(), "0".to_string()];
+        let arguments = vec![
+            "cmd".to_string(),
+            "/C".to_string(),
+            "exit".to_string(),
+            "0".to_string(),
+        ];
 
         let command = Command {
             arguments,
@@ -2092,8 +2305,12 @@ exit 1
             working_directory: ".".to_string(),
             ..Default::default()
         };
-        let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
@@ -2116,9 +2333,12 @@ exit 1
                 }),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 RunningActionsManagerArgs {
@@ -2127,10 +2347,12 @@ exit 1
                     cas_store: Pin::into_inner(cas_store.clone()),
                     ac_store: Some(Pin::into_inner(ac_store.clone())),
                     historical_store: Pin::into_inner(cas_store.clone()),
-                    upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                        ..Default::default()
-                    },
+                    upload_action_result_config:
+                        &nativelink_config::cas_server::UploadActionResultConfig {
+                            upload_ac_results_strategy:
+                                nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                            ..Default::default()
+                        },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     timeout_handled_externally: false,
                 },
@@ -2168,7 +2390,10 @@ exit 1
                         })
                 })
                 .await?;
-            assert_eq!(SENT_TIMEOUT.load(Ordering::Relaxed), TASK_TIMEOUT.as_millis() as i64);
+            assert_eq!(
+                SENT_TIMEOUT.load(Ordering::Relaxed),
+                TASK_TIMEOUT.as_millis() as i64
+            );
         }
         {
             // Ensure if no timeout is set use max timeout.
@@ -2185,9 +2410,12 @@ exit 1
                 }),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 RunningActionsManagerArgs {
@@ -2196,10 +2424,12 @@ exit 1
                     cas_store: Pin::into_inner(cas_store.clone()),
                     ac_store: Some(Pin::into_inner(ac_store.clone())),
                     historical_store: Pin::into_inner(cas_store.clone()),
-                    upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                        ..Default::default()
-                    },
+                    upload_action_result_config:
+                        &nativelink_config::cas_server::UploadActionResultConfig {
+                            upload_ac_results_strategy:
+                                nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                            ..Default::default()
+                        },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     timeout_handled_externally: false,
                 },
@@ -2257,9 +2487,12 @@ exit 1
                 }),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 RunningActionsManagerArgs {
@@ -2268,10 +2501,12 @@ exit 1
                     cas_store: Pin::into_inner(cas_store.clone()),
                     ac_store: Some(Pin::into_inner(ac_store.clone())),
                     historical_store: Pin::into_inner(cas_store.clone()),
-                    upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                        upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                        ..Default::default()
-                    },
+                    upload_action_result_config:
+                        &nativelink_config::cas_server::UploadActionResultConfig {
+                            upload_ac_results_strategy:
+                                nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                            ..Default::default()
+                        },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     timeout_handled_externally: false,
                 },
@@ -2324,7 +2559,8 @@ exit 1
             monotonic_clock(&CLOCK)
         }
 
-        type StaticOneshotTuple = Mutex<(Option<oneshot::Sender<()>>, Option<oneshot::Receiver<()>>)>;
+        type StaticOneshotTuple =
+            Mutex<(Option<oneshot::Sender<()>>, Option<oneshot::Receiver<()>>)>;
         static TIMEOUT_ONESHOT: Lazy<StaticOneshotTuple> = Lazy::new(|| {
             let (tx, rx) = oneshot::channel();
             Mutex::new((Some(tx), Some(rx)))
@@ -2340,10 +2576,12 @@ exit 1
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
-                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                    ..Default::default()
-                },
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
             },
@@ -2359,7 +2597,11 @@ exit 1
         )?);
 
         #[cfg(target_family = "unix")]
-        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
+        let arguments = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "sleep infinity".to_string(),
+        ];
         #[cfg(target_family = "windows")]
         // Windows is weird with timeout, so we use ping. See:
         // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately
@@ -2375,8 +2617,12 @@ exit 1
             working_directory: ".".to_string(),
             ..Default::default()
         };
-        let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
@@ -2388,8 +2634,12 @@ exit 1
             input_root_digest: Some(input_root_digest.into()),
             ..Default::default()
         };
-        let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
 
         let execute_results_fut = running_actions_manager
             .create_and_add_action(
@@ -2448,10 +2698,12 @@ exit 1
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 historical_store: Pin::into_inner(cas_store.clone()),
-                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                    ..Default::default()
-                },
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
             },
@@ -2462,7 +2714,11 @@ exit 1
         )?);
 
         #[cfg(target_family = "unix")]
-        let arguments = vec!["sh".to_string(), "-c".to_string(), "sleep infinity".to_string()];
+        let arguments = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "sleep infinity".to_string(),
+        ];
         #[cfg(target_family = "windows")]
         // Windows is weird with timeout, so we use ping. See:
         // https://www.ibm.com/support/pages/timeout-command-run-batch-job-exits-immediately-and-returns-error-input-redirection-not-supported-exiting-process-immediately
@@ -2478,8 +2734,12 @@ exit 1
             working_directory: ".".to_string(),
             ..Default::default()
         };
-        let command_digest =
-            serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
             cas_store.as_ref(),
@@ -2491,8 +2751,12 @@ exit 1
             input_root_digest: Some(input_root_digest.into()),
             ..Default::default()
         };
-        let action_digest =
-            serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher()).await?;
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
 
         let (cleanup_tx, cleanup_rx) = oneshot::channel();
         let cleanup_was_requested = AtomicBool::new(false);
@@ -2560,7 +2824,11 @@ exit 1
                 .error
                 .as_ref()
                 .err_tip(|| format!("No error exists in result : {:?}", action_result))?;
-            assert_eq!(err.code, Code::Aborted, "Expected Aborted : {action_result:?}");
+            assert_eq!(
+                err.code,
+                Code::Aborted,
+                "Expected Aborted : {action_result:?}"
+            );
         }
 
         Ok(())
@@ -2589,10 +2857,12 @@ exit 1
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 execution_configuration: ExecutionConfiguration::default(),
                 historical_store: Pin::into_inner(cas_store.clone()),
-                upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
-                    upload_ac_results_strategy: nativelink_config::cas_server::UploadCacheResultsStrategy::never,
-                    ..Default::default()
-                },
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
                 max_action_timeout: Duration::MAX,
                 timeout_handled_externally: false,
             },
@@ -2614,9 +2884,12 @@ exit 1
                 working_directory: ".".to_string(),
                 ..Default::default()
             };
-            let command_digest =
-                serialize_and_upload_message(&command, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory::default(),
                 cas_store.as_ref(),
@@ -2628,9 +2901,12 @@ exit 1
                 input_root_digest: Some(input_root_digest.into()),
                 ..Default::default()
             };
-            let action_digest =
-                serialize_and_upload_message(&action, cas_store.as_ref(), &mut DigestHasherFunc::Sha256.hasher())
-                    .await?;
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_ref(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
 
             let running_action_impl = running_actions_manager
                 .create_and_add_action(

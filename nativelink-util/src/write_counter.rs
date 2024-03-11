@@ -57,7 +57,11 @@ impl<T: AsyncWrite> WriteCounter<T> {
 }
 
 impl<T: AsyncWrite> AsyncWrite for WriteCounter<T> {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
         let me = self.project();
         let result = me.inner.poll_write(cx, buf);
         match &result {
@@ -73,7 +77,10 @@ impl<T: AsyncWrite> AsyncWrite for WriteCounter<T> {
         me.inner.poll_flush(cx)
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
         let me = self.project();
         me.inner.poll_shutdown(cx)
     }

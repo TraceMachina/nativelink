@@ -19,7 +19,8 @@ use std::sync::Arc;
 use futures::StreamExt;
 use nativelink_error::Error;
 use nativelink_util::health_utils::{
-    HealthRegistryBuilder, HealthStatus, HealthStatusDescription, HealthStatusIndicator, HealthStatusReporter,
+    HealthRegistryBuilder, HealthStatus, HealthStatusDescription, HealthStatusIndicator,
+    HealthStatusReporter,
 };
 
 #[cfg(test)]
@@ -32,7 +33,8 @@ mod health_utils_tests {
     async fn create_empty_indicator() -> Result<(), Error> {
         let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
         let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> = health_registry.health_status_report().collect().await;
+        let health_status: Vec<HealthStatusDescription> =
+            health_registry.health_status_report().collect().await;
         assert_eq!(health_status.len(), 0);
         Ok(())
     }
@@ -46,7 +48,8 @@ mod health_utils_tests {
         health_registry_builder.register_indicator(Arc::new(MockComponentImpl {}));
 
         let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> = health_registry.health_status_report().collect().await;
+        let health_status: Vec<HealthStatusDescription> =
+            health_registry.health_status_report().collect().await;
 
         assert_eq!(health_status.len(), 1);
         assert_eq!(
@@ -76,7 +79,8 @@ mod health_utils_tests {
         namespace1_registry.register_indicator(Arc::new(MockComponentImpl {}));
 
         let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> = health_registry.health_status_report().collect().await;
+        let health_status: Vec<HealthStatusDescription> =
+            health_registry.health_status_report().collect().await;
 
         assert_eq!(health_status.len(), 2);
         let expected_health_status = vec_to_set(vec![
@@ -114,7 +118,8 @@ mod health_utils_tests {
         health_registry_builder.register_indicator(Arc::new(MockComponentImpl3 {}));
 
         let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> = health_registry.health_status_report().collect().await;
+        let health_status: Vec<HealthStatusDescription> =
+            health_registry.health_status_report().collect().await;
 
         assert_eq!(health_status.len(), 3);
         let expected_health_status = vec_to_set(vec![
@@ -164,7 +169,8 @@ mod health_utils_tests {
             .register_indicator(Arc::new(MockComponentImpl3 {}));
 
         let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> = health_registry.health_status_report().collect().await;
+        let health_status: Vec<HealthStatusDescription> =
+            health_registry.health_status_report().collect().await;
 
         assert_eq!(health_status.len(), 3);
         let expected_health_status = vec_to_set(vec![

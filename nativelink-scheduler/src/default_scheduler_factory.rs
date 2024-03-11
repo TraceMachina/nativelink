@@ -29,7 +29,10 @@ use crate::property_modifier_scheduler::PropertyModifierScheduler;
 use crate::simple_scheduler::SimpleScheduler;
 use crate::worker_scheduler::WorkerScheduler;
 
-pub type SchedulerFactoryResults = (Option<Arc<dyn ActionScheduler>>, Option<Arc<dyn WorkerScheduler>>);
+pub type SchedulerFactoryResults = (
+    Option<Arc<dyn ActionScheduler>>,
+    Option<Arc<dyn WorkerScheduler>>,
+);
 
 pub fn scheduler_factory(
     scheduler_type_cfg: &SchedulerConfig,
@@ -95,14 +98,16 @@ fn inner_scheduler_factory(
             // (ActionScheduler and WorkerScheduler) and we need to be able to know if the underlying scheduler
             // has already been visited, not just the trait. `Any` could be used, but that'd require some rework
             // of all the schedulers. This is the most simple way to do it. Rust's uintptr_t is usize.
-            let action_scheduler_uintptr: usize = Arc::as_ptr(action_scheduler).cast::<()>() as usize;
+            let action_scheduler_uintptr: usize =
+                Arc::as_ptr(action_scheduler).cast::<()>() as usize;
             if !visited_schedulers.contains(&action_scheduler_uintptr) {
                 visited_schedulers.insert(action_scheduler_uintptr);
                 action_scheduler.clone().register_metrics(scheduler_metrics);
             }
         }
         if let Some(worker_scheduler) = &scheduler.1 {
-            let worker_scheduler_uintptr: usize = Arc::as_ptr(worker_scheduler).cast::<()>() as usize;
+            let worker_scheduler_uintptr: usize =
+                Arc::as_ptr(worker_scheduler).cast::<()>() as usize;
             if !visited_schedulers.contains(&worker_scheduler_uintptr) {
                 visited_schedulers.insert(worker_scheduler_uintptr);
                 worker_scheduler.clone().register_metrics(scheduler_metrics);

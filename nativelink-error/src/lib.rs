@@ -52,7 +52,10 @@ impl Error {
         if !msg.is_empty() {
             msgs.push(msg);
         }
-        Self { code, messages: msgs }
+        Self {
+            code,
+            messages: msgs,
+        }
     }
 
     #[inline]
@@ -72,7 +75,10 @@ impl Error {
     }
 
     #[must_use]
-    pub fn merge_option<T: Into<Self>, U: Into<Self>>(this: Option<T>, other: Option<U>) -> Option<Self> {
+    pub fn merge_option<T: Into<Self>, U: Into<Self>>(
+        this: Option<T>,
+        other: Option<U>,
+    ) -> Option<Self> {
         if let Some(this) = this {
             if let Some(other) = other {
                 return Some(this.into().merge(other));
@@ -396,7 +402,9 @@ impl From<std::io::ErrorKind> for Code {
             | std::io::ErrorKind::ConnectionReset
             | std::io::ErrorKind::ConnectionAborted => Self::Unavailable,
             std::io::ErrorKind::AlreadyExists => Self::AlreadyExists,
-            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => Self::InvalidArgument,
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
+                Self::InvalidArgument
+            }
             std::io::ErrorKind::TimedOut => Self::DeadlineExceeded,
             std::io::ErrorKind::Interrupted => Self::Aborted,
             std::io::ErrorKind::NotConnected

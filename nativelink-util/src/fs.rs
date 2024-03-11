@@ -28,7 +28,9 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 /// open files at any given time. This will greatly reduce the chance we'll hit open file limit
 /// issues.
 pub use tokio::fs::DirEntry;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, ReadBuf, SeekFrom, Take};
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, ReadBuf, SeekFrom, Take,
+};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::time::timeout;
 use tracing::error;
@@ -128,12 +130,20 @@ impl ResumeableFileSlot {
             .open(&self.path)
             .await
             .err_tip(|| format!("Could not open after resume {:?}", self.path))?;
-        let mut file_slot = FileSlot { _permit: permit, inner };
+        let mut file_slot = FileSlot {
+            _permit: permit,
+            inner,
+        };
         file_slot
             .inner
             .seek(SeekFrom::Start(stream_position))
             .await
-            .err_tip(|| format!("Failed to seek to position {stream_position} {:?}", self.path))?;
+            .err_tip(|| {
+                format!(
+                    "Failed to seek to position {stream_position} {:?}",
+                    self.path
+                )
+            })?;
 
         self.maybe_file_slot = MaybeFileSlot::Open(file_slot.take(bytes_remaining));
         match &mut self.maybe_file_slot {
@@ -179,7 +189,9 @@ impl ResumeableFileSlot {
                         (buf, state) = output;
                         break;
                     }
-                    Ok(Err(err)) => return Err(err).err_tip(|| "read_buf_cb's handler returned an error"),
+                    Ok(Err(err)) => {
+                        return Err(err).err_tip(|| "read_buf_cb's handler returned an error")
+                    }
                     Err(_) => {
                         self.close_file()
                             .await
@@ -226,21 +238,34 @@ impl AsyncSeek for FileSlot {
         Pin::new(&mut self.inner).start_seek(position)
     }
 
-    fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<u64, tokio::io::Error>> {
+    fn poll_complete(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<u64, tokio::io::Error>> {
         Pin::new(&mut self.inner).poll_complete(cx)
     }
 }
 
 impl AsyncWrite for FileSlot {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, tokio::io::Error>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, tokio::io::Error>> {
         Pin::new(&mut self.inner).poll_write(cx, buf)
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), tokio::io::Error>> {
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), tokio::io::Error>> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), tokio::io::Error>> {
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), tokio::io::Error>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 
@@ -287,7 +312,10 @@ where
 pub fn set_open_file_limit(limit: usize) {
     let current_total = TOTAL_FILE_SEMAPHORES.load(Ordering::Acquire);
     if limit < current_total {
-        error!("set_open_file_limit({}) must be greater than {}", limit, current_total);
+        error!(
+            "set_open_file_limit({}) must be greater than {}",
+            limit, current_total
+        );
         return;
     }
     TOTAL_FILE_SEMAPHORES.fetch_add(limit - current_total, Ordering::Release);
@@ -360,9 +388,13 @@ pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
 }
 
-pub async fn set_permissions(src: impl AsRef<Path>, perm: std::fs::Permissions) -> Result<(), Error> {
+pub async fn set_permissions(
+    src: impl AsRef<Path>,
+    perm: std::fs::Permissions,
+) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
-    call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into)).await
+    call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))
+        .await
 }
 
 pub async fn create_dir(path: impl AsRef<Path>) -> Result<(), Error> {

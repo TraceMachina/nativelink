@@ -74,7 +74,10 @@ impl FastCDC {
             mask_hard: 2u32.pow(bits + 1) - 1,
             mask_easy: 2u32.pow(bits - 1) - 1,
 
-            state: State { hash: 0, position: 0 },
+            state: State {
+                hash: 0,
+                position: 0,
+            },
         }
     }
 }
@@ -159,7 +162,10 @@ impl Clone for FastCDC {
             mask_easy: self.mask_easy,
             mask_hard: self.mask_hard,
 
-            state: State { hash: 0, position: 0 },
+            state: State {
+                hash: 0,
+                position: 0,
+            },
         }
     }
 }

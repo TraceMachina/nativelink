@@ -22,8 +22,8 @@ use bincode::{DefaultOptions, Options};
 use bytes::Bytes;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_store::compression_store::{
-    CompressionStore, Footer, Lz4Config, SliceIndex, CURRENT_STREAM_FORMAT_VERSION, DEFAULT_BLOCK_SIZE,
-    FOOTER_FRAME_TYPE,
+    CompressionStore, Footer, Lz4Config, SliceIndex, CURRENT_STREAM_FORMAT_VERSION,
+    DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE,
 };
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
@@ -44,8 +44,16 @@ fn extract_footer(data: &[u8]) -> Result<Footer, Error> {
     pos -= (index_count * 4) as usize; // Skip indexes(u32 * index_count).
     pos -= 8; // Skip bincode_index_count(u64).
     let footer_len = u32::from_le_bytes(data[pos - 4..pos].try_into().unwrap());
-    assert_eq!(footer_len as usize, data.len() - pos, "Expected footer_len to match");
-    assert_eq!(data[pos - 4 - 1], FOOTER_FRAME_TYPE, "Expected frame_type to be footer");
+    assert_eq!(
+        footer_len as usize,
+        data.len() - pos,
+        "Expected footer_len to match"
+    );
+    assert_eq!(
+        data[pos - 4 - 1],
+        FOOTER_FRAME_TYPE,
+        "Expected frame_type to be footer"
+    );
 
     DefaultOptions::new()
         .with_fixint_encoding()
@@ -71,10 +79,14 @@ mod compression_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
-                    nativelink_config::stores::Lz4Config { ..Default::default() },
+                    nativelink_config::stores::Lz4Config {
+                        ..Default::default()
+                    },
                 ),
             },
-            Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default())),
+            Arc::new(MemoryStore::new(
+                &nativelink_config::stores::MemoryStore::default(),
+            )),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -88,7 +100,11 @@ mod compression_store_tests {
             .await
             .err_tip(|| "Failed to get from inner store")?;
 
-        assert_eq!(from_utf8(&store_data[..]).unwrap(), RAW_INPUT, "Expected data to match");
+        assert_eq!(
+            from_utf8(&store_data[..]).unwrap(),
+            RAW_INPUT,
+            "Expected data to match"
+        );
         Ok(())
     }
 
@@ -106,7 +122,9 @@ mod compression_store_tests {
                     },
                 ),
             },
-            Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default())),
+            Arc::new(MemoryStore::new(
+                &nativelink_config::stores::MemoryStore::default(),
+            )),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -118,7 +136,9 @@ mod compression_store_tests {
         ];
 
         let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
-        store.update_oneshot(digest, RAW_DATA.as_ref().into()).await?;
+        store
+            .update_oneshot(digest, RAW_DATA.as_ref().into())
+            .await?;
 
         // Read through the store forcing lots of decompression steps at different offsets
         // and different window sizes. This will ensure we get most edge cases for when
@@ -128,7 +148,12 @@ mod compression_store_tests {
                 let store_data = store
                     .get_part_unchunked(digest, offset, Some(read_slice_size), None)
                     .await
-                    .err_tip(|| format!("Failed to get from inner store at {} - {}", offset, read_slice_size))?;
+                    .err_tip(|| {
+                        format!(
+                            "Failed to get from inner store at {} - {}",
+                            offset, read_slice_size
+                        )
+                    })?;
 
                 let start_pos = cmp::min(RAW_DATA.len(), offset);
                 let end_pos = cmp::min(RAW_DATA.len(), offset + read_slice_size);
@@ -153,10 +178,14 @@ mod compression_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
-                    nativelink_config::stores::Lz4Config { ..Default::default() },
+                    nativelink_config::stores::Lz4Config {
+                        ..Default::default()
+                    },
                 ),
             },
-            Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default())),
+            Arc::new(MemoryStore::new(
+                &nativelink_config::stores::MemoryStore::default(),
+            )),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -179,14 +208,18 @@ mod compression_store_tests {
 
     #[tokio::test]
     async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
-        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
-                    nativelink_config::stores::Lz4Config { ..Default::default() },
+                    nativelink_config::stores::Lz4Config {
+                        ..Default::default()
+                    },
                 ),
             },
             inner_store.clone(),
@@ -202,7 +235,11 @@ mod compression_store_tests {
             .await
             .err_tip(|| "Failed to get from inner store")?;
 
-        assert_eq!(store_data.len(), 0, "Expected store data to have no data in it");
+        assert_eq!(
+            store_data.len(),
+            0,
+            "Expected store data to have no data in it"
+        );
 
         let compressed_data = Pin::new(inner_store.as_ref())
             .get_part_unchunked(digest, 0, None, None)
@@ -228,7 +265,9 @@ mod compression_store_tests {
     async fn check_header_test() -> Result<(), Error> {
         const BLOCK_SIZE: u32 = 150;
         const MAX_SIZE_INPUT: usize = 1024 * 1024; // 1MB.
-        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
@@ -283,9 +322,15 @@ mod compression_store_tests {
             // Check upload_type and upload_size.
             const MAX_SIZE_OPT_CODE: u32 = 1;
             let upload_type = reader.read_u32_le().await?;
-            assert_eq!(upload_type, MAX_SIZE_OPT_CODE, "Expected enum size type to match");
+            assert_eq!(
+                upload_type, MAX_SIZE_OPT_CODE,
+                "Expected enum size type to match"
+            );
             let upload_size = reader.read_u32_le().await?;
-            assert_eq!(upload_size, MAX_SIZE_INPUT as u32, "Expected upload size to match");
+            assert_eq!(
+                upload_size, MAX_SIZE_INPUT as u32,
+                "Expected upload size to match"
+            );
         }
 
         // As a sanity check lets check our footer.
@@ -295,7 +340,9 @@ mod compression_store_tests {
                 indexes: vec![],
                 index_count: 0,
                 uncompressed_data_size: RAW_INPUT.len() as u64,
-                config: Lz4Config { block_size: BLOCK_SIZE },
+                config: Lz4Config {
+                    block_size: BLOCK_SIZE
+                },
                 version: CURRENT_STREAM_FORMAT_VERSION,
             },
             "Expected footers to match"
@@ -307,7 +354,9 @@ mod compression_store_tests {
     #[tokio::test]
     async fn check_footer_test() -> Result<(), Error> {
         const BLOCK_SIZE: u32 = 32 * 1024;
-        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
@@ -361,7 +410,8 @@ mod compression_store_tests {
         }
         {
             // Check data size in footer.
-            let uncompressed_data_size = u64::from_le_bytes(compressed_data[pos - 8..pos].try_into().unwrap());
+            let uncompressed_data_size =
+                u64::from_le_bytes(compressed_data[pos - 8..pos].try_into().unwrap());
             pos -= 8;
             assert_eq!(
                 uncompressed_data_size,
@@ -399,7 +449,8 @@ mod compression_store_tests {
         }
         {
             // `bincode` adds the size again as a u64 before our index vector so check it too.
-            let bincode_index_count = u64::from_le_bytes(compressed_data[pos - 8..pos].try_into().unwrap());
+            let bincode_index_count =
+                u64::from_le_bytes(compressed_data[pos - 8..pos].try_into().unwrap());
             pos -= 8;
             assert_eq!(
                 bincode_index_count, index_count as u64,
@@ -419,7 +470,10 @@ mod compression_store_tests {
         {
             // Check our frame type.
             let frame_type = u8::from_le_bytes(compressed_data[pos - 1..pos].try_into().unwrap());
-            assert_eq!(frame_type, FOOTER_FRAME_TYPE, "Expected frame type to be footer");
+            assert_eq!(
+                frame_type, FOOTER_FRAME_TYPE,
+                "Expected frame type to be footer"
+            );
         }
 
         // Just as one last sanity check lets check our deserialized footer.
@@ -433,7 +487,9 @@ mod compression_store_tests {
                     .to_vec(),
                 index_count: EXPECTED_INDEXES.len() as u32,
                 uncompressed_data_size: data_len as u64,
-                config: Lz4Config { block_size: BLOCK_SIZE },
+                config: Lz4Config {
+                    block_size: BLOCK_SIZE
+                },
                 version: CURRENT_STREAM_FORMAT_VERSION,
             },
             "Expected footers to match"
@@ -450,7 +506,9 @@ mod compression_store_tests {
         };
 
         const BLOCK_SIZE: u32 = 32 * 1024;
-        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
                 backend: nativelink_config::stores::StoreConfig::memory(

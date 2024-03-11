@@ -24,19 +24,23 @@ use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
-    BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse, GetActionResultRequest,
-    GetTreeRequest, GetTreeResponse, UpdateActionResultRequest,
+    digest_function, ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse,
+    BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, FindMissingBlobsRequest,
+    FindMissingBlobsResponse, GetActionResultRequest, GetTreeRequest, GetTreeResponse,
+    UpdateActionResultRequest,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
-    QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
+    QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest,
+    WriteResponse,
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::grpc_utils::ConnectionManager;
 use nativelink_util::health_utils::HealthStatusIndicator;
-use nativelink_util::proto_stream_utils::{FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper};
+use nativelink_util::proto_stream_utils::{
+    FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
+};
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
@@ -83,7 +87,10 @@ impl GrpcStore {
         config: &nativelink_config::stores::GrpcStore,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Self, Error> {
-        error_if!(config.endpoints.is_empty(), "Expected at least 1 endpoint in GrpcStore");
+        error_if!(
+            config.endpoints.is_empty(),
+            "Expected at least 1 endpoint in GrpcStore"
+        );
         let mut endpoints = Vec::with_capacity(config.endpoints.len());
         for endpoint_config in &config.endpoints {
             let endpoint = tls_utils::endpoint(endpoint_config)
@@ -99,7 +106,10 @@ impl GrpcStore {
                 Arc::new(jitter_fn),
                 config.retry.to_owned(),
             ),
-            connection_manager: ConnectionManager::new(endpoints.into_iter(), config.max_concurrent_requests),
+            connection_manager: ConnectionManager::new(
+                endpoints.into_iter(),
+                config.max_concurrent_requests,
+            ),
         })
     }
 
@@ -263,11 +273,16 @@ impl GrpcStore {
         );
 
         let request = self.get_read_request(grpc_request.into_request().into_inner())?;
-        self.perform_request(request, |request| async move { self.read_internal(request).await })
-            .await
+        self.perform_request(request, |request| async move {
+            self.read_internal(request).await
+        })
+        .await
     }
 
-    pub async fn write<T, E>(&self, stream: WriteRequestStreamWrapper<T, E>) -> Result<Response<WriteResponse>, Error>
+    pub async fn write<T, E>(
+        &self,
+        stream: WriteRequestStreamWrapper<T, E>,
+    ) -> Result<Response<WriteResponse>, Error>
     where
         T: Stream<Item = Result<WriteRequest, E>> + Unpin + Send + 'static,
         E: Into<Error> + 'static,
@@ -277,7 +292,10 @@ impl GrpcStore {
             "CAS operation on AC store"
         );
 
-        let local_state = Arc::new(Mutex::new(WriteState::new(self.instance_name.clone(), stream)));
+        let local_state = Arc::new(Mutex::new(WriteState::new(
+            self.instance_name.clone(),
+            stream,
+        )));
 
         let result = self
             .retrier
@@ -394,7 +412,10 @@ impl GrpcStore {
         .await
     }
 
-    async fn get_action_result_from_digest(&self, digest: DigestInfo) -> Result<Response<ActionResult>, Error> {
+    async fn get_action_result_from_digest(
+        &self,
+        digest: DigestInfo,
+    ) -> Result<Response<ActionResult>, Error> {
         let action_result_request = GetActionResultRequest {
             instance_name: self.instance_name.clone(),
             action_digest: Some(digest.into()),
@@ -403,7 +424,8 @@ impl GrpcStore {
             inline_output_files: Vec::new(),
             digest_function: digest_function::Value::Sha256.into(),
         };
-        self.get_action_result(Request::new(action_result_request)).await
+        self.get_action_result(Request::new(action_result_request))
+            .await
     }
 
     async fn get_action_result_as_part(
@@ -446,8 +468,12 @@ impl GrpcStore {
         digest: DigestInfo,
         reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
-        let action_result = ActionResult::decode(reader.collect_all_with_size_hint(ESTIMATED_DIGEST_SIZE).await?)
-            .err_tip(|| "Failed to decode ActionResult in update_action_result_from_bytes")?;
+        let action_result = ActionResult::decode(
+            reader
+                .collect_all_with_size_hint(ESTIMATED_DIGEST_SIZE)
+                .await?,
+        )
+        .err_tip(|| "Failed to decode ActionResult in update_action_result_from_bytes")?;
         let update_action_request = UpdateActionResultRequest {
             instance_name: self.instance_name.clone(),
             action_digest: Some(digest.into()),
@@ -503,7 +529,8 @@ impl Store for GrpcStore {
         // To optimise this, the missing digests are sorted and then it is
         // efficient to perform a binary search for each digest within the
         // missing list.
-        let mut missing_digests = Vec::with_capacity(missing_blobs_response.missing_blob_digests.len());
+        let mut missing_digests =
+            Vec::with_capacity(missing_blobs_response.missing_blob_digests.len());
         for missing_digest in missing_blobs_response.missing_blob_digests {
             missing_digests.push(DigestInfo::try_from(missing_digest)?);
         }
@@ -555,7 +582,12 @@ impl Store for GrpcStore {
                 error!("GrpcStore::update() polled stream after error was returned.");
                 return None;
             }
-            let data = match local_state.reader.recv().await.err_tip(|| "In GrpcStore::update()") {
+            let data = match local_state
+                .reader
+                .recv()
+                .await
+                .err_tip(|| "In GrpcStore::update()")
+            {
                 Ok(data) => data,
                 Err(err) => {
                     local_state.did_error = true;
@@ -596,7 +628,9 @@ impl Store for GrpcStore {
         length: Option<usize>,
     ) -> Result<(), Error> {
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
-            return self.get_action_result_as_part(digest, writer, offset, length).await;
+            return self
+                .get_action_result_as_part(digest, writer, offset, length)
+                .await;
         }
 
         // Shortcut for empty blobs.
@@ -632,7 +666,11 @@ impl Store for GrpcStore {
                     read_offset: local_state.read_offset,
                     read_limit: local_state.read_limit,
                 };
-                let mut stream = match self.read_internal(request).await.err_tip(|| "in GrpcStore::get_part()") {
+                let mut stream = match self
+                    .read_internal(request)
+                    .await
+                    .err_tip(|| "in GrpcStore::get_part()")
+                {
                     Ok(stream) => stream,
                     Err(err) => return Some((RetryResult::Retry(err), local_state)),
                 };

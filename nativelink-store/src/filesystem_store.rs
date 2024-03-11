@@ -27,7 +27,9 @@ use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{join, Future, TryFutureExt};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::buf_channel::{
+    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+};
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -107,16 +109,23 @@ impl Drop for EncodedFilePath {
 
         let file_path = self.get_file_path().to_os_string();
         let shared_context = self.shared_context.clone();
-        shared_context.active_drop_spawns.fetch_add(1, Ordering::Relaxed);
+        shared_context
+            .active_drop_spawns
+            .fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
-            info!("\x1b[0;31mFilesystem Store\x1b[0m: Deleting: {:?}", file_path);
+            info!(
+                "\x1b[0;31mFilesystem Store\x1b[0m: Deleting: {:?}",
+                file_path
+            );
             let result = fs::remove_file(&file_path)
                 .await
                 .err_tip(|| format!("Failed to remove file {:?}", file_path));
             if let Err(err) = result {
                 error!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
             }
-            shared_context.active_drop_spawns.fetch_sub(1, Ordering::Relaxed);
+            shared_context
+                .active_drop_spawns
+                .fetch_sub(1, Ordering::Relaxed);
         });
     }
 }
@@ -149,7 +158,11 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     fn get_encoded_file_path(&self) -> &RwLock<EncodedFilePath>;
 
     /// Returns a reader that will read part of the underlying file.
-    async fn read_file_part(&self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot, Error>;
+    async fn read_file_part(
+        &self,
+        offset: u64,
+        length: u64,
+    ) -> Result<fs::ResumeableFileSlot, Error>;
 
     /// This function is a safe way to extract the file name of the underlying file. To protect users from
     /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
@@ -157,7 +170,11 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     /// This is because the filename is not guaranteed to exist after this function returns, however inside
     /// the callback the file is always guaranteed to exist and immutable.
     /// DO NOT USE THIS FUNCTION TO EXTRACT THE FILENAME AND STORE IT FOR LATER USE.
-    async fn get_file_path_locked<T, Fut: Future<Output = Result<T, Error>> + Send, F: FnOnce(OsString) -> Fut + Send>(
+    async fn get_file_path_locked<
+        T,
+        Fut: Future<Output = Result<T, Error>> + Send,
+        F: FnOnce(OsString) -> Fut + Send,
+    >(
         &self,
         handler: F,
     ) -> Result<T, Error>;
@@ -195,14 +212,19 @@ impl FileEntry for FileEntryImpl {
         let temp_full_path = encoded_file_path.get_file_path().to_os_string();
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
-                let remove_result = fs::remove_file(&temp_full_path)
-                    .await
-                    .err_tip(|| format!("Failed to remove file {:?} in filesystem store", temp_full_path));
+                let remove_result = fs::remove_file(&temp_full_path).await.err_tip(|| {
+                    format!(
+                        "Failed to remove file {:?} in filesystem store",
+                        temp_full_path
+                    )
+                });
                 if let Err(remove_err) = remove_result {
                     err = err.merge(remove_err);
                 }
                 warn!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
-                Err(err).err_tip(|| format!("Failed to create {:?} in filesystem store", temp_full_path))
+                Err(err).err_tip(|| {
+                    format!("Failed to create {:?} in filesystem store", temp_full_path)
+                })
             })
             .await?;
 
@@ -229,12 +251,21 @@ impl FileEntry for FileEntryImpl {
         &self.encoded_file_path
     }
 
-    async fn read_file_part(&self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot, Error> {
+    async fn read_file_part(
+        &self,
+        offset: u64,
+        length: u64,
+    ) -> Result<fs::ResumeableFileSlot, Error> {
         let (mut file, full_content_path_for_debug_only) = self
             .get_file_path_locked(|full_content_path| async move {
                 let file = fs::open_file(full_content_path.clone(), length)
                     .await
-                    .err_tip(|| format!("Failed to open file in filesystem store {:?}", full_content_path))?;
+                    .err_tip(|| {
+                        format!(
+                            "Failed to open file in filesystem store {:?}",
+                            full_content_path
+                        )
+                    })?;
                 Ok((file, full_content_path))
             })
             .await?;
@@ -245,7 +276,12 @@ impl FileEntry for FileEntryImpl {
             .get_mut()
             .seek(SeekFrom::Start(offset))
             .await
-            .err_tip(|| format!("Failed to seek file: {:?}", full_content_path_for_debug_only))?;
+            .err_tip(|| {
+                format!(
+                    "Failed to seek file: {:?}",
+                    full_content_path_for_debug_only
+                )
+            })?;
         Ok(file)
     }
 
@@ -273,7 +309,11 @@ impl Debug for FileEntryImpl {
 
 fn make_temp_digest(digest: &mut DigestInfo) {
     static DELETE_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
-    digest.packed_hash[24..].clone_from_slice(&DELETE_FILE_COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+    digest.packed_hash[24..].clone_from_slice(
+        &DELETE_FILE_COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .to_le_bytes(),
+    );
 }
 
 #[async_trait]
@@ -293,8 +333,12 @@ impl LenEntry for FileEntryImpl {
             .get_file_path_locked(move |full_content_path| async move {
                 let full_content_path = full_content_path.to_os_string();
                 spawn_blocking(move || {
-                    set_file_atime(&full_content_path, FileTime::now())
-                        .err_tip(|| format!("Failed to touch file in filesystem store {:?}", full_content_path))
+                    set_file_atime(&full_content_path, FileTime::now()).err_tip(|| {
+                        format!(
+                            "Failed to touch file in filesystem store {:?}",
+                            full_content_path
+                        )
+                    })
                 })
                 .await
                 .map_err(|e| {
@@ -330,7 +374,8 @@ impl LenEntry for FileEntryImpl {
             let mut new_digest = encoded_file_path.digest;
             make_temp_digest(&mut new_digest);
 
-            let to_path = to_full_path_from_digest(&encoded_file_path.shared_context.temp_path, &new_digest);
+            let to_path =
+                to_full_path_from_digest(&encoded_file_path.shared_context.temp_path, &new_digest);
 
             info!(
                 "\x1b[0;31mFilesystem Store\x1b[0m: Unref {}, moving file {:?} to {:?}",
@@ -392,7 +437,11 @@ async fn add_files_to_cache<Fe: FileEntry>(
             .duration_since(atime)
             .map_err(|_| make_input_err!("File access time newer than now"))?;
         evicting_map
-            .insert_with_time(digest, Arc::new(file_entry), time_since_anchor.as_secs() as i32)
+            .insert_with_time(
+                digest,
+                Arc::new(file_entry),
+                time_since_anchor.as_secs() as i32,
+            )
             .await;
         Ok(())
     }
@@ -450,7 +499,8 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 file_name, err
             );
             // Ignore result.
-            let _ = fs::remove_file(format!("{}/{}", &shared_context.content_path, &file_name)).await;
+            let _ =
+                fs::remove_file(format!("{}/{}", &shared_context.content_path, &file_name)).await;
         }
     }
     Ok(())
@@ -466,7 +516,10 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     while let Some(dir_entry) = read_dir_stream.next().await {
         let path = dir_entry?.path();
         if let Err(err) = fs::remove_file(&path).await {
-            warn!("Failed to delete file in filesystem store {:?} : {:?}", &path, err);
+            warn!(
+                "Failed to delete file in filesystem store {:?} : {:?}",
+                &path, err
+            );
         }
     }
     Ok(())
@@ -483,7 +536,8 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
     pub async fn new(config: &nativelink_config::stores::FilesystemStore) -> Result<Self, Error> {
-        Self::new_with_timeout_and_rename_fn(config, sleep, |from, to| std::fs::rename(from, to)).await
+        Self::new_with_timeout_and_rename_fn(config, sleep, |from, to| std::fs::rename(from, to))
+            .await
     }
 
     pub async fn new_with_timeout_and_rename_fn(
@@ -535,10 +589,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
-        self.evicting_map
-            .get(digest)
-            .await
-            .ok_or_else(|| make_err!(Code::NotFound, "{} not found in filesystem store", digest.hash_str()))
+        self.evicting_map.get(digest).await.ok_or_else(|| {
+            make_err!(
+                Code::NotFound,
+                "{} not found in filesystem store",
+                digest.hash_str()
+            )
+        })
     }
 
     async fn update_file<'a>(
@@ -550,17 +607,17 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     ) -> Result<(), Error> {
         let mut data_size = 0;
         loop {
-            let Ok(data_result) = timeout(fs::idle_file_descriptor_timeout(), reader.recv()).await else {
+            let Ok(data_result) = timeout(fs::idle_file_descriptor_timeout(), reader.recv()).await
+            else {
                 // In the event we timeout, we want to close the writing file, to prevent
                 // the file descriptor left open for long periods of time.
                 // This is needed because we wrap `fs` so only a fixed number of file
                 // descriptors may be open at any given time. If we are streaming from
                 // File -> File, it can cause a deadlock if the Write file is not sending
                 // data because it is waiting for a file descriotor to open before sending data.
-                resumeable_temp_file
-                    .close_file()
-                    .await
-                    .err_tip(|| "Could not close file due to timeout in FileSystemStore::update_file")?;
+                resumeable_temp_file.close_file().await.err_tip(|| {
+                    "Could not close file due to timeout in FileSystemStore::update_file"
+                })?;
                 continue;
             };
             let mut data = data_result.err_tip(|| "Failed to receive data in filesystem store")?;
@@ -618,7 +675,11 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // See: https://github.com/TraceMachina/nativelink/issues/495
         tokio::spawn(async move {
             let mut encoded_file_path = entry.get_encoded_file_path().write().await;
-            let final_path = get_file_path_raw(&PathType::Content, encoded_file_path.shared_context.as_ref(), &digest);
+            let final_path = get_file_path_raw(
+                &PathType::Content,
+                encoded_file_path.shared_context.as_ref(),
+                &digest,
+            );
 
             evicting_map.insert(digest, entry.clone()).await;
 
@@ -674,7 +735,10 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
             let (update_result, send_eof_result) = join!(update_fut, tx.send_eof());
             update_result
                 .err_tip(|| format!("Failed to create zero file for digest {digest:?}"))
-                .merge(send_eof_result.err_tip(|| "Failed to send zero file EOF in filesystem store has"))?;
+                .merge(
+                    send_eof_result
+                        .err_tip(|| "Failed to send zero file EOF in filesystem store has"),
+                )?;
 
             *result = Some(0);
         }
@@ -721,7 +785,12 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
             UploadSizeInfo::MaxSize(_) => file
                 .as_reader()
                 .await
-                .err_tip(|| format!("While getting metadata for {:?} in update_with_whole_file", path))?
+                .err_tip(|| {
+                    format!(
+                        "While getting metadata for {:?} in update_with_whole_file",
+                        path
+                    )
+                })?
                 .get_ref()
                 .as_ref()
                 .metadata()
@@ -762,11 +831,13 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
             return Ok(());
         }
 
-        let entry = self
-            .evicting_map
-            .get(&digest)
-            .await
-            .ok_or_else(|| make_err!(Code::NotFound, "{} not found in filesystem store", digest.hash_str()))?;
+        let entry = self.evicting_map.get(&digest).await.ok_or_else(|| {
+            make_err!(
+                Code::NotFound,
+                "{} not found in filesystem store",
+                digest.hash_str()
+            )
+        })?;
         let read_limit = length.unwrap_or(usize::MAX) as u64;
         let mut resumeable_temp_file = entry.read_file_part(offset as u64, read_limit).await?;
 

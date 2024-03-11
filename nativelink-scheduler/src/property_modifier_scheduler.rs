@@ -47,19 +47,27 @@ impl PropertyModifierScheduler {
 
 #[async_trait]
 impl ActionScheduler for PropertyModifierScheduler {
-    async fn get_platform_property_manager(&self, instance_name: &str) -> Result<Arc<PlatformPropertyManager>, Error> {
+    async fn get_platform_property_manager(
+        &self,
+        instance_name: &str,
+    ) -> Result<Arc<PlatformPropertyManager>, Error> {
         {
             let property_managers = self.property_managers.lock();
             if let Some(property_manager) = property_managers.get(instance_name) {
                 return Ok(property_manager.clone());
             }
         }
-        let property_manager = self.scheduler.get_platform_property_manager(instance_name).await?;
+        let property_manager = self
+            .scheduler
+            .get_platform_property_manager(instance_name)
+            .await?;
         let mut known_properties = property_manager.get_known_properties().clone();
         for modification in &self.modifications {
             match modification {
                 PropertyModification::remove(name) => {
-                    known_properties.entry(name.into()).or_insert(PropertyType::priority);
+                    known_properties
+                        .entry(name.into())
+                        .or_insert(PropertyType::priority);
                 }
                 PropertyModification::add(_) => (),
             }
@@ -79,20 +87,27 @@ impl ActionScheduler for PropertyModifierScheduler {
         Ok(property_manager)
     }
 
-    async fn add_action(&self, mut action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(
+        &self,
+        mut action_info: ActionInfo,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let platform_property_manager = self
             .get_platform_property_manager(&action_info.unique_qualifier.instance_name)
             .await
             .err_tip(|| "In PropertyModifierScheduler::add_action")?;
         for modification in &self.modifications {
             match modification {
-                PropertyModification::add(addition) => action_info.platform_properties.properties.insert(
-                    addition.name.clone(),
-                    platform_property_manager
-                        .make_prop_value(&addition.name, &addition.value)
-                        .err_tip(|| "In PropertyModifierScheduler::add_action")?,
-                ),
-                PropertyModification::remove(name) => action_info.platform_properties.properties.remove(name),
+                PropertyModification::add(addition) => {
+                    action_info.platform_properties.properties.insert(
+                        addition.name.clone(),
+                        platform_property_manager
+                            .make_prop_value(&addition.name, &addition.value)
+                            .err_tip(|| "In PropertyModifierScheduler::add_action")?,
+                    )
+                }
+                PropertyModification::remove(name) => {
+                    action_info.platform_properties.properties.remove(name)
+                }
             };
         }
         self.scheduler.add_action(action_info).await

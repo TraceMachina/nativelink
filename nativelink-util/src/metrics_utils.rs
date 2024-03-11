@@ -17,8 +17,8 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem::forget;
 use std::sync::atomic::{
-    AtomicBool, AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32, AtomicU64, AtomicU8,
-    AtomicUsize, Ordering,
+    AtomicBool, AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32,
+    AtomicU64, AtomicU8, AtomicUsize, Ordering,
 };
 use std::sync::{Arc, Weak};
 use std::thread_local;
@@ -97,7 +97,12 @@ impl CollectorState {
     /// Any special types that want metrics published should implement `MetricPublisher`
     /// for that type.
     #[inline]
-    pub fn publish(&mut self, name: impl Into<String>, value: impl MetricPublisher, help: impl Into<String>) {
+    pub fn publish(
+        &mut self,
+        name: impl Into<String>,
+        value: impl MetricPublisher,
+        help: impl Into<String>,
+    ) {
         value.publish(self, name.into(), help.into(), vec![]);
     }
 
@@ -127,8 +132,12 @@ impl CollectorState {
         NumericalMetric<N>: EncodeMetric,
     {
         let gague: Box<dyn LocalMetric> = Box::new(value.into());
-        self.metrics
-            .push((name.into(), help.into(), MaybeOwned::Owned(gague), labels.into()));
+        self.metrics.push((
+            name.into(),
+            help.into(),
+            MaybeOwned::Owned(gague),
+            labels.into(),
+        ));
     }
 
     /// Publish a static text metric. Generally these are used for labels and don't
@@ -141,7 +150,8 @@ impl CollectorState {
         help: impl Into<String>,
         labels: impl Into<Labels>,
     ) {
-        self.text.push((name.into(), help.into(), value.into(), labels.into()));
+        self.text
+            .push((name.into(), help.into(), value.into(), labels.into()));
     }
 
     /// Publish a histogram metric. Be careful not to have the iterator take too
@@ -168,7 +178,9 @@ impl CollectorState {
             0.00, 0.01, 0.03, 0.05, 0.10, 0.30, 0.50, 0.70, 0.90, 0.95, 0.97, 0.99, 1.00,
         ] {
             let index = (i * data_len) as usize;
-            let value = data.get(if index < data.len() { index } else { index - 1 }).unwrap();
+            let value = data
+                .get(if index < data.len() { index } else { index - 1 })
+                .unwrap();
             let labels = vec![("quantile".into(), format!("{:.2}", i).into())];
             self.publish_number(name.clone(), *value, help.clone(), labels);
         }
@@ -191,28 +203,49 @@ impl CollectorState {
                         prefix = Some(Prefix::from(parent_prefix.clone()));
                     }
                     (
-                        Cow::Owned(Descriptor::new(name, help, None, prefix.as_ref(), combined_labels)),
+                        Cow::Owned(Descriptor::new(
+                            name,
+                            help,
+                            None,
+                            prefix.as_ref(),
+                            combined_labels,
+                        )),
                         metric,
                     )
                 })
-                .chain(self.text.into_iter().map(move |(name, help, value, labels)| {
-                    let mut combined_labels = parent_labels2.clone();
-                    combined_labels.extend_from_slice(&labels);
-                    let info: Box<dyn LocalMetric> = Box::new(Info::new(vec![(name, value)]));
-                    let mut prefix: Option<Prefix> = None;
-                    if let Some(parent_prefix) = &module_name2 {
-                        prefix = Some(Prefix::from(parent_prefix.clone()));
-                    }
-                    (
-                        Cow::Owned(Descriptor::new("labels", help, None, prefix.as_ref(), combined_labels)),
-                        MaybeOwned::Owned(info),
-                    )
-                }))
-                .chain(self.children.into_iter().flat_map(move |(child_state, labels)| {
-                    let mut combined_labels = parent_labels3.clone();
-                    combined_labels.extend_from_slice(&labels);
-                    child_state.into_metrics(combined_labels)
-                })),
+                .chain(
+                    self.text
+                        .into_iter()
+                        .map(move |(name, help, value, labels)| {
+                            let mut combined_labels = parent_labels2.clone();
+                            combined_labels.extend_from_slice(&labels);
+                            let info: Box<dyn LocalMetric> =
+                                Box::new(Info::new(vec![(name, value)]));
+                            let mut prefix: Option<Prefix> = None;
+                            if let Some(parent_prefix) = &module_name2 {
+                                prefix = Some(Prefix::from(parent_prefix.clone()));
+                            }
+                            (
+                                Cow::Owned(Descriptor::new(
+                                    "labels",
+                                    help,
+                                    None,
+                                    prefix.as_ref(),
+                                    combined_labels,
+                                )),
+                                MaybeOwned::Owned(info),
+                            )
+                        }),
+                )
+                .chain(
+                    self.children
+                        .into_iter()
+                        .flat_map(move |(child_state, labels)| {
+                            let mut combined_labels = parent_labels3.clone();
+                            combined_labels.extend_from_slice(&labels);
+                            child_state.into_metrics(combined_labels)
+                        }),
+                ),
         )
     }
 }
@@ -322,7 +355,10 @@ pub struct AsyncCounterWrapper {
 
 impl AsyncCounterWrapper {
     #[inline]
-    pub fn wrap_fn<'a, T: 'a, E>(&'a self, func: impl FnOnce() -> Result<T, E> + 'a) -> Result<T, E> {
+    pub fn wrap_fn<'a, T: 'a, E>(
+        &'a self,
+        func: impl FnOnce() -> Result<T, E> + 'a,
+    ) -> Result<T, E> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let result = (func)();
         if result.is_ok() {
@@ -334,7 +370,10 @@ impl AsyncCounterWrapper {
     }
 
     #[inline]
-    pub async fn wrap<'a, T, E, F: Future<Output = Result<T, E>> + 'a>(&'a self, future: F) -> Result<T, E> {
+    pub async fn wrap<'a, T, E, F: Future<Output = Result<T, E>> + 'a>(
+        &'a self,
+        future: F,
+    ) -> Result<T, E> {
         if !metrics_enabled() {
             return future.await;
         }
@@ -348,7 +387,10 @@ impl AsyncCounterWrapper {
     }
 
     #[inline]
-    pub async fn wrap_no_capture_result<'a, T, F: Future<Output = T> + 'a>(&'a self, future: F) -> T {
+    pub async fn wrap_no_capture_result<'a, T, F: Future<Output = T> + 'a>(
+        &'a self,
+        future: F,
+    ) -> T {
         if !metrics_enabled() {
             return future.await;
         }
@@ -482,7 +524,10 @@ impl CounterWithTime {
         }
         self.counter.fetch_add(1, Ordering::Relaxed);
         self.last_time.store(
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
             Ordering::Relaxed,
         );
     }
@@ -527,7 +572,8 @@ impl<T: Sync + Send + 'static> Debug for Collector<T> {
     }
 }
 
-type CollectorResult<'a> = Box<dyn Iterator<Item = (Cow<'a, Descriptor>, MaybeOwned<'a, Box<dyn LocalMetric>>)> + 'a>;
+type CollectorResult<'a> =
+    Box<dyn Iterator<Item = (Cow<'a, Descriptor>, MaybeOwned<'a, Box<dyn LocalMetric>>)> + 'a>;
 
 impl<S: MetricsComponent + Sync + Send + 'static> PrometheusCollector for Collector<S> {
     fn collect(&self) -> CollectorResult {
@@ -561,7 +607,13 @@ where
     T: MetricsComponent,
 {
     #[inline]
-    fn publish(&self, parent_state: &mut CollectorState, module_name: String, _help: String, labels: Labels) {
+    fn publish(
+        &self,
+        parent_state: &mut CollectorState,
+        module_name: String,
+        _help: String,
+        labels: Labels,
+    ) {
         let module_name = if module_name.is_empty() {
             None
         } else {

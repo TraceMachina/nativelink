@@ -32,7 +32,9 @@ mod ref_store_tests {
     fn setup_stores() -> (Arc<StoreManager>, Arc<MemoryStore>, Arc<RefStore>) {
         let store_manager = Arc::new(StoreManager::new());
 
-        let memory_store_owned = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let memory_store_owned = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         store_manager.add_store("foo", memory_store_owned.clone());
 
         let ref_store_owned = Arc::new(RefStore::new(
@@ -53,7 +55,10 @@ mod ref_store_tests {
         {
             // Insert data into memory store.
             Pin::new(memory_store_owned.as_ref())
-                .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, VALUE1.into())
+                .update_oneshot(
+                    DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+                    VALUE1.into(),
+                )
                 .await?;
         }
         {
@@ -79,13 +84,21 @@ mod ref_store_tests {
         {
             // Insert data into memory store.
             Pin::new(memory_store_owned.as_ref())
-                .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, VALUE1.into())
+                .update_oneshot(
+                    DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+                    VALUE1.into(),
+                )
                 .await?;
         }
         {
             // Now check if we read it from ref_store it has same data.
             let data = Pin::new(ref_store_owned.as_ref())
-                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, 0, None, None)
+                .get_part_unchunked(
+                    DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+                    0,
+                    None,
+                    None,
+                )
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -106,13 +119,21 @@ mod ref_store_tests {
         {
             // Insert data into ref_store.
             Pin::new(ref_store_owned.as_ref())
-                .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, VALUE1.into())
+                .update_oneshot(
+                    DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+                    VALUE1.into(),
+                )
                 .await?;
         }
         {
             // Now check if we read it from memory_store it has same data.
             let data = Pin::new(memory_store_owned.as_ref())
-                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, 0, None, None)
+                .get_part_unchunked(
+                    DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+                    0,
+                    None,
+                    None,
+                )
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -129,7 +150,9 @@ mod ref_store_tests {
     async fn inner_store_test() -> Result<(), Error> {
         let store_manager = Arc::new(StoreManager::new());
 
-        let memory_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let memory_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         store_manager.add_store("mem_store", memory_store.clone());
 
         let ref_store_inner = Arc::new(RefStore::new(

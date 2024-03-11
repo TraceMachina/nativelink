@@ -19,7 +19,9 @@ use futures::StreamExt;
 use nativelink_error::Error;
 use nativelink_proto::google::bytestream::WriteRequest;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::proto_stream_utils::{WriteRequestStreamWrapper, WriteState, WriteStateWrapper};
+use nativelink_util::proto_stream_utils::{
+    WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
+};
 use parking_lot::Mutex;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 

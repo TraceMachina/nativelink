@@ -15,7 +15,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
-    convert_numeric_with_shellexpand, convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
+    convert_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
+    convert_string_with_shellexpand,
 };
 
 /// Name of the store. This type will be used when referencing a store

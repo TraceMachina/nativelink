@@ -20,12 +20,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::{join, FutureExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::buf_channel::{
+    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fs;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::Registry;
-use nativelink_util::store_trait::{slow_update_store_with_file, Store, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{
+    slow_update_store_with_file, Store, StoreOptimizations, UploadSizeInfo,
+};
 
 // TODO(blaise.bruer) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -45,7 +49,10 @@ impl FastSlowStore {
         fast_store: Arc<dyn Store>,
         slow_store: Arc<dyn Store>,
     ) -> Self {
-        Self { fast_store, slow_store }
+        Self {
+            fast_store,
+            slow_store,
+        }
     }
 
     pub fn fast_store(&self) -> &Arc<dyn Store> {
@@ -93,7 +100,10 @@ impl FastSlowStore {
     /// offset so the output range maps the received_range.start to 0.
     // TODO(allada) This should be put into utils, as this logic is used
     // elsewhere in the code.
-    pub fn calculate_range(received_range: &Range<usize>, send_range: &Range<usize>) -> Option<Range<usize>> {
+    pub fn calculate_range(
+        received_range: &Range<usize>,
+        send_range: &Range<usize>,
+    ) -> Option<Range<usize>> {
         // Protect against subtraction overflow.
         if received_range.start >= received_range.end {
             return None;
@@ -121,13 +131,18 @@ impl Store for FastSlowStore {
         // so only check the fast store in such case.
         let slow_store = self.slow_store.inner_store(None);
         if slow_store.optimized_for(StoreOptimizations::NoopDownloads) {
-            return self.pin_fast_store().has_with_results(digests, results).await;
+            return self
+                .pin_fast_store()
+                .has_with_results(digests, results)
+                .await;
         }
         // Only check the slow store because if it's not there, then something
         // down stream might be unable to get it.  This should not affect
         // workers as they only use get() and a CAS can use an
         // ExistenceCacheStore to avoid the bottleneck.
-        self.pin_slow_store().has_with_results(digests, results).await
+        self.pin_slow_store()
+            .has_with_results(digests, results)
+            .await
     }
 
     async fn update(
@@ -140,11 +155,17 @@ impl Store for FastSlowStore {
         // and just use the store that is not a noop store.
         let slow_store = self.slow_store.inner_store(Some(digest));
         if slow_store.optimized_for(StoreOptimizations::NoopUpdates) {
-            return self.pin_fast_store().update(digest, reader, size_info).await;
+            return self
+                .pin_fast_store()
+                .update(digest, reader, size_info)
+                .await;
         }
         let fast_store = self.fast_store.inner_store(Some(digest));
         if fast_store.optimized_for(StoreOptimizations::NoopUpdates) {
-            return self.pin_slow_store().update(digest, reader, size_info).await;
+            return self
+                .pin_slow_store()
+                .update(digest, reader, size_info)
+                .await;
         }
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
@@ -158,10 +179,9 @@ impl Store for FastSlowStore {
                     .err_tip(|| "Failed to read buffer in fastslow store")?;
                 if buffer.is_empty() {
                     // EOF received.
-                    fast_tx
-                        .send_eof()
-                        .await
-                        .err_tip(|| "Failed to write eof to fast store in fast_slow store update")?;
+                    fast_tx.send_eof().await.err_tip(|| {
+                        "Failed to write eof to fast store in fast_slow store update"
+                    })?;
                     slow_tx
                         .send_eof()
                         .await
@@ -169,7 +189,8 @@ impl Store for FastSlowStore {
                     return Result::<(), Error>::Ok(());
                 }
 
-                let (fast_result, slow_result) = join!(fast_tx.send(buffer.clone()), slow_tx.send(buffer));
+                let (fast_result, slow_result) =
+                    join!(fast_tx.send(buffer.clone()), slow_tx.send(buffer));
                 fast_result
                     .map_err(|e| {
                         make_err!(
@@ -191,7 +212,8 @@ impl Store for FastSlowStore {
         let fast_store_fut = self.pin_fast_store().update(digest, fast_rx, size_info);
         let slow_store_fut = self.pin_slow_store().update(digest, slow_rx, size_info);
 
-        let (data_stream_res, fast_res, slow_res) = join!(data_stream_fut, fast_store_fut, slow_store_fut);
+        let (data_stream_res, fast_res, slow_res) =
+            join!(data_stream_fut, fast_store_fut, slow_store_fut);
         data_stream_res.merge(fast_res).merge(slow_res)?;
         Ok(())
     }
@@ -252,7 +274,9 @@ impl Store for FastSlowStore {
         let fast_store = self.pin_fast_store();
         let slow_store = self.pin_slow_store();
         if fast_store.has(digest).await?.is_some() {
-            return fast_store.get_part_ref(digest, writer, offset, length).await;
+            return fast_store
+                .get_part_ref(digest, writer, offset, length)
+                .await;
         }
 
         let sz = slow_store
@@ -287,9 +311,10 @@ impl Store for FastSlowStore {
                     return Ok::<_, Error>((fast_res, writer_pin));
                 }
 
-                let writer_fut = if let Some(range) =
-                    Self::calculate_range(&(bytes_received..bytes_received + output_buf.len()), &send_range)
-                {
+                let writer_fut = if let Some(range) = Self::calculate_range(
+                    &(bytes_received..bytes_received + output_buf.len()),
+                    &send_range,
+                ) {
                     writer_pin.send(output_buf.slice(range)).right_future()
                 } else {
                     futures::future::ready(Ok(())).left_future()
@@ -305,7 +330,8 @@ impl Store for FastSlowStore {
         let slow_store_fut = slow_store.get(digest, slow_tx);
         let fast_store_fut = fast_store.update(digest, fast_rx, UploadSizeInfo::ExactSize(sz));
 
-        let (data_stream_res, slow_res, fast_res) = join!(data_stream_fut, slow_store_fut, fast_store_fut);
+        let (data_stream_res, slow_res, fast_res) =
+            join!(data_stream_fut, slow_store_fut, fast_store_fut);
         match data_stream_res {
             Ok((fast_eof_res, mut writer_pin)) =>
             // Sending the EOF will drop us almost immediately in bytestream_server
@@ -338,9 +364,13 @@ impl Store for FastSlowStore {
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         let fast_store_registry = registry.sub_registry_with_prefix("fast");
-        self.fast_store.clone().register_metrics(fast_store_registry);
+        self.fast_store
+            .clone()
+            .register_metrics(fast_store_registry);
         let slow_store_registry = registry.sub_registry_with_prefix("slow");
-        self.slow_store.clone().register_metrics(slow_store_registry);
+        self.slow_store
+            .clone()
+            .register_metrics(slow_store_registry);
     }
 }
 

@@ -151,13 +151,19 @@ impl Store for ExistenceCacheStore {
         if exists[0].is_some() {
             // We need to drain the reader to avoid the writer complaining that we dropped
             // the connection prematurely.
-            reader.drain().await.err_tip(|| "In ExistenceCacheStore::update")?;
+            reader
+                .drain()
+                .await
+                .err_tip(|| "In ExistenceCacheStore::update")?;
             return Ok(());
         }
         let result = self.pin_inner().update(digest, reader, size_info).await;
         if result.is_ok() {
             if let UploadSizeInfo::ExactSize(size) = size_info {
-                let _ = self.existence_cache.insert(digest, ExistanceItem(size)).await;
+                let _ = self
+                    .existence_cache
+                    .insert(digest, ExistanceItem(size))
+                    .await;
             }
         }
         result
@@ -170,11 +176,17 @@ impl Store for ExistenceCacheStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        let result = self.pin_inner().get_part_ref(digest, writer, offset, length).await;
+        let result = self
+            .pin_inner()
+            .get_part_ref(digest, writer, offset, length)
+            .await;
         if result.is_ok() {
             let size = usize::try_from(digest.size_bytes)
                 .err_tip(|| "Could not convert size_bytes in ExistenceCacheStore::get_part")?;
-            let _ = self.existence_cache.insert(digest, ExistanceItem(size)).await;
+            let _ = self
+                .existence_cache
+                .insert(digest, ExistanceItem(size))
+                .await;
         }
         result
     }
@@ -197,7 +209,9 @@ impl Store for ExistenceCacheStore {
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
-        self.inner_store.clone().register_metrics(inner_store_registry);
+        self.inner_store
+            .clone()
+            .register_metrics(inner_store_registry);
     }
 }
 

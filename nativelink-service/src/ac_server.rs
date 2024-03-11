@@ -46,12 +46,15 @@ pub struct AcServer {
 }
 
 impl AcServer {
-    pub fn new(config: &HashMap<InstanceName, AcStoreConfig>, store_manager: &StoreManager) -> Result<Self, Error> {
+    pub fn new(
+        config: &HashMap<InstanceName, AcStoreConfig>,
+        store_manager: &StoreManager,
+    ) -> Result<Self, Error> {
         let mut stores = HashMap::with_capacity(config.len());
         for (instance_name, ac_cfg) in config {
-            let store = store_manager
-                .get_store(&ac_cfg.ac_store)
-                .ok_or_else(|| make_input_err!("'ac_store': '{}' does not exist", ac_cfg.ac_store))?;
+            let store = store_manager.get_store(&ac_cfg.ac_store).ok_or_else(|| {
+                make_input_err!("'ac_store': '{}' does not exist", ac_cfg.ac_store)
+            })?;
             stores.insert(
                 instance_name.to_string(),
                 AcStoreInfo {
@@ -60,7 +63,9 @@ impl AcServer {
                 },
             );
         }
-        Ok(AcServer { stores: stores.clone() })
+        Ok(AcServer {
+            stores: stores.clone(),
+        })
     }
 
     pub fn into_service(self) -> Server<AcServer> {
@@ -89,11 +94,14 @@ impl AcServer {
         // If we are a GrpcStore we shortcut here, as this is a special store.
         let any_store = store_info.store.inner_store(Some(digest)).as_any();
         if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
-            return grpc_store.get_action_result(Request::new(get_action_request)).await;
+            return grpc_store
+                .get_action_result(Request::new(get_action_request))
+                .await;
         }
 
         Ok(Response::new(
-            get_and_decode_digest::<ActionResult>(Pin::new(store_info.store.as_ref()), &digest).await?,
+            get_and_decode_digest::<ActionResult>(Pin::new(store_info.store.as_ref()), &digest)
+                .await?,
         ))
     }
 
@@ -154,7 +162,10 @@ impl ActionCache for AcServer {
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
         let now = Instant::now();
-        info!("\x1b[0;31mget_action_result Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!(
+            "\x1b[0;31mget_action_result Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let hash = grpc_request
             .get_ref()
             .action_digest
@@ -163,9 +174,15 @@ impl ActionCache for AcServer {
         let resp = self.inner_get_action_result(grpc_request).await;
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
-            error!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
+            error!(
+                "\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}",
+                d, hash, resp
+            );
         } else {
-            info!("\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}", d, hash, resp);
+            info!(
+                "\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}",
+                d, hash, resp
+            );
         }
         return resp.map_err(|e| e.into());
     }
@@ -182,9 +199,17 @@ impl ActionCache for AcServer {
         let resp = self.inner_update_action_result(grpc_request).await;
         let d = now.elapsed().as_secs_f32();
         if resp.is_err() {
-            log::error!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}", d, resp);
+            log::error!(
+                "\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}",
+                d,
+                resp
+            );
         } else {
-            log::info!("\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}", d, resp);
+            log::info!(
+                "\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}",
+                d,
+                resp
+            );
         }
         return resp.map_err(|e| e.into());
     }

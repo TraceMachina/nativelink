@@ -41,14 +41,14 @@ impl PlatformPropertyManager {
     pub fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
         if let Some(prop_type) = self.known_properties.get(key) {
             return match prop_type {
-                PropertyType::minimum => Ok(PlatformPropertyValue::Minimum(value.parse::<u64>().err_tip_with_code(
-                    |e| {
+                PropertyType::minimum => Ok(PlatformPropertyValue::Minimum(
+                    value.parse::<u64>().err_tip_with_code(|e| {
                         (
                             Code::InvalidArgument,
                             format!("Cannot convert to platform property to u64: {value} - {e}"),
                         )
-                    },
-                )?)),
+                    })?,
+                )),
                 PropertyType::exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
                 PropertyType::priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
             };

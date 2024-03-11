@@ -262,38 +262,65 @@ pub struct TlsConfig {
 pub struct HttpServerConfig {
     /// Interval to send keep-alive pings via HTTP2.
     /// Note: This is in seconds.
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub http2_keep_alive_interval: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub experimental_http2_max_pending_accept_reset_streams: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub experimental_http2_initial_stream_window_size: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub experimental_http2_initial_connection_window_size: Option<u32>,
 
     #[serde(default)]
     pub experimental_http2_adaptive_window: Option<bool>,
 
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub experimental_http2_max_frame_size: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub experimental_http2_max_concurrent_streams: Option<u32>,
 
     /// Note: This is in seconds.
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub experimental_http2_keep_alive_timeout: Option<u32>,
 
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub experimental_http2_max_send_buf_size: Option<u32>,
 
     #[serde(default)]
     pub experimental_http2_enable_connect_protocol: Option<bool>,
 
-    #[serde(default, deserialize_with = "convert_optional_numeric_with_shellexpand")]
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
     pub experimental_http2_max_header_list_size: Option<u32>,
 }
 

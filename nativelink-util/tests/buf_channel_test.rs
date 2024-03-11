@@ -75,7 +75,10 @@ mod buf_channel_tests {
             // Try to send EOF, but expect error because receiver will be dropped without taking it.
             assert_eq!(
                 tx.send_eof().await,
-                Err(make_err!(Code::Internal, "Receiver went away before receiving EOF"))
+                Err(make_err!(
+                    Code::Internal,
+                    "Receiver went away before receiving EOF"
+                ))
             );
             Result::<(), Error>::Ok(())
         };
@@ -192,7 +195,9 @@ mod buf_channel_tests {
         };
         let rx_fut = async move {
             assert_eq!(rx.take(1).await?.as_ptr(), first_chunk_ptr);
-            assert_eq!(rx.take(100).await?.as_ptr(), unsafe { first_chunk_ptr.add(1) });
+            assert_eq!(rx.take(100).await?.as_ptr(), unsafe {
+                first_chunk_ptr.add(1)
+            });
             Result::<(), Error>::Ok(())
         };
         try_join!(tx_fut, rx_fut)?;
@@ -212,10 +217,22 @@ mod buf_channel_tests {
             Result::<(), Error>::Ok(())
         };
         let rx_fut = async move {
-            assert_eq!(rx.next().await.map(|v| v.err_tip(|| "")), Some(Ok(Bytes::from(DATA1))));
-            assert_eq!(rx.next().await.map(|v| v.err_tip(|| "")), Some(Ok(Bytes::from(DATA2))));
-            assert_eq!(rx.next().await.map(|v| v.err_tip(|| "")), Some(Ok(Bytes::from(DATA1))));
-            assert_eq!(rx.next().await.map(|v| v.err_tip(|| "")), Some(Ok(Bytes::from(DATA2))));
+            assert_eq!(
+                rx.next().await.map(|v| v.err_tip(|| "")),
+                Some(Ok(Bytes::from(DATA1)))
+            );
+            assert_eq!(
+                rx.next().await.map(|v| v.err_tip(|| "")),
+                Some(Ok(Bytes::from(DATA2)))
+            );
+            assert_eq!(
+                rx.next().await.map(|v| v.err_tip(|| "")),
+                Some(Ok(Bytes::from(DATA1)))
+            );
+            assert_eq!(
+                rx.next().await.map(|v| v.err_tip(|| "")),
+                Some(Ok(Bytes::from(DATA2)))
+            );
             assert_eq!(rx.next().await.map(|v| v.err_tip(|| "")), None);
             Result::<(), Error>::Ok(())
         };
@@ -290,7 +307,10 @@ mod buf_channel_tests {
             assert_eq!(rx.recv().await?, Bytes::from(DATA1));
             assert_eq!(
                 rx.recv().await,
-                Err(make_err!(Code::Internal, "Failed to send closing ok message to write"))
+                Err(make_err!(
+                    Code::Internal,
+                    "Failed to send closing ok message to write"
+                ))
             );
             Result::<(), Error>::Ok(())
         };
