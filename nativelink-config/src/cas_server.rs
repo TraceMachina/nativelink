@@ -448,6 +448,21 @@ pub enum EnvironmentSource {
     /// All fields are optional, file does not need to be created and may be
     /// empty.
     side_channel_file,
+
+    /// A "root" directory for the action. This directory can be used to
+    /// store temporary files that are not needed after the action has
+    /// completed. This directory will be purged after the action has
+    /// completed.
+    ///
+    /// For example:
+    /// If an action writes temporary data to a path but nativelink should
+    /// clean up this path after the job has executed, you may create any
+    /// directory under the path provided in this variable. A common pattern
+    /// would be to use `entrypoint` to set a shell script that reads this
+    /// variable, `mkdir $ENV_VAR_NAME/tmp` and `export TMPDIR=$ENV_VAR_NAME/tmp`.
+    /// Another example might be to bind-mount the `/tmp` path in a container to
+    /// this path in `entrypoint`.
+    action_directory,
 }
 
 #[derive(Deserialize, Debug, Default)]
