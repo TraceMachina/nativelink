@@ -448,6 +448,18 @@ pub enum EnvironmentSource {
     /// All fields are optional, file does not need to be created and may be
     /// empty.
     side_channel_file,
+
+    /// A "root" directory for the action. This directory can be used to
+    /// store temporary files that are not needed after the action has
+    /// completed. This directory will be purged after the action has
+    /// completed.
+    ///
+    /// For example:
+    /// If an action makes use of some constant path to create and
+    /// reference files (such as /tmp), you can set this value to /tmp.
+    /// This can also be useful when working with bind mounts to provide
+    /// actions with access to other resources in a container.
+    action_directory,
 }
 
 #[derive(Deserialize, Debug, Default)]
