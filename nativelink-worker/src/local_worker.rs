@@ -362,7 +362,7 @@ pub async fn new_local_worker(
     };
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: config.work_directory.clone(),
+            root_action_directory: config.work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
@@ -386,7 +386,6 @@ pub async fn new_local_worker(
                         .timeout
                         .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
                     let timeout_duration = Duration::from_secs_f32(timeout);
-
                     let tls_config =
                         tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)
                             .err_tip(|| "Parsing local worker TLS configuration")?;
