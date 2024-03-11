@@ -222,7 +222,7 @@ fn is_executable(_metadata: &std::fs::Metadata, full_path: &impl AsRef<Path>) ->
 
 #[cfg(target_family = "unix")]
 fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) -> bool {
-    (metadata.mode() & 0o001) != 0
+    (metadata.mode() & 0o111) != 0
 }
 
 async fn upload_file(
