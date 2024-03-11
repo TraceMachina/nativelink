@@ -358,7 +358,7 @@ pub async fn new_local_worker(
         Duration::from_secs(config.max_action_timeout as u64)
     };
     let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-        root_work_directory: config.work_directory.clone(),
+        root_action_directory: config.work_directory.clone(),
         execution_configuration: ExecutionConfiguration {
             entrypoint,
             additional_environment: config.additional_environment.clone(),
