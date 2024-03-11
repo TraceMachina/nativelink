@@ -43,7 +43,10 @@ pub struct RefStore {
 }
 
 impl RefStore {
-    pub fn new(config: &nativelink_config::stores::RefStore, store_manager: Weak<StoreManager>) -> Self {
+    pub fn new(
+        config: &nativelink_config::stores::RefStore,
+        store_manager: Weak<StoreManager>,
+    ) -> Self {
         RefStore {
             ref_store_name: config.name.clone(),
             store_manager,
@@ -71,12 +74,17 @@ impl RefStore {
         }
         // This should protect us against multiple writers writing the same location at the same
         // time.
-        let _lock = self
-            .ref_store
-            .mux
-            .lock()
-            .map_err(|e| make_err!(Code::Internal, "Failed to lock mutex in ref_store : {:?}", e))?;
-        let store_manager = self.store_manager.upgrade().err_tip(|| "Store manager is gone")?;
+        let _lock = self.ref_store.mux.lock().map_err(|e| {
+            make_err!(
+                Code::Internal,
+                "Failed to lock mutex in ref_store : {:?}",
+                e
+            )
+        })?;
+        let store_manager = self
+            .store_manager
+            .upgrade()
+            .err_tip(|| "Store manager is gone")?;
         if let Some(store) = store_manager.get_store(&self.ref_store_name) {
             unsafe {
                 *ref_store = Some(store.clone());
@@ -98,7 +106,9 @@ impl Store for RefStore {
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         let store = self.get_store()?;
-        Pin::new(store.as_ref()).has_with_results(digests, results).await
+        Pin::new(store.as_ref())
+            .has_with_results(digests, results)
+            .await
     }
 
     async fn update(
@@ -108,7 +118,9 @@ impl Store for RefStore {
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let store = self.get_store()?;
-        Pin::new(store.as_ref()).update(digest, reader, size_info).await
+        Pin::new(store.as_ref())
+            .update(digest, reader, size_info)
+            .await
     }
 
     async fn get_part_ref(

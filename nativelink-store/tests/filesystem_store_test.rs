@@ -61,7 +61,9 @@ struct TestFileEntry<Hooks: FileEntryHooks + 'static + Sync + Send> {
 
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hooks> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        f.debug_struct("TestFileEntry").field("inner", &self.inner).finish()
+        f.debug_struct("TestFileEntry")
+            .field("inner", &self.inner)
+            .finish()
     }
 }
 
@@ -69,7 +71,11 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hook
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<Hooks> {
     fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
         Self {
-            inner: Some(FileEntryImpl::create(data_size, block_size, encoded_file_path)),
+            inner: Some(FileEntryImpl::create(
+                data_size,
+                block_size,
+                encoded_file_path,
+            )),
             _phantom: PhantomData,
         }
     }
@@ -78,7 +84,8 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         block_size: u64,
         encoded_file_path: EncodedFilePath,
     ) -> Result<(Self, fs::ResumeableFileSlot, OsString), Error> {
-        let (inner, file_slot, path) = FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
+        let (inner, file_slot, path) =
+            FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
         Ok((
             Self {
                 inner: Some(inner),
@@ -101,8 +108,16 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         self.inner.as_ref().unwrap().get_encoded_file_path()
     }
 
-    async fn read_file_part(&self, offset: u64, length: u64) -> Result<fs::ResumeableFileSlot, Error> {
-        self.inner.as_ref().unwrap().read_file_part(offset, length).await
+    async fn read_file_part(
+        &self,
+        offset: u64,
+        length: u64,
+    ) -> Result<fs::ResumeableFileSlot, Error> {
+        self.inner
+            .as_ref()
+            .unwrap()
+            .read_file_part(offset, length)
+            .await
     }
 
     async fn get_file_path_locked<
@@ -113,7 +128,11 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         &self,
         handler: F,
     ) -> Result<T, Error> {
-        self.inner.as_ref().unwrap().get_file_path_locked(handler).await
+        self.inner
+            .as_ref()
+            .unwrap()
+            .get_file_path_locked(handler)
+            .await
     }
 }
 
@@ -146,7 +165,9 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
         // Sadly we need to rely on `active_drop_spawns` to hit zero to ensure that
         // all tasks have completed.
         let thread_handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
             rt.block_on(async move {
                 // Drop the FileEntryImpl in a controlled setting then wait for the
                 // `active_drop_spawns` to hit zero.
@@ -217,13 +238,15 @@ mod filesystem_store_tests {
         let temp_path = make_temp_path("temp_path");
         {
             let store = Box::pin(
-                FilesystemStore::<FileEntryImpl>::new(&nativelink_config::stores::FilesystemStore {
-                    content_path: content_path.clone(),
-                    temp_path: temp_path.clone(),
-                    eviction_policy: None,
-                    block_size: 1,
-                    ..Default::default()
-                })
+                FilesystemStore::<FileEntryImpl>::new(
+                    &nativelink_config::stores::FilesystemStore {
+                        content_path: content_path.clone(),
+                        temp_path: temp_path.clone(),
+                        eviction_policy: None,
+                        block_size: 1,
+                        ..Default::default()
+                    },
+                )
                 .await?,
             );
 
@@ -240,16 +263,21 @@ mod filesystem_store_tests {
         {
             // With a new store ensure content is still readable (ie: restores from shutdown).
             let store = Box::pin(
-                FilesystemStore::<FileEntryImpl>::new(&nativelink_config::stores::FilesystemStore {
-                    content_path,
-                    temp_path,
-                    eviction_policy: None,
-                    ..Default::default()
-                })
+                FilesystemStore::<FileEntryImpl>::new(
+                    &nativelink_config::stores::FilesystemStore {
+                        content_path,
+                        temp_path,
+                        eviction_policy: None,
+                        ..Default::default()
+                    },
+                )
                 .await?,
             );
 
-            let content = store.as_ref().get_part_unchunked(digest, 0, None, None).await?;
+            let content = store
+                .as_ref()
+                .get_part_unchunked(digest, 0, None, None)
+                .await?;
             assert_eq!(content, VALUE1.as_bytes());
         }
 
@@ -271,19 +299,24 @@ mod filesystem_store_tests {
         }
 
         let store = Box::pin(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&nativelink_config::stores::FilesystemStore {
-                content_path: content_path.clone(),
-                temp_path: temp_path.clone(),
-                eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
-                    max_count: 3,
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+                        max_count: 3,
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            })
+                },
+            )
             .await?,
         );
 
-        store.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
+        store
+            .as_ref()
+            .update_oneshot(digest1, VALUE1.into())
+            .await?;
 
         let expected_file_name = OsString::from(format!(
             "{}/{}-{}",
@@ -294,16 +327,27 @@ mod filesystem_store_tests {
         {
             // Check to ensure our file exists where it should and content matches.
             let data = read_file_contents(&expected_file_name).await?;
-            assert_eq!(&data[..], VALUE1.as_bytes(), "Expected file content to match");
+            assert_eq!(
+                &data[..],
+                VALUE1.as_bytes(),
+                "Expected file content to match"
+            );
         }
 
         // Replace content.
-        store.as_ref().update_oneshot(digest1, VALUE2.into()).await?;
+        store
+            .as_ref()
+            .update_oneshot(digest1, VALUE2.into())
+            .await?;
 
         {
             // Check to ensure our file now has new content.
             let data = read_file_contents(&expected_file_name).await?;
-            assert_eq!(&data[..], VALUE2.as_bytes(), "Expected file content to match");
+            assert_eq!(
+                &data[..],
+                VALUE2.as_bytes(),
+                "Expected file content to match"
+            );
         }
 
         loop {
@@ -345,38 +389,54 @@ mod filesystem_store_tests {
         }
 
         let store = Arc::new(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&nativelink_config::stores::FilesystemStore {
-                content_path: content_path.clone(),
-                temp_path: temp_path.clone(),
-                eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
-                    max_count: 3,
-                    ..Default::default()
-                }),
-                block_size: 1,
-                read_buffer_size: 1,
-            })
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+                        max_count: 3,
+                        ..Default::default()
+                    }),
+                    block_size: 1,
+                    read_buffer_size: 1,
+                },
+            )
             .await?,
         );
 
         let store_pin = Pin::new(store.as_ref());
         // Insert data into store.
-        store_pin.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
+        store_pin
+            .as_ref()
+            .update_oneshot(digest1, VALUE1.into())
+            .await?;
 
         let (writer, mut reader) = make_buf_channel_pair();
         let store_clone = store.clone();
         let digest1_clone = digest1;
-        tokio::spawn(async move { Pin::new(store_clone.as_ref()).get(digest1_clone, writer).await });
+        tokio::spawn(async move {
+            Pin::new(store_clone.as_ref())
+                .get(digest1_clone, writer)
+                .await
+        });
 
         {
             // Check to ensure our first byte has been received. The future should be stalled here.
             let first_byte = DropCloserReadHalf::take(&mut reader, 1)
                 .await
                 .err_tip(|| "Error reading first byte")?;
-            assert_eq!(first_byte[0], VALUE1.as_bytes()[0], "Expected first byte to match");
+            assert_eq!(
+                first_byte[0],
+                VALUE1.as_bytes()[0],
+                "Expected first byte to match"
+            );
         }
 
         // Replace content.
-        store_pin.as_ref().update_oneshot(digest1, VALUE2.into()).await?;
+        store_pin
+            .as_ref()
+            .update_oneshot(digest1, VALUE2.into())
+            .await?;
 
         // Ensure we let any background tasks finish.
         tokio::task::yield_now().await;
@@ -393,9 +453,16 @@ mod filesystem_store_tests {
                 num_files += 1;
                 let path = temp_dir_entry?.path();
                 let data = read_file_contents(path.as_os_str()).await?;
-                assert_eq!(&data[..], VALUE1.as_bytes(), "Expected file content to match");
+                assert_eq!(
+                    &data[..],
+                    VALUE1.as_bytes(),
+                    "Expected file content to match"
+                );
             }
-            assert_eq!(num_files, 1, "There should only be one file in the temp directory");
+            assert_eq!(
+                num_files, 1,
+                "There should only be one file in the temp directory"
+            );
         }
 
         let remaining_file_data = DropCloserReadHalf::take(&mut reader, 1024)
@@ -450,22 +517,27 @@ mod filesystem_store_tests {
         }
 
         let store = Arc::new(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&nativelink_config::stores::FilesystemStore {
-                content_path: content_path.clone(),
-                temp_path: temp_path.clone(),
-                eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
-                    max_count: 1,
-                    ..Default::default()
-                }),
-                block_size: 1,
-                read_buffer_size: 1,
-            })
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+                        max_count: 1,
+                        ..Default::default()
+                    }),
+                    block_size: 1,
+                    read_buffer_size: 1,
+                },
+            )
             .await?,
         );
 
         let store_pin = Pin::new(store.as_ref());
         // Insert data into store.
-        store_pin.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
+        store_pin
+            .as_ref()
+            .update_oneshot(digest1, VALUE1.into())
+            .await?;
 
         let mut reader = {
             let (writer, reader) = make_buf_channel_pair();
@@ -478,7 +550,10 @@ mod filesystem_store_tests {
         assert!(reader.peek().await.is_ok(), "Could not peek into reader");
 
         // Insert new content. This will evict the old item.
-        store_pin.as_ref().update_oneshot(digest2, VALUE2.into()).await?;
+        store_pin
+            .as_ref()
+            .update_oneshot(digest2, VALUE2.into())
+            .await?;
 
         // Ensure we let any background tasks finish.
         tokio::task::yield_now().await;
@@ -495,9 +570,16 @@ mod filesystem_store_tests {
                 num_files += 1;
                 let path = temp_dir_entry?.path();
                 let data = read_file_contents(path.as_os_str()).await?;
-                assert_eq!(&data[..], VALUE1.as_bytes(), "Expected file content to match");
+                assert_eq!(
+                    &data[..],
+                    VALUE1.as_bytes(),
+                    "Expected file content to match"
+                );
             }
-            assert_eq!(num_files, 1, "There should only be one file in the temp directory");
+            assert_eq!(
+                num_files, 1,
+                "There should only be one file in the temp directory"
+            );
         }
 
         let reader_data = DropCloserReadHalf::take(&mut reader, 1024)
@@ -543,7 +625,10 @@ mod filesystem_store_tests {
             .await?,
         );
         // Insert data into store.
-        store.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
+        store
+            .as_ref()
+            .update_oneshot(digest1, VALUE1.into())
+            .await?;
 
         let file_entry = store.get_file_entry_for_digest(&digest1).await?;
         file_entry
@@ -552,13 +637,19 @@ mod filesystem_store_tests {
                 set_file_atime(&path, FileTime::from_system_time(SystemTime::UNIX_EPOCH))?;
 
                 // Check to ensure it was set to zero from previous command.
-                assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+                assert_eq!(
+                    fs::metadata(&path).await?.accessed()?,
+                    SystemTime::UNIX_EPOCH
+                );
                 Ok(())
             })
             .await?;
 
         // Now touch digest1.
-        let data = store.as_ref().get_part_unchunked(digest1, 0, None, None).await?;
+        let data = store
+            .as_ref()
+            .get_part_unchunked(digest1, 0, None, None)
+            .await?;
         assert_eq!(data, VALUE1.as_bytes());
 
         file_entry
@@ -640,7 +731,10 @@ mod filesystem_store_tests {
             .await?,
         );
         // Insert data into store.
-        store.as_ref().update_oneshot(digest1, VALUE1.into()).await?;
+        store
+            .as_ref()
+            .update_oneshot(digest1, VALUE1.into())
+            .await?;
 
         let file_entry = store.get_file_entry_for_digest(&digest1).await?;
         file_entry
@@ -649,13 +743,19 @@ mod filesystem_store_tests {
                 set_file_atime(&path, FileTime::from_system_time(SystemTime::UNIX_EPOCH))?;
 
                 // Check to ensure it was set to zero from previous command.
-                assert_eq!(fs::metadata(&path).await?.accessed()?, SystemTime::UNIX_EPOCH);
+                assert_eq!(
+                    fs::metadata(&path).await?.accessed()?,
+                    SystemTime::UNIX_EPOCH
+                );
                 Ok(())
             })
             .await?;
 
         // Now touch digest1.
-        let data = store.as_ref().get_part_unchunked(digest1, 0, None, None).await?;
+        let data = store
+            .as_ref()
+            .get_part_unchunked(digest1, 0, None, None)
+            .await?;
         assert_eq!(data, VALUE1.as_bytes());
 
         file_entry
@@ -692,7 +792,11 @@ mod filesystem_store_tests {
             // The file contents should equal our initial data.
             let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
             let mut file_contents = String::new();
-            reader.as_reader().await?.read_to_string(&mut file_contents).await?;
+            reader
+                .as_reader()
+                .await?
+                .read_to_string(&mut file_contents)
+                .await?;
             assert_eq!(file_contents, VALUE1);
         }
 
@@ -703,7 +807,11 @@ mod filesystem_store_tests {
             // The file contents still equal our old data.
             let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
             let mut file_contents = String::new();
-            reader.as_reader().await?.read_to_string(&mut file_contents).await?;
+            reader
+                .as_reader()
+                .await?
+                .read_to_string(&mut file_contents)
+                .await?;
             assert_eq!(file_contents, VALUE1);
         }
 
@@ -722,7 +830,8 @@ mod filesystem_store_tests {
             fn on_unref<Fe: FileEntry>(file_entry: &Fe) {
                 block_on(file_entry.get_file_path_locked(move |path_str| async move {
                     let path = Path::new(&path_str);
-                    let digest = digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
+                    let digest =
+                        digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
                     UNREFED_DIGESTS.lock().unwrap().push(digest);
                     Ok(())
                 }))
@@ -731,26 +840,38 @@ mod filesystem_store_tests {
         }
 
         let store = Box::pin(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&nativelink_config::stores::FilesystemStore {
-                content_path: make_temp_path("content_path"),
-                temp_path: make_temp_path("temp_path"),
-                eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
-                    max_bytes: 5,
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: make_temp_path("content_path"),
+                    temp_path: make_temp_path("temp_path"),
+                    eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+                        max_bytes: 5,
+                        ..Default::default()
+                    }),
+                    block_size: 1,
                     ..Default::default()
-                }),
-                block_size: 1,
-                ..Default::default()
-            })
+                },
+            )
             .await?,
         );
         // Insert data into store.
-        store.as_ref().update_oneshot(small_digest, VALUE1.into()).await?;
-        store.as_ref().update_oneshot(big_digest, BIG_VALUE.into()).await?;
+        store
+            .as_ref()
+            .update_oneshot(small_digest, VALUE1.into())
+            .await?;
+        store
+            .as_ref()
+            .update_oneshot(big_digest, BIG_VALUE.into())
+            .await?;
 
         {
             // Our first digest should have been unrefed exactly once.
             let unrefed_digests = UNREFED_DIGESTS.lock().unwrap();
-            assert_eq!(unrefed_digests.len(), 1, "Expected exactly 1 unrefed digest");
+            assert_eq!(
+                unrefed_digests.len(),
+                1,
+                "Expected exactly 1 unrefed digest"
+            );
             assert_eq!(unrefed_digests[0], small_digest, "Expected digest to match");
         }
 
@@ -759,7 +880,8 @@ mod filesystem_store_tests {
 
     #[allow(clippy::await_holding_refcell_ref)]
     #[tokio::test]
-    async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens() -> Result<(), Error> {
+    async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens(
+    ) -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let content_path = make_temp_path("content_path");
@@ -775,12 +897,14 @@ mod filesystem_store_tests {
         }
 
         let store = Box::pin(
-            FilesystemStore::<TestFileEntry<LocalHooks>>::new(&nativelink_config::stores::FilesystemStore {
-                content_path: content_path.clone(),
-                temp_path: temp_path.clone(),
-                eviction_policy: None,
-                ..Default::default()
-            })
+            FilesystemStore::<TestFileEntry<LocalHooks>>::new(
+                &nativelink_config::stores::FilesystemStore {
+                    content_path: content_path.clone(),
+                    temp_path: temp_path.clone(),
+                    eviction_policy: None,
+                    ..Default::default()
+                },
+            )
             .await?,
         );
 
@@ -814,11 +938,18 @@ mod filesystem_store_tests {
                     let dir_entry = dir_entry?;
                     {
                         // Some filesystems won't sync automatically, so force it.
-                        let mut file_handle = fs::open_file(dir_entry.path().into_os_string(), u64::MAX)
-                            .await
-                            .err_tip(|| "Failed to open temp file")?;
+                        let mut file_handle =
+                            fs::open_file(dir_entry.path().into_os_string(), u64::MAX)
+                                .await
+                                .err_tip(|| "Failed to open temp file")?;
                         // We don't care if it fails, this is only best attempt.
-                        let _ = file_handle.as_reader().await?.get_ref().as_ref().sync_all().await;
+                        let _ = file_handle
+                            .as_reader()
+                            .await?
+                            .get_ref()
+                            .as_ref()
+                            .sync_all()
+                            .await;
                     }
                     // Ensure we have written to the file too. This ensures we have an open file handle.
                     // Failing to do this may result in the file existing, but the `update_fut` not actually
@@ -835,7 +966,10 @@ mod filesystem_store_tests {
             async move {
                 // This will ensure we yield to our future and other potential spawns.
                 tokio::task::yield_now().await;
-                assert_eq!(poll!(update_fut_clone.borrow_mut().deref_mut())?, Poll::Pending);
+                assert_eq!(
+                    poll!(update_fut_clone.borrow_mut().deref_mut())?,
+                    Poll::Pending
+                );
                 Ok(())
             }
         })
@@ -873,7 +1007,11 @@ mod filesystem_store_tests {
         }
 
         // Finally ensure that our entry is not in the store.
-        assert_eq!(store.as_ref().has(digest).await?, None, "Entry should not be in store");
+        assert_eq!(
+            store.as_ref().has(digest).await?,
+            None,
+            "Entry should not be in store"
+        );
 
         Ok(())
     }
@@ -911,14 +1049,20 @@ mod filesystem_store_tests {
         let digest_clone = digest;
 
         let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
-            Pin::new(store_clone.as_ref()).get(digest_clone, writer).await
+            Pin::new(store_clone.as_ref())
+                .get(digest_clone, writer)
+                .await
         }));
 
         let file_data = DropCloserReadHalf::take(&mut reader, 1024)
             .await
             .err_tip(|| "Error reading bytes")?;
 
-        assert_eq!(&file_data, large_value.as_bytes(), "Expected file content to match");
+        assert_eq!(
+            &file_data,
+            large_value.as_bytes(),
+            "Expected file content to match"
+        );
 
         Ok(())
     }
@@ -997,7 +1141,10 @@ mod filesystem_store_tests {
             .err_tip(|| "Failed to get_part_ref");
         assert_eq!(results, vec!(Some(0)));
 
-        async fn wait_for_empty_content_file<Fut: Future<Output = Result<(), Error>>, F: Fn() -> Fut>(
+        async fn wait_for_empty_content_file<
+            Fut: Future<Output = Result<(), Error>>,
+            F: Fn() -> Fut,
+        >(
             content_path: &str,
             digest: DigestInfo,
             yield_fn: F,
@@ -1005,8 +1152,12 @@ mod filesystem_store_tests {
             loop {
                 yield_fn().await?;
 
-                let empty_digest_file_name =
-                    OsString::from(format!("{}/{}-{}", content_path, digest.hash_str(), digest.size_bytes));
+                let empty_digest_file_name = OsString::from(format!(
+                    "{}/{}-{}",
+                    content_path,
+                    digest.hash_str(),
+                    digest.size_bytes
+                ));
 
                 let file_metadata = fs::metadata(empty_digest_file_name)
                     .await
@@ -1106,7 +1257,12 @@ mod filesystem_store_tests {
             .get_file_path_locked(move |file_path| async move {
                 assert_eq!(
                     file_path,
-                    OsString::from(format!("{}/{}-{}", content_path, digest.hash_str(), digest.size_bytes))
+                    OsString::from(format!(
+                        "{}/{}-{}",
+                        content_path,
+                        digest.hash_str(),
+                        digest.size_bytes
+                    ))
                 );
                 Ok(())
             })
@@ -1137,10 +1293,19 @@ mod filesystem_store_tests {
 
         store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
 
-        let stored_file_path = OsString::from(format!("{}/{}-{}", content_path, digest.hash_str(), digest.size_bytes));
+        let stored_file_path = OsString::from(format!(
+            "{}/{}-{}",
+            content_path,
+            digest.hash_str(),
+            digest.size_bytes
+        ));
         std::fs::remove_file(stored_file_path)?;
 
-        let digest_result = store.as_ref().has(digest).await.err_tip(|| "Failed to execute has")?;
+        let digest_result = store
+            .as_ref()
+            .has(digest)
+            .await
+            .err_tip(|| "Failed to execute has")?;
         assert!(digest_result.is_none());
 
         Ok(())
@@ -1176,12 +1341,24 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        store.as_ref().update_oneshot(digest_1kb, value_1kb.into()).await?;
-        let short_entry = store.as_ref().get_file_entry_for_digest(&digest_1kb).await?;
+        store
+            .as_ref()
+            .update_oneshot(digest_1kb, value_1kb.into())
+            .await?;
+        let short_entry = store
+            .as_ref()
+            .get_file_entry_for_digest(&digest_1kb)
+            .await?;
         assert_eq!(short_entry.size_on_disk(), 4 * 1024);
 
-        store.as_ref().update_oneshot(digest_5kb, value_5kb.into()).await?;
-        let long_entry = store.as_ref().get_file_entry_for_digest(&digest_5kb).await?;
+        store
+            .as_ref()
+            .update_oneshot(digest_5kb, value_5kb.into())
+            .await?;
+        let long_entry = store
+            .as_ref()
+            .get_file_entry_for_digest(&digest_5kb)
+            .await?;
         assert_eq!(long_entry.size_on_disk(), 8 * 1024);
         Ok(())
     }
@@ -1212,17 +1389,32 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        let mut file = fs::create_file(OsString::from(format!("{}/{}", temp_path, "dummy_file"))).await?;
-        let original_inode = file.as_reader().await?.get_ref().as_ref().metadata().await?.ino();
+        let mut file =
+            fs::create_file(OsString::from(format!("{}/{}", temp_path, "dummy_file"))).await?;
+        let original_inode = file
+            .as_reader()
+            .await?
+            .get_ref()
+            .as_ref()
+            .metadata()
+            .await?
+            .ino();
 
         let result = store
             .as_ref()
             .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
             .await?;
-        assert!(result.is_none(), "Expected filesystem store to consume the file");
+        assert!(
+            result.is_none(),
+            "Expected filesystem store to consume the file"
+        );
 
-        let expected_file_name =
-            OsString::from(format!("{}/{}-{}", content_path, digest.hash_str(), digest.size_bytes));
+        let expected_file_name = OsString::from(format!(
+            "{}/{}-{}",
+            content_path,
+            digest.hash_str(),
+            digest.size_bytes
+        ));
         let new_inode = fs::create_file(expected_file_name)
             .await?
             .as_reader()
@@ -1232,7 +1424,10 @@ mod filesystem_store_tests {
             .metadata()
             .await?
             .ino();
-        assert_eq!(original_inode, new_inode, "Expected the same inode for the file");
+        assert_eq!(
+            original_inode, new_inode,
+            "Expected the same inode for the file"
+        );
 
         Ok(())
     }

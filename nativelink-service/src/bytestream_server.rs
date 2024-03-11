@@ -25,13 +25,18 @@ use futures::stream::unfold;
 use futures::{try_join, Future, Stream, TryFutureExt};
 use nativelink_config::cas_server::ByteStreamConfig;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
-use nativelink_proto::google::bytestream::byte_stream_server::{ByteStream, ByteStreamServer as Server};
+use nativelink_proto::google::bytestream::byte_stream_server::{
+    ByteStream, ByteStreamServer as Server,
+};
 use nativelink_proto::google::bytestream::{
-    QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest, WriteResponse,
+    QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest,
+    WriteResponse,
 };
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::buf_channel::{
+    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
@@ -59,7 +64,9 @@ struct StreamState {
 
 impl Debug for StreamState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StreamState").field("uuid", &self.uuid).finish()
+        f.debug_struct("StreamState")
+            .field("uuid", &self.uuid)
+            .finish()
     }
 }
 
@@ -77,7 +84,10 @@ impl<'a> ActiveStreamGuard<'a> {
     /// remove it from the active_uploads.
     fn graceful_finish(mut self) {
         let stream_state = self.stream_state.take().unwrap();
-        self.bytestream_server.active_uploads.lock().remove(&stream_state.uuid);
+        self.bytestream_server
+            .active_uploads
+            .lock()
+            .remove(&stream_state.uuid);
     }
 }
 
@@ -228,7 +238,9 @@ impl ByteStreamServer {
                 .update(
                     digest,
                     rx,
-                    UploadSizeInfo::ExactSize(usize::try_from(digest.size_bytes).err_tip(|| "Invalid digest size")?),
+                    UploadSizeInfo::ExactSize(
+                        usize::try_from(digest.size_bytes).err_tip(|| "Invalid digest size")?,
+                    ),
                 )
                 .await
         });
@@ -243,11 +255,14 @@ impl ByteStreamServer {
         })
     }
 
-    async fn inner_read(&self, grpc_request: Request<ReadRequest>) -> Result<Response<ReadStream>, Error> {
+    async fn inner_read(
+        &self,
+        grpc_request: Request<ReadRequest>,
+    ) -> Result<Response<ReadStream>, Error> {
         let read_request = grpc_request.into_inner();
 
-        let read_limit =
-            usize::try_from(read_request.read_limit).err_tip(|| "read_limit has is not convertible to usize")?;
+        let read_limit = usize::try_from(read_request.read_limit)
+            .err_tip(|| "read_limit has is not convertible to usize")?;
         let resource_info = ResourceInfo::new(&read_request.resource_name, false)?;
         let instance_name = resource_info.instance_name;
         let store = self
@@ -274,7 +289,11 @@ impl ByteStreamServer {
             get_part_fut: Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>,
         }
 
-        let read_limit = if read_limit != 0 { Some(read_limit) } else { None };
+        let read_limit = if read_limit != 0 {
+            Some(read_limit)
+        } else {
+            None
+        };
 
         // This allows us to call a destructor when the the object is dropped.
         let state = Some(ReaderState {
@@ -393,7 +412,11 @@ impl ByteStreamServer {
                     // by counting the number of bytes sent from the client. If they send
                     // less than the amount they said they were going to send and then
                     // close the stream, we know there's a problem.
-                    None => return Err(make_input_err!("Client closed stream before sending all data")),
+                    None => {
+                        return Err(make_input_err!(
+                            "Client closed stream before sending all data"
+                        ))
+                    }
                     // Code path for client stream error. Probably client disconnect.
                     Some(Err(err)) => return Err(err),
                     // Code path for received chunk of data.
@@ -468,7 +491,8 @@ impl ByteStreamServer {
                 &active_stream_guard.bytes_received,
                 expected_size
             ),
-            (&mut active_stream.store_update_fut).map_err(|err| { err.append("Error updating inner store") })
+            (&mut active_stream.store_update_fut)
+                .map_err(|err| { err.append("Error updating inner store") })
         )?;
 
         // Close our guard and consider the stream no longer active.
@@ -488,7 +512,12 @@ impl ByteStreamServer {
         let store_clone = self
             .stores
             .get(resource_info.instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", &resource_info.instance_name))?
+            .err_tip(|| {
+                format!(
+                    "'instance_name' not configured for '{}'",
+                    &resource_info.instance_name
+                )
+            })?
             .clone();
 
         let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
@@ -496,7 +525,9 @@ impl ByteStreamServer {
         // If we are a GrpcStore we shortcut here, as this is a special store.
         let any_store = store_clone.inner_store(Some(digest)).as_any();
         if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
-            return grpc_store.query_write_status(Request::new(query_request.clone())).await;
+            return grpc_store
+                .query_write_status(Request::new(query_request.clone()))
+                .await;
         }
 
         let uuid = resource_info
@@ -530,7 +561,10 @@ impl ByteStreamServer {
 #[tonic::async_trait]
 impl ByteStream for ByteStreamServer {
     type ReadStream = ReadStream;
-    async fn read(&self, grpc_request: Request<ReadRequest>) -> Result<Response<Self::ReadStream>, Status> {
+    async fn read(
+        &self,
+        grpc_request: Request<ReadRequest>,
+    ) -> Result<Response<Self::ReadStream>, Status> {
         info!("\x1b[0;31mRead Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
         let resp = self
@@ -547,7 +581,10 @@ impl ByteStream for ByteStreamServer {
         resp
     }
 
-    async fn write(&self, grpc_request: Request<Streaming<WriteRequest>>) -> Result<Response<WriteResponse>, Status> {
+    async fn write(
+        &self,
+        grpc_request: Request<Streaming<WriteRequest>>,
+    ) -> Result<Response<WriteResponse>, Status> {
         let now = Instant::now();
         let stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
             .await

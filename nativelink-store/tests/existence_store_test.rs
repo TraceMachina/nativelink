@@ -35,7 +35,9 @@ mod verify_store_tests {
             backend: StoreConfig::noop, // Note: Not used.
             eviction_policy: Default::default(),
         };
-        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let store_owned = ExistenceCacheStore::new(&config, inner_store.clone());
         let store = Pin::new(&store_owned);
 
@@ -52,7 +54,10 @@ mod verify_store_tests {
         );
 
         assert_eq!(
-            store.has(digest).await.err_tip(|| "Failed to check store")?,
+            store
+                .has(digest)
+                .await
+                .err_tip(|| "Failed to check store")?,
             Some(VALUE.len()),
             "Expected digest to exist in store"
         );
@@ -71,7 +76,9 @@ mod verify_store_tests {
             backend: StoreConfig::noop,
             eviction_policy: Default::default(),
         };
-        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let store = ExistenceCacheStore::new(&config, inner_store.clone());
 
         let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
@@ -94,7 +101,9 @@ mod verify_store_tests {
             backend: StoreConfig::noop,
             eviction_policy: Default::default(),
         };
-        let inner_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let inner_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
         Pin::new(inner_store.as_ref())
             .update_oneshot(digest, VALUE.into())

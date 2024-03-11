@@ -83,11 +83,14 @@ impl Store for MemoryStore {
     ) -> Result<(), Error> {
         self.evicting_map.sizes_for_keys(digests, results).await;
         // We need to do a special pass to ensure our zero digest exist.
-        digests.iter().zip(results.iter_mut()).for_each(|(digest, result)| {
-            if is_zero_digest(digest) {
-                *result = Some(0);
-            }
-        });
+        digests
+            .iter()
+            .zip(results.iter_mut())
+            .for_each(|(digest, result)| {
+                if is_zero_digest(digest) {
+                    *result = Some(0);
+                }
+            });
         Ok(())
     }
 
@@ -114,7 +117,9 @@ impl Store for MemoryStore {
             new_buffer.freeze()
         };
 
-        self.evicting_map.insert(digest, BytesWrapper(final_buffer)).await;
+        self.evicting_map
+            .insert(digest, BytesWrapper(final_buffer))
+            .await;
         Ok(())
     }
 
@@ -137,7 +142,12 @@ impl Store for MemoryStore {
             .evicting_map
             .get(&digest)
             .await
-            .err_tip_with_code(|_| (Code::NotFound, format!("Hash {} not found", digest.hash_str())))?;
+            .err_tip_with_code(|_| {
+                (
+                    Code::NotFound,
+                    format!("Hash {} not found", digest.hash_str()),
+                )
+            })?;
         let default_len = value.len() - offset;
         let length = length.unwrap_or(default_len).min(default_len);
         if length > 0 {

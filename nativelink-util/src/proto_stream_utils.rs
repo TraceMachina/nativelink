@@ -111,9 +111,8 @@ where
         } else {
             match Pin::new(&mut self.stream).poll_next(cx) {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(maybe_message)) => {
-                    maybe_message.err_tip(|| format!("Stream error at byte {}", self.bytes_received))
-                }
+                Poll::Ready(Some(maybe_message)) => maybe_message
+                    .err_tip(|| format!("Stream error at byte {}", self.bytes_received)),
                 Poll::Ready(None) => Err(make_input_err!("Expected WriteRequest struct in stream")),
             }
         };
@@ -164,7 +163,10 @@ impl FirstStream {
 impl Stream for FirstStream {
     type Item = Result<ReadResponse, Status>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         if let Some(first_response) = self.first_response.take() {
             return std::task::Poll::Ready(first_response.map(Ok));
         }
@@ -230,7 +232,8 @@ where
     }
 
     pub fn can_resume(&self) -> bool {
-        self.read_stream_error.is_none() && (self.cached_messages[0].is_some() || self.read_stream.is_first_msg())
+        self.read_stream_error.is_none()
+            && (self.cached_messages[0].is_some() || self.read_stream.is_first_msg())
     }
 
     pub fn resume(&mut self) {
@@ -280,7 +283,8 @@ where
             return Poll::Ready(cached_message);
         }
         // Read a new write request from the downstream.
-        let Poll::Ready(maybe_message) = Pin::new(&mut local_state.read_stream).poll_next(cx) else {
+        let Poll::Ready(maybe_message) = Pin::new(&mut local_state.read_stream).poll_next(cx)
+        else {
             return Poll::Pending;
         };
         // Update the instance name in the write request and forward it on.

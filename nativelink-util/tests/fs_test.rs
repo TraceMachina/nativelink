@@ -60,7 +60,10 @@ mod fs_tests {
         {
             let mut file = fs::open_file(&filename, u64::MAX).await?;
             let mut contents = String::new();
-            file.as_reader().await?.read_to_string(&mut contents).await?;
+            file.as_reader()
+                .await?
+                .read_to_string(&mut contents)
+                .await?;
             assert_eq!(contents, "HelloGoodbye");
         }
         Ok(())
@@ -73,7 +76,10 @@ mod fs_tests {
         let filename = make_temp_path("test_file.txt").await;
         {
             let mut file = fs::create_file(&filename).await?;
-            file.as_writer().await?.write_all(DUMMYDATA.as_bytes()).await?;
+            file.as_writer()
+                .await?
+                .write_all(DUMMYDATA.as_bytes())
+                .await?;
             file.as_writer().await?.as_mut().sync_all().await?;
         }
         {
@@ -104,7 +110,10 @@ mod fs_tests {
         let filename = make_temp_path("test_file.txt").await;
         {
             let mut file = fs::create_file(&filename).await?;
-            file.as_writer().await?.write_all(DUMMYDATA.as_bytes()).await?;
+            file.as_writer()
+                .await?
+                .write_all(DUMMYDATA.as_bytes())
+                .await?;
             file.as_writer().await?.as_mut().sync_all().await?;
         }
         {
@@ -139,12 +148,19 @@ mod fs_tests {
         let filename = make_temp_path("test_file.txt").await;
         {
             let mut file = fs::create_file(&filename).await?;
-            file.as_writer().await?.write_all(DUMMYDATA.as_bytes()).await?;
+            file.as_writer()
+                .await?
+                .write_all(DUMMYDATA.as_bytes())
+                .await?;
             file.as_writer().await?.as_mut().sync_all().await?;
         }
         {
             let mut file = fs::open_file(&filename, 11).await?;
-            file.as_reader().await?.get_mut().seek(SeekFrom::Start(2)).await?;
+            file.as_reader()
+                .await?
+                .get_mut()
+                .seek(SeekFrom::Start(2))
+                .await?;
             let mut contents = [0u8; 5];
             {
                 assert_eq!(file.as_reader().await?.read(&mut contents).await?, 5);

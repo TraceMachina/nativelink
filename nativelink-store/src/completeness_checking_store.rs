@@ -40,7 +40,10 @@ pub struct CompletenessCheckingStore {
 
 impl CompletenessCheckingStore {
     pub fn new(ac_store: Arc<dyn Store>, cas_store: Arc<dyn Store>) -> Self {
-        CompletenessCheckingStore { cas_store, ac_store }
+        CompletenessCheckingStore {
+            cas_store,
+            ac_store,
+        }
     }
 }
 
@@ -80,8 +83,8 @@ async fn check_output_directories(
         .into_iter()
         .filter_map(|output_dir| output_dir.tree_digest.map(DigestInfo::try_from));
     for maybe_tree_digest in tree_digests {
-        let tree_digest =
-            maybe_tree_digest.err_tip(|| "Could not decode tree digest CompletenessCheckingStore::has")?;
+        let tree_digest = maybe_tree_digest
+            .err_tip(|| "Could not decode tree digest CompletenessCheckingStore::has")?;
         futures.push(async move {
             let tree = get_and_decode_digest::<ProtoTree>(cas_store, &tree_digest).await?;
             // TODO(allada) When `try_collect()` is stable we can use it instead.
@@ -157,9 +160,11 @@ async fn inner_has_with_results(
         .map(|(i, digest)| {
             async move {
                 // Note: We don't err_tip here because often have NotFound here which is ok.
-                let (action_result, size) = get_size_and_decode_digest::<ProtoActionResult>(ac_store, digest).await?;
+                let (action_result, size) =
+                    get_size_and_decode_digest::<ProtoActionResult>(ac_store, digest).await?;
 
-                let (mut digest_infos, output_directories) = get_digests_and_output_dirs(action_result)?;
+                let (mut digest_infos, output_directories) =
+                    get_digests_and_output_dirs(action_result)?;
 
                 {
                     let mut state = state_mux.lock();
@@ -177,7 +182,9 @@ async fn inner_has_with_results(
                     } else {
                         state.digests_to_check.extend(digest_infos);
                     }
-                    state.digests_to_check_idxs.extend(iter::repeat(i).take(rep_len));
+                    state
+                        .digests_to_check_idxs
+                        .extend(iter::repeat(i).take(rep_len));
                     state.notify.notify_one();
                 }
 
@@ -191,7 +198,9 @@ async fn inner_has_with_results(
                     let mut state = state_mux.lock();
                     let rep_len = digest_infos.len();
                     state.digests_to_check.extend(digest_infos);
-                    state.digests_to_check_idxs.extend(iter::repeat(i).take(rep_len));
+                    state
+                        .digests_to_check_idxs
+                        .extend(iter::repeat(i).take(rep_len));
                     state.notify.notify_one();
                 })
                 .await?;
@@ -202,7 +211,9 @@ async fn inner_has_with_results(
             // digest that failed so we know which one to unset.
             .map_err(move |mut e| {
                 if e.code != Code::NotFound {
-                    e = e.append("Error checking existence of digest in CompletenessCheckingStore::has");
+                    e = e.append(
+                        "Error checking existence of digest in CompletenessCheckingStore::has",
+                    );
                 }
                 (e, i)
             })
@@ -251,7 +262,9 @@ async fn inner_has_with_results(
             cas_store
                 .has_with_results(&digests, &mut has_results[..])
                 .await
-                .err_tip(|| "Error calling has_with_results() inside CompletenessCheckingStore::has")?;
+                .err_tip(|| {
+                    "Error calling has_with_results() inside CompletenessCheckingStore::has"
+                })?;
             let missed_indexes = has_results
                 .iter()
                 .zip(indexes)
@@ -330,7 +343,9 @@ impl Store for CompletenessCheckingStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        Pin::new(self.ac_store.as_ref()).update(digest, reader, size_info).await
+        Pin::new(self.ac_store.as_ref())
+            .update(digest, reader, size_info)
+            .await
     }
 
     async fn get_part_ref(
@@ -342,9 +357,14 @@ impl Store for CompletenessCheckingStore {
     ) -> Result<(), Error> {
         let ac_store = Pin::new(self.ac_store.as_ref());
         let results = &mut [None];
-        inner_has_with_results(ac_store, Pin::new(self.cas_store.as_ref()), &[digest], results)
-            .await
-            .err_tip(|| "when calling CompletenessCheckingStore::get_part_ref")?;
+        inner_has_with_results(
+            ac_store,
+            Pin::new(self.cas_store.as_ref()),
+            &[digest],
+            results,
+        )
+        .await
+        .err_tip(|| "when calling CompletenessCheckingStore::get_part_ref")?;
         if results[0].is_none() {
             return Err(make_err!(
                 Code::NotFound,

@@ -50,7 +50,11 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     ) -> Result<(), Error>;
 
     /// Event for when the keep alive message was received from the worker.
-    async fn worker_keep_alive_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp) -> Result<(), Error>;
+    async fn worker_keep_alive_received(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error>;
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     async fn remove_worker(&self, worker_id: WorkerId);

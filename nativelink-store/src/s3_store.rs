@@ -102,7 +102,10 @@ impl TlsConnector {
             match connector.call(req.clone()).await {
                 Ok(stream) => Some((RetryResult::Ok(stream), connector)),
                 Err(e) => Some((
-                    RetryResult::Retry(make_err!(Code::Unavailable, "Failed to call S3 connector: {e:?}")),
+                    RetryResult::Retry(make_err!(
+                        Code::Unavailable,
+                        "Failed to call S3 connector: {e:?}"
+                    )),
                     connector,
                 )),
             }
@@ -114,7 +117,8 @@ impl TlsConnector {
 impl Service<Uri> for TlsConnector {
     type Response = MaybeHttpsStream<TcpStream>;
     type Error = Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.connector
@@ -148,7 +152,8 @@ impl S3Store {
             delay.mul_f32(OsRng.gen_range(min..max))
         });
         let s3_client = {
-            let http_client = HyperClientBuilder::new().build(TlsConnector::new(config, jitter_fn.clone()));
+            let http_client =
+                HyperClientBuilder::new().build(TlsConnector::new(config, jitter_fn.clone()));
             let credential_provider = credentials::default_provider().await;
             let mut config_builder = aws_config::defaults(BehaviorVersion::v2023_11_09())
                 .credentials_provider(credential_provider)
@@ -186,7 +191,12 @@ impl S3Store {
     }
 
     fn make_s3_path(&self, digest: &DigestInfo) -> String {
-        format!("{}{}-{}", self.key_prefix, digest.hash_str(), digest.size_bytes)
+        format!(
+            "{}{}-{}",
+            self.key_prefix,
+            digest.hash_str(),
+            digest.size_bytes
+        )
     }
 
     async fn has(self: Pin<&Self>, digest: &DigestInfo) -> Result<Option<usize>, Error> {
@@ -294,7 +304,10 @@ impl Store for S3Store {
                     digest.hash_str()
                 );
                 let content_length = write_buf.len();
-                (ByteStream::new(SdkBody::from(write_buf)), content_length as i64)
+                (
+                    ByteStream::new(SdkBody::from(write_buf)),
+                    content_length as i64,
+                )
             };
 
             return self
@@ -312,7 +325,8 @@ impl Store for S3Store {
 
         // S3 requires us to upload in parts if the size is greater than 5GB. The part size must be at least
         // 5mb and can have up to 10,000 parts.
-        let bytes_per_upload_part = cmp::max(MIN_MULTIPART_SIZE, max_size / (MIN_MULTIPART_SIZE - 1));
+        let bytes_per_upload_part =
+            cmp::max(MIN_MULTIPART_SIZE, max_size / (MIN_MULTIPART_SIZE - 1));
 
         let response: CreateMultipartUploadOutput = self
             .s3_client
@@ -321,7 +335,12 @@ impl Store for S3Store {
             .key(s3_path)
             .send()
             .await
-            .map_err(|e| make_err!(Code::Internal, "Failed to create multipart upload to s3: {e:?}"))?;
+            .map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to create multipart upload to s3: {e:?}"
+                )
+            })?;
 
         let upload_id = response
             .upload_id
@@ -423,7 +442,10 @@ impl Store for S3Store {
                 .send()
                 .await;
             if let Err(err) = abort_result {
-                info!("\x1b[0;31ms3_store\x1b[0m: Failed to abort_multipart_upload: {:?}", err);
+                info!(
+                    "\x1b[0;31ms3_store\x1b[0m: Failed to abort_multipart_upload: {:?}",
+                    err
+                );
             }
         }
         complete_result
@@ -474,7 +496,10 @@ impl Store for S3Store {
                     Err(sdk_error) => match sdk_error.into_service_error() {
                         GetObjectError::NoSuchKey(e) => {
                             return Some((
-                                RetryResult::Err(make_err!(Code::NotFound, "No such key in S3: {e}")),
+                                RetryResult::Err(make_err!(
+                                    Code::NotFound,
+                                    "No such key in S3: {e}"
+                                )),
                                 writer,
                             ));
                         }
@@ -501,14 +526,18 @@ impl Store for S3Store {
                             }
                             if let Err(e) = writer.send(bytes).await {
                                 return Some((
-                                    RetryResult::Err(make_input_err!("Error sending bytes to consumer in S3: {e}")),
+                                    RetryResult::Err(make_input_err!(
+                                        "Error sending bytes to consumer in S3: {e}"
+                                    )),
                                     writer,
                                 ));
                             }
                         }
                         Err(e) => {
                             return Some((
-                                RetryResult::Retry(make_input_err!("Bad bytestream element in S3: {e}")),
+                                RetryResult::Retry(make_input_err!(
+                                    "Bad bytestream element in S3: {e}"
+                                )),
                                 writer,
                             ));
                         }
@@ -516,7 +545,9 @@ impl Store for S3Store {
                 }
                 if let Err(e) = writer.send_eof().await {
                     return Some((
-                        RetryResult::Err(make_input_err!("Failed to send EOF to consumer in S3: {e}")),
+                        RetryResult::Err(make_input_err!(
+                            "Failed to send EOF to consumer in S3: {e}"
+                        )),
                         writer,
                     ));
                 }

@@ -150,14 +150,22 @@ mod fastcdc_tests {
 
         let mut expected_missing_hashes = HashSet::<String>::new();
         {
-            expected_missing_hashes.insert("076a696917163caac2725f753bd2be2e902478c59cd92eeff012851da5868800".into());
-            expected_missing_hashes.insert("b60ffdcaa8f833ca6a9900814e55d5a47b3205a6ac7d21aaadc64f889b556932".into());
-            expected_missing_hashes.insert("11367bd6ecba2833556decd869ac714180456ab9ef815b167ffae947796377fd".into());
+            expected_missing_hashes
+                .insert("076a696917163caac2725f753bd2be2e902478c59cd92eeff012851da5868800".into());
+            expected_missing_hashes
+                .insert("b60ffdcaa8f833ca6a9900814e55d5a47b3205a6ac7d21aaadc64f889b556932".into());
+            expected_missing_hashes
+                .insert("11367bd6ecba2833556decd869ac714180456ab9ef815b167ffae947796377fd".into());
 
             for key in left_frames.keys() {
                 let maybe_right_frame = right_frames.get(key);
                 if maybe_right_frame.is_none() {
-                    assert_eq!(expected_missing_hashes.contains(key), true, "Expected to find: {}", key);
+                    assert_eq!(
+                        expected_missing_hashes.contains(key),
+                        true,
+                        "Expected to find: {}",
+                        key
+                    );
                     expected_missing_hashes.remove(key);
                 } else {
                     right_frames.remove(key);
@@ -185,8 +193,16 @@ mod fastcdc_tests {
                 expected_new_hashes.remove(&key);
             }
         }
-        assert_eq!(expected_missing_hashes.len(), 0, "Some old hashes were not found");
-        assert_eq!(expected_new_hashes.len(), 0, "Some new hashes were not consumed");
+        assert_eq!(
+            expected_missing_hashes.len(),
+            0,
+            "Some old hashes were not found"
+        );
+        assert_eq!(
+            expected_new_hashes.len(),
+            0,
+            "Some new hashes were not consumed"
+        );
 
         Ok(())
     }

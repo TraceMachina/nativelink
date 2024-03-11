@@ -55,7 +55,8 @@ impl Store for NoopStore {
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
-        optimization == StoreOptimizations::NoopUpdates || optimization == StoreOptimizations::NoopDownloads
+        optimization == StoreOptimizations::NoopUpdates
+            || optimization == StoreOptimizations::NoopDownloads
     }
 
     async fn get_part_ref(

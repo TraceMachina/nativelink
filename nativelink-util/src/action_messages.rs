@@ -23,9 +23,9 @@ use std::time::{Duration, SystemTime};
 use blake3::Hasher as Blake3Hasher;
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest,
-    ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory, OutputFile, OutputSymlink,
-    SymlinkNode,
+    execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata,
+    ExecuteRequest, ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory,
+    OutputFile, OutputSymlink, SymlinkNode,
 };
 use nativelink_proto::google::longrunning::operation::Result as LongRunningResult;
 use nativelink_proto::google::longrunning::Operation;
@@ -216,8 +216,8 @@ impl From<ActionInfo> for ExecuteRequest {
         Self {
             instance_name: val.unique_qualifier.instance_name,
             action_digest: Some(digest),
-            skip_cache_lookup: true,    // The worker should never cache lookup.
-            execution_policy: None,     // Not used in the worker.
+            skip_cache_lookup: true, // The worker should never cache lookup.
+            execution_policy: None,  // Not used in the worker.
             results_cache_policy: None, // Not used in the worker.
             digest_function: val.digest_function.proto_digest_func().into(),
         }
@@ -536,31 +536,45 @@ impl TryFrom<ExecutedActionMetadata> for ExecutionMetadata {
                 .try_into()?,
             worker_completed_timestamp: eam
                 .worker_completed_timestamp
-                .err_tip(|| "Expected worker_completed_timestamp to exist in ExecutedActionMetadata")?
+                .err_tip(|| {
+                    "Expected worker_completed_timestamp to exist in ExecutedActionMetadata"
+                })?
                 .try_into()?,
             input_fetch_start_timestamp: eam
                 .input_fetch_start_timestamp
-                .err_tip(|| "Expected input_fetch_start_timestamp to exist in ExecutedActionMetadata")?
+                .err_tip(|| {
+                    "Expected input_fetch_start_timestamp to exist in ExecutedActionMetadata"
+                })?
                 .try_into()?,
             input_fetch_completed_timestamp: eam
                 .input_fetch_completed_timestamp
-                .err_tip(|| "Expected input_fetch_completed_timestamp to exist in ExecutedActionMetadata")?
+                .err_tip(|| {
+                    "Expected input_fetch_completed_timestamp to exist in ExecutedActionMetadata"
+                })?
                 .try_into()?,
             execution_start_timestamp: eam
                 .execution_start_timestamp
-                .err_tip(|| "Expected execution_start_timestamp to exist in ExecutedActionMetadata")?
+                .err_tip(|| {
+                    "Expected execution_start_timestamp to exist in ExecutedActionMetadata"
+                })?
                 .try_into()?,
             execution_completed_timestamp: eam
                 .execution_completed_timestamp
-                .err_tip(|| "Expected execution_completed_timestamp to exist in ExecutedActionMetadata")?
+                .err_tip(|| {
+                    "Expected execution_completed_timestamp to exist in ExecutedActionMetadata"
+                })?
                 .try_into()?,
             output_upload_start_timestamp: eam
                 .output_upload_start_timestamp
-                .err_tip(|| "Expected output_upload_start_timestamp to exist in ExecutedActionMetadata")?
+                .err_tip(|| {
+                    "Expected output_upload_start_timestamp to exist in ExecutedActionMetadata"
+                })?
                 .try_into()?,
             output_upload_completed_timestamp: eam
                 .output_upload_completed_timestamp
-                .err_tip(|| "Expected output_upload_completed_timestamp to exist in ExecutedActionMetadata")?
+                .err_tip(|| {
+                    "Expected output_upload_completed_timestamp to exist in ExecutedActionMetadata"
+                })?
                 .try_into()?,
         })
     }
@@ -699,7 +713,12 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
         logs
     }
 
-    let status = Some(action_result.error.clone().map_or_else(Status::default, |v| v.into()));
+    let status = Some(
+        action_result
+            .error
+            .clone()
+            .map_or_else(Status::default, |v| v.into()),
+    );
     let message = action_result.message.clone();
     ExecuteResponse {
         server_logs: logs_from(action_result.server_logs.clone()),
@@ -715,9 +734,10 @@ impl From<ActionStage> for ExecuteResponse {
         match val {
             // We don't have an execute response if we don't have the results. It is defined
             // behavior to return an empty proto struct.
-            ActionStage::Unknown | ActionStage::CacheCheck | ActionStage::Queued | ActionStage::Executing => {
-                Self::default()
-            }
+            ActionStage::Unknown
+            | ActionStage::CacheCheck
+            | ActionStage::Queued
+            | ActionStage::Executing => Self::default(),
             ActionStage::Completed(action_result) => to_execute_response(action_result),
             // Handled separately as there are no server logs and the action
             // result is already in Proto format.
@@ -734,17 +754,26 @@ impl From<ActionStage> for ExecuteResponse {
 
 impl From<ActionResult> for ProtoActionResult {
     fn from(val: ActionResult) -> Self {
-        let mut output_symlinks =
-            Vec::with_capacity(val.output_file_symlinks.len() + val.output_directory_symlinks.len());
+        let mut output_symlinks = Vec::with_capacity(
+            val.output_file_symlinks.len() + val.output_directory_symlinks.len(),
+        );
         output_symlinks.extend_from_slice(val.output_file_symlinks.as_slice());
         output_symlinks.extend_from_slice(val.output_directory_symlinks.as_slice());
 
         Self {
             output_files: val.output_files.into_iter().map(Into::into).collect(),
-            output_file_symlinks: val.output_file_symlinks.into_iter().map(Into::into).collect(),
+            output_file_symlinks: val
+                .output_file_symlinks
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             output_symlinks: output_symlinks.into_iter().map(Into::into).collect(),
             output_directories: val.output_folders.into_iter().map(Into::into).collect(),
-            output_directory_symlinks: val.output_directory_symlinks.into_iter().map(Into::into).collect(),
+            output_directory_symlinks: val
+                .output_directory_symlinks
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             exit_code: val.exit_code,
             stdout_raw: Bytes::default(),
             stdout_digest: Some(val.stdout_digest.into()),
@@ -780,7 +809,11 @@ impl TryFrom<ProtoActionResult> for ActionResult {
         let output_files = val
             .output_files
             .into_iter()
-            .map(|output_file| output_file.try_into().err_tip(|| "Output File could not be converted"))
+            .map(|output_file| {
+                output_file
+                    .try_into()
+                    .err_tip(|| "Output File could not be converted")
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         let output_folders = val
@@ -826,12 +859,18 @@ impl TryFrom<ExecuteResponse> for ActionStage {
             .result
             .err_tip(|| "Expected result to be set on ExecuteResponse msg")?;
         let action_result = ActionResult {
-            output_files: proto_action_result.output_files.try_map(TryInto::try_into)?,
+            output_files: proto_action_result
+                .output_files
+                .try_map(TryInto::try_into)?,
             output_directory_symlinks: proto_action_result
                 .output_directory_symlinks
                 .try_map(TryInto::try_into)?,
-            output_file_symlinks: proto_action_result.output_file_symlinks.try_map(TryInto::try_into)?,
-            output_folders: proto_action_result.output_directories.try_map(TryInto::try_into)?,
+            output_file_symlinks: proto_action_result
+                .output_file_symlinks
+                .try_map(TryInto::try_into)?,
+            output_folders: proto_action_result
+                .output_directories
+                .try_map(TryInto::try_into)?,
             exit_code: proto_action_result.exit_code,
 
             stdout_digest: proto_action_result
@@ -851,10 +890,13 @@ impl TryFrom<ExecuteResponse> for ActionStage {
                     .err_tip(|| "Expected digest to be set on LogFile msg")?
                     .try_into()
             })?,
-            error: execute_response
-                .status
-                .clone()
-                .and_then(|v| if v.code == 0 { None } else { Some(v.into()) }),
+            error: execute_response.status.clone().and_then(|v| {
+                if v.code == 0 {
+                    None
+                } else {
+                    Some(v.into())
+                }
+            }),
             message: execute_response.message,
         };
 
@@ -871,11 +913,13 @@ trait TypeUrl: Message {
 }
 
 impl TypeUrl for ExecuteResponse {
-    const TYPE_URL: &'static str = "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse";
+    const TYPE_URL: &'static str =
+        "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteResponse";
 }
 
 impl TypeUrl for ExecuteOperationMetadata {
-    const TYPE_URL: &'static str = "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata";
+    const TYPE_URL: &'static str =
+        "type.googleapis.com/build.bazel.remote.execution.v2.ExecuteOperationMetadata";
 }
 
 fn from_any<T>(message: &Any) -> Result<T, Error>
@@ -905,9 +949,12 @@ impl TryFrom<Operation> for ActionState {
     type Error = Error;
 
     fn try_from(operation: Operation) -> Result<ActionState, Error> {
-        let metadata =
-            from_any::<ExecuteOperationMetadata>(&operation.metadata.err_tip(|| "No metadata in upstream operation")?)
-                .err_tip(|| "Could not decode metadata in upstream operation")?;
+        let metadata = from_any::<ExecuteOperationMetadata>(
+            &operation
+                .metadata
+                .err_tip(|| "No metadata in upstream operation")?,
+        )
+        .err_tip(|| "Could not decode metadata in upstream operation")?;
 
         let action_digest = metadata
             .action_digest
@@ -915,9 +962,12 @@ impl TryFrom<Operation> for ActionState {
             .try_into()
             .err_tip(|| "Could not convert Digest to DigestInfo")?;
 
-        let stage = match execution_stage::Value::try_from(metadata.stage)
-            .err_tip(|| format!("Could not convert {} to execution_stage::Value", metadata.stage))?
-        {
+        let stage = match execution_stage::Value::try_from(metadata.stage).err_tip(|| {
+            format!(
+                "Could not convert {} to execution_stage::Value",
+                metadata.stage
+            )
+        })? {
             execution_stage::Value::Unknown => ActionStage::Unknown,
             execution_stage::Value::CacheCheck => ActionStage::CacheCheck,
             execution_stage::Value::Queued => ActionStage::Queued,
@@ -934,7 +984,9 @@ impl TryFrom<Operation> for ActionState {
                     LongRunningResult::Response(response) => {
                         // Could be Completed, CompletedFromCache or Error.
                         from_any::<ExecuteResponse>(&response)
-                            .err_tip(|| "Could not decode result structure for completed upstream action")?
+                            .err_tip(|| {
+                                "Could not decode result structure for completed upstream action"
+                            })?
                             .try_into()?
                     }
                 }

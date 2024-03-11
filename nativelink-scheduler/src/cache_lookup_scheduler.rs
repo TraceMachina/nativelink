@@ -24,7 +24,9 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState};
+use nativelink_util::action_messages::{
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use parking_lot::{Mutex, MutexGuard};
@@ -83,10 +85,14 @@ async fn get_action_from_store(
     }
 }
 
-async fn validate_outputs_exist(cas_store: &Arc<dyn Store>, action_result: &ProtoActionResult) -> bool {
+async fn validate_outputs_exist(
+    cas_store: &Arc<dyn Store>,
+    action_result: &ProtoActionResult,
+) -> bool {
     // Verify that output_files and output_directories are available in the cas.
-    let mut required_digests =
-        Vec::with_capacity(action_result.output_files.len() + action_result.output_directories.len());
+    let mut required_digests = Vec::with_capacity(
+        action_result.output_files.len() + action_result.output_directories.len(),
+    );
     for digest in action_result
         .output_files
         .iter()
@@ -104,7 +110,10 @@ async fn validate_outputs_exist(cas_store: &Arc<dyn Store>, action_result: &Prot
         required_digests.push(digest);
     }
 
-    let Ok(sizes) = Pin::new(cas_store.as_ref()).has_many(&required_digests).await else {
+    let Ok(sizes) = Pin::new(cas_store.as_ref())
+        .has_many(&required_digests)
+        .await
+    else {
         return false;
     };
     sizes.into_iter().all(|size| size.is_some())
@@ -142,11 +151,19 @@ impl CacheLookupScheduler {
 
 #[async_trait]
 impl ActionScheduler for CacheLookupScheduler {
-    async fn get_platform_property_manager(&self, instance_name: &str) -> Result<Arc<PlatformPropertyManager>, Error> {
-        self.action_scheduler.get_platform_property_manager(instance_name).await
+    async fn get_platform_property_manager(
+        &self,
+        instance_name: &str,
+    ) -> Result<Arc<PlatformPropertyManager>, Error> {
+        self.action_scheduler
+            .get_platform_property_manager(instance_name)
+            .await
     }
 
-    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(
+        &self,
+        action_info: ActionInfo,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         if action_info.skip_cache_lookup {
             // Cache lookup skipped, forward to the upstream.
             return self.action_scheduler.add_action(action_info).await;
@@ -160,7 +177,9 @@ impl ActionScheduler for CacheLookupScheduler {
         let scope_guard = {
             let mut cache_check_actions = self.cache_check_actions.lock();
             // Check this isn't a duplicate request first.
-            if let Some(rx) = subscribe_to_existing_action(&cache_check_actions, &action_info.unique_qualifier) {
+            if let Some(rx) =
+                subscribe_to_existing_action(&cache_check_actions, &action_info.unique_qualifier)
+            {
                 return Ok(rx);
             }
             cache_check_actions.insert(action_info.unique_qualifier.clone(), tx.clone());
@@ -185,11 +204,13 @@ impl ActionScheduler for CacheLookupScheduler {
             let action_digest = current_state.action_digest();
             let instance_name = action_info.instance_name().clone();
             if let Some(action_result) =
-                get_action_from_store(Pin::new(ac_store.as_ref()), *action_digest, instance_name).await
+                get_action_from_store(Pin::new(ac_store.as_ref()), *action_digest, instance_name)
+                    .await
             {
                 if validate_outputs_exist(&cas_store, &action_result).await {
                     // Found in the cache, return the result immediately.
-                    Arc::make_mut(&mut current_state).stage = ActionStage::CompletedFromCache(action_result);
+                    Arc::make_mut(&mut current_state).stage =
+                        ActionStage::CompletedFromCache(action_result);
                     let _ = tx.send(current_state);
                     return;
                 }
@@ -212,10 +233,11 @@ impl ActionScheduler for CacheLookupScheduler {
                     }
                 }
                 Err(err) => {
-                    Arc::make_mut(&mut current_state).stage = ActionStage::Completed(ActionResult {
-                        error: Some(err),
-                        ..Default::default()
-                    });
+                    Arc::make_mut(&mut current_state).stage =
+                        ActionStage::Completed(ActionResult {
+                            error: Some(err),
+                            ..Default::default()
+                        });
                     let _ = tx.send(current_state);
                 }
             }
@@ -234,7 +256,9 @@ impl ActionScheduler for CacheLookupScheduler {
             }
         }
         // Cache skipped may be in the upstream scheduler.
-        self.action_scheduler.find_existing_action(unique_qualifier).await
+        self.action_scheduler
+            .find_existing_action(unique_qualifier)
+            .await
     }
 
     async fn clean_recently_completed_actions(&self) {}

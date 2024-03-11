@@ -74,7 +74,11 @@ mod retry_tests {
                 RetryResult::<bool>::Retry(make_err!(Code::Unavailable, "Dummy failure",))
             }))
             .await;
-        assert_eq!(run_count.load(Ordering::Relaxed), 3, "Expected function to be called");
+        assert_eq!(
+            run_count.load(Ordering::Relaxed),
+            3,
+            "Expected function to be called"
+        );
         assert_eq!(result.is_err(), true, "Expected result to error");
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -105,7 +109,11 @@ mod retry_tests {
                 RetryResult::<bool>::Retry(make_err!(Code::Unavailable, "Dummy failure",))
             }))
             .await?;
-        assert_eq!(run_count.load(Ordering::Relaxed), 2, "Expected function to be called");
+        assert_eq!(
+            run_count.load(Ordering::Relaxed),
+            2,
+            "Expected function to be called"
+        );
         assert_eq!(result, true, "Expected result to succeed");
 
         Ok(())

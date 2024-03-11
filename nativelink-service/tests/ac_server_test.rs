@@ -19,7 +19,9 @@ use bytes::BytesMut;
 use maplit::hashmap;
 use nativelink_error::Error;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
-use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ActionResult, Digest};
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    digest_function, ActionResult, Digest,
+};
 use nativelink_service::ac_server::AcServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
@@ -52,7 +54,9 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+            &nativelink_config::stores::StoreConfig::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
             &store_manager,
             Some(&mut <Registry>::default()),
             None,
@@ -62,7 +66,9 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_ac",
         store_factory(
-            &nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+            &nativelink_config::stores::StoreConfig::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
             &store_manager,
             Some(&mut <Registry>::default()),
             None,
@@ -91,7 +97,11 @@ mod get_action_result {
 
     use super::*;
 
-    async fn get_action_result(ac_server: &AcServer, hash: &str, size: i64) -> Result<Response<ActionResult>, Status> {
+    async fn get_action_result(
+        ac_server: &AcServer,
+        hash: &str,
+        size: i64,
+    ) -> Result<Response<ActionResult>, Status> {
         ac_server
             .get_action_result(Request::new(GetActionResultRequest {
                 instance_name: INSTANCE_NAME.to_string(),
@@ -138,7 +148,11 @@ mod get_action_result {
         insert_into_store(ac_store, HASH1, HASH1_SIZE, &action_result).await?;
         let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
 
-        assert!(raw_response.is_ok(), "Expected value, got error {:?}", raw_response);
+        assert!(
+            raw_response.is_ok(),
+            "Expected value, got error {:?}",
+            raw_response
+        );
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
         Ok(())
     }
@@ -220,7 +234,11 @@ mod update_action_result {
         )
         .await;
 
-        assert!(raw_response.is_ok(), "Expected success, got error {:?}", raw_response);
+        assert!(
+            raw_response.is_ok(),
+            "Expected success, got error {:?}",
+            raw_response
+        );
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
 
         let digest = DigestInfo::try_new(HASH1, size_bytes)?;

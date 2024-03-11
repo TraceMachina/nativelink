@@ -35,8 +35,12 @@ mod ref_store_tests {
     const BIG_VALUE: &str = "123456789";
 
     fn setup_stores(size: u64) -> (SizePartitioningStore, Arc<MemoryStore>, Arc<MemoryStore>) {
-        let lower_memory_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
-        let upper_memory_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let lower_memory_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
+        let upper_memory_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
 
         let size_part_store = SizePartitioningStore::new(
             &nativelink_config::stores::SizePartitioningStore {
@@ -56,17 +60,24 @@ mod ref_store_tests {
 
     #[tokio::test]
     async fn has_test() -> Result<(), Error> {
-        let (size_part_store, lower_memory_store, upper_memory_store) = setup_stores(BASE_SIZE_PART);
+        let (size_part_store, lower_memory_store, upper_memory_store) =
+            setup_stores(BASE_SIZE_PART);
 
         {
             // Insert data into lower store.
             Pin::new(lower_memory_store.as_ref())
-                .update_oneshot(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, SMALL_VALUE.into())
+                .update_oneshot(
+                    DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?,
+                    SMALL_VALUE.into(),
+                )
                 .await?;
 
             // Insert data into upper store.
             Pin::new(upper_memory_store.as_ref())
-                .update_oneshot(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, BIG_VALUE.into())
+                .update_oneshot(
+                    DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
+                    BIG_VALUE.into(),
+                )
                 .await?;
         }
         {
@@ -98,23 +109,35 @@ mod ref_store_tests {
 
     #[tokio::test]
     async fn get_test() -> Result<(), Error> {
-        let (size_part_store, lower_memory_store, upper_memory_store) = setup_stores(BASE_SIZE_PART);
+        let (size_part_store, lower_memory_store, upper_memory_store) =
+            setup_stores(BASE_SIZE_PART);
 
         {
             // Insert data into lower store.
             Pin::new(lower_memory_store.as_ref())
-                .update_oneshot(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, SMALL_VALUE.into())
+                .update_oneshot(
+                    DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?,
+                    SMALL_VALUE.into(),
+                )
                 .await?;
 
             // Insert data into upper store.
             Pin::new(upper_memory_store.as_ref())
-                .update_oneshot(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, BIG_VALUE.into())
+                .update_oneshot(
+                    DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
+                    BIG_VALUE.into(),
+                )
                 .await?;
         }
         {
             // Read the partition store small data.
             let data = Pin::new(&size_part_store)
-                .get_part_unchunked(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, 0, None, None)
+                .get_part_unchunked(
+                    DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?,
+                    0,
+                    None,
+                    None,
+                )
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -127,7 +150,12 @@ mod ref_store_tests {
         {
             // Read the partition store big data.
             let data = Pin::new(&size_part_store)
-                .get_part_unchunked(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, 0, None, None)
+                .get_part_unchunked(
+                    DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
+                    0,
+                    None,
+                    None,
+                )
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -142,23 +170,35 @@ mod ref_store_tests {
 
     #[tokio::test]
     async fn update_test() -> Result<(), Error> {
-        let (size_part_store, lower_memory_store, upper_memory_store) = setup_stores(BASE_SIZE_PART);
+        let (size_part_store, lower_memory_store, upper_memory_store) =
+            setup_stores(BASE_SIZE_PART);
 
         {
             // Insert small data into ref_store.
             Pin::new(&size_part_store)
-                .update_oneshot(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, SMALL_VALUE.into())
+                .update_oneshot(
+                    DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?,
+                    SMALL_VALUE.into(),
+                )
                 .await?;
 
             // Insert small data into ref_store.
             Pin::new(&size_part_store)
-                .update_oneshot(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, BIG_VALUE.into())
+                .update_oneshot(
+                    DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
+                    BIG_VALUE.into(),
+                )
                 .await?;
         }
         {
             // Check if we read small data from size_partition_store it has same data.
             let data = Pin::new(lower_memory_store.as_ref())
-                .get_part_unchunked(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, 0, None, None)
+                .get_part_unchunked(
+                    DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?,
+                    0,
+                    None,
+                    None,
+                )
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -171,7 +211,12 @@ mod ref_store_tests {
         {
             // Check if we read big data from size_partition_store it has same data.
             let data = Pin::new(upper_memory_store.as_ref())
-                .get_part_unchunked(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, 0, None, None)
+                .get_part_unchunked(
+                    DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
+                    0,
+                    None,
+                    None,
+                )
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(

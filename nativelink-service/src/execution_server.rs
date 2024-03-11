@@ -20,13 +20,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName};
 use nativelink_error::{make_input_err, Error, ResultExt};
-use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{Execution, ExecutionServer as Server};
-use nativelink_proto::build::bazel::remote::execution::v2::{Action, Command, ExecuteRequest, WaitExecutionRequest};
+use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
+    Execution, ExecutionServer as Server,
+};
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    Action, Command, ExecuteRequest, WaitExecutionRequest,
+};
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
+use nativelink_util::action_messages::{
+    ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;
@@ -101,7 +107,9 @@ impl InstanceInfo {
                         .await
                         .err_tip(|| "Failed to get platform properties in build_action_info")?
                         .make_prop_value(&property.name, &property.value)
-                        .err_tip(|| "Failed to convert command platform property in build_action_info")?;
+                        .err_tip(|| {
+                            "Failed to convert command platform property in build_action_info"
+                        })?;
                     platform_properties.insert(property.name.clone(), platform_property);
                 }
             }
@@ -146,7 +154,9 @@ impl ExecutionServer {
         for (instance_name, exec_cfg) in config {
             let cas_store = store_manager
                 .get_store(&exec_cfg.cas_store)
-                .ok_or_else(|| make_input_err!("'cas_store': '{}' does not exist", exec_cfg.cas_store))?;
+                .ok_or_else(|| {
+                    make_input_err!("'cas_store': '{}' does not exist", exec_cfg.cas_store)
+                })?;
             let scheduler = scheduler_map
                 .get(&exec_cfg.scheduler)
                 .err_tip(|| {
@@ -157,7 +167,13 @@ impl ExecutionServer {
                 })?
                 .clone();
 
-            instance_infos.insert(instance_name.to_string(), InstanceInfo { scheduler, cas_store });
+            instance_infos.insert(
+                instance_name.to_string(),
+                InstanceInfo {
+                    scheduler,
+                    cas_store,
+                },
+            );
         }
         Ok(Self { instance_infos })
     }
@@ -174,7 +190,10 @@ impl ExecutionServer {
         tonic::Response::new(receiver_stream)
     }
 
-    async fn inner_execute(&self, request: Request<ExecuteRequest>) -> Result<Response<ExecuteStream>, Error> {
+    async fn inner_execute(
+        &self,
+        request: Request<ExecuteRequest>,
+    ) -> Result<Response<ExecuteStream>, Error> {
         let execute_req = request.into_inner();
         let instance_name = execute_req.instance_name;
 
@@ -230,7 +249,11 @@ impl ExecutionServer {
                 unique_qualifier.instance_name
             )));
         };
-        let Some(rx) = instance_info.scheduler.find_existing_action(&unique_qualifier).await else {
+        let Some(rx) = instance_info
+            .scheduler
+            .find_existing_action(&unique_qualifier)
+            .await
+        else {
             return Err(Status::not_found("Failed to find existing task"));
         };
         Ok(Self::to_execute_stream(rx))
@@ -241,7 +264,10 @@ impl ExecutionServer {
 impl Execution for ExecutionServer {
     type ExecuteStream = ExecuteStream;
 
-    async fn execute(&self, grpc_request: Request<ExecuteRequest>) -> Result<Response<ExecuteStream>, Status> {
+    async fn execute(
+        &self,
+        grpc_request: Request<ExecuteRequest>,
+    ) -> Result<Response<ExecuteStream>, Status> {
         // TODO(blaise.bruer) This is a work in progress, remote execution likely won't work yet.
         info!("\x1b[0;31mexecute Req\x1b[0m: {:?}", grpc_request.get_ref());
         let now = Instant::now();
@@ -260,7 +286,10 @@ impl Execution for ExecutionServer {
     }
 
     type WaitExecutionStream = ExecuteStream;
-    async fn wait_execution(&self, request: Request<WaitExecutionRequest>) -> Result<Response<ExecuteStream>, Status> {
+    async fn wait_execution(
+        &self,
+        request: Request<WaitExecutionRequest>,
+    ) -> Result<Response<ExecuteStream>, Status> {
         self.inner_wait_execution(request)
             .await
             .err_tip(|| "Failed on wait_execution() command")

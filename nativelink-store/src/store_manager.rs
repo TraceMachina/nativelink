@@ -29,12 +29,18 @@ impl StoreManager {
     }
 
     pub fn add_store(&self, name: &str, store: Arc<dyn Store>) {
-        let mut stores = self.stores.write().expect("Failed to lock mutex in add_store()");
+        let mut stores = self
+            .stores
+            .write()
+            .expect("Failed to lock mutex in add_store()");
         stores.insert(name.to_string(), store);
     }
 
     pub fn get_store(&self, name: &str) -> Option<Arc<dyn Store>> {
-        let stores = self.stores.read().expect("Failed to lock read mutex in get_store()");
+        let stores = self
+            .stores
+            .read()
+            .expect("Failed to lock read mutex in get_store()");
         if let Some(store) = stores.get(name) {
             return Some(store.clone());
         }

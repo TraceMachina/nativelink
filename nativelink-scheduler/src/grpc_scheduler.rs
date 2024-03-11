@@ -27,7 +27,9 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     digest_function, ExecuteRequest, ExecutionPolicy, GetCapabilitiesRequest, WaitExecutionRequest,
 };
 use nativelink_proto::google::longrunning::Operation;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY};
+use nativelink_util::action_messages::{
+    ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY,
+};
 use nativelink_util::grpc_utils::ConnectionManager;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::tls_utils;
@@ -77,7 +79,10 @@ impl GrpcScheduler {
                 Arc::new(jitter_fn),
                 config.retry.to_owned(),
             ),
-            connection_manager: ConnectionManager::new(std::iter::once(endpoint), config.max_concurrent_requests),
+            connection_manager: ConnectionManager::new(
+                std::iter::once(endpoint),
+                config.max_concurrent_requests,
+            ),
         })
     }
 
@@ -101,7 +106,9 @@ impl GrpcScheduler {
             .await
     }
 
-    async fn stream_state(mut result_stream: Streaming<Operation>) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn stream_state(
+        mut result_stream: Streaming<Operation>,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         if let Some(initial_response) = result_stream
             .message()
             .await
@@ -136,14 +143,22 @@ impl GrpcScheduler {
             });
             return Ok(rx);
         }
-        Err(make_err!(Code::Internal, "Upstream scheduler didn't accept action."))
+        Err(make_err!(
+            Code::Internal,
+            "Upstream scheduler didn't accept action."
+        ))
     }
 }
 
 #[async_trait]
 impl ActionScheduler for GrpcScheduler {
-    async fn get_platform_property_manager(&self, instance_name: &str) -> Result<Arc<PlatformPropertyManager>, Error> {
-        if let Some(platform_property_manager) = self.platform_property_managers.lock().get(instance_name) {
+    async fn get_platform_property_manager(
+        &self,
+        instance_name: &str,
+    ) -> Result<Arc<PlatformPropertyManager>, Error> {
+        if let Some(platform_property_manager) =
+            self.platform_property_managers.lock().get(instance_name)
+        {
             return Ok(platform_property_manager.clone());
         }
 
@@ -166,7 +181,12 @@ impl ActionScheduler for GrpcScheduler {
                     .err_tip(|| "Unable to get execution properties in GrpcScheduler")?
                     .supported_node_properties
                     .iter()
-                    .map(|property| (property.clone(), nativelink_config::schedulers::PropertyType::exact))
+                    .map(|property| {
+                        (
+                            property.clone(),
+                            nativelink_config::schedulers::PropertyType::exact,
+                        )
+                    })
                     .collect(),
             ));
 
@@ -178,7 +198,10 @@ impl ActionScheduler for GrpcScheduler {
         .await
     }
 
-    async fn add_action(&self, action_info: ActionInfo) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn add_action(
+        &self,
+        action_info: ActionInfo,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {
             None
         } else {
@@ -236,7 +259,10 @@ impl ActionScheduler for GrpcScheduler {
         match result_stream {
             Ok(result_stream) => Some(result_stream),
             Err(err) => {
-                warn!("Error response looking up action with upstream scheduler: {}", err);
+                warn!(
+                    "Error response looking up action with upstream scheduler: {}",
+                    err
+                );
                 None
             }
         }

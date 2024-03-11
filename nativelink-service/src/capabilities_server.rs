@@ -24,8 +24,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Valu
 use nativelink_proto::build::bazel::remote::execution::v2::priority_capabilities::PriorityRange;
 use nativelink_proto::build::bazel::remote::execution::v2::symlink_absolute_path_strategy::Value as SymlinkAbsolutePathStrategy;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities, GetCapabilitiesRequest,
-    PriorityCapabilities, ServerCapabilities,
+    ActionCacheUpdateCapabilities, CacheCapabilities, ExecutionCapabilities,
+    GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
 };
 use nativelink_proto::build::bazel::semver::SemVer;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
@@ -87,24 +87,35 @@ impl Capabilities for CapabilitiesServer {
         request: Request<GetCapabilitiesRequest>,
     ) -> Result<Response<ServerCapabilities>, Status> {
         let instance_name = request.into_inner().instance_name;
-        let maybe_supported_node_properties = self.supported_node_properties_for_instance.get(&instance_name);
-        let execution_capabilities = maybe_supported_node_properties.map(|props_for_instance| ExecutionCapabilities {
-            digest_function: default_digest_hasher_func().proto_digest_func().into(),
-            exec_enabled: true, // TODO(blaise.bruer) Make this configurable.
-            execution_priority_capabilities: Some(PriorityCapabilities {
-                priorities: vec![PriorityRange {
-                    min_priority: 0,
-                    max_priority: i32::MAX,
-                }],
-            }),
-            supported_node_properties: props_for_instance.clone(),
-            digest_functions: vec![DigestFunction::Sha256.into(), DigestFunction::Blake3.into()],
-        });
+        let maybe_supported_node_properties = self
+            .supported_node_properties_for_instance
+            .get(&instance_name);
+        let execution_capabilities =
+            maybe_supported_node_properties.map(|props_for_instance| ExecutionCapabilities {
+                digest_function: default_digest_hasher_func().proto_digest_func().into(),
+                exec_enabled: true, // TODO(blaise.bruer) Make this configurable.
+                execution_priority_capabilities: Some(PriorityCapabilities {
+                    priorities: vec![PriorityRange {
+                        min_priority: 0,
+                        max_priority: i32::MAX,
+                    }],
+                }),
+                supported_node_properties: props_for_instance.clone(),
+                digest_functions: vec![
+                    DigestFunction::Sha256.into(),
+                    DigestFunction::Blake3.into(),
+                ],
+            });
 
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {
-                digest_functions: vec![DigestFunction::Sha256.into(), DigestFunction::Blake3.into()],
-                action_cache_update_capabilities: Some(ActionCacheUpdateCapabilities { update_enabled: true }),
+                digest_functions: vec![
+                    DigestFunction::Sha256.into(),
+                    DigestFunction::Blake3.into(),
+                ],
+                action_cache_update_capabilities: Some(ActionCacheUpdateCapabilities {
+                    update_enabled: true,
+                }),
                 cache_priority_capabilities: None,
                 max_batch_total_size_bytes: MAX_BATCH_TOTAL_SIZE,
                 symlink_absolute_path_strategy: SymlinkAbsolutePathStrategy::Disallowed.into(),

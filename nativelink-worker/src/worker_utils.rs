@@ -59,17 +59,27 @@ pub async fn make_supported_properties<S: BuildHasher>(
                     process.env_clear();
                     process.args(args);
                     process.stdin(Stdio::null());
-                    let err_fn = || format!("Error executing property_name {property_name} command");
-                    info!("Spawning process for cmd: '{}' for property: '{}'", cmd, property_name);
+                    let err_fn =
+                        || format!("Error executing property_name {property_name} command");
+                    info!(
+                        "Spawning process for cmd: '{}' for property: '{}'",
+                        cmd, property_name
+                    );
                     let process_output = process.output().await.err_tip(err_fn)?;
                     if !process_output.status.success() {
-                        return Err(make_err!(process_output.status.code().unwrap().into(), "{}", err_fn()));
+                        return Err(make_err!(
+                            process_output.status.code().unwrap().into(),
+                            "{}",
+                            err_fn()
+                        ));
                     }
                     if !process_output.stderr.is_empty() {
                         eprintln!(
                             "{}",
-                            from_utf8(&process_output.stderr)
-                                .map_err(|e| make_input_err!("Failed to decode stderr to utf8 : {:?}", e))?
+                            from_utf8(&process_output.stderr).map_err(|e| make_input_err!(
+                                "Failed to decode stderr to utf8 : {:?}",
+                                e
+                            ))?
                         );
                     }
                     let reader = BufReader::new(Cursor::new(process_output.stdout));
@@ -78,7 +88,10 @@ pub async fn make_supported_properties<S: BuildHasher>(
                     for value in reader.lines() {
                         props.push(Property {
                             name: property_name.clone(),
-                            value: value.err_tip(|| "Could split input by lines")?.trim().to_string(),
+                            value: value
+                                .err_tip(|| "Could split input by lines")?
+                                .trim()
+                                .to_string(),
                         });
                     }
                     Ok(props)

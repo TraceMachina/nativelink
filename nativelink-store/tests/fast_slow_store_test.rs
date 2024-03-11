@@ -27,12 +27,20 @@ use rand::{Rng, SeedableRng};
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
 fn make_stores() -> (Arc<impl Store>, Arc<impl Store>, Arc<impl Store>) {
-    let fast_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
-    let slow_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+    let fast_store = Arc::new(MemoryStore::new(
+        &nativelink_config::stores::MemoryStore::default(),
+    ));
+    let slow_store = Arc::new(MemoryStore::new(
+        &nativelink_config::stores::MemoryStore::default(),
+    ));
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
-            fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
-            slow: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+            fast: nativelink_config::stores::StoreConfig::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
+            slow: nativelink_config::stores::StoreConfig::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -59,7 +67,9 @@ async fn check_data<S: Store>(
         debug_name
     );
 
-    let store_data = check_store.get_part_unchunked(digest, 0, None, None).await?;
+    let store_data = check_store
+        .get_part_unchunked(digest, 0, None, None)
+        .await?;
     assert_eq!(
         store_data, original_data,
         "Expected data to match in {} store",
@@ -91,11 +101,25 @@ mod fast_slow_store_tests {
 
         let original_data = make_random_data(20 * MEGABYTE_SZ);
         let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
-        store.update_oneshot(digest, original_data.clone().into()).await?;
+        store
+            .update_oneshot(digest, original_data.clone().into())
+            .await?;
 
         check_data(store, digest, &original_data, "fast_slow").await?;
-        check_data(Pin::new(fast_store.as_ref()), digest, &original_data, "fast").await?;
-        check_data(Pin::new(slow_store.as_ref()), digest, &original_data, "slow").await?;
+        check_data(
+            Pin::new(fast_store.as_ref()),
+            digest,
+            &original_data,
+            "fast",
+        )
+        .await?;
+        check_data(
+            Pin::new(slow_store.as_ref()),
+            digest,
+            &original_data,
+            "slow",
+        )
+        .await?;
 
         Ok(())
     }
@@ -109,14 +133,21 @@ mod fast_slow_store_tests {
 
         let original_data = make_random_data(MEGABYTE_SZ);
         let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
-        slow_store.update_oneshot(digest, original_data.clone().into()).await?;
+        slow_store
+            .update_oneshot(digest, original_data.clone().into())
+            .await?;
 
-        assert_eq!(fast_slow_store.has(digest).await, Ok(Some(original_data.len())));
+        assert_eq!(
+            fast_slow_store.has(digest).await,
+            Ok(Some(original_data.len()))
+        );
         assert_eq!(fast_store.has(digest).await, Ok(None));
         assert_eq!(slow_store.has(digest).await, Ok(Some(original_data.len())));
 
         // This get() request should place the data in fast_store too.
-        fast_slow_store.get_part_unchunked(digest, 0, None, None).await?;
+        fast_slow_store
+            .get_part_unchunked(digest, 0, None, None)
+            .await?;
 
         // Now the data should exist in all the stores.
         check_data(fast_store, digest, &original_data, "fast_store").await?;
@@ -134,12 +165,16 @@ mod fast_slow_store_tests {
 
         let original_data = make_random_data(MEGABYTE_SZ);
         let digest = DigestInfo::try_new(VALID_HASH, 100).unwrap();
-        slow_store.update_oneshot(digest, original_data.clone().into()).await?;
+        slow_store
+            .update_oneshot(digest, original_data.clone().into())
+            .await?;
 
         // This get() request should place the data in fast_store too.
         assert_eq!(
             original_data[10..60],
-            fast_slow_store.get_part_unchunked(digest, 10, Some(50), None).await?
+            fast_slow_store
+                .get_part_unchunked(digest, 10, Some(50), None)
+                .await?
         );
 
         // Full data should exist in the fast store even though only partially
@@ -152,7 +187,8 @@ mod fast_slow_store_tests {
 
     #[test]
     fn calculate_range_test() {
-        let test = |start_range, end_range| FastSlowStore::calculate_range(&start_range, &end_range);
+        let test =
+            |start_range, end_range| FastSlowStore::calculate_range(&start_range, &end_range);
         {
             // Exact match.
             let received_range = 0..1;
@@ -262,7 +298,8 @@ mod fast_slow_store_tests {
                 reader.drain().await?;
                 let eof_tx = self.eof_tx.lock().unwrap().take();
                 if let Some(tx) = eof_tx {
-                    tx.send(()).map_err(|e| make_err!(Code::Internal, "{:?}", e))?;
+                    tx.send(())
+                        .map_err(|e| make_err!(Code::Internal, "{:?}", e))?;
                 }
                 let read_rx = self.read_rx.lock().unwrap().take();
                 if let Some(rx) = read_rx {
@@ -302,7 +339,11 @@ mod fast_slow_store_tests {
                 self
             }
 
-            fn register_metrics(self: Arc<Self>, _registry: &mut nativelink_util::metrics_utils::Registry) {}
+            fn register_metrics(
+                self: Arc<Self>,
+                _registry: &mut nativelink_util::metrics_utils::Registry,
+            ) {
+            }
         }
 
         impl Drop for DropCheckStore {
@@ -333,8 +374,12 @@ mod fast_slow_store_tests {
 
         let fast_slow_store = Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
-                fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
-                slow: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+                fast: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
+                slow: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
             },
             fast_store,
             slow_store,
@@ -370,12 +415,20 @@ mod fast_slow_store_tests {
 
     #[tokio::test]
     async fn ignore_value_in_fast_store() -> Result<(), Error> {
-        let fast_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
-        let slow_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let fast_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
+        let slow_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let fast_slow_store = Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
-                fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
-                slow: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+                fast: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
+                slow: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
             },
             fast_store.clone(),
             slow_store,
@@ -385,7 +438,10 @@ mod fast_slow_store_tests {
             .update_oneshot(digest, make_random_data(100).into())
             .await?;
         assert!(
-            Pin::new(fast_slow_store.as_ref()).has(digest).await?.is_none(),
+            Pin::new(fast_slow_store.as_ref())
+                .has(digest)
+                .await?
+                .is_none(),
             "Expected data to not exist in store"
         );
         Ok(())
@@ -394,10 +450,14 @@ mod fast_slow_store_tests {
     // Regression test for https://github.com/TraceMachina/nativelink/issues/665
     #[tokio::test]
     async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
-        let fast_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let fast_store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let slow_store = Arc::new(NoopStore::new());
         let fast_slow_store_config = nativelink_config::stores::FastSlowStore {
-            fast: nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+            fast: nativelink_config::stores::StoreConfig::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
             slow: nativelink_config::stores::StoreConfig::noop,
         };
         let fast_slow_store = Arc::new(FastSlowStore::new(

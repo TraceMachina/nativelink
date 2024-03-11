@@ -32,12 +32,18 @@ pub struct ShardStore {
 }
 
 impl ShardStore {
-    pub fn new(config: &nativelink_config::stores::ShardStore, stores: Vec<Arc<dyn Store>>) -> Result<Self, Error> {
+    pub fn new(
+        config: &nativelink_config::stores::ShardStore,
+        stores: Vec<Arc<dyn Store>>,
+    ) -> Result<Self, Error> {
         error_if!(
             config.stores.len() != stores.len(),
             "Config shards do not match stores length"
         );
-        error_if!(config.stores.is_empty(), "ShardStore must have at least one store");
+        error_if!(
+            config.stores.is_empty(),
+            "ShardStore must have at least one store"
+        );
         let total_weight: u64 = config
             .stores
             .iter()
@@ -46,7 +52,9 @@ impl ShardStore {
         let mut weights: Vec<u32> = config
             .stores
             .iter()
-            .map(|shard_config| (u32::MAX as u64 * shard_config.weight.unwrap_or(1) as u64 / total_weight) as u32)
+            .map(|shard_config| {
+                (u32::MAX as u64 * shard_config.weight.unwrap_or(1) as u64 / total_weight) as u32
+            })
             .scan(0, |state, weight| {
                 *state += weight;
                 Some(*state)
@@ -68,14 +76,30 @@ impl ShardStore {
         //     TryFrom returning.
         let size_bytes = digest.size_bytes.to_le_bytes();
         let key: u32 = 0
-            .bitxor(u32::from_le_bytes(digest.packed_hash[0..4].try_into().unwrap()))
-            .bitxor(u32::from_le_bytes(digest.packed_hash[4..8].try_into().unwrap()))
-            .bitxor(u32::from_le_bytes(digest.packed_hash[8..12].try_into().unwrap()))
-            .bitxor(u32::from_le_bytes(digest.packed_hash[12..16].try_into().unwrap()))
-            .bitxor(u32::from_le_bytes(digest.packed_hash[16..20].try_into().unwrap()))
-            .bitxor(u32::from_le_bytes(digest.packed_hash[20..24].try_into().unwrap()))
-            .bitxor(u32::from_le_bytes(digest.packed_hash[24..28].try_into().unwrap()))
-            .bitxor(u32::from_le_bytes(digest.packed_hash[28..32].try_into().unwrap()))
+            .bitxor(u32::from_le_bytes(
+                digest.packed_hash[0..4].try_into().unwrap(),
+            ))
+            .bitxor(u32::from_le_bytes(
+                digest.packed_hash[4..8].try_into().unwrap(),
+            ))
+            .bitxor(u32::from_le_bytes(
+                digest.packed_hash[8..12].try_into().unwrap(),
+            ))
+            .bitxor(u32::from_le_bytes(
+                digest.packed_hash[12..16].try_into().unwrap(),
+            ))
+            .bitxor(u32::from_le_bytes(
+                digest.packed_hash[16..20].try_into().unwrap(),
+            ))
+            .bitxor(u32::from_le_bytes(
+                digest.packed_hash[20..24].try_into().unwrap(),
+            ))
+            .bitxor(u32::from_le_bytes(
+                digest.packed_hash[24..28].try_into().unwrap(),
+            ))
+            .bitxor(u32::from_le_bytes(
+                digest.packed_hash[28..32].try_into().unwrap(),
+            ))
             .bitxor(u32::from_le_bytes(size_bytes[0..4].try_into().unwrap()))
             .bitxor(u32::from_le_bytes(size_bytes[4..8].try_into().unwrap()));
         self.weights_and_stores
@@ -194,7 +218,10 @@ impl Store for ShardStore {
             return self;
         };
         let index = self.get_store_index(&digest);
-        self.weights_and_stores[index].1.clone().inner_store_arc(Some(digest))
+        self.weights_and_stores[index]
+            .1
+            .clone()
+            .inner_store_arc(Some(digest))
     }
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {

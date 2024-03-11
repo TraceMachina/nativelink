@@ -84,7 +84,11 @@ impl MockWorkerApiClient {
         result: Result<Response<Streaming<UpdateForWorker>>, Status>,
     ) -> SupportedProperties {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
+        let req = match rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
             WorkerClientApiCalls::ConnectWorker(req) => req,
             req @ WorkerClientApiCalls::ExecutionResponse(_) => {
                 panic!("expect_connect_worker expected ConnectWorker, got : {req:?}")
@@ -96,9 +100,16 @@ impl MockWorkerApiClient {
         req
     }
 
-    pub async fn expect_execution_response(&mut self, result: Result<Response<()>, Status>) -> ExecuteResult {
+    pub async fn expect_execution_response(
+        &mut self,
+        result: Result<Response<()>, Status>,
+    ) -> ExecuteResult {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let req = match rx_call_lock.recv().await.expect("Could not receive msg in mpsc") {
+        let req = match rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
             WorkerClientApiCalls::ExecutionResponse(req) => req,
             req @ WorkerClientApiCalls::ConnectWorker(_) => {
                 panic!("expect_execution_response expected ExecutionResponse, got : {req:?}")
@@ -121,7 +132,11 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             .send(WorkerClientApiCalls::ConnectWorker(request))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
-        match rx_resp_lock.recv().await.expect("Could not receive msg in mpsc") {
+        match rx_resp_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
             WorkerClientApiReturns::ConnectWorker(result) => result,
             resp @ WorkerClientApiReturns::ExecutionResponse(_) => {
                 panic!("connect_worker expected ConnectWorker response, received {resp:?}")
@@ -142,7 +157,11 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             .send(WorkerClientApiCalls::ExecutionResponse(request))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
-        match rx_resp_lock.recv().await.expect("Could not receive msg in mpsc") {
+        match rx_resp_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
             WorkerClientApiReturns::ExecutionResponse(result) => result,
             resp @ WorkerClientApiReturns::ConnectWorker(_) => {
                 panic!("execution_response expected ExecutionResponse response, received {resp:?}")
@@ -155,7 +174,8 @@ pub fn setup_grpc_stream() -> (HyperSender, Response<Streaming<UpdateForWorker>>
     let (tx, body) = Body::channel();
     let mut codec = ProstCodec::<UpdateForWorker, UpdateForWorker>::default();
     // Note: This is an undocumented function.
-    let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+    let stream =
+        Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
     (tx, Response::new(stream))
 }
 
@@ -186,7 +206,9 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
     }
 }
 
-pub async fn setup_local_worker(platform_properties: HashMap<String, WorkerProperty>) -> TestContext {
+pub async fn setup_local_worker(
+    platform_properties: HashMap<String, WorkerProperty>,
+) -> TestContext {
     const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
     let local_worker_config = LocalWorkerConfig {
         platform_properties,

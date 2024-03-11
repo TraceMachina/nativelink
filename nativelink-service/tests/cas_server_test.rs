@@ -38,7 +38,9 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+            &nativelink_config::stores::StoreConfig::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
             &store_manager,
             Some(&mut <Registry>::default()),
             None,
@@ -160,7 +162,8 @@ mod find_missing_blobs {
 #[cfg(test)]
 mod batch_update_blobs {
     use nativelink_proto::build::bazel::remote::execution::v2::{
-        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
+        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest,
+        BatchUpdateBlobsResponse,
     };
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
@@ -235,7 +238,8 @@ mod batch_read_blobs {
     use super::*;
 
     #[tokio::test]
-    async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dyn std::error::Error>> {
+    async fn batch_read_blobs_read_two_blobs_success_one_fail(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -323,15 +327,16 @@ mod batch_read_blobs {
 #[cfg(test)]
 mod end_to_end {
     use nativelink_proto::build::bazel::remote::execution::v2::{
-        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
-        FindMissingBlobsRequest,
+        batch_update_blobs_request, batch_update_blobs_response, BatchUpdateBlobsRequest,
+        BatchUpdateBlobsResponse, FindMissingBlobsRequest,
     };
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use super::*;
 
     #[tokio::test]
-    async fn batch_update_blobs_two_items_existence_with_third_missing() -> Result<(), Box<dyn std::error::Error>> {
+    async fn batch_update_blobs_two_items_existence_with_third_missing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
 

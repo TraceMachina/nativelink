@@ -97,22 +97,30 @@ mod evicting_map_tests {
             .await;
 
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+                .await,
             None,
             "Expected map to not have item 1"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+                .await,
             Some(0),
             "Expected map to have item 2"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH3, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+                .await,
             Some(0),
             "Expected map to have item 3"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH4, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
+                .await,
             Some(0),
             "Expected map to have item 4"
         );
@@ -146,22 +154,30 @@ mod evicting_map_tests {
             .await;
 
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+                .await,
             None,
             "Expected map to not have item 1"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+                .await,
             None,
             "Expected map to not have item 2"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH3, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+                .await,
             Some(DATA.len()),
             "Expected map to have item 3"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH4, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
+                .await,
             Some(DATA.len()),
             "Expected map to have item 4"
         );
@@ -195,22 +211,30 @@ mod evicting_map_tests {
             .await;
 
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+                .await,
             None,
             "Expected map to not have item 1"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+                .await,
             None,
             "Expected map to not have item 2"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH3, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+                .await,
             None,
             "Expected map to not have item 3"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH4, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
+                .await,
             Some(DATA.len()),
             "Expected map to have item 4"
         );
@@ -248,22 +272,30 @@ mod evicting_map_tests {
             .await;
 
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+                .await,
             None,
             "Expected map to not have item 1"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+                .await,
             Some(DATA.len()),
             "Expected map to have item 2"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH3, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+                .await,
             Some(DATA.len()),
             "Expected map to have item 3"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH4, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH4, 0)?)
+                .await,
             Some(DATA.len()),
             "Expected map to have item 4"
         );
@@ -299,17 +331,23 @@ mod evicting_map_tests {
             .await; // This will trigger an eviction.
 
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+                .await,
             None,
             "Expected map to not have item 1"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+                .await,
             None,
             "Expected map to not have item 2"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH3, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+                .await,
             Some(DATA.len()),
             "Expected map to have item 3"
         );
@@ -378,7 +416,10 @@ mod evicting_map_tests {
             (entry1, entry2)
         };
 
-        let existing_entry = evicting_map.get(&DigestInfo::try_new(HASH1, 0)?).await.unwrap();
+        let existing_entry = evicting_map
+            .get(&DigestInfo::try_new(HASH1, 0)?)
+            .await
+            .unwrap();
         assert_eq!(existing_entry.data, DATA2);
 
         assert!(entry1.unref_called.load(Ordering::Relaxed));
@@ -408,24 +449,32 @@ mod evicting_map_tests {
             .insert(DigestInfo::try_new(HASH2, 0)?, Bytes::from(DATA).into())
             .await;
         MockClock::advance(Duration::from_secs(2));
-        evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await; // HASH1 should now be last to be evicted.
+        evicting_map
+            .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+            .await; // HASH1 should now be last to be evicted.
         MockClock::advance(Duration::from_secs(2));
         evicting_map
             .insert(DigestInfo::try_new(HASH3, 0)?, Bytes::from(DATA).into())
             .await; // This will trigger an eviction.
 
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+                .await,
             None,
             "Expected map to not have item 1"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH2, 0)?)
+                .await,
             None,
             "Expected map to not have item 2"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH3, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH3, 0)?)
+                .await,
             Some(8),
             "Expected map to have item 3"
         );
@@ -454,18 +503,34 @@ mod evicting_map_tests {
             .insert(DigestInfo::try_new(HASH1, 1)?, value2.clone())
             .await;
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+                .await,
             Some(value1.len()),
             "HASH1/0 should exist"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 1)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH1, 1)?)
+                .await,
             Some(value2.len()),
             "HASH1/1 should exist"
         );
 
-        assert_eq!(evicting_map.get(&DigestInfo::try_new(HASH1, 0)?).await.unwrap(), value1);
-        assert_eq!(evicting_map.get(&DigestInfo::try_new(HASH1, 1)?).await.unwrap(), value2);
+        assert_eq!(
+            evicting_map
+                .get(&DigestInfo::try_new(HASH1, 0)?)
+                .await
+                .unwrap(),
+            value1
+        );
+        assert_eq!(
+            evicting_map
+                .get(&DigestInfo::try_new(HASH1, 1)?)
+                .await
+                .unwrap(),
+            value2
+        );
 
         Ok(())
     }
@@ -501,17 +566,23 @@ mod evicting_map_tests {
                 .await;
 
             assert_eq!(
-                evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+                evicting_map
+                    .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+                    .await,
                 Some(value1.len()),
                 "HASH1/0 should exist"
             );
             assert_eq!(
-                evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 1)?).await,
+                evicting_map
+                    .size_for_key(&DigestInfo::try_new(HASH2, 1)?)
+                    .await,
                 Some(value2.len()),
                 "HASH2/1 should exist"
             );
             assert_eq!(
-                evicting_map.size_for_key(&DigestInfo::try_new(HASH3, 3)?).await,
+                evicting_map
+                    .size_for_key(&DigestInfo::try_new(HASH3, 3)?)
+                    .await,
                 Some(value3.len()),
                 "HASH3/1 should exist"
             );
@@ -525,17 +596,23 @@ mod evicting_map_tests {
         // Data should now have the previously inserted data, but not the newly inserted data
         // that was inserted after the `build_lru_index` call.
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH1, 0)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
+                .await,
             Some(value1.len()),
             "HASH1/0 should exist"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH2, 1)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH2, 1)?)
+                .await,
             Some(value2.len()),
             "HASH2/1 should exist"
         );
         assert_eq!(
-            evicting_map.size_for_key(&DigestInfo::try_new(HASH3, 3)?).await,
+            evicting_map
+                .size_for_key(&DigestInfo::try_new(HASH3, 3)?)
+                .await,
             None,
             "HASH3/2 should be empty"
         );
@@ -557,10 +634,15 @@ mod evicting_map_tests {
 
         const DATA: &str = "12345678";
         let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
-        evicting_map.insert(digest_info1, Bytes::from(DATA).into()).await;
+        evicting_map
+            .insert(digest_info1, Bytes::from(DATA).into())
+            .await;
 
         // Getting from map before time has expired should return the value.
-        assert_eq!(evicting_map.get(&digest_info1).await, Some(Bytes::from(DATA).into()));
+        assert_eq!(
+            evicting_map.get(&digest_info1).await,
+            Some(Bytes::from(DATA).into())
+        );
 
         MockClock::advance(Duration::from_secs(10));
 
@@ -584,10 +666,14 @@ mod evicting_map_tests {
 
         const DATA: &str = "12345678";
         let digest_info1: DigestInfo = DigestInfo::try_new(HASH1, 0)?;
-        evicting_map.insert(digest_info1, Bytes::from(DATA).into()).await;
+        evicting_map
+            .insert(digest_info1, Bytes::from(DATA).into())
+            .await;
 
         let digest_info2: DigestInfo = DigestInfo::try_new(HASH2, 0)?;
-        evicting_map.insert(digest_info2, Bytes::from(DATA).into()).await;
+        evicting_map
+            .insert(digest_info2, Bytes::from(DATA).into())
+            .await;
 
         // Removing digest before time has expired should return true.
         assert!(evicting_map.remove(&digest_info2).await);

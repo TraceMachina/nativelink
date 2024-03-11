@@ -41,7 +41,9 @@ pub async fn get_and_decode_digest<T: Message + Default>(
     store: Pin<&dyn Store>,
     digest: &DigestInfo,
 ) -> Result<T, Error> {
-    get_size_and_decode_digest(store, digest).map_ok(|(v, _)| v).await
+    get_size_and_decode_digest(store, digest)
+        .map_ok(|(v, _)| v)
+        .await
 }
 
 /// Attempts to fetch the digest contents from a store into the associated proto.
@@ -50,7 +52,12 @@ pub async fn get_size_and_decode_digest<T: Message + Default>(
     digest: &DigestInfo,
 ) -> Result<(T, usize), Error> {
     let mut store_data_resp = store
-        .get_part_unchunked(*digest, 0, Some(MAX_ACTION_MSG_SIZE), Some(ESTIMATED_DIGEST_SIZE))
+        .get_part_unchunked(
+            *digest,
+            0,
+            Some(MAX_ACTION_MSG_SIZE),
+            Some(ESTIMATED_DIGEST_SIZE),
+        )
         .await;
     if let Err(err) = &mut store_data_resp {
         if err.code == Code::NotFound {
@@ -64,7 +71,12 @@ pub async fn get_size_and_decode_digest<T: Message + Default>(
     let store_data_len = store_data.len();
 
     T::decode(store_data)
-        .err_tip_with_code(|e| (Code::NotFound, format!("Stored value appears to be corrupt: {}", e)))
+        .err_tip_with_code(|e| {
+            (
+                Code::NotFound,
+                format!("Stored value appears to be corrupt: {}", e),
+            )
+        })
         .map(|v| (v, store_data_len))
 }
 
@@ -88,7 +100,8 @@ pub async fn serialize_and_upload_message<'a, T: Message>(
     hasher: &mut impl DigestHasher,
 ) -> Result<DigestInfo, Error> {
     let mut buffer = BytesMut::with_capacity(message.encoded_len());
-    let digest = message_to_digest(message, &mut buffer, hasher).err_tip(|| "In serialize_and_upload_message")?;
+    let digest = message_to_digest(message, &mut buffer, hasher)
+        .err_tip(|| "In serialize_and_upload_message")?;
     cas_store
         .update_oneshot(digest, buffer.freeze())
         .await
