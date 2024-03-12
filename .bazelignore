@@ -1,5 +1,7 @@
 .cache
 .config
+.direnv
+.devenv
 bazel-bin
 bazel-out
 bazel-remote-bin
