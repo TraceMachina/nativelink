@@ -45,7 +45,9 @@ pub trait InstantWrapper: 'static {
 
 impl InstantWrapper for SystemTime {
     fn from_secs(secs: u64) -> SystemTime {
-        SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)).unwrap()
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(secs))
+            .unwrap()
     }
 
     fn unix_timestamp(&self) -> u64 {
@@ -198,12 +200,18 @@ where
             anchor_time: self.anchor_time.unix_timestamp(),
         };
         for (digest, eviction_item) in state.lru.iter() {
-            serialized_lru.data.push((*digest, eviction_item.seconds_since_anchor));
+            serialized_lru
+                .data
+                .push((*digest, eviction_item.seconds_since_anchor));
         }
         serialized_lru
     }
 
-    pub async fn restore_lru(&mut self, seiralized_lru: SerializedLRU, entry_builder: impl Fn(&DigestInfo) -> T) {
+    pub async fn restore_lru(
+        &mut self,
+        seiralized_lru: SerializedLRU,
+        entry_builder: impl Fn(&DigestInfo) -> T,
+    ) {
         let mut state = self.state.lock().await;
         self.anchor_time = I::from_secs(seiralized_lru.anchor_time);
         state.lru.clear();
@@ -221,11 +229,19 @@ where
         self.evict_items(state.deref_mut()).await;
     }
 
-    fn should_evict(&self, lru_len: usize, peek_entry: &EvictionItem<T>, sum_store_size: u64, max_bytes: u64) -> bool {
+    fn should_evict(
+        &self,
+        lru_len: usize,
+        peek_entry: &EvictionItem<T>,
+        sum_store_size: u64,
+        max_bytes: u64,
+    ) -> bool {
         let is_over_size = max_bytes != 0 && sum_store_size >= max_bytes;
 
-        let evict_older_than_seconds = (self.anchor_time.elapsed().as_secs() as i32) - self.max_seconds;
-        let old_item_exists = self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
+        let evict_older_than_seconds =
+            (self.anchor_time.elapsed().as_secs() as i32) - self.max_seconds;
+        let old_item_exists =
+            self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
 
         let is_over_count = self.max_count != 0 && (lru_len as u64) > self.max_count;
 
@@ -239,8 +255,12 @@ where
 
         let max_bytes = if self.max_bytes != 0
             && self.evict_bytes != 0
-            && self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, self.max_bytes)
-        {
+            && self.should_evict(
+                state.lru.len(),
+                peek_entry,
+                state.sum_store_size,
+                self.max_bytes,
+            ) {
             if self.max_bytes > self.evict_bytes {
                 self.max_bytes - self.evict_bytes
             } else {
@@ -251,7 +271,10 @@ where
         };
 
         while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
-            let (key, eviction_item) = state.lru.pop_lru().expect("Tried to peek() then pop() but failed");
+            let (key, eviction_item) = state
+                .lru
+                .pop_lru()
+                .expect("Tried to peek() then pop() but failed");
             info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.hash_str());
             state.remove(&eviction_item, false).await;
 
@@ -329,7 +352,10 @@ where
                 .zip(digests.iter())
                 .filter_map(|((data, result), digest)| Some((data?, result, digest)))
                 .map(|(data, result, digest)| async move {
-                    *result = self.touch_or_remove(digest, data).await.map(|data| data.len());
+                    *result = self
+                        .touch_or_remove(digest, data)
+                        .await
+                        .map(|data| data.len());
                 })
                 .collect::<FuturesUnordered<_>>()
                 .for_each(|_| future::ready(())),
@@ -362,7 +388,12 @@ where
     }
 
     /// Returns the replaced item if any.
-    pub async fn insert_with_time(&self, digest: DigestInfo, data: T, seconds_since_anchor: i32) -> Option<T> {
+    pub async fn insert_with_time(
+        &self,
+        digest: DigestInfo,
+        data: T,
+        seconds_since_anchor: i32,
+    ) -> Option<T> {
         let mut state = self.state.lock().await;
         let results = self
             .inner_insert_many(&mut state, [(digest, data)], seconds_since_anchor)
@@ -438,7 +469,11 @@ where
 
 impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T, I> {
     fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish("max_bytes", &self.max_bytes, "Maximum size of the store in bytes");
+        c.publish(
+            "max_bytes",
+            &self.max_bytes,
+            "Maximum size of the store in bytes",
+        );
         c.publish(
             "evict_bytes",
             &self.evict_bytes,
@@ -466,13 +501,19 @@ impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T,
                 &state.sum_store_size,
                 "Total size of all items in the store",
             );
-            c.publish("items_in_store_total", &state.lru.len(), "Number of items in the store");
+            c.publish(
+                "items_in_store_total",
+                &state.lru.len(),
+                "Number of items in the store",
+            );
             c.publish(
                 "oldest_item_timestamp",
                 &state
                     .lru
                     .peek_lru()
-                    .map(|(_, v)| self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64)
+                    .map(|(_, v)| {
+                        self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64
+                    })
                     .unwrap_or(-1),
                 "Timestamp of the oldest item in the store",
             );
@@ -482,7 +523,9 @@ impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T,
                     .lru
                     .iter()
                     .next()
-                    .map(|(_, v)| self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64)
+                    .map(|(_, v)| {
+                        self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64
+                    })
                     .unwrap_or(-1),
                 "Timestamp of the newest item in the store",
             );

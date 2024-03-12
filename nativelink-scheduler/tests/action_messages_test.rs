@@ -148,7 +148,11 @@ mod action_messages_tests {
 
         assert_eq!(
             vec![high_priority_action, lowest_priority_action],
-            action_set.iter().rev().cloned().collect::<Vec<Arc<ActionInfo>>>()
+            action_set
+                .iter()
+                .rev()
+                .cloned()
+                .collect::<Vec<Arc<ActionInfo>>>()
         );
 
         Ok(())
@@ -200,7 +204,11 @@ mod action_messages_tests {
 
         assert_eq!(
             vec![first_action, current_action],
-            action_set.iter().rev().cloned().collect::<Vec<Arc<ActionInfo>>>()
+            action_set
+                .iter()
+                .rev()
+                .cloned()
+                .collect::<Vec<Arc<ActionInfo>>>()
         );
 
         Ok(())

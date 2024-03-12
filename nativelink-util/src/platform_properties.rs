@@ -55,7 +55,10 @@ impl From<ProtoPlatform> for PlatformProperties {
     fn from(platform: ProtoPlatform) -> Self {
         let mut properties = HashMap::with_capacity(platform.properties.len());
         for property in platform.properties {
-            properties.insert(property.name, PlatformPropertyValue::Unknown(property.value));
+            properties.insert(
+                property.name,
+                PlatformPropertyValue::Unknown(property.value),
+            );
         }
         Self { properties }
     }

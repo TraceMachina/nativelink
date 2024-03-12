@@ -24,7 +24,9 @@ use bytes::{Buf, BufMut, BytesMut};
 use futures::future::FutureExt;
 use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::buf_channel::{
+    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+};
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::Registry;
@@ -171,7 +173,12 @@ impl UploadState {
             upload_size,
         };
         let footer = Footer {
-            indexes: vec![SliceIndex { ..Default::default() }; max_index_count],
+            indexes: vec![
+                SliceIndex {
+                    ..Default::default()
+                };
+                max_index_count
+            ],
             index_count: max_index_count as u32,
             uncompressed_data_size: 0, // Updated later.
             config: header.config,
@@ -184,7 +191,8 @@ impl UploadState {
         let max_output_size = {
             let header_size = store.bincode_options.serialized_size(&header).unwrap() as usize;
             let max_content_size = max_block_size * max_index_count;
-            let max_footer_size = U32_SZ + 1 + store.bincode_options.serialized_size(&footer).unwrap() as usize;
+            let max_footer_size =
+                U32_SZ + 1 + store.bincode_options.serialized_size(&footer).unwrap() as usize;
             header_size + max_content_size + max_footer_size
         };
 
@@ -256,16 +264,22 @@ impl Store for CompressionStore {
         let inner_store = self.inner_store.clone();
         let update_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
             Pin::new(inner_store.as_ref())
-                .update(digest, rx, UploadSizeInfo::MaxSize(output_state.max_output_size))
+                .update(
+                    digest,
+                    rx,
+                    UploadSizeInfo::MaxSize(output_state.max_output_size),
+                )
                 .await
                 .err_tip(|| "Inner store update in compression store failed")
         }))
-        .map(
-            |result| match result.err_tip(|| "Failed to run compression update spawn") {
-                Ok(inner_result) => inner_result.err_tip(|| "Compression underlying store update failed"),
+        .map(|result| {
+            match result.err_tip(|| "Failed to run compression update spawn") {
+                Ok(inner_result) => {
+                    inner_result.err_tip(|| "Compression underlying store update failed")
+                }
                 Err(e) => Err(e),
-            },
-        );
+            }
+        });
 
         let write_fut = async move {
             {
@@ -273,7 +287,9 @@ impl Store for CompressionStore {
                 let serialized_header = self
                     .bincode_options
                     .serialize(&output_state.header)
-                    .map_err(|e| make_err!(Code::Internal, "Failed to serialize header : {:?}", e))?;
+                    .map_err(|e| {
+                        make_err!(Code::Internal, "Failed to serialize header : {:?}", e)
+                    })?;
                 tx.send(serialized_header.into())
                     .await
                     .err_tip(|| "Failed to write compression header on upload")?;
@@ -304,7 +320,10 @@ impl Store for CompressionStore {
                 // For efficiency reasons we do some raw slice manipulation so we can write directly
                 // into our buffer instead of having to do another allocation.
                 let raw_compressed_data = unsafe {
-                    std::slice::from_raw_parts_mut(compressed_data_buf.chunk_mut().as_mut_ptr(), max_output_size)
+                    std::slice::from_raw_parts_mut(
+                        compressed_data_buf.chunk_mut().as_mut_ptr(),
+                        max_output_size,
+                    )
                 };
 
                 let compressed_data_sz = compress_into(&chunk, raw_compressed_data)
@@ -333,10 +352,12 @@ impl Store for CompressionStore {
             // Note: We need to be careful that if we don't have any data (zero bytes) it
             // doesn't go to -1.
             index_count = index_count.saturating_sub(1);
-            output_state
-                .footer
-                .indexes
-                .resize(index_count as usize, SliceIndex { ..Default::default() });
+            output_state.footer.indexes.resize(
+                index_count as usize,
+                SliceIndex {
+                    ..Default::default()
+                },
+            );
             output_state.footer.index_count = output_state.footer.indexes.len() as u32;
             output_state.footer.uncompressed_data_size = received_amt as u64;
             {
@@ -344,7 +365,9 @@ impl Store for CompressionStore {
                 let serialized_footer = self
                     .bincode_options
                     .serialize(&output_state.footer)
-                    .map_err(|e| make_err!(Code::Internal, "Failed to serialize header : {:?}", e))?;
+                    .map_err(|e| {
+                        make_err!(Code::Internal, "Failed to serialize header : {:?}", e)
+                    })?;
 
                 let mut footer = BytesMut::with_capacity(1 + 4 + serialized_footer.len());
                 footer.put_u8(FOOTER_FRAME_TYPE);
@@ -392,7 +415,9 @@ impl Store for CompressionStore {
         }))
         .map(
             |result| match result.err_tip(|| "Failed to run compression get spawn") {
-                Ok(inner_result) => inner_result.err_tip(|| "Compression underlying store get failed"),
+                Ok(inner_result) => {
+                    inner_result.err_tip(|| "Compression underlying store get failed")
+                }
                 Err(e) => Err(e),
             },
         );
@@ -418,7 +443,9 @@ impl Store for CompressionStore {
 
                 self.bincode_options
                     .deserialize::<Header>(&chunk)
-                    .map_err(|e| make_err!(Code::Internal, "Failed to deserialize header : {:?}", e))?
+                    .map_err(|e| {
+                        make_err!(Code::Internal, "Failed to deserialize header : {:?}", e)
+                    })?
             };
 
             error_if!(
@@ -468,26 +495,34 @@ impl Store for CompressionStore {
                     ));
                 }
                 {
-                    let max_output_size = get_maximum_output_size(header.config.block_size as usize);
+                    let max_output_size =
+                        get_maximum_output_size(header.config.block_size as usize);
                     let mut uncompressed_data = BytesMut::with_capacity(max_output_size);
 
                     // For efficiency reasons we do some raw slice manipulation so we can write directly
                     // into our buffer instead of having to do another allocation.
                     let raw_decompressed_data = unsafe {
-                        std::slice::from_raw_parts_mut(uncompressed_data.chunk_mut().as_mut_ptr(), max_output_size)
+                        std::slice::from_raw_parts_mut(
+                            uncompressed_data.chunk_mut().as_mut_ptr(),
+                            max_output_size,
+                        )
                     };
 
                     let uncompressed_chunk_sz = decompress_into(&chunk, raw_decompressed_data)
                         .map_err(|e| make_err!(Code::Internal, "Decompression error {:?}", e))?;
                     unsafe { uncompressed_data.advance_mut(uncompressed_chunk_sz) };
-                    let new_uncompressed_data_sz = uncompressed_data_sz + uncompressed_chunk_sz as u64;
+                    let new_uncompressed_data_sz =
+                        uncompressed_data_sz + uncompressed_chunk_sz as u64;
                     if new_uncompressed_data_sz >= offset && remaining_bytes_to_send > 0 {
                         let start_pos = if offset <= uncompressed_data_sz {
                             0
                         } else {
                             offset - uncompressed_data_sz
                         } as usize;
-                        let end_pos = cmp::min(start_pos + remaining_bytes_to_send as usize, uncompressed_chunk_sz);
+                        let end_pos = cmp::min(
+                            start_pos + remaining_bytes_to_send as usize,
+                            uncompressed_chunk_sz,
+                        );
                         if end_pos != start_pos {
                             // Make sure we don't send an EOF by accident.
                             writer
@@ -529,7 +564,9 @@ impl Store for CompressionStore {
                 let footer = self
                     .bincode_options
                     .deserialize::<Footer>(&chunk)
-                    .map_err(|e| make_err!(Code::Internal, "Failed to deserialize footer : {:?}", e))?;
+                    .map_err(|e| {
+                        make_err!(Code::Internal, "Failed to deserialize footer : {:?}", e)
+                    })?;
 
                 error_if!(
                     header.version != footer.version,
@@ -596,7 +633,9 @@ impl Store for CompressionStore {
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
-        self.inner_store.clone().register_metrics(inner_store_registry);
+        self.inner_store
+            .clone()
+            .register_metrics(inner_store_registry);
     }
 }
 

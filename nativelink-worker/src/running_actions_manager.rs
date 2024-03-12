@@ -32,13 +32,18 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use filetime::{set_file_mtime, FileTime};
 use formatx::Template;
-use futures::future::{try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt};
+use futures::future::{
+    try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt,
+};
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
-use nativelink_config::cas_server::{EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy};
+use nativelink_config::cas_server::{
+    EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
+};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    Action, ActionResult as ProtoActionResult, Command as ProtoCommand, Directory as ProtoDirectory, Directory,
-    DirectoryNode, ExecuteResponse, FileNode, SymlinkNode, Tree as ProtoTree, UpdateActionResultRequest,
+    Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
+    Directory as ProtoDirectory, Directory, DirectoryNode, ExecuteResponse, FileNode, SymlinkNode,
+    Tree as ProtoTree, UpdateActionResultRequest,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     HistoricalExecuteResponse, StartExecute,
@@ -50,11 +55,14 @@ use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
+    to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo,
+    NameOrPath, SymlinkInfo,
 };
 use nativelink_util::common::{fs, DigestInfo, JoinHandleDropGuard};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::metrics_utils::{AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent};
+use nativelink_util::metrics_utils::{
+    AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent,
+};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use parking_lot::Mutex;
 use prost::Message;
@@ -80,7 +88,8 @@ const EXIT_CODE_FOR_SIGNAL: i32 = 9;
 /// Default strategy for uploading historical results.
 /// Note: If this value changes the config documentation
 /// should reflect it.
-const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy = UploadCacheResultsStrategy::failures_only;
+const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
+    UploadCacheResultsStrategy::failures_only;
 
 /// Valid string reasons for a failure.
 /// Note: If these change, the documentation should be updated.
@@ -149,20 +158,33 @@ pub fn download_to_directory<'a>(
                         file_entry
                             .get_file_path_locked(|src| fs::hard_link(src, &dest))
                             .await
-                            .map_err(|e| make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}"))?;
+                            .map_err(|e| {
+                                make_err!(Code::Internal, "Could not make hardlink, {e:?} : {dest}")
+                            })?;
                         #[cfg(target_family = "unix")]
                         if let Some(unix_mode) = unix_mode {
                             fs::set_permissions(&dest, Permissions::from_mode(unix_mode))
                                 .await
-                                .err_tip(|| format!("Could not set unix mode in download_to_directory {dest}"))?;
+                                .err_tip(|| {
+                                    format!(
+                                        "Could not set unix mode in download_to_directory {dest}"
+                                    )
+                                })?;
                         }
                         if let Some(mtime) = mtime {
                             spawn_blocking(move || {
-                                set_file_mtime(&dest, FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32))
-                                    .err_tip(|| format!("Failed to set mtime in download_to_directory {dest}"))
+                                set_file_mtime(
+                                    &dest,
+                                    FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
+                                )
+                                .err_tip(|| {
+                                    format!("Failed to set mtime in download_to_directory {dest}")
+                                })
                             })
                             .await
-                            .err_tip(|| "Failed to launch spawn_blocking in download_to_directory")??;
+                            .err_tip(|| {
+                                "Failed to launch spawn_blocking in download_to_directory"
+                            })??;
                         }
                         Ok(())
                     })
@@ -183,9 +205,14 @@ pub fn download_to_directory<'a>(
                     fs::create_dir(&new_directory_path)
                         .await
                         .err_tip(|| format!("Could not create directory {new_directory_path}"))?;
-                    download_to_directory(cas_store, filesystem_store, &digest, &new_directory_path)
-                        .await
-                        .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
+                    download_to_directory(
+                        cas_store,
+                        filesystem_store,
+                        &digest,
+                        &new_directory_path,
+                    )
+                    .await
+                    .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
                     Ok(())
                 }
                 .boxed(),
@@ -197,9 +224,12 @@ pub fn download_to_directory<'a>(
             let dest = format!("{}/{}", current_directory, symlink_node.name);
             futures.push(
                 async move {
-                    fs::symlink(&symlink_node.target, &dest)
-                        .await
-                        .err_tip(|| format!("Could not create symlink {} -> {}", symlink_node.target, dest))?;
+                    fs::symlink(&symlink_node.target, &dest).await.err_tip(|| {
+                        format!(
+                            "Could not create symlink {} -> {}",
+                            symlink_node.target, dest
+                        )
+                    })?;
                     Ok(())
                 }
                 .boxed(),
@@ -232,10 +262,9 @@ async fn upload_file(
     hasher: DigestHasherFunc,
 ) -> Result<FileInfo, Error> {
     let (is_executable, file_size) = {
-        let file_handle = resumeable_file
-            .as_reader()
-            .await
-            .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?;
+        let file_handle = resumeable_file.as_reader().await.err_tip(|| {
+            "Could not get reader from file slot in RunningActionsManager::upload_file()"
+        })?;
         let metadata = file_handle
             .get_ref()
             .as_ref()
@@ -249,12 +278,16 @@ async fn upload_file(
             .hasher()
             .digest_for_file(resumeable_file, Some(file_size))
             .await
-            .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
+            .err_tip(|| {
+                format!("Failed to hash file in digest_for_file failed for {full_path:?}")
+            })?;
 
         resumeable_file
             .as_reader()
             .await
-            .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?
+            .err_tip(|| {
+                "Could not get reader from file slot in RunningActionsManager::upload_file()"
+            })?
             .get_mut()
             .rewind()
             .await
@@ -275,7 +308,13 @@ async fn upload_file(
         .file_name()
         .err_tip(|| format!("Expected file_name to exist on {full_path:?}"))?
         .to_str()
-        .err_tip(|| make_err!(Code::Internal, "Could not convert {:?} to string", full_path))?
+        .err_tip(|| {
+            make_err!(
+                Code::Internal,
+                "Could not convert {:?} to string",
+                full_path
+            )
+        })?
         .to_string();
 
     Ok(FileInfo {
@@ -306,7 +345,13 @@ async fn upload_symlink(
     } else {
         full_target_path
             .to_str()
-            .err_tip(|| make_err!(Code::Internal, "Could not convert '{:?}' to string", full_target_path))?
+            .err_tip(|| {
+                make_err!(
+                    Code::Internal,
+                    "Could not convert '{:?}' to string",
+                    full_target_path
+                )
+            })?
             .to_string()
     };
 
@@ -315,7 +360,13 @@ async fn upload_symlink(
         .file_name()
         .err_tip(|| format!("Expected file_name to exist on {full_path:?}"))?
         .to_str()
-        .err_tip(|| make_err!(Code::Internal, "Could not convert {:?} to string", full_path))?
+        .err_tip(|| {
+            make_err!(
+                Code::Internal,
+                "Could not convert {:?} to string",
+                full_path
+            )
+        })?
         .to_string();
 
     Ok(SymlinkInfo {
@@ -361,16 +412,26 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                             .and_then(|(dir, all_dirs)| async move {
                                 let directory_name = full_path
                                     .file_name()
-                                    .err_tip(|| format!("Expected file_name to exist on {full_dir_path:?}"))?
+                                    .err_tip(|| {
+                                        format!("Expected file_name to exist on {full_dir_path:?}")
+                                    })?
                                     .to_str()
                                     .err_tip(|| {
-                                        make_err!(Code::Internal, "Could not convert {:?} to string", full_dir_path)
+                                        make_err!(
+                                            Code::Internal,
+                                            "Could not convert {:?} to string",
+                                            full_dir_path
+                                        )
                                     })?
                                     .to_string();
 
-                                let digest = serialize_and_upload_message(&dir, cas_store, &mut hasher.hasher())
-                                    .await
-                                    .err_tip(|| format!("for {full_path:?}"))?;
+                                let digest = serialize_and_upload_message(
+                                    &dir,
+                                    cas_store,
+                                    &mut hasher.hasher(),
+                                )
+                                .await
+                                .err_tip(|| format!("for {full_path:?}"))?;
 
                                 Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
                                     DirectoryNode {
@@ -384,15 +445,17 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                     );
                 } else if file_type.is_file() {
                     file_futures.push(async move {
-                        let file_handle = fs::open_file(full_path.as_os_str().to_os_string(), u64::MAX)
-                            .await
-                            .err_tip(|| format!("Could not open file {full_path:?}"))?;
+                        let file_handle =
+                            fs::open_file(full_path.as_os_str().to_os_string(), u64::MAX)
+                                .await
+                                .err_tip(|| format!("Could not open file {full_path:?}"))?;
                         upload_file(file_handle, cas_store, &full_path, hasher)
                             .map_ok(|v| v.into())
                             .await
                     });
                 } else if file_type.is_symlink() {
-                    symlink_futures.push(upload_symlink(full_path, &full_work_directory).map_ok(Into::into));
+                    symlink_futures
+                        .push(upload_symlink(full_path, &full_work_directory).map_ok(Into::into));
                 }
             }
         }
@@ -460,9 +523,12 @@ async fn process_side_channel_file(
             .err_tip(|| "Error reading side channel file")?;
     }
 
-    let side_channel_info: SideChannelInfo = serde_json5::from_str(&json_contents).map_err(|e| {
-        make_input_err!("Could not convert contents of side channel file (json) to SideChannelInfo : {e:?}")
-    })?;
+    let side_channel_info: SideChannelInfo =
+        serde_json5::from_str(&json_contents).map_err(|e| {
+            make_input_err!(
+                "Could not convert contents of side channel file (json) to SideChannelInfo : {e:?}"
+            )
+        })?;
     Ok(side_channel_info.failure.map(|failure| match failure {
         SideChannelFailureReason::timeout => Error::new(
             Code::DeadlineExceeded,
@@ -572,24 +638,32 @@ impl RunningActionImpl {
     async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         {
             let mut state = self.state.lock();
-            state.execution_metadata.input_fetch_start_timestamp = (self.running_actions_manager.callbacks.now_fn)();
+            state.execution_metadata.input_fetch_start_timestamp =
+                (self.running_actions_manager.callbacks.now_fn)();
         }
         let command = {
             // Download and build out our input files/folders. Also fetch and decode our Command.
             let cas_store_pin = Pin::new(self.running_actions_manager.cas_store.as_ref());
             let command_fut = self.metrics().get_proto_command_from_store.wrap(async {
-                get_and_decode_digest::<ProtoCommand>(cas_store_pin, &self.action_info.command_digest)
-                    .await
-                    .err_tip(|| "Converting command_digest to Command")
+                get_and_decode_digest::<ProtoCommand>(
+                    cas_store_pin,
+                    &self.action_info.command_digest,
+                )
+                .await
+                .err_tip(|| "Converting command_digest to Command")
             });
-            let filesystem_store_pin = Pin::new(self.running_actions_manager.filesystem_store.as_ref());
+            let filesystem_store_pin =
+                Pin::new(self.running_actions_manager.filesystem_store.as_ref());
             // Download the input files/folder and place them into the temp directory.
-            let download_to_directory_fut = self.metrics().download_to_directory.wrap(download_to_directory(
-                cas_store_pin,
-                filesystem_store_pin,
-                &self.action_info.input_root_digest,
-                &self.work_directory,
-            ));
+            let download_to_directory_fut =
+                self.metrics()
+                    .download_to_directory
+                    .wrap(download_to_directory(
+                        cas_store_pin,
+                        filesystem_store_pin,
+                        &self.action_info.input_root_digest,
+                        &self.work_directory,
+                    ));
             let (command, _) = try_join(command_fut, download_to_directory_fut).await?;
             command
         };
@@ -599,15 +673,21 @@ impl RunningActionImpl {
                 let full_output_path = if command.working_directory.is_empty() {
                     format!("{}/{}", self.work_directory, output_file)
                 } else {
-                    format!("{}/{}/{}", self.work_directory, command.working_directory, output_file)
+                    format!(
+                        "{}/{}/{}",
+                        self.work_directory, command.working_directory, output_file
+                    )
                 };
                 async move {
                     let full_parent_path = Path::new(&full_output_path)
                         .parent()
                         .err_tip(|| format!("Parent path for {full_output_path} has no parent"))?;
-                    fs::create_dir_all(full_parent_path)
-                        .await
-                        .err_tip(|| format!("Error creating output directory {} (file)", full_parent_path.display()))?;
+                    fs::create_dir_all(full_parent_path).await.err_tip(|| {
+                        format!(
+                            "Error creating output directory {} (file)",
+                            full_parent_path.display()
+                        )
+                    })?;
                     Result::<(), Error>::Ok(())
                 }
             };
@@ -637,7 +717,8 @@ impl RunningActionImpl {
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
-            state.execution_metadata.execution_start_timestamp = (self.running_actions_manager.callbacks.now_fn)();
+            state.execution_metadata.execution_start_timestamp =
+                (self.running_actions_manager.callbacks.now_fn)();
             (
                 state
                     .command_proto
@@ -654,14 +735,17 @@ impl RunningActionImpl {
         if command_proto.arguments.is_empty() {
             return Err(make_input_err!("No arguments provided in Command proto"));
         }
-        let args: Vec<&OsStr> =
-            if let Some(entrypoint) = &self.running_actions_manager.execution_configuration.entrypoint {
-                std::iter::once(entrypoint.as_ref())
-                    .chain(command_proto.arguments.iter().map(AsRef::as_ref))
-                    .collect()
-            } else {
-                command_proto.arguments.iter().map(AsRef::as_ref).collect()
-            };
+        let args: Vec<&OsStr> = if let Some(entrypoint) = &self
+            .running_actions_manager
+            .execution_configuration
+            .entrypoint
+        {
+            std::iter::once(entrypoint.as_ref())
+                .chain(command_proto.arguments.iter().map(AsRef::as_ref))
+                .collect()
+        } else {
+            command_proto.arguments.iter().map(AsRef::as_ref).collect()
+        };
         info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
         let mut command_builder = process::Command::new(args[0]);
         command_builder
@@ -670,7 +754,10 @@ impl RunningActionImpl {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(format!("{}/{}", self.work_directory, command_proto.working_directory))
+            .current_dir(format!(
+                "{}/{}",
+                self.work_directory, command_proto.working_directory
+            ))
             .env_clear();
 
         let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
@@ -688,7 +775,9 @@ impl RunningActionImpl {
                         .get(property)
                         .map_or_else(|| Cow::Borrowed(""), |v| v.as_str()),
                     EnvironmentSource::value(value) => Cow::Borrowed(value.as_str()),
-                    EnvironmentSource::timeout_millis => Cow::Owned(self.timeout.as_millis().to_string()),
+                    EnvironmentSource::timeout_millis => {
+                        Cow::Owned(self.timeout.as_millis().to_string())
+                    }
                     EnvironmentSource::side_channel_file => {
                         let file_cow = format!(
                             "{}/{}/{}",
@@ -885,7 +974,8 @@ impl RunningActionImpl {
         info!("\x1b[0;31mWorker Uploading Results\x1b[0m");
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
-            state.execution_metadata.output_upload_start_timestamp = (self.running_actions_manager.callbacks.now_fn)();
+            state.execution_metadata.output_upload_start_timestamp =
+                (self.running_actions_manager.callbacks.now_fn)();
             (
                 state
                     .command_proto
@@ -911,7 +1001,8 @@ impl RunningActionImpl {
         let mut output_path_futures = FuturesUnordered::new();
         let mut output_paths = command_proto.output_paths;
         if output_paths.is_empty() {
-            output_paths.reserve(command_proto.output_files.len() + command_proto.output_directories.len());
+            output_paths
+                .reserve(command_proto.output_files.len() + command_proto.output_directories.len());
             output_paths.append(&mut command_proto.output_files);
             output_paths.append(&mut command_proto.output_directories);
         }
@@ -919,12 +1010,16 @@ impl RunningActionImpl {
             let full_path = OsString::from(if command_proto.working_directory.is_empty() {
                 format!("{}/{}", self.work_directory, entry)
             } else {
-                format!("{}/{}/{}", self.work_directory, command_proto.working_directory, entry)
+                format!(
+                    "{}/{}/{}",
+                    self.work_directory, command_proto.working_directory, entry
+                )
             });
             let work_directory = &self.work_directory;
             output_path_futures.push(async move {
                 let metadata = {
-                    let mut resumeable_file = match fs::open_file(full_path.clone(), u64::MAX).await {
+                    let mut resumeable_file = match fs::open_file(full_path.clone(), u64::MAX).await
+                    {
                         Ok(file) => file,
                         Err(e) => {
                             if e.code == Code::NotFound {
@@ -942,7 +1037,12 @@ impl RunningActionImpl {
 
                     // Just in case we are starved for open file descriptors, we timeout the metadata
                     // call and close the file, then try again.
-                    let metadata = match timeout(fs::idle_file_descriptor_timeout(), &mut metadata_fut).await {
+                    let metadata = match timeout(
+                        fs::idle_file_descriptor_timeout(),
+                        &mut metadata_fut,
+                    )
+                    .await
+                    {
                         Ok(result) => result,
                         Err(_) => {
                             resumeable_file
@@ -974,9 +1074,13 @@ impl RunningActionImpl {
                                     root: Some(root_dir),
                                     children: children.into(),
                                 };
-                                let tree_digest = serialize_and_upload_message(&tree, cas_store, &mut hasher.hasher())
-                                    .await
-                                    .err_tip(|| format!("While processing {entry}"))?;
+                                let tree_digest = serialize_and_upload_message(
+                                    &tree,
+                                    cas_store,
+                                    &mut hasher.hasher(),
+                                )
+                                .await
+                                .err_tip(|| format!("While processing {entry}"))?;
                                 Ok(DirectoryInfo {
                                     path: entry,
                                     tree_digest,
@@ -1003,8 +1107,11 @@ impl RunningActionImpl {
                         }
                         Err(e) => {
                             if e.code != Code::NotFound {
-                                return Err(e)
-                                    .err_tip(|| format!("While querying target symlink metadata for {full_path:?}"));
+                                return Err(e).err_tip(|| {
+                                    format!(
+                                        "While querying target symlink metadata for {full_path:?}"
+                                    )
+                                });
                             }
                             // If the file doesn't exist, we consider it a file. Even though the
                             // file doesn't exist we still need to populate an entry.
@@ -1057,8 +1164,12 @@ impl RunningActionImpl {
                 match output_type {
                     OutputType::File(output_file) => output_files.push(output_file),
                     OutputType::Directory(output_folder) => output_folders.push(output_folder),
-                    OutputType::FileSymlink(output_symlink) => output_file_symlinks.push(output_symlink),
-                    OutputType::DirectorySymlink(output_symlink) => output_directory_symlinks.push(output_symlink),
+                    OutputType::FileSymlink(output_symlink) => {
+                        output_file_symlinks.push(output_symlink)
+                    }
+                    OutputType::DirectorySymlink(output_symlink) => {
+                        output_directory_symlinks.push(output_symlink)
+                    }
                     OutputType::None => { /* Safe to ignore */ }
                 }
             }
@@ -1070,14 +1181,16 @@ impl RunningActionImpl {
             Err(e) => return Err(e).err_tip(|| "Error while uploading results"),
         };
 
-        execution_metadata.output_upload_completed_timestamp = (self.running_actions_manager.callbacks.now_fn)();
+        execution_metadata.output_upload_completed_timestamp =
+            (self.running_actions_manager.callbacks.now_fn)();
         output_files.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_folders.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         output_file_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         output_directory_symlinks.sort_unstable_by(|a, b| a.name_or_path.cmp(&b.name_or_path));
         {
             let mut state = self.state.lock();
-            execution_metadata.worker_completed_timestamp = (self.running_actions_manager.callbacks.now_fn)();
+            execution_metadata.worker_completed_timestamp =
+                (self.running_actions_manager.callbacks.now_fn)();
             state.action_result = Some(ActionResult {
                 output_files,
                 output_folders,
@@ -1145,7 +1258,11 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics().clone().execute.wrap(Self::inner_execute(self)).await
+        self.metrics()
+            .clone()
+            .execute
+            .wrap(Self::inner_execute(self))
+            .await
     }
 
     async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
@@ -1157,7 +1274,11 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        self.metrics().clone().cleanup.wrap(Self::inner_cleanup(self)).await
+        self.metrics()
+            .clone()
+            .cleanup
+            .wrap(Self::inner_cleanup(self))
+            .await
     }
 
     async fn get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
@@ -1244,7 +1365,11 @@ impl UploadActionResults {
         let upload_historical_results_strategy = config
             .upload_historical_results_strategy
             .unwrap_or(DEFAULT_HISTORICAL_RESULTS_STRATEGY);
-        if !matches!(config.upload_ac_results_strategy, UploadCacheResultsStrategy::never) && ac_store.is_none() {
+        if !matches!(
+            config.upload_ac_results_strategy,
+            UploadCacheResultsStrategy::never
+        ) && ac_store.is_none()
+        {
             return Err(make_input_err!(
                 "upload_ac_results_strategy is set, but no ac_store is configured"
             ));
@@ -1254,18 +1379,22 @@ impl UploadActionResults {
             upload_historical_results_strategy,
             ac_store,
             historical_store,
-            success_message_template: Template::new(&config.success_message_template).map_err(|e| {
-                make_input_err!(
-                    "Could not convert success_message_template to rust template: {} : {e:?}",
-                    config.success_message_template
-                )
-            })?,
-            failure_message_template: Template::new(&config.failure_message_template).map_err(|e| {
-                make_input_err!(
-                    "Could not convert failure_message_template to rust template: {} : {e:?}",
-                    config.success_message_template
-                )
-            })?,
+            success_message_template: Template::new(&config.success_message_template).map_err(
+                |e| {
+                    make_input_err!(
+                        "Could not convert success_message_template to rust template: {} : {e:?}",
+                        config.success_message_template
+                    )
+                },
+            )?,
+            failure_message_template: Template::new(&config.failure_message_template).map_err(
+                |e| {
+                    make_input_err!(
+                        "Could not convert failure_message_template to rust template: {} : {e:?}",
+                        config.success_message_template
+                    )
+                },
+            )?,
         })
     }
 
@@ -1282,7 +1411,9 @@ impl UploadActionResults {
             UploadCacheResultsStrategy::success_only => !did_fail,
             UploadCacheResultsStrategy::never => false,
             // Never cache internal errors or timeouts.
-            UploadCacheResultsStrategy::everything => treat_infra_error_as_failure || action_result.error.is_none(),
+            UploadCacheResultsStrategy::everything => {
+                treat_infra_error_as_failure || action_result.error.is_none()
+            }
             UploadCacheResultsStrategy::failures_only => did_fail,
         }
     }
@@ -1369,8 +1500,13 @@ impl UploadActionResults {
         .await
         .err_tip(|| format!("Caching HistoricalExecuteResponse for digest: {action_digest:?}"))?;
 
-        Self::format_execute_response_message(message_template, action_digest, Some(historical_digest_info), hasher)
-            .err_tip(|| "Could not format message in upload_historical_results_with_message")
+        Self::format_execute_response_message(
+            message_template,
+            action_digest,
+            Some(historical_digest_info),
+            hasher,
+        )
+        .err_tip(|| "Could not format message in upload_historical_results_with_message")
     }
 
     async fn cache_action_result(
@@ -1381,7 +1517,8 @@ impl UploadActionResults {
     ) -> Result<(), Error> {
         let should_upload_historical_results =
             Self::should_cache_result(self.upload_historical_results_strategy, action_result, true);
-        let should_upload_ac_results = Self::should_cache_result(self.upload_ac_results_strategy, action_result, false);
+        let should_upload_ac_results =
+            Self::should_cache_result(self.upload_ac_results_strategy, action_result, false);
         // Shortcut so we don't need to convert to proto if not needed.
         if !should_upload_ac_results && !should_upload_historical_results {
             return Ok(());
@@ -1399,7 +1536,12 @@ impl UploadActionResults {
 
         let upload_historical_results_with_message_result = if should_upload_historical_results {
             let maybe_message = self
-                .upload_historical_results_with_message(action_info, execute_response.clone(), message_template, hasher)
+                .upload_historical_results_with_message(
+                    action_info,
+                    execute_response.clone(),
+                    message_template,
+                    hasher,
+                )
                 .await;
             match maybe_message {
                 Ok(message) => {
@@ -1410,7 +1552,8 @@ impl UploadActionResults {
                 Err(e) => Result::<(), Error>::Err(e),
             }
         } else {
-            match Self::format_execute_response_message(message_template, action_info, None, hasher) {
+            match Self::format_execute_response_message(message_template, action_info, None, hasher)
+            {
                 Ok(message) => {
                     action_result.message = message.clone();
                     execute_response.message = message;
@@ -1469,11 +1612,21 @@ pub struct RunningActionsManagerImpl {
 }
 
 impl RunningActionsManagerImpl {
-    pub fn new_with_callbacks(args: RunningActionsManagerArgs<'_>, callbacks: Callbacks) -> Result<Self, Error> {
+    pub fn new_with_callbacks(
+        args: RunningActionsManagerArgs<'_>,
+        callbacks: Callbacks,
+    ) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
-        let any_store = args.cas_store.fast_store().clone().inner_store_arc(None).as_any_arc();
+        let any_store = args
+            .cas_store
+            .fast_store()
+            .clone()
+            .inner_store_arc(None)
+            .as_any_arc();
         let filesystem_store = any_store.downcast::<FilesystemStore>().map_err(|_| {
-            make_input_err!("Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl")
+            make_input_err!(
+                "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl"
+            )
         })?;
         let (action_done_tx, _) = watch::channel(());
         Ok(Self {
@@ -1506,7 +1659,10 @@ impl RunningActionsManagerImpl {
         )
     }
 
-    fn make_work_directory<'a>(&'a self, action_id: &'a ActionId) -> impl Future<Output = Result<String, Error>> + 'a {
+    fn make_work_directory<'a>(
+        &'a self,
+        action_id: &'a ActionId,
+    ) -> impl Future<Output = Result<String, Error>> + 'a {
         self.metrics.make_work_directory.wrap(async move {
             let work_directory = format!("{}/{}", self.root_work_directory, hex::encode(action_id));
             fs::create_dir(&work_directory)
@@ -1531,9 +1687,10 @@ impl RunningActionsManagerImpl {
                 .err_tip(|| "Expected action_digest to exist on StartExecute")?
                 .try_into()?;
             let load_start_timestamp = (self.callbacks.now_fn)();
-            let action = get_and_decode_digest::<Action>(Pin::new(self.cas_store.as_ref()), &action_digest)
-                .await
-                .err_tip(|| "During start_action")?;
+            let action =
+                get_and_decode_digest::<Action>(Pin::new(self.cas_store.as_ref()), &action_digest)
+                    .await
+                    .err_tip(|| "During start_action")?;
             let action_info = ActionInfo::try_from_action_and_execute_request_with_salt(
                 execute_request,
                 action,
@@ -1548,9 +1705,9 @@ impl RunningActionsManagerImpl {
 
     fn cleanup_action(&self, action_id: &ActionId) -> Result<(), Error> {
         let mut running_actions = self.running_actions.lock();
-        let result = running_actions
-            .remove(action_id)
-            .err_tip(|| format!("Expected action id '{action_id:?}' to exist in RunningActionsManagerImpl"));
+        let result = running_actions.remove(action_id).err_tip(|| {
+            format!("Expected action id '{action_id:?}' to exist in RunningActionsManagerImpl")
+        });
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|_| {});
         result.map(|_| ())
@@ -1565,7 +1722,10 @@ impl RunningActionsManagerImpl {
         };
         if let Some(kill_channel_tx) = kill_channel_tx {
             if kill_channel_tx.send(()).is_err() {
-                error!("Error sending kill to running action {}", hex::encode(action.action_id));
+                error!(
+                    "Error sending kill to running action {}",
+                    hex::encode(action.action_id)
+                );
             }
         }
     }
@@ -1642,10 +1802,11 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     ) -> Result<(), Error> {
         self.metrics
             .cache_action_result
-            .wrap(
-                self.upload_action_results
-                    .cache_action_result(action_info, action_result, hasher),
-            )
+            .wrap(self.upload_action_results.cache_action_result(
+                action_info,
+                action_result,
+                hasher,
+            ))
             .await
     }
 
@@ -1718,7 +1879,11 @@ impl MetricsComponent for Metrics {
             &self.cache_action_result,
             "Stats about the cache_action_result command.",
         );
-        c.publish("kill_all", &self.kill_all, "Stats about the kill_all command.");
+        c.publish(
+            "kill_all",
+            &self.kill_all,
+            "Stats about the kill_all command.",
+        );
         c.publish(
             "create_action_info",
             &self.create_action_info,

@@ -18,11 +18,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_input_err, Error, ResultExt};
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::buf_channel::{
+    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{Collector, CollectorState, CounterWithTime, MetricsComponent, Registry};
+use nativelink_util::metrics_utils::{
+    Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
+};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 
 pub struct VerifyStore {
@@ -36,7 +40,10 @@ pub struct VerifyStore {
 }
 
 impl VerifyStore {
-    pub fn new(config: &nativelink_config::stores::VerifyStore, inner_store: Arc<dyn Store>) -> Self {
+    pub fn new(
+        config: &nativelink_config::stores::VerifyStore,
+        inner_store: Arc<dyn Store>,
+    ) -> Self {
         VerifyStore {
             inner_store,
             verify_size: config.verify_size,
@@ -89,7 +96,9 @@ impl VerifyStore {
                         ));
                     }
                 }
-                tx.send_eof().await.err_tip(|| "In verify_store::check_update")?;
+                tx.send_eof()
+                    .await
+                    .err_tip(|| "In verify_store::check_update")?;
                 break;
             }
 
@@ -124,8 +133,8 @@ impl Store for VerifyStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let digest_size =
-            usize::try_from(digest.size_bytes).err_tip(|| "Digest size_bytes was not convertible to usize")?;
+        let digest_size = usize::try_from(digest.size_bytes)
+            .err_tip(|| "Digest size_bytes was not convertible to usize")?;
         if let UploadSizeInfo::ExactSize(expected_size) = size_info {
             if self.verify_size && expected_size != digest_size {
                 self.size_verification_failures.inc();
@@ -144,7 +153,8 @@ impl Store for VerifyStore {
         let (tx, rx) = make_buf_channel_pair();
 
         let update_fut = self.pin_inner().update(digest, rx, size_info);
-        let check_fut = self.inner_check_update(tx, reader, size_info, digest.packed_hash, hasher.as_mut());
+        let check_fut =
+            self.inner_check_update(tx, reader, size_info, digest.packed_hash, hasher.as_mut());
 
         let (update_res, check_res) = tokio::join!(update_fut, check_fut);
 
@@ -158,7 +168,9 @@ impl Store for VerifyStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        self.pin_inner().get_part_ref(digest, writer, offset, length).await
+        self.pin_inner()
+            .get_part_ref(digest, writer, offset, length)
+            .await
     }
 
     fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {

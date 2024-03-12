@@ -126,7 +126,10 @@ impl Retrier {
             .take(self.config.max_retries) // Remember this is number of retries, so will run max_retries + 1.
     }
 
-    pub fn retry<'a, T, Fut>(&'a self, operation: Fut) -> Pin<Box<dyn Future<Output = Result<T, Error>> + 'a + Send>>
+    pub fn retry<'a, T, Fut>(
+        &'a self,
+        operation: Fut,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Error>> + 'a + Send>>
     where
         Fut: futures::stream::Stream<Item = RetryResult<T>> + Send + 'a,
         T: Send,
@@ -145,13 +148,19 @@ impl Retrier {
                         ))
                     }
                     Some(RetryResult::Ok(value)) => return Ok(value),
-                    Some(RetryResult::Err(e)) => return Err(e.append(format!("On attempt {attempt}"))),
+                    Some(RetryResult::Err(e)) => {
+                        return Err(e.append(format!("On attempt {attempt}")))
+                    }
                     Some(RetryResult::Retry(e)) => {
                         if !self.should_retry(&e.code) {
                             info!("Not retrying permanent error on attempt {attempt}: {e:?}");
                             return Err(e);
                         }
-                        (self.sleep_fn)(iter.next().ok_or(e.append(format!("On attempt {attempt}")))?).await
+                        (self.sleep_fn)(
+                            iter.next()
+                                .ok_or(e.append(format!("On attempt {attempt}")))?,
+                        )
+                        .await
                     }
                 }
             }

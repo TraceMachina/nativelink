@@ -37,7 +37,9 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     store_manager.add_store(
         "main_cas",
         store_factory(
-            &nativelink_config::stores::StoreConfig::memory(nativelink_config::stores::MemoryStore::default()),
+            &nativelink_config::stores::StoreConfig::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
             &store_manager,
             Some(&mut <Registry>::default()),
             None,
@@ -90,7 +92,12 @@ pub mod write_tests {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             let join_handle = tokio::spawn(async move {
                 let response_future = bs_server.write(Request::new(stream));
@@ -140,13 +147,16 @@ pub mod write_tests {
         {
             // One for spawn() future and one for result.
             let server_result = join_handle.await??;
-            let committed_size =
-                usize::try_from(server_result.into_inner().committed_size).or(Err("Cant convert i64 to usize"))?;
+            let committed_size = usize::try_from(server_result.into_inner().committed_size)
+                .or(Err("Cant convert i64 to usize"))?;
             assert_eq!(committed_size, raw_data.len());
 
             // Now lets check our store to ensure it was written with proper data.
             assert!(
-                store.has(DigestInfo::try_new(HASH1, raw_data.len())?).await?.is_some(),
+                store
+                    .has(DigestInfo::try_new(HASH1, raw_data.len())?)
+                    .await?
+                    .is_some(),
                 "Not found in store",
             );
             let store_data = store
@@ -174,14 +184,22 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+                JoinHandle<(
+                    Result<Response<WriteResponse>, tonic::Status>,
+                    ByteStreamServer,
+                )>,
             ),
             Error,
         > {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             let join_handle = tokio::spawn(async move {
                 let response_future = bs_server.write(Request::new(stream));
@@ -262,14 +280,22 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+                JoinHandle<(
+                    Result<Response<WriteResponse>, tonic::Status>,
+                    ByteStreamServer,
+                )>,
             ),
             Error,
         > {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             let join_handle = tokio::spawn(async move {
                 let response_future = bs_server.write(Request::new(stream));
@@ -356,14 +382,22 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+                JoinHandle<(
+                    Result<Response<WriteResponse>, tonic::Status>,
+                    ByteStreamServer,
+                )>,
             ),
             Error,
         > {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             let join_handle = tokio::spawn(async move {
                 let response_future = bs_server.write(Request::new(stream));
@@ -438,7 +472,8 @@ pub mod write_tests {
     }
 
     #[tokio::test]
-    pub async fn ensure_write_is_not_done_until_write_request_is_set() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn ensure_write_is_not_done_until_write_request_is_set(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -450,7 +485,12 @@ pub mod write_tests {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             (tx, bs_server.write(Request::new(stream)))
         };
@@ -532,14 +572,22 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+                JoinHandle<(
+                    Result<Response<WriteResponse>, tonic::Status>,
+                    ByteStreamServer,
+                )>,
             ),
             Error,
         > {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             let join_handle = tokio::spawn(async move {
                 let response_future = bs_server.write(Request::new(stream));
@@ -579,13 +627,18 @@ pub mod write_tests {
             write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
             tx.send_data(encode_stream_proto(&write_request)?).await?;
         }
-        assert!(join_handle.await?.0.is_err(), "Expected error to be returned");
+        assert!(
+            join_handle.await?.0.is_err(),
+            "Expected error to be returned"
+        );
         {
             // Make sure stream was closed.
             write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
             write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
             assert!(
-                tx.send_data(encode_stream_proto(&write_request)?).await.is_err(),
+                tx.send_data(encode_stream_proto(&write_request)?)
+                    .await
+                    .is_err(),
                 "Expected error to be returned"
             );
         }
@@ -604,14 +657,22 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+                JoinHandle<(
+                    Result<Response<WriteResponse>, tonic::Status>,
+                    ByteStreamServer,
+                )>,
             ),
             Error,
         > {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             let join_handle = tokio::spawn(async move {
                 let response_future = bs_server.write(Request::new(stream));
@@ -661,14 +722,22 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+                JoinHandle<(
+                    Result<Response<WriteResponse>, tonic::Status>,
+                    ByteStreamServer,
+                )>,
             ),
             Error,
         > {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             let join_handle = tokio::spawn(async move {
                 let response_future = bs_server.write(Request::new(stream));
@@ -711,14 +780,22 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(Result<Response<WriteResponse>, tonic::Status>, ByteStreamServer)>,
+                JoinHandle<(
+                    Result<Response<WriteResponse>, tonic::Status>,
+                    ByteStreamServer,
+                )>,
             ),
             Error,
         > {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             let join_handle = tokio::spawn(async move {
                 let response_future = bs_server.write(Request::new(stream));
@@ -764,7 +841,8 @@ pub mod read_tests {
     use super::*;
 
     #[tokio::test]
-    pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::error::Error>>
+    {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
         let store_owned = store_manager.get_store("main_cas").unwrap();
@@ -781,7 +859,10 @@ pub mod read_tests {
             read_offset: 0,
             read_limit: VALUE1.len() as i64,
         };
-        let mut read_stream = bs_server.read(Request::new(read_request)).await?.into_inner();
+        let mut read_stream = bs_server
+            .read(Request::new(read_request))
+            .await?
+            .into_inner();
         {
             let mut roundtrip_data = Vec::with_capacity(VALUE1.len());
             assert!(!VALUE1.is_empty(), "Expected at least one byte to be sent");
@@ -814,21 +895,32 @@ pub mod read_tests {
 
         let data_len = raw_data.len();
         let digest = DigestInfo::try_new(HASH1, data_len)?;
-        store.update_oneshot(digest, raw_data.clone().into()).await?;
+        store
+            .update_oneshot(digest, raw_data.clone().into())
+            .await?;
 
         let read_request = ReadRequest {
             resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, HASH1, raw_data.len()),
             read_offset: 0,
             read_limit: raw_data.len() as i64,
         };
-        let mut read_stream = bs_server.read(Request::new(read_request)).await?.into_inner();
+        let mut read_stream = bs_server
+            .read(Request::new(read_request))
+            .await?
+            .into_inner();
         {
             let mut roundtrip_data = Vec::with_capacity(raw_data.len());
-            assert!(!raw_data.is_empty(), "Expected at least one byte to be sent");
+            assert!(
+                !raw_data.is_empty(),
+                "Expected at least one byte to be sent"
+            );
             while let Some(result_read_response) = read_stream.next().await {
                 roundtrip_data.append(&mut result_read_response?.data.to_vec());
             }
-            assert_eq!(roundtrip_data, raw_data, "Expected response to match what is in store");
+            assert_eq!(
+                roundtrip_data, raw_data,
+                "Expected response to match what is in store"
+            );
         }
         Ok(())
     }
@@ -839,9 +931,12 @@ pub mod read_tests {
     /// stream was never shutdown.
     #[tokio::test]
     pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
-        let store_manager = make_store_manager().await.err_tip(|| "Couldn't get store manager")?;
+        let store_manager = make_store_manager()
+            .await
+            .err_tip(|| "Couldn't get store manager")?;
         let mut read_stream = {
-            let bs_server = make_bytestream_server(store_manager.as_ref()).err_tip(|| "Couldn't make store")?;
+            let bs_server =
+                make_bytestream_server(store_manager.as_ref()).err_tip(|| "Couldn't make store")?;
             let read_request = ReadRequest {
                 resource_name: format!(
                     "{}/blobs/{}/{}",
@@ -882,7 +977,9 @@ pub mod read_tests {
 #[cfg(test)]
 pub mod query_tests {
     use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
-    use nativelink_proto::google::bytestream::{QueryWriteStatusRequest, QueryWriteStatusResponse, WriteRequest};
+    use nativelink_proto::google::bytestream::{
+        QueryWriteStatusRequest, QueryWriteStatusResponse, WriteRequest,
+    };
     use pretty_assertions::assert_eq; // Must be declared in every module.
     use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
     use tonic::transport::Body;
@@ -925,7 +1022,12 @@ pub mod query_tests {
             let (tx, body) = Body::channel();
             let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
             // Note: This is an undocumented function.
-            let stream = Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+            let stream = Streaming::new_request(
+                codec.decoder(),
+                body,
+                Some(CompressionEncoding::Gzip),
+                None,
+            );
 
             let bs_server_clone = bs_server.clone();
             let join_handle = tokio::spawn(async move {

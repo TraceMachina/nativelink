@@ -47,9 +47,12 @@ pub fn default_digest_size_health_check() -> usize {
 
 /// Set the default digest size for health check data, this should be called once.
 pub fn set_default_digest_size_health_check(size: usize) -> Result<(), Error> {
-    DEFAULT_DIGEST_SIZE_HEALTH_CHECK
-        .set(size)
-        .map_err(|_| make_err!(Code::Internal, "set_default_digest_size_health_check already set"))
+    DEFAULT_DIGEST_SIZE_HEALTH_CHECK.set(size).map_err(|_| {
+        make_err!(
+            Code::Internal,
+            "set_default_digest_size_health_check already set"
+        )
+    })
 }
 
 #[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
@@ -140,7 +143,10 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     /// exist in the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
     #[inline]
-    async fn has_many(self: Pin<&Self>, digests: &[DigestInfo]) -> Result<Vec<Option<usize>>, Error> {
+    async fn has_many(
+        self: Pin<&Self>,
+        digests: &[DigestInfo],
+    ) -> Result<Vec<Option<usize>>, Error> {
         let mut results = vec![None; digests.len()];
         self.has_with_results(digests, &mut results).await?;
         Ok(results)
@@ -191,7 +197,11 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     }
 
     // Utility to send all the data to the store when you have all the bytes.
-    async fn update_oneshot(self: Pin<&Self>, digest: DigestInfo, data: Bytes) -> Result<(), Error> {
+    async fn update_oneshot(
+        self: Pin<&Self>,
+        digest: DigestInfo,
+        data: Bytes,
+    ) -> Result<(), Error> {
         // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
@@ -210,7 +220,10 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
                 .err_tip(|| "Failed to write EOF in update_oneshot")?;
             Ok(())
         };
-        try_join!(send_fut, self.update(digest, rx, UploadSizeInfo::ExactSize(data_len)))?;
+        try_join!(
+            send_fut,
+            self.update(digest, rx, UploadSizeInfo::ExactSize(data_len))
+        )?;
         Ok(())
     }
 
@@ -243,7 +256,11 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
 
     /// Utility that works the same as ``.get_part()`, but writes all the data.
     #[inline]
-    async fn get(self: Pin<&Self>, digest: DigestInfo, writer: DropCloserWriteHalf) -> Result<(), Error> {
+    async fn get(
+        self: Pin<&Self>,
+        digest: DigestInfo,
+        writer: DropCloserWriteHalf,
+    ) -> Result<(), Error> {
         self.get_part(digest, writer, 0, None).await
     }
 
@@ -256,7 +273,9 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        Pin::new(self.as_ref()).get_part(digest, writer, offset, length).await
+        Pin::new(self.as_ref())
+            .get_part(digest, writer, offset, length)
+            .await
     }
 
     // Utility that will return all the bytes at once instead of in a streaming manner.
@@ -308,7 +327,10 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         let digest_bytes = bytes::Bytes::copy_from_slice(&digest_data);
 
         if let Err(e) = self.update_oneshot(digest_info, digest_bytes.clone()).await {
-            return HealthStatus::new_failed(self.get_ref(), format!("Store.update_oneshot() failed: {}", e).into());
+            return HealthStatus::new_failed(
+                self.get_ref(),
+                format!("Store.update_oneshot() failed: {}", e).into(),
+            );
         }
 
         match self.has(digest_info).await {
@@ -321,10 +343,16 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
                 }
             }
             Ok(None) => {
-                return HealthStatus::new_failed(self.get_ref(), "Store.has() size not found".into());
+                return HealthStatus::new_failed(
+                    self.get_ref(),
+                    "Store.has() size not found".into(),
+                );
             }
             Err(e) => {
-                return HealthStatus::new_failed(self.get_ref(), format!("Store.has() failed: {}", e).into());
+                return HealthStatus::new_failed(
+                    self.get_ref(),
+                    format!("Store.has() failed: {}", e).into(),
+                );
             }
         }
 
@@ -334,7 +362,10 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         {
             Ok(b) => {
                 if b != digest_bytes {
-                    return HealthStatus::new_failed(self.get_ref(), "Store.get_part_unchunked() data mismatch".into());
+                    return HealthStatus::new_failed(
+                        self.get_ref(),
+                        "Store.get_part_unchunked() data mismatch".into(),
+                    );
                 }
             }
             Err(e) => {

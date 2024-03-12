@@ -78,7 +78,9 @@ pub fn store_factory<'a>(
                 store_factory(&config.slow, store_manager, None, None).await?,
             )),
             StoreConfig::filesystem(config) => Arc::new(<FilesystemStore>::new(config).await?),
-            StoreConfig::ref_store(config) => Arc::new(RefStore::new(config, Arc::downgrade(store_manager))),
+            StoreConfig::ref_store(config) => {
+                Arc::new(RefStore::new(config, Arc::downgrade(store_manager)))
+            }
             StoreConfig::size_partitioning(config) => Arc::new(SizePartitioningStore::new(
                 config,
                 store_factory(&config.lower_store, store_manager, None, None).await?,
@@ -90,7 +92,9 @@ pub fn store_factory<'a>(
                 let stores = config
                     .stores
                     .iter()
-                    .map(|store_config| store_factory(&store_config.store, store_manager, None, None))
+                    .map(|store_config| {
+                        store_factory(&store_config.store, store_manager, None, None)
+                    })
                     .collect::<FuturesOrdered<_>>()
                     .try_collect::<Vec<_>>()
                     .await?;

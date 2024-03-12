@@ -77,7 +77,9 @@ impl TryFrom<ProtoDigestFunction> for DigestHasherFunc {
         match value {
             ProtoDigestFunction::Sha256 => Ok(Self::Sha256),
             ProtoDigestFunction::Blake3 => Ok(Self::Blake3),
-            v => Err(make_input_err!("Unknown or unsupported digest function {v:?}")),
+            v => Err(make_input_err!(
+                "Unknown or unsupported digest function {v:?}"
+            )),
         }
     }
 }
@@ -223,10 +225,13 @@ impl DigestHasher for DigestHasherImpl {
             DigestHasherFuncImpl::Sha256(_) => self.hash_file(file).await,
             DigestHasherFuncImpl::Blake3(mut hasher) => {
                 JoinHandleDropGuard::new(tokio::task::spawn_blocking(move || {
-                    hasher
-                        .update_mmap(file.get_path())
-                        .map_err(|e| make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}"))?;
-                    Result::<_, Error>::Ok((DigestInfo::new(hasher.finalize().into(), hasher.count() as i64), file))
+                    hasher.update_mmap(file.get_path()).map_err(|e| {
+                        make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
+                    })?;
+                    Result::<_, Error>::Ok((
+                        DigestInfo::new(hasher.finalize().into(), hasher.count() as i64),
+                        file,
+                    ))
                 }))
                 .await
                 .err_tip(|| "Could not spawn blocking task in digest_for_file")?

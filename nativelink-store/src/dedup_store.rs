@@ -132,7 +132,10 @@ impl DedupStore {
             .map(|index_entry| DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes))
             .collect();
         let mut sum = 0;
-        for size in Pin::new(self.content_store.as_ref()).has_many(&digests).await? {
+        for size in Pin::new(self.content_store.as_ref())
+            .has_many(&digests)
+            .await?
+        {
             let Some(size) = size else {
                 // A part is missing so return None meaning not-found.
                 // This will abort all in-flight queries related to this request.
@@ -204,8 +207,16 @@ impl Store for DedupStore {
 
         let serialized_index = self
             .bincode_options
-            .serialize(&DedupIndex { entries: index_entries })
-            .map_err(|e| make_err!(Code::Internal, "Failed to serialize index in dedup_store : {:?}", e))?;
+            .serialize(&DedupIndex {
+                entries: index_entries,
+            })
+            .map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to serialize index in dedup_store : {:?}",
+                    e
+                )
+            })?;
 
         self.pin_index_store()
             .update_oneshot(digest, serialized_index.into())
@@ -239,13 +250,15 @@ impl Store for DedupStore {
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
 
-            self.bincode_options.deserialize::<DedupIndex>(&data).map_err(|e| {
-                make_err!(
-                    Code::Internal,
-                    "Failed to deserialize index in dedup_store::get_part : {:?}",
-                    e
-                )
-            })?
+            self.bincode_options
+                .deserialize::<DedupIndex>(&data)
+                .map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Failed to deserialize index in dedup_store::get_part : {:?}",
+                        e
+                    )
+                })?
         };
 
         let mut start_byte_in_stream: usize = 0;
@@ -257,8 +270,8 @@ impl Store for DedupStore {
                 let mut entries = Vec::with_capacity(index_entries.entries.len());
                 for entry in index_entries.entries {
                     let first_byte = current_entries_sum;
-                    let entry_size =
-                        usize::try_from(entry.size_bytes).err_tip(|| "Failed to convert to usize in DedupStore")?;
+                    let entry_size = usize::try_from(entry.size_bytes)
+                        .err_tip(|| "Failed to convert to usize in DedupStore")?;
                     current_entries_sum += entry_size;
                     // Filter any items who's end byte is before the first requested byte.
                     if current_entries_sum <= offset {

@@ -19,8 +19,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nativelink_config::cas_server::WorkerApiConfig;
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile, OutputDirectory, OutputFile,
-    OutputSymlink,
+    ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile,
+    OutputDirectory, OutputFile, OutputSymlink,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_server::WorkerApi;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
@@ -56,10 +56,12 @@ fn static_now_fn() -> Result<Duration, Error> {
 async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
-    let scheduler = Arc::new(SimpleScheduler::new(&nativelink_config::schedulers::SimpleScheduler {
-        worker_timeout_s: worker_timeout,
-        ..Default::default()
-    }));
+    let scheduler = Arc::new(SimpleScheduler::new(
+        &nativelink_config::schedulers::SimpleScheduler {
+            worker_timeout_s: worker_timeout,
+            ..Default::default()
+        },
+    ));
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
     schedulers.insert(SCHEDULER_NAME.to_string(), scheduler.clone());
@@ -79,19 +81,28 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
         .into_inner();
 
     let maybe_first_message = connection_worker_stream.next().await;
-    assert!(maybe_first_message.is_some(), "Expected first message from stream");
+    assert!(
+        maybe_first_message.is_some(),
+        "Expected first message from stream"
+    );
     let first_update = maybe_first_message
         .unwrap()
         .err_tip(|| "Expected success result")?
         .update
         .err_tip(|| "Expected update field to be populated")?;
     let worker_id = match first_update {
-        update_for_worker::Update::ConnectionResult(connection_result) => connection_result.worker_id,
+        update_for_worker::Update::ConnectionResult(connection_result) => {
+            connection_result.worker_id
+        }
         other => unreachable!("Expected ConnectionResult, got {:?}", other),
     };
 
     const UUID_SIZE: usize = 36;
-    assert_eq!(worker_id.len(), UUID_SIZE, "Worker ID should be 36 characters");
+    assert_eq!(
+        worker_id.len(),
+        UUID_SIZE,
+        "Worker ID should be 36 characters"
+    );
 
     Ok(TestContext {
         scheduler,
@@ -106,10 +117,13 @@ pub mod connect_worker_tests {
     use super::*;
 
     #[tokio::test]
-    pub async fn connect_worker_adds_worker_to_scheduler_test() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn connect_worker_adds_worker_to_scheduler_test(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
-        let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
+        let worker_exists = test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id);
         assert!(worker_exists, "Expected worker to exist in worker map");
 
         Ok(())
@@ -130,15 +144,25 @@ pub mod keep_alive_tests {
         {
             // Now change time to 1 second before timeout and ensure the worker is still in the pool.
             now_timestamp += BASE_WORKER_TIMEOUT_S - 1;
-            test_context.scheduler.remove_timedout_workers(now_timestamp).await?;
-            let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
+            test_context
+                .scheduler
+                .remove_timedout_workers(now_timestamp)
+                .await?;
+            let worker_exists = test_context
+                .scheduler
+                .contains_worker_for_test(&test_context.worker_id);
             assert!(worker_exists, "Expected worker to exist in worker map");
         }
         {
             // Now add 1 second and our worker should have been evicted due to timeout.
             now_timestamp += 1;
-            test_context.scheduler.remove_timedout_workers(now_timestamp).await?;
-            let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
+            test_context
+                .scheduler
+                .remove_timedout_workers(now_timestamp)
+                .await?;
+            let worker_exists = test_context
+                .scheduler
+                .contains_worker_for_test(&test_context.worker_id);
             assert!(!worker_exists, "Expected worker to not exist in map");
         }
 
@@ -146,7 +170,8 @@ pub mod keep_alive_tests {
     }
 
     #[tokio::test]
-    pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn server_does_not_timeout_if_keep_alive_test(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let now_timestamp = Arc::new(Mutex::new(BASE_NOW_S));
         let now_timestamp_clone = now_timestamp.clone();
         let add_and_return_timestamp = move |add_amount: u64| -> u64 {
@@ -163,8 +188,13 @@ pub mod keep_alive_tests {
         {
             // Now change time to 1 second before timeout and ensure the worker is still in the pool.
             let timestamp = add_and_return_timestamp(BASE_WORKER_TIMEOUT_S - 1);
-            test_context.scheduler.remove_timedout_workers(timestamp).await?;
-            let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
+            test_context
+                .scheduler
+                .remove_timedout_workers(timestamp)
+                .await?;
+            let worker_exists = test_context
+                .scheduler
+                .contains_worker_for_test(&test_context.worker_id);
             assert!(worker_exists, "Expected worker to exist in worker map");
         }
         {
@@ -180,8 +210,13 @@ pub mod keep_alive_tests {
         {
             // Now add 1 second and our worker should still exist in our map.
             let timestamp = add_and_return_timestamp(1);
-            test_context.scheduler.remove_timedout_workers(timestamp).await?;
-            let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
+            test_context
+                .scheduler
+                .remove_timedout_workers(timestamp)
+                .await?;
+            let worker_exists = test_context
+                .scheduler
+                .contains_worker_for_test(&test_context.worker_id);
             assert!(worker_exists, "Expected worker to exist in map");
         }
 
@@ -189,8 +224,10 @@ pub mod keep_alive_tests {
     }
 
     #[tokio::test]
-    pub async fn worker_receives_keep_alive_request_test() -> Result<(), Box<dyn std::error::Error>> {
-        let mut test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    pub async fn worker_receives_keep_alive_request_test() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut test_context =
+            setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
         // Send keep alive to client.
         test_context
@@ -201,7 +238,10 @@ pub mod keep_alive_tests {
         {
             // Read stream and ensure it was a keep alive message.
             let maybe_message = test_context.connection_worker_stream.next().await;
-            assert!(maybe_message.is_some(), "Expected next message in stream to exist");
+            assert!(
+                maybe_message.is_some(),
+                "Expected next message in stream to exist"
+            );
             let update_message = maybe_message
                 .unwrap()
                 .err_tip(|| "Expected success result")?
@@ -226,13 +266,23 @@ pub mod going_away_tests {
     pub async fn going_away_removes_worker_test() -> Result<(), Box<dyn std::error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
-        let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
+        let worker_exists = test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id);
         assert!(worker_exists, "Expected worker to exist in worker map");
 
-        test_context.scheduler.remove_worker(test_context.worker_id).await;
+        test_context
+            .scheduler
+            .remove_worker(test_context.worker_id)
+            .await;
 
-        let worker_exists = test_context.scheduler.contains_worker_for_test(&test_context.worker_id);
-        assert!(!worker_exists, "Expected worker to be removed from worker map");
+        let worker_exists = test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id);
+        assert!(
+            !worker_exists,
+            "Expected worker to be removed from worker map"
+        );
 
         Ok(())
     }
@@ -274,7 +324,8 @@ pub mod execution_response_tests {
             skip_cache_lookup: true,
             digest_function: DigestHasherFunc::Sha256,
         };
-        let mut client_action_state_receiver = test_context.scheduler.add_action(action_info).await?;
+        let mut client_action_state_receiver =
+            test_context.scheduler.add_action(action_info).await?;
 
         let mut server_logs = HashMap::new();
         server_logs.insert(
@@ -330,7 +381,10 @@ pub mod execution_response_tests {
                         execution_completed_timestamp: Some(make_system_time(7).into()),
                         output_upload_start_timestamp: Some(make_system_time(8).into()),
                         output_upload_completed_timestamp: Some(make_system_time(9).into()),
-                        virtual_execution_duration: Some(prost_types::Duration { seconds: 1, nanos: 0 }),
+                        virtual_execution_duration: Some(prost_types::Duration {
+                            seconds: 1,
+                            nanos: 0,
+                        }),
                         auxiliary_metadata: vec![],
                     }),
                 }),
@@ -341,7 +395,8 @@ pub mod execution_response_tests {
                     details: Default::default(),
                 }),
                 server_logs,
-                message: "TODO(blaise.bruer) We should put a reference something like bb_browser".to_string(),
+                message: "TODO(blaise.bruer) We should put a reference something like bb_browser"
+                    .to_string(),
             })),
         };
         {
@@ -361,13 +416,17 @@ pub mod execution_response_tests {
             // Check the result that the client would have received.
             client_action_state_receiver.changed().await?;
             let client_given_state = client_action_state_receiver.borrow();
-            let execute_response = if let execute_result::Result::ExecuteResponse(v) = result.result.unwrap() {
-                v
-            } else {
-                panic!("Expected type to be ExecuteResponse");
-            };
+            let execute_response =
+                if let execute_result::Result::ExecuteResponse(v) = result.result.unwrap() {
+                    v
+                } else {
+                    panic!("Expected type to be ExecuteResponse");
+                };
 
-            assert_eq!(client_given_state.stage, execute_response.clone().try_into()?);
+            assert_eq!(
+                client_given_state.stage,
+                execute_response.clone().try_into()?
+            );
 
             // We just checked if conversion from ExecuteResponse into ActionStage was an exact mach.
             // Now check if we cast the ActionStage into an ExecuteResponse we get the exact same struct.

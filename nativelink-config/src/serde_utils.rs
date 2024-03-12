@@ -58,7 +58,9 @@ where
 }
 
 /// Same as convert_numeric_with_shellexpand, but supports Option<T>.
-pub fn convert_optional_numeric_with_shellexpand<'de, D, T, E>(deserializer: D) -> Result<Option<T>, D::Error>
+pub fn convert_optional_numeric_with_shellexpand<'de, D, T, E>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     E: fmt::Display,
@@ -102,7 +104,9 @@ where
 
 /// Helper for serde macro so you can use shellexpand variables in the json configuration
 /// files when the number is a numeric type.
-pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
     let value = String::deserialize(deserializer)?;
     Ok((*(shellexpand::env(&value).map_err(de::Error::custom)?)).to_string())
 }

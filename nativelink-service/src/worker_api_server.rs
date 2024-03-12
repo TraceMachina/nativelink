@@ -38,7 +38,8 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-pub type ConnectWorkerStream = Pin<Box<dyn Stream<Item = Result<UpdateForWorker, Status>> + Send + Sync + 'static>>;
+pub type ConnectWorkerStream =
+    Pin<Box<dyn Stream<Item = Result<UpdateForWorker, Status>> + Send + Sync + 'static>>;
 
 pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
@@ -66,7 +67,9 @@ impl WorkerApiServer {
                         .expect("Error: system time is now behind unix epoch");
                     match weak_scheduler.upgrade() {
                         Some(scheduler) => {
-                            if let Err(e) = scheduler.remove_timedout_workers(timestamp.as_secs()).await {
+                            if let Err(e) =
+                                scheduler.remove_timedout_workers(timestamp.as_secs()).await
+                            {
                                 error!("Error while running remove_timedout_workers : {:?}", e);
                             }
                         }
@@ -136,7 +139,12 @@ impl WorkerApiServer {
         // Now register the worker with the scheduler.
         let worker_id = {
             let worker_id = Uuid::new_v4().as_u128();
-            let worker = Worker::new(WorkerId(worker_id), platform_properties, tx, (self.now_fn)()?.as_secs());
+            let worker = Worker::new(
+                WorkerId(worker_id),
+                platform_properties,
+                tx,
+                (self.now_fn)()?.as_secs(),
+            );
             self.scheduler
                 .add_worker(worker)
                 .await
@@ -161,7 +169,10 @@ impl WorkerApiServer {
         ))))
     }
 
-    async fn inner_keep_alive(&self, keep_alive_request: KeepAliveRequest) -> Result<Response<()>, Error> {
+    async fn inner_keep_alive(
+        &self,
+        keep_alive_request: KeepAliveRequest,
+    ) -> Result<Response<()>, Error> {
         let worker_id: WorkerId = keep_alive_request.worker_id.try_into()?;
         self.scheduler
             .worker_keep_alive_received(&worker_id, (self.now_fn)()?.as_secs())
@@ -170,13 +181,19 @@ impl WorkerApiServer {
         Ok(Response::new(()))
     }
 
-    async fn inner_going_away(&self, going_away_request: GoingAwayRequest) -> Result<Response<()>, Error> {
+    async fn inner_going_away(
+        &self,
+        going_away_request: GoingAwayRequest,
+    ) -> Result<Response<()>, Error> {
         let worker_id: WorkerId = going_away_request.worker_id.try_into()?;
         self.scheduler.remove_worker(worker_id).await;
         Ok(Response::new(()))
     }
 
-    async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<Response<()>, Error> {
+    async fn inner_execution_response(
+        &self,
+        execute_result: ExecuteResult,
+    ) -> Result<Response<()>, Error> {
         let worker_id: WorkerId = execute_result.worker_id.try_into()?;
         let action_digest: DigestInfo = execute_result
             .action_digest
@@ -219,7 +236,10 @@ impl WorkerApi for WorkerApiServer {
         grpc_request: Request<SupportedProperties>,
     ) -> Result<Response<Self::ConnectWorkerStream>, Status> {
         let now = Instant::now();
-        info!("\x1b[0;31mconnect_worker Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!(
+            "\x1b[0;31mconnect_worker Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let supported_properties = grpc_request.into_inner();
         let resp = self.inner_connect_worker(supported_properties).await;
         let d = now.elapsed().as_secs_f32();
@@ -231,9 +251,15 @@ impl WorkerApi for WorkerApiServer {
         return resp.map_err(|e| e.into());
     }
 
-    async fn keep_alive(&self, grpc_request: Request<KeepAliveRequest>) -> Result<Response<()>, Status> {
+    async fn keep_alive(
+        &self,
+        grpc_request: Request<KeepAliveRequest>,
+    ) -> Result<Response<()>, Status> {
         let now = Instant::now();
-        info!("\x1b[0;31mkeep_alive Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!(
+            "\x1b[0;31mkeep_alive Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let keep_alive_request = grpc_request.into_inner();
         let resp = self.inner_keep_alive(keep_alive_request).await;
         let d = now.elapsed().as_secs_f32();
@@ -245,9 +271,15 @@ impl WorkerApi for WorkerApiServer {
         return resp.map_err(|e| e.into());
     }
 
-    async fn going_away(&self, grpc_request: Request<GoingAwayRequest>) -> Result<Response<()>, Status> {
+    async fn going_away(
+        &self,
+        grpc_request: Request<GoingAwayRequest>,
+    ) -> Result<Response<()>, Status> {
         let now = Instant::now();
-        info!("\x1b[0;31mgoing_away Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!(
+            "\x1b[0;31mgoing_away Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let going_away_request = grpc_request.into_inner();
         let resp = self.inner_going_away(going_away_request).await;
         let d = now.elapsed().as_secs_f32();
@@ -259,9 +291,15 @@ impl WorkerApi for WorkerApiServer {
         return resp.map_err(|e| e.into());
     }
 
-    async fn execution_response(&self, grpc_request: Request<ExecuteResult>) -> Result<Response<()>, Status> {
+    async fn execution_response(
+        &self,
+        grpc_request: Request<ExecuteResult>,
+    ) -> Result<Response<()>, Status> {
         let now = Instant::now();
-        info!("\x1b[0;31mexecution_response Req\x1b[0m: {:?}", grpc_request.get_ref());
+        info!(
+            "\x1b[0;31mexecution_response Req\x1b[0m: {:?}",
+            grpc_request.get_ref()
+        );
         let execute_result = grpc_request.into_inner();
         let resp = self.inner_execution_response(execute_result).await;
         let d = now.elapsed().as_secs_f32();

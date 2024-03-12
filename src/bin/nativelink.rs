@@ -46,9 +46,12 @@ use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatus, HealthStatusDescription, HealthStatusReporter,
 };
 use nativelink_util::metrics_utils::{
-    set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent, Registry,
+    set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent,
+    Registry,
 };
-use nativelink_util::store_trait::{set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG};
+use nativelink_util::store_trait::{
+    set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
+};
 use nativelink_worker::local_worker::new_local_worker;
 use parking_lot::Mutex;
 use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
@@ -96,9 +99,14 @@ struct Args {
     config_file: String,
 }
 
-async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), Box<dyn std::error::Error>> {
+async fn inner_main(
+    cfg: CasConfig,
+    server_start_timestamp: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut root_metrics_registry = <Registry>::with_prefix("nativelink");
-    let health_registry_builder = Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink".into())));
+    let health_registry_builder = Arc::new(AsyncMutex::new(HealthRegistryBuilder::new(
+        "nativelink".into(),
+    )));
 
     let store_manager = Arc::new(StoreManager::new());
     {
@@ -107,7 +115,8 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
 
         for (name, store_cfg) in cfg.stores {
             let health_component_name = format!("stores/{name}");
-            let mut health_register_store = health_registry_lock.sub_builder(health_component_name.into());
+            let mut health_register_store =
+                health_registry_lock.sub_builder(health_component_name.into());
             let store_metrics = root_store_metrics.sub_registry_with_prefix(&name);
             store_manager.add_store(
                 &name,
@@ -199,7 +208,8 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 counter: Counter::default(),
                 server_start_ts: server_start_timestamp,
             });
-            let server_metrics = root_metrics_registry.sub_registry_with_prefix(format!("server_{name}"));
+            let server_metrics =
+                root_metrics_registry.sub_registry_with_prefix(format!("server_{name}"));
             server_metrics.register_collector(Box::new(Collector::new(&connected_clients_mux)));
 
             (server_cfg, connected_clients_mux)
@@ -224,7 +234,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         AcServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
+                            if let Some(encoding) =
+                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                            {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in http_config
@@ -248,7 +260,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         CasServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
+                            if let Some(encoding) =
+                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                            {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in http_config
@@ -272,7 +286,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         ExecutionServer::new(&cfg, &action_schedulers, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
+                            if let Some(encoding) =
+                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                            {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in http_config
@@ -296,7 +312,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         ByteStreamServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
+                            if let Some(encoding) =
+                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                            {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in http_config
@@ -319,7 +337,12 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         .capabilities
                         .as_ref()
                         // Borrow checker fighting here...
-                        .map(|_| CapabilitiesServer::new(services.capabilities.as_ref().unwrap(), &action_schedulers)),
+                        .map(|_| {
+                            CapabilitiesServer::new(
+                                services.capabilities.as_ref().unwrap(),
+                                &action_schedulers,
+                            )
+                        }),
                 )
                 .await
                 .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
@@ -329,7 +352,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 .map(|v| {
                     let mut service = v.into_service();
                     let send_algo = &http_config.compression.send_compression_algorithm;
-                    if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
+                    if let Some(encoding) =
+                        into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                    {
                         service = service.send_compressed(encoding);
                     }
                     for encoding in http_config
@@ -351,7 +376,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                         WorkerApiServer::new(&cfg, &worker_schedulers).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
-                            if let Some(encoding) = into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none)) {
+                            if let Some(encoding) =
+                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                            {
                                 service = service.send_compressed(encoding);
                             }
                             for encoding in http_config
@@ -387,13 +414,20 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     spawn_blocking(move || {
                         futures::executor::block_on(async {
                             let health_status_descriptions: Vec<HealthStatusDescription> =
-                                health_registry_status.health_status_report().collect().await;
+                                health_registry_status
+                                    .health_status_report()
+                                    .collect()
+                                    .await;
 
                             match serde_json5::to_string(&health_status_descriptions) {
                                 Ok(body) => {
-                                    let contains_failed_report = health_status_descriptions
-                                        .iter()
-                                        .any(|description| matches!(description.status, HealthStatus::Failed { .. }));
+                                    let contains_failed_report =
+                                        health_status_descriptions.iter().any(|description| {
+                                            matches!(
+                                                description.status,
+                                                HealthStatus::Failed { .. }
+                                            )
+                                        });
                                     let status_code = if contains_failed_report {
                                         StatusCode::SERVICE_UNAVAILABLE
                                     } else {
@@ -403,7 +437,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                                         .status(status_code)
                                         .header(
                                             hyper::header::CONTENT_TYPE,
-                                            hyper::header::HeaderValue::from_static(JSON_CONTENT_TYPE),
+                                            hyper::header::HeaderValue::from_static(
+                                                JSON_CONTENT_TYPE,
+                                            ),
                                         )
                                         .body(body)
                                         .unwrap()
@@ -443,24 +479,30 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     // if it needs to wait on a future.
                     spawn_blocking(move || {
                         let mut buf = String::new();
-                        let root_metrics_registry_guard = futures::executor::block_on(root_metrics_registry.lock());
-                        prometheus_client::encoding::text::encode(&mut buf, &root_metrics_registry_guard)
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                            .map(|_| {
-                                // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
-                                buf = buf.replace("nativelink_nativelink_stores_", "");
-                                buf = buf.replace("nativelink_nativelink_workers_", "");
-                                let mut response = Response::new(buf);
-                                // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
-                                // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
-                                // However, this makes debugging more difficult, so we use the old text/plain instead.
-                                response.headers_mut().insert(
-                                    hyper::header::CONTENT_TYPE,
-                                    hyper::header::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
-                                );
-                                response
-                            })
-                            .unwrap_or_else(error_to_response)
+                        let root_metrics_registry_guard =
+                            futures::executor::block_on(root_metrics_registry.lock());
+                        prometheus_client::encoding::text::encode(
+                            &mut buf,
+                            &root_metrics_registry_guard,
+                        )
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                        .map(|_| {
+                            // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
+                            buf = buf.replace("nativelink_nativelink_stores_", "");
+                            buf = buf.replace("nativelink_nativelink_workers_", "");
+                            let mut response = Response::new(buf);
+                            // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
+                            // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
+                            // However, this makes debugging more difficult, so we use the old text/plain instead.
+                            response.headers_mut().insert(
+                                hyper::header::CONTENT_TYPE,
+                                hyper::header::HeaderValue::from_static(
+                                    "text/plain; version=0.0.4; charset=utf-8",
+                                ),
+                            );
+                            response
+                        })
+                        .unwrap_or_else(error_to_response)
                     })
                     .await
                     .unwrap_or_else(error_to_response)
@@ -486,15 +528,27 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                                 let is_draining = match is_draining.as_str() {
                                     "0" => false,
                                     "1" => true,
-                                    _ => return Err(make_err!(Code::Internal, "{} is neither 0 nor 1", is_draining)),
+                                    _ => {
+                                        return Err(make_err!(
+                                            Code::Internal,
+                                            "{} is neither 0 nor 1",
+                                            is_draining
+                                        ))
+                                    }
                                 };
                                 worker_schedulers
                                     .get(&instance_name)
                                     .err_tip(|| {
-                                        format!("Can not get an instance with the name of '{}'", &instance_name)
+                                        format!(
+                                            "Can not get an instance with the name of '{}'",
+                                            &instance_name
+                                        )
                                     })?
                                     .clone()
-                                    .set_drain_worker(WorkerId::try_from(worker_id.clone())?, is_draining)
+                                    .set_drain_worker(
+                                        WorkerId::try_from(worker_id.clone())?,
+                                        is_draining,
+                                    )
                                     .await?;
                                 Ok::<_, Error>(format!("Draining worker {worker_id}"))
                             })
@@ -515,7 +569,8 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
         let maybe_tls_acceptor = http_config.tls.map_or(Ok(None), |tls_config| {
             fn read_cert(cert_file: &str) -> Result<Vec<CertificateDer<'static>>, Error> {
                 let mut cert_reader = std::io::BufReader::new(
-                    std::fs::File::open(cert_file).err_tip(|| format!("Could not open cert file {cert_file}"))?,
+                    std::fs::File::open(cert_file)
+                        .err_tip(|| format!("Could not open cert file {cert_file}"))?,
                 );
                 let certs = extract_certs(&mut cert_reader)
                     .map(|certificate| certificate.map(CertificateDer::from))
@@ -552,9 +607,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
             let verifier = if let Some(client_ca_file) = &tls_config.client_ca_file {
                 let mut client_auth_roots = RootCertStore::empty();
                 for cert in read_cert(client_ca_file)?.into_iter() {
-                    client_auth_roots
-                        .add(cert)
-                        .map_err(|e| make_err!(Code::Internal, "Could not read client CA: {e:?}"))?;
+                    client_auth_roots.add(cert).map_err(|e| {
+                        make_err!(Code::Internal, "Could not read client CA: {e:?}")
+                    })?;
                 }
                 let crls = if let Some(client_crl_file) = &tls_config.client_crl_file {
                     let mut crl_reader = std::io::BufReader::new(
@@ -571,14 +626,21 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                 WebPkiClientVerifier::builder(Arc::new(client_auth_roots))
                     .with_crls(crls)
                     .build()
-                    .map_err(|e| make_err!(Code::Internal, "Could not create WebPkiClientVerifier: {e:?}"))?
+                    .map_err(|e| {
+                        make_err!(
+                            Code::Internal,
+                            "Could not create WebPkiClientVerifier: {e:?}"
+                        )
+                    })?
             } else {
                 WebPkiClientVerifier::no_client_auth()
             };
             let mut config = TlsServerConfig::builder()
                 .with_client_cert_verifier(verifier)
                 .with_single_cert(certs, key)
-                .map_err(|e| make_err!(Code::Internal, "Could not create TlsServerConfig : {e:?}"))?;
+                .map_err(|e| {
+                    make_err!(Code::Internal, "Could not create TlsServerConfig : {e:?}")
+                })?;
 
             config.alpn_protocols.push("h2".into());
             Ok(Some(TlsAcceptor::from(Arc::new(config))))
@@ -593,10 +655,9 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
         }
 
         if let Some(value) = http_config.experimental_http2_max_pending_accept_reset_streams {
-            http.http2_max_pending_accept_reset_streams(
-                usize::try_from(value)
-                    .err_tip(|| "Could not convert experimental_http2_max_pending_accept_reset_streams")?,
-            );
+            http.http2_max_pending_accept_reset_streams(usize::try_from(value).err_tip(|| {
+                "Could not convert experimental_http2_max_pending_accept_reset_streams"
+            })?);
         }
         if let Some(value) = http_config.experimental_http2_initial_stream_window_size {
             http.http2_initial_stream_window_size(value);
@@ -647,9 +708,12 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
 
                 // This is the safest way to guarantee that if our future
                 // is ever dropped we will cleanup our data.
-                let scope_guard = guard(connected_clients_mux.clone(), move |connected_clients_mux| {
-                    connected_clients_mux.inner.lock().remove(&remote_addr);
-                });
+                let scope_guard = guard(
+                    connected_clients_mux.clone(),
+                    move |connected_clients_mux| {
+                        connected_clients_mux.inner.lock().remove(&remote_addr);
+                    },
+                );
                 let (http, svc) = (http.clone(), svc.clone());
                 let fut = if let Some(tls_acceptor) = &maybe_tls_acceptor {
                     let tls_stream = match tls_acceptor.accept(tcp_stream).await {
@@ -687,17 +751,18 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
         for (i, worker_cfg) in worker_cfgs.into_iter().enumerate() {
             let spawn_fut = match worker_cfg {
                 WorkerConfig::local(local_worker_cfg) => {
-                    let fast_slow_store =
-                        store_manager
-                            .get_store(&local_worker_cfg.cas_fast_slow_store)
-                            .err_tip(|| {
-                                format!(
-                                    "Failed to find store for cas_store_ref in worker config : {}",
-                                    local_worker_cfg.cas_fast_slow_store
-                                )
-                            })?;
+                    let fast_slow_store = store_manager
+                        .get_store(&local_worker_cfg.cas_fast_slow_store)
+                        .err_tip(|| {
+                            format!(
+                                "Failed to find store for cas_store_ref in worker config : {}",
+                                local_worker_cfg.cas_fast_slow_store
+                            )
+                        })?;
 
-                    let maybe_ac_store = if let Some(ac_store_ref) = &local_worker_cfg.upload_action_result.ac_store {
+                    let maybe_ac_store = if let Some(ac_store_ref) =
+                        &local_worker_cfg.upload_action_result.ac_store
+                    {
                         Some(store_manager.get_store(ac_store_ref).err_tip(|| {
                             format!("Failed to find store for ac_store in worker config : {ac_store_ref}")
                         })?)
@@ -706,16 +771,18 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
                     };
                     // Note: Defaults to fast_slow_store if not specified. If this ever changes it must
                     // be updated in config documentation for the `historical_results_store` the field.
-                    let historical_store =
-                        if let Some(cas_store_ref) = &local_worker_cfg.upload_action_result.historical_results_store {
-                            store_manager.get_store(cas_store_ref).err_tip(|| {
+                    let historical_store = if let Some(cas_store_ref) = &local_worker_cfg
+                        .upload_action_result
+                        .historical_results_store
+                    {
+                        store_manager.get_store(cas_store_ref).err_tip(|| {
                                 format!(
                                 "Failed to find store for historical_results_store in worker config : {cas_store_ref}"
                             )
                             })?
-                        } else {
-                            fast_slow_store.clone()
-                        };
+                    } else {
+                        fast_slow_store.clone()
+                    };
                     let local_worker = new_local_worker(
                         Arc::new(local_worker_cfg),
                         fast_slow_store,
@@ -755,7 +822,8 @@ async fn inner_main(cfg: CasConfig, server_start_timestamp: u64) -> Result<(), B
 async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
     let args = Args::parse();
     let json_contents = String::from_utf8(
-        std::fs::read(&args.config_file).err_tip(|| format!("Could not open config file {}", args.config_file))?,
+        std::fs::read(&args.config_file)
+            .err_tip(|| format!("Could not open config file {}", args.config_file))?,
     )?;
     Ok(serde_json5::from_str(&json_contents)?)
 }
@@ -801,7 +869,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 global_cfg.max_open_files = DEFAULT_MAX_OPEN_FILES;
             }
             if global_cfg.idle_file_descriptor_timeout_millis == 0 {
-                global_cfg.idle_file_descriptor_timeout_millis = DEFAULT_IDLE_FILE_DESCRIPTOR_TIMEOUT_MILLIS;
+                global_cfg.idle_file_descriptor_timeout_millis =
+                    DEFAULT_IDLE_FILE_DESCRIPTOR_TIMEOUT_MILLIS;
             }
             if global_cfg.default_digest_size_health_check == 0 {
                 global_cfg.default_digest_size_health_check = DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG;
@@ -823,7 +892,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         set_open_file_limit(global_cfg.max_open_files);
-        set_idle_file_descriptor_timeout(Duration::from_millis(global_cfg.idle_file_descriptor_timeout_millis))?;
+        set_idle_file_descriptor_timeout(Duration::from_millis(
+            global_cfg.idle_file_descriptor_timeout_millis,
+        ))?;
         set_default_digest_hasher_func(DigestHasherFunc::from(
             global_cfg
                 .default_digest_hash_function
@@ -837,7 +908,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var(METRICS_DISABLE_ENV).is_ok() {
         metrics_enabled = false;
     }
-    let server_start_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let server_start_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .max_blocking_threads(max_blocking_threads)
         .enable_all()
@@ -845,7 +919,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     runtime.spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Failed to listen to SIGINT");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen to SIGINT");
         eprintln!("User terminated process via SIGINT");
         std::process::exit(130);
     });

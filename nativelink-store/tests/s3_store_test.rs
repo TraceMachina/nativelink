@@ -70,7 +70,11 @@ mod s3_store_tests {
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let result = store_pin.has(digest).await;
-        assert_eq!(result, Ok(Some(512)), "Expected to find item, got: {result:?}");
+        assert_eq!(
+            result,
+            Ok(Some(512)),
+            "Expected to find item, got: {result:?}"
+        );
         Ok(())
     }
 
@@ -100,7 +104,11 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let result = store_pin.has(digest).await;
-        assert_eq!(result, Ok(None), "Expected to not find item, got: {result:?}");
+        assert_eq!(
+            result,
+            Ok(None),
+            "Expected to not find item, got: {result:?}"
+        );
         Ok(())
     }
 
@@ -162,7 +170,12 @@ mod s3_store_tests {
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
         let result = store_pin.has(digest).await;
-        assert_eq!(result, Ok(Some(111)), "Expected to find item, got: {:?}", result);
+        assert_eq!(
+            result,
+            Ok(Some(111)),
+            "Expected to find item, got: {:?}",
+            result
+        );
         Ok(())
     }
 
@@ -244,7 +257,12 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
 
         let store_data = store_pin
-            .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?, 0, None, None)
+            .get_part_unchunked(
+                DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
+                0,
+                None,
+                None,
+            )
             .await?;
         assert_eq!(
             store_data,
@@ -356,7 +374,9 @@ mod s3_store_tests {
         )?;
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = Pin::new(&store).get_part_unchunked(digest, 0, None, None).await;
+        let result = Pin::new(&store)
+            .get_part_unchunked(digest, 0, None, None)
+            .await;
         assert!(result.is_ok(), "Expected to find item, got: {result:?}");
         Ok(())
     }
@@ -475,7 +495,9 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let _ = Pin::new(&store).update_oneshot(digest, send_data.clone().into()).await;
+        let _ = Pin::new(&store)
+            .update_oneshot(digest, send_data.clone().into())
+            .await;
         mock_client.assert_requests_match(&[]);
         Ok(())
     }

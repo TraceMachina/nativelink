@@ -20,7 +20,10 @@ fn main() -> std::io::Result<()> {
                 .help("Output directory"),
         )
         .get_matches();
-    let paths = matches.get_many::<String>("inputs").unwrap().collect::<Vec<&String>>();
+    let paths = matches
+        .get_many::<String>("inputs")
+        .unwrap()
+        .collect::<Vec<&String>>();
     let output_dir = PathBuf::from(matches.get_one::<String>("output_dir").unwrap());
 
     let mut config = Config::new();

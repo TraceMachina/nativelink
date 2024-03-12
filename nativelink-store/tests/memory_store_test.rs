@@ -48,10 +48,15 @@ mod memory_store_tests {
 
         // Insert dummy value into store.
         store
-            .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, VALUE1.into())
+            .update_oneshot(
+                DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
+                VALUE1.into(),
+            )
             .await?;
         assert_eq!(
-            store.has(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?).await,
+            store
+                .has(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?)
+                .await,
             Ok(Some(VALUE1.len())),
             "Expected memory store to have hash: {}",
             VALID_HASH1
@@ -60,10 +65,18 @@ mod memory_store_tests {
         let store_data = {
             // Now change value we just inserted.
             store
-                .update_oneshot(DigestInfo::try_new(VALID_HASH1, VALUE2.len())?, VALUE2.into())
+                .update_oneshot(
+                    DigestInfo::try_new(VALID_HASH1, VALUE2.len())?,
+                    VALUE2.into(),
+                )
                 .await?;
             store
-                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE2.len())?, 0, None, None)
+                .get_part_unchunked(
+                    DigestInfo::try_new(VALID_HASH1, VALUE2.len())?,
+                    0,
+                    None,
+                    None,
+                )
                 .await?
         };
 
@@ -91,7 +104,9 @@ mod memory_store_tests {
             let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
             let store = Pin::new(&store_owned);
 
-            let initial_virtual_mem = memory_stats().err_tip(|| "Failed to read memory.")?.physical_mem;
+            let initial_virtual_mem = memory_stats()
+                .err_tip(|| "Failed to read memory.")?
+                .physical_mem;
             for (i, hash) in [VALID_HASH1, VALID_HASH2, VALID_HASH3, VALID_HASH4]
                 .into_iter()
                 .enumerate()
@@ -110,7 +125,9 @@ mod memory_store_tests {
                     .err_tip(|| "Could not update store")?;
             }
 
-            let new_virtual_mem = memory_stats().err_tip(|| "Failed to read memory.")?.physical_mem;
+            let new_virtual_mem = memory_stats()
+                .err_tip(|| "Failed to read memory.")?
+                .physical_mem;
             sum_memory_usage_increase_perc += new_virtual_mem as f64 / initial_virtual_mem as f64;
         }
         assert!(
@@ -155,7 +172,12 @@ mod memory_store_tests {
             .await?;
         assert_eq!(
             store
-                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE.len())?, 0, None, None)
+                .get_part_unchunked(
+                    DigestInfo::try_new(VALID_HASH1, VALUE.len())?,
+                    0,
+                    None,
+                    None
+                )
                 .await,
             Ok("".into()),
             "Expected memory store to have empty value"
@@ -191,7 +213,11 @@ mod memory_store_tests {
             ) {
                 let digest = DigestInfo::try_new(hash, expected_size);
                 assert!(
-                    digest.is_err() || store.update_oneshot(digest.unwrap(), value.into(),).await.is_err(),
+                    digest.is_err()
+                        || store
+                            .update_oneshot(digest.unwrap(), value.into(),)
+                            .await
+                            .is_err(),
                     ".has() should have failed: {hash} {expected_size} {value}",
                 );
             }
@@ -201,10 +227,18 @@ mod memory_store_tests {
         }
         {
             // .update() tests.
-            async fn get_should_fail<'a>(store: Pin<&'a MemoryStore>, hash: &'a str, expected_size: usize) {
+            async fn get_should_fail<'a>(
+                store: Pin<&'a MemoryStore>,
+                hash: &'a str,
+                expected_size: usize,
+            ) {
                 let digest = DigestInfo::try_new(hash, expected_size);
                 assert!(
-                    digest.is_err() || store.get_part_unchunked(digest.unwrap(), 0, None, None).await.is_err(),
+                    digest.is_err()
+                        || store
+                            .get_part_unchunked(digest.unwrap(), 0, None, None)
+                            .await
+                            .is_err(),
                     ".get() should have failed: {hash} {expected_size}",
                 );
             }
@@ -225,7 +259,9 @@ mod memory_store_tests {
             size_bytes: 0,
         };
 
-        let store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let store_clone = store.clone();
         let (mut writer, mut reader) = make_buf_channel_pair();
 

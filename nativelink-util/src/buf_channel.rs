@@ -69,11 +69,16 @@ impl DropCloserWriteHalf {
             .as_ref()
             .ok_or_else(|| make_err!(Code::Internal, "Tried to send while stream is closed"))?;
         let buf_len = buf.len() as u64;
-        error_if!(buf_len == 0, "Cannot send EOF in send(). Instead use send_eof()");
-        let result = tx
-            .send(Ok(buf))
-            .await
-            .map_err(|_| make_err!(Code::Internal, "Failed to write to data, receiver disconnected"));
+        error_if!(
+            buf_len == 0,
+            "Cannot send EOF in send(). Instead use send_eof()"
+        );
+        let result = tx.send(Ok(buf)).await.map_err(|_| {
+            make_err!(
+                Code::Internal,
+                "Failed to write to data, receiver disconnected"
+            )
+        });
         if result.is_err() {
             // Close our channel to prevent drop() from spawning a task.
             self.tx = None;
@@ -85,7 +90,10 @@ impl DropCloserWriteHalf {
     /// Sends an EOF (End of File) message to the receiver which will gracefully let the
     /// stream know it has no more data. This will close the stream.
     pub async fn send_eof(&mut self) -> Result<(), Error> {
-        error_if!(self.tx.is_none(), "Tried to send an EOF when pipe is broken");
+        error_if!(
+            self.tx.is_none(),
+            "Tried to send an EOF when pipe is broken"
+        );
         self.tx = None;
 
         // The final result will be provided in this oneshot channel.
@@ -132,9 +140,10 @@ impl Drop for DropCloserWriteHalf {
                 // we could end up with the receiver thinking everything is good and saving this bad data.
                 tokio::spawn(async move {
                     let _ = tx
-                        .send(Err(
-                            make_err!(Code::Internal, "Writer was dropped before EOF was sent",),
-                        ))
+                        .send(Err(make_err!(
+                            Code::Internal,
+                            "Writer was dropped before EOF was sent",
+                        )))
                         .await; // Nowhere to send failure to write here.
                 });
             }
@@ -174,7 +183,10 @@ impl DropCloserReadHalf {
         match maybe_chunk {
             Some(Ok(chunk)) => {
                 let chunk_len = chunk.len() as u64;
-                error_if!(chunk_len == 0, "Chunk should never be EOF, expected None in this case");
+                error_if!(
+                    chunk_len == 0,
+                    "Chunk should never be EOF, expected None in this case"
+                );
                 error_if!(
                     self.close_after_size < chunk_len,
                     "Received too much data. This only happens when `close_after_size` is set."
@@ -183,21 +195,27 @@ impl DropCloserReadHalf {
                 if self.close_after_size == 0 {
                     error_if!(self.close_tx.is_none(), "Expected stream to not be closed");
                     self.close_tx.take().unwrap().send(Ok(())).map_err(|_| {
-                        make_err!(Code::Internal, "Failed to send closing ok message to write with size")
+                        make_err!(
+                            Code::Internal,
+                            "Failed to send closing ok message to write with size"
+                        )
                     })?;
                 }
                 Ok(chunk)
             }
 
-            Some(Err(e)) => Err(make_err!(Code::Internal, "Received erroneous partial chunk: {e}")),
+            Some(Err(e)) => Err(make_err!(
+                Code::Internal,
+                "Received erroneous partial chunk: {e}"
+            )),
 
             // None is a safe EOF received.
             None => {
                 // Notify our sender that we received the EOF with success.
                 if let Some(close_tx) = self.close_tx.take() {
-                    close_tx
-                        .send(Ok(()))
-                        .map_err(|_| make_err!(Code::Internal, "Failed to send closing ok message to write"))?;
+                    close_tx.send(Ok(())).map_err(|_| {
+                        make_err!(Code::Internal, "Failed to send closing ok message to write")
+                    })?;
                 }
                 Ok(Bytes::new())
             }
@@ -296,7 +314,10 @@ impl DropCloserReadHalf {
             if current_size + chunk.len() <= desired_size {
                 return;
             }
-            assert!(partial.is_none(), "Partial should have been consumed during the recv()");
+            assert!(
+                partial.is_none(),
+                "Partial should have been consumed during the recv()"
+            );
             let local_partial = chunk.split_off(desired_size - current_size);
             *partial = if local_partial.is_empty() {
                 None
@@ -313,7 +334,10 @@ impl DropCloserReadHalf {
             // we will then go the slow path and actually copy our data.
 
             // 1. Read some data from our stream (or self.partial).
-            let mut first_chunk = self.recv().await.err_tip(|| "During first buf_channel::take()")?;
+            let mut first_chunk = self
+                .recv()
+                .await
+                .err_tip(|| "During first buf_channel::take()")?;
             assert!(
                 self.partial.is_none(),
                 "Partial should have been consumed during the recv()"
@@ -327,11 +351,17 @@ impl DropCloserReadHalf {
             }
             // 3b. If our first_chunk has data and it our self.partial was filled it means our stream has more data.
             if self.partial.is_some() {
-                assert!(first_chunk.len() == size, "Length should be exactly size here");
+                assert!(
+                    first_chunk.len() == size,
+                    "Length should be exactly size here"
+                );
                 return Ok(first_chunk);
             }
 
-            let mut second_chunk = self.recv().await.err_tip(|| "During second buf_channel::take()")?;
+            let mut second_chunk = self
+                .recv()
+                .await
+                .err_tip(|| "During second buf_channel::take()")?;
             if second_chunk.is_empty() {
                 assert!(
                     first_chunk.len() <= size,
@@ -339,7 +369,12 @@ impl DropCloserReadHalf {
                 );
                 return Ok(first_chunk);
             }
-            populate_partial_if_needed(first_chunk.len(), size, &mut second_chunk, &mut self.partial);
+            populate_partial_if_needed(
+                first_chunk.len(),
+                size,
+                &mut second_chunk,
+                &mut self.partial,
+            );
             (first_chunk, second_chunk)
         };
         let mut output = BytesMut::with_capacity(size);
@@ -383,14 +418,17 @@ impl Stream for DropCloserReadHalf {
     // TODO(blaise.bruer) This is not very efficient as we are creating a new future on every
     // poll() call. It might be better to use a waker.
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Box::pin(self.recv()).as_mut().poll(cx).map(|result| match result {
-            Ok(bytes) => {
-                if bytes.is_empty() {
-                    return None;
+        Box::pin(self.recv())
+            .as_mut()
+            .poll(cx)
+            .map(|result| match result {
+                Ok(bytes) => {
+                    if bytes.is_empty() {
+                        return None;
+                    }
+                    Some(Ok(bytes))
                 }
-                Some(Ok(bytes))
-            }
-            Err(e) => Some(Err(e.to_std_err())),
-        })
+                Err(e) => Some(Err(e.to_std_err())),
+            })
     }
 }

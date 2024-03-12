@@ -22,7 +22,9 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use nativelink_util::action_messages::ActionInfo;
-use nativelink_util::metrics_utils::{CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent};
+use nativelink_util::metrics_utils::{
+    CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent,
+};
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
@@ -102,7 +104,10 @@ pub struct Worker {
     metrics: Arc<Metrics>,
 }
 
-fn send_msg_to_worker(tx: &mut UnboundedSender<UpdateForWorker>, msg: update_for_worker::Update) -> Result<(), Error> {
+fn send_msg_to_worker(
+    tx: &mut UnboundedSender<UpdateForWorker>,
+    msg: update_for_worker::Update,
+) -> Result<(), Error> {
     tx.send(UpdateForWorker { update: Some(msg) })
         .map_err(|_| make_err!(Code::Internal, "Worker disconnected"))
 }
@@ -110,12 +115,17 @@ fn send_msg_to_worker(tx: &mut UnboundedSender<UpdateForWorker>, msg: update_for
 /// Reduces the platform properties available on the worker based on the platform properties provided.
 /// This is used because we allow more than 1 job to run on a worker at a time, and this is how the
 /// scheduler knows if more jobs can run on a given worker.
-fn reduce_platform_properties(parent_props: &mut PlatformProperties, reduction_props: &PlatformProperties) {
+fn reduce_platform_properties(
+    parent_props: &mut PlatformProperties,
+    reduction_props: &PlatformProperties,
+) {
     debug_assert!(reduction_props.is_satisfied_by(parent_props));
     for (property, prop_value) in &reduction_props.properties {
         if let PlatformPropertyValue::Minimum(value) = prop_value {
             let worker_props = &mut parent_props.properties;
-            if let &mut PlatformPropertyValue::Minimum(worker_value) = &mut worker_props.get_mut(property).unwrap() {
+            if let &mut PlatformPropertyValue::Minimum(worker_value) =
+                &mut worker_props.get_mut(property).unwrap()
+            {
                 *worker_value -= value;
             }
         }
@@ -138,7 +148,10 @@ impl Worker {
             is_paused: false,
             is_draining: false,
             metrics: Arc::new(Metrics {
-                connected_timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                connected_timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
                 actions_completed: CounterWithTime::default(),
                 run_action: FuncCounterWrapper::default(),
                 keep_alive: FuncCounterWrapper::default(),
@@ -186,7 +199,10 @@ impl Worker {
         self.metrics.run_action.wrap(move || {
             let action_info_clone = action_info.as_ref().clone();
             running_action_infos.insert(action_info.clone());
-            reduce_platform_properties(worker_platform_properties, &action_info.platform_properties);
+            reduce_platform_properties(
+                worker_platform_properties,
+                &action_info.platform_properties,
+            );
             send_msg_to_worker(
                 tx,
                 update_for_worker::Update::StartAction(StartExecute {
@@ -213,7 +229,9 @@ impl Worker {
         for (property, prop_value) in &props.properties {
             if let PlatformPropertyValue::Minimum(value) = prop_value {
                 let worker_props = &mut self.platform_properties.properties;
-                if let PlatformPropertyValue::Minimum(worker_value) = worker_props.get_mut(property).unwrap() {
+                if let PlatformPropertyValue::Minimum(worker_value) =
+                    worker_props.get_mut(property).unwrap()
+                {
                     *worker_value += value;
                 }
             }

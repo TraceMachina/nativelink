@@ -20,8 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_util::action_messages::{
-    ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath,
-    SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
+    ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata,
+    FileInfo, NameOrPath, SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 mod utils {
@@ -38,13 +38,18 @@ use nativelink_util::common::DigestInfo;
 use tokio::sync::{mpsc, watch};
 use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
 
-async fn verify_initial_connection_message(worker_id: WorkerId, rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>) {
+async fn verify_initial_connection_message(
+    worker_id: WorkerId,
+    rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>,
+) {
     use pretty_assertions::assert_eq;
     // Worker should have been sent an execute command.
     let expected_msg_for_worker = UpdateForWorker {
-        update: Some(update_for_worker::Update::ConnectionResult(ConnectionResult {
-            worker_id: worker_id.to_string(),
-        })),
+        update: Some(update_for_worker::Update::ConnectionResult(
+            ConnectionResult {
+                worker_id: worker_id.to_string(),
+            },
+        )),
     };
     let msg_for_worker = rx.recv().await.unwrap();
     assert_eq!(msg_for_worker, expected_msg_for_worker);
@@ -65,7 +70,10 @@ async fn setup_new_worker(
 ) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let worker = Worker::new(worker_id, props, tx, NOW_TIME);
-    scheduler.add_worker(worker).await.err_tip(|| "Failed to add worker")?;
+    scheduler
+        .add_worker(worker)
+        .await
+        .err_tip(|| "Failed to add worker")?;
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
     verify_initial_connection_message(worker_id, &mut rx).await;
     Ok(rx)
@@ -103,7 +111,8 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
         let mut client_rx = setup_action(
             &scheduler,
@@ -155,7 +164,8 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
         let client_rx = setup_action(
             &scheduler,
@@ -219,7 +229,8 @@ mod scheduler_tests {
         let action_digest1 = DigestInfo::new([99u8; 32], 512);
         let action_digest2 = DigestInfo::new([88u8; 32], 512);
 
-        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
+        let mut rx_from_worker1 =
+            setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
         let insert_timestamp1 = make_system_time(1);
         let mut client_rx1 = setup_action(
             &scheduler,
@@ -292,7 +303,8 @@ mod scheduler_tests {
         }
 
         // Add a second worker that can take jobs if the first dies.
-        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
+        let mut rx_from_worker2 =
+            setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
 
         {
             // Client should get notification saying it's being executed.
@@ -359,7 +371,8 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
         let mut client_rx = setup_action(
             &scheduler,
@@ -433,18 +446,26 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
         let mut platform_properties = PlatformProperties::default();
-        platform_properties
-            .properties
-            .insert("prop".to_string(), PlatformPropertyValue::Exact("1".to_string()));
+        platform_properties.properties.insert(
+            "prop".to_string(),
+            PlatformPropertyValue::Exact("1".to_string()),
+        );
         let mut worker_properties = platform_properties.clone();
-        worker_properties
-            .properties
-            .insert("prop".to_string(), PlatformPropertyValue::Exact("2".to_string()));
+        worker_properties.properties.insert(
+            "prop".to_string(),
+            PlatformPropertyValue::Exact("2".to_string()),
+        );
 
-        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, platform_properties.clone()).await?;
+        let mut rx_from_worker1 =
+            setup_new_worker(&scheduler, WORKER_ID1, platform_properties.clone()).await?;
         let insert_timestamp = make_system_time(1);
-        let mut client_rx =
-            setup_action(&scheduler, action_digest, worker_properties.clone(), insert_timestamp).await?;
+        let mut client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            worker_properties.clone(),
+            insert_timestamp,
+        )
+        .await?;
 
         {
             // Client should get notification saying it's been queued.
@@ -457,7 +478,8 @@ mod scheduler_tests {
             assert_eq!(action_state.as_ref(), &expected_action_state);
         }
 
-        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, worker_properties).await?;
+        let mut rx_from_worker2 =
+            setup_new_worker(&scheduler, WORKER_ID2, worker_properties).await?;
         {
             // Worker should have been sent an execute command.
             let expected_msg_for_worker = UpdateForWorker {
@@ -488,7 +510,10 @@ mod scheduler_tests {
         }
 
         // Our first worker should have no updates over this test.
-        assert_eq!(rx_from_worker1.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        assert_eq!(
+            rx_from_worker1.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        );
 
         Ok(())
     }
@@ -539,7 +564,8 @@ mod scheduler_tests {
             assert_eq!(action_state2.as_ref(), &expected_action_state);
         }
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
 
         {
             // Worker should have been sent an execute command.
@@ -565,8 +591,14 @@ mod scheduler_tests {
         {
             // Both client1 and client2 should be receiving the same updates.
             // Most importantly the `name` (which is random) will be the same.
-            assert_eq!(client1_rx.borrow_and_update().as_ref(), &expected_action_state);
-            assert_eq!(client2_rx.borrow_and_update().as_ref(), &expected_action_state);
+            assert_eq!(
+                client1_rx.borrow_and_update().as_ref(),
+                &expected_action_state
+            );
+            assert_eq!(
+                client2_rx.borrow_and_update().as_ref(),
+                &expected_action_state
+            );
         }
 
         {
@@ -579,7 +611,10 @@ mod scheduler_tests {
                 insert_timestamp3,
             )
             .await?;
-            assert_eq!(client3_rx.borrow_and_update().as_ref(), &expected_action_state);
+            assert_eq!(
+                client3_rx.borrow_and_update().as_ref(),
+                &expected_action_state
+            );
         }
 
         Ok(())
@@ -594,7 +629,8 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
 
         // Now act like the worker disconnected.
         drop(rx_from_worker);
@@ -635,7 +671,8 @@ mod scheduler_tests {
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
         // Note: This needs to stay in scope or a disconnect will trigger.
-        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
+        let mut rx_from_worker1 =
+            setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
         let mut client_rx = setup_action(
             &scheduler,
@@ -646,7 +683,8 @@ mod scheduler_tests {
         .await?;
 
         // Note: This needs to stay in scope or a disconnect will trigger.
-        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
+        let mut rx_from_worker2 =
+            setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
 
         let mut expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
@@ -691,7 +729,9 @@ mod scheduler_tests {
             .worker_keep_alive_received(&WORKER_ID2, NOW_TIME + WORKER_TIMEOUT_S)
             .await?;
         // This should remove worker 1 (the one executing our job).
-        scheduler.remove_timedout_workers(NOW_TIME + WORKER_TIMEOUT_S).await?;
+        scheduler
+            .remove_timedout_workers(NOW_TIME + WORKER_TIMEOUT_S)
+            .await?;
         tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 
         {
@@ -729,7 +769,8 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
         let mut client_rx = setup_action(
             &scheduler,
@@ -812,7 +853,10 @@ mod scheduler_tests {
         {
             // Update info for the action should now be closed (notification happens through Err).
             let result = client_rx.changed().await;
-            assert!(result.is_err(), "Expected result to be an error : {result:?}");
+            assert!(
+                result.is_err(),
+                "Expected result to be an error : {result:?}"
+            );
         }
 
         Ok(())
@@ -828,7 +872,8 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
         let client_rx = setup_action(
             &scheduler,
@@ -930,7 +975,8 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, GOOD_WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, GOOD_WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
         let mut client_rx = setup_action(
             &scheduler,
@@ -988,7 +1034,8 @@ mod scheduler_tests {
             .await;
 
         {
-            const EXPECTED_ERR: &str = "Got a result from a worker that should not be running the action";
+            const EXPECTED_ERR: &str =
+                "Got a result from a worker that should not be running the action";
             // Our request should have sent an error back.
             assert!(
                 update_action_result.is_err(),
@@ -1040,7 +1087,8 @@ mod scheduler_tests {
             insert_timestamp,
         )
         .await?;
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
 
         {
             // Worker should have been sent an execute command.
@@ -1109,7 +1157,10 @@ mod scheduler_tests {
         {
             // Action should now be executing.
             expected_action_state.stage = ActionStage::Completed(action_result.clone());
-            assert_eq!(client_rx.borrow_and_update().as_ref(), &expected_action_state);
+            assert_eq!(
+                client_rx.borrow_and_update().as_ref(),
+                &expected_action_state
+            );
         }
 
         // Now we need to ensure that if we schedule another execution of the same job it doesn't
@@ -1138,7 +1189,8 @@ mod scheduler_tests {
     /// This tests to ensure that platform property restrictions allow jobs to continue to run after
     /// a job finished on a specific worker (eg: restore platform properties).
     #[tokio::test]
-    async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> Result<(), Error> {
+    async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> Result<(), Error>
+    {
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -1151,7 +1203,8 @@ mod scheduler_tests {
         let mut properties = HashMap::new();
         properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
         let platform_properties = PlatformProperties { properties };
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, platform_properties.clone()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, platform_properties.clone()).await?;
         let insert_timestamp1 = make_system_time(1);
         let mut client1_rx = setup_action(
             &scheduler,
@@ -1161,7 +1214,13 @@ mod scheduler_tests {
         )
         .await?;
         let insert_timestamp2 = make_system_time(1);
-        let mut client2_rx = setup_action(&scheduler, action_digest2, platform_properties, insert_timestamp2).await?;
+        let mut client2_rx = setup_action(
+            &scheduler,
+            action_digest2,
+            platform_properties,
+            insert_timestamp2,
+        )
+        .await?;
 
         match rx_from_worker.recv().await.unwrap().update {
             Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
@@ -1309,7 +1368,8 @@ mod scheduler_tests {
         .await?;
 
         // Add the worker after the queue has been set up.
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, platform_properties).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, platform_properties).await?;
 
         match rx_from_worker.recv().await.unwrap().update {
             Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
@@ -1338,7 +1398,8 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         let insert_timestamp = make_system_time(1);
         let mut client_rx = setup_action(
             &scheduler,
@@ -1383,7 +1444,8 @@ mod scheduler_tests {
         }
 
         // Now connect a new worker and it should pickup the action.
-        let mut rx_from_worker = setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
         {
             // Other tests check full data. We only care if we got StartAction.
             match rx_from_worker.recv().await.unwrap().update {
@@ -1459,12 +1521,14 @@ mod scheduler_tests {
         // Since the inner spawn owns this callback, we can use the callback to know if the
         // inner spawn was dropped because our callback would be dropped, which dropps our
         // DropChecker.
-        let scheduler =
-            SimpleScheduler::new_with_callback(&nativelink_config::schedulers::SimpleScheduler::default(), move || {
+        let scheduler = SimpleScheduler::new_with_callback(
+            &nativelink_config::schedulers::SimpleScheduler::default(),
+            move || {
                 // This will ensure dropping happens if this function is ever dropped.
                 let _drop_checker = drop_checker.clone();
                 async move {}
-            });
+            },
+        );
         assert_eq!(dropped.load(Ordering::Relaxed), false);
 
         drop(scheduler);
@@ -1488,7 +1552,8 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
-        let mut rx_from_worker1 = setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
+        let mut rx_from_worker1 =
+            setup_new_worker(&scheduler, WORKER_ID1, PlatformProperties::default()).await?;
         let mut client_rx = setup_action(
             &scheduler,
             action_digest,
@@ -1497,7 +1562,8 @@ mod scheduler_tests {
         )
         .await?;
 
-        let mut rx_from_worker2 = setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
+        let mut rx_from_worker2 =
+            setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
 
         {
             // Other tests check full data. We only care if we got StartAction.
@@ -1526,7 +1592,10 @@ mod scheduler_tests {
         // Now connect a new worker and it should pickup the action.
         {
             // Other tests check full data. We only care if we got StartAction.
-            rx_from_worker2.recv().await.err_tip(|| "worker went away")?;
+            rx_from_worker2
+                .recv()
+                .await
+                .err_tip(|| "worker went away")?;
             // Other tests check full data. We only care if client thinks we are Executing.
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
         }

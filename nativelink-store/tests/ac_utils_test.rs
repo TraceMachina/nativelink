@@ -52,7 +52,9 @@ mod ac_utils_tests {
     async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
         let filepath = make_temp_path("test.txt").await;
         let expected_data = vec![0x88; 1024 * 1024]; // 1MB.
-        let store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore::default()));
+        let store = Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        ));
         let store_pin = Pin::new(store.as_ref());
         let digest = DigestInfo::try_new(HASH1, HASH1_SIZE)?; // Dummy hash data.
         {
@@ -70,7 +72,11 @@ mod ac_utils_tests {
             // Upload our file.
             let resumeable_file = fs::open_file(filepath, u64::MAX).await?;
             store_pin
-                .update_with_whole_file(digest, resumeable_file, UploadSizeInfo::ExactSize(expected_data.len()))
+                .update_with_whole_file(
+                    digest,
+                    resumeable_file,
+                    UploadSizeInfo::ExactSize(expected_data.len()),
+                )
                 .await?;
         }
         {

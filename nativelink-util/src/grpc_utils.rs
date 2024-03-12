@@ -36,13 +36,17 @@ impl ConnectionManager {
     /// set of Endpoints.  This will restrict the number of concurrent requests
     /// assuming that the user of this connection manager uses the connection
     /// only once and reports all errors.
-    pub fn new(endpoints: impl IntoIterator<Item = Endpoint>, max_concurrent_requests: usize) -> Self {
+    pub fn new(
+        endpoints: impl IntoIterator<Item = Endpoint>,
+        max_concurrent_requests: usize,
+    ) -> Self {
         let endpoints = Vec::from_iter(endpoints);
         let channel = Channel::balance_list(endpoints.iter().cloned());
         Self {
             endpoints,
             channel: Mutex::new((0, channel)),
-            request_semaphore: (max_concurrent_requests > 0).then_some(Semaphore::new(max_concurrent_requests)),
+            request_semaphore: (max_concurrent_requests > 0)
+                .then_some(Semaphore::new(max_concurrent_requests)),
         }
     }
 

@@ -50,7 +50,10 @@ pub enum HealthStatus {
 }
 
 impl HealthStatus {
-    pub fn new_ok(component: &(impl HealthStatusIndicator + ?Sized), message: Cow<'static, str>) -> Self {
+    pub fn new_ok(
+        component: &(impl HealthStatusIndicator + ?Sized),
+        message: Cow<'static, str>,
+    ) -> Self {
         Self::Ok {
             struct_name: component.struct_name(),
             message,
@@ -67,14 +70,20 @@ impl HealthStatus {
         }
     }
 
-    pub fn new_warning(component: &(impl HealthStatusIndicator + ?Sized), message: Cow<'static, str>) -> HealthStatus {
+    pub fn new_warning(
+        component: &(impl HealthStatusIndicator + ?Sized),
+        message: Cow<'static, str>,
+    ) -> HealthStatus {
         Self::Warning {
             struct_name: component.struct_name(),
             message,
         }
     }
 
-    pub fn new_failed(component: &(impl HealthStatusIndicator + ?Sized), message: Cow<'static, str>) -> HealthStatus {
+    pub fn new_failed(
+        component: &(impl HealthStatusIndicator + ?Sized),
+        message: Cow<'static, str>,
+    ) -> HealthStatus {
         Self::Failed {
             struct_name: component.struct_name(),
             message,
@@ -106,7 +115,8 @@ pub trait HealthStatusIndicator: Sync + Send + Unpin {
     async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus;
 }
 
-type HealthRegistryBuilderState = Arc<Mutex<HashMap<Cow<'static, str>, Arc<dyn HealthStatusIndicator>>>>;
+type HealthRegistryBuilderState =
+    Arc<Mutex<HashMap<Cow<'static, str>, Arc<dyn HealthStatusIndicator>>>>;
 pub struct HealthRegistryBuilder {
     namespace: Cow<'static, str>,
     state: HealthRegistryBuilderState,
@@ -159,14 +169,14 @@ pub trait HealthStatusReporter {
 /// of health status descriptions.
 impl HealthStatusReporter for HealthRegistry {
     fn health_status_report(&self) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + '_>> {
-        Box::pin(
-            futures::stream::iter(self.indicators.iter()).then(|(namespace, indicator)| async move {
+        Box::pin(futures::stream::iter(self.indicators.iter()).then(
+            |(namespace, indicator)| async move {
                 HealthStatusDescription {
                     namespace: namespace.clone(),
                     status: indicator.check_health(namespace.clone()).await,
                 }
-            }),
-        )
+            },
+        ))
     }
 }
 
