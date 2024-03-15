@@ -22,18 +22,12 @@ jobs:
       - uses: >- # v4.1.1
           actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
-      - uses: >- # Custom commit at 2023-10-23
-          bazelbuild/setup-bazelisk@5bc144ec07bd24eaa9b5c3e8c9af4006b033b629
-
-      # TODO(aaronmondal): This cache is ~4 gigabytes in size and potentially
-      #                    leads to `no space left on device` errors. Find a
-      #                    more robust solution.
-      # - name: Mount bazel cache
-      #   uses: >- # v3.3.2
-      #     actions/cache@704facf57e6136b1bc63b828d79edcd491f0ee84
-      #   with:
-      #     path: ~/.cache/bazel
-      #     key: ${{ matrix.os }}-bazel-${{ matrix.sanitizer }}
+      - name: Setup Bazelisk
+        uses: >- # v0.8.1
+          bazel-contrib/setup-bazel@b388b84bb637e50cdae241d0f255670d4bd79f29
+        with:
+          bazelisk-cache: true
+          repository-cache: true
 
       - name: Run Bazel tests
         run: bazel test --config=${{ matrix.sanitizer }} --verbose_failures //...
