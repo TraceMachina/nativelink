@@ -89,11 +89,11 @@ async fn check_output_directories(
             let tree = get_and_decode_digest::<ProtoTree>(cas_store, &tree_digest).await?;
             // TODO(allada) When `try_collect()` is stable we can use it instead.
             // https://github.com/rust-lang/rust/issues/94047
-            let mut digest_iter = tree
-                .children
-                .into_iter()
-                .chain(tree.root)
-                .flat_map(|dir| dir.files.into_iter().filter_map(|f| f.digest.map(DigestInfo::try_from)));
+            let mut digest_iter = tree.children.into_iter().chain(tree.root).flat_map(|dir| {
+                dir.files
+                    .into_iter()
+                    .filter_map(|f| f.digest.map(DigestInfo::try_from))
+            });
 
             let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
             digest_iter
