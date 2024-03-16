@@ -34,12 +34,14 @@ jobs:
         uses: >- # Custom commit, last pinned at 2024-03-03.
           DeterminateSystems/magic-nix-cache-action@742d8701e54851d2136f71b61d31382a4f4d0788
 
-      - name: Mount bazel cache
-        uses: >- # v4.0.1
-          actions/cache@ab5e6d0c87105b4c9c2047343972218f562e4319
-        with:
-          path: "~/.cache/bazel"
-          key: ${{ runner.os }}-bazel-nix
+      # TODO(aaronmondal): Figure out why this cache breaks CI.
+      # See: https://github.com/TraceMachina/nativelink/issues/772
+      # - name: Mount bazel cache
+      #   uses: >- # v4.0.1
+      #     actions/cache@ab5e6d0c87105b4c9c2047343972218f562e4319
+      #   with:
+      #     path: "~/.cache/bazel"
+      #     key: ${{ runner.os }}-bazel-nix
 
       - name: Invoke Bazel build in Nix shell
         run: |
