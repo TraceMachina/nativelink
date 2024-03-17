@@ -15,7 +15,7 @@ nativelink-store = { path = "../nativelink-store" }
 nativelink-scheduler = { path = "../nativelink-scheduler" }
 
 async-lock = "3.3.0"
-async-trait = "0.1.77"
+async-trait = "0.1.78"
 bytes = "1.5.0"
 filetime = "0.2.23"
 formatx = "0.2.2"
