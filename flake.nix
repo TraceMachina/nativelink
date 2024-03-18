@@ -127,10 +127,26 @@
 
         generate-toolchains = import ./tools/generate-toolchains.nix {inherit pkgs;};
 
+        # inherit (nix2container.packages.${system}.nix2container) buildImage;
+        # rbe-autogen = import ./local-remote-execution/rbe-autogen.nix {inherit pkgs nativelink buildImage;};
+        # createWorker = import ./tools/create-worker.nix {inherit pkgs nativelink buildImage;};
+
+        inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
         rbe-autogen = import ./local-remote-execution/rbe-autogen.nix {inherit pkgs nativelink buildImage;};
         createWorker = import ./tools/create-worker.nix {inherit pkgs nativelink buildImage;};
+        siso-chromium = buildImage {
+          name = "siso-chromium";
+          fromImage = pullImage {
+            imageName = "gcr.io/chops-public-images-prod/rbe/siso-chromium/linux";
+            imageDigest = "sha256:26de99218a1a8b527d4840490bcbf1690ee0b55c84316300b60776e6b3a03fe1";
+            sha256 = "sha256-v2wctuZStb6eexcmJdkxKcGHjRk2LuZwyJvi/BerMyw=";
+            tlsVerify = true;
+            arch = "amd64";
+            os = "linux";
+          };
+        };
       in rec {
         _module.args.pkgs = import self.inputs.nixpkgs {
           inherit system;
@@ -152,6 +168,7 @@
           lre-java = import ./local-remote-execution/lre-java.nix {inherit pkgs buildImage;};
           rbe-autogen-lre-java = rbe-autogen lre-java;
           nativelink-worker-lre-java = createWorker lre-java;
+          nativelink-worker-siso-chromium = createWorker siso-chromium;
           image = buildImage {
             name = "nativelink";
             config = {
