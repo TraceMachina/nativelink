@@ -18,6 +18,11 @@
       url = "github:ipetkov/crane";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nix2container = {
+      url = "github:nlewo/nix2container";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
   };
 
   outputs = inputs @ {
@@ -25,6 +30,7 @@
     flake-parts,
     crane,
     rust-overlay,
+    nix2container,
     ...
   }:
     flake-parts.lib.mkFlake {inherit inputs;} {
@@ -97,8 +103,8 @@
               then customStdenv
               else pkgs.pkgsMusl.stdenv;
             strictDeps = true;
-            buildInputs = maybeDarwinDeps;
-            nativeBuildInputs = [pkgs.cacert] ++ maybeDarwinDeps;
+            buildInputs = [pkgs.cacert] ++ maybeDarwinDeps;
+            nativeBuildInputs = maybeDarwinDeps;
           }
           // pkgs.lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
             CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
@@ -120,7 +126,12 @@
         local-image-test = import ./tools/local-image-test.nix {inherit pkgs;};
 
         generate-toolchains = import ./tools/generate-toolchains.nix {inherit pkgs;};
-      in {
+
+        inherit (nix2container.packages.${system}.nix2container) buildImage;
+
+        rbe-autogen = import ./local-remote-execution/rbe-autogen.nix {inherit pkgs nativelink buildImage;};
+        createWorker = import ./tools/create-worker.nix {inherit pkgs nativelink buildImage;};
+      in rec {
         _module.args.pkgs = import self.inputs.nixpkgs {
           inherit system;
           overlays = [(import rust-overlay)];
@@ -131,18 +142,20 @@
             program = "${nativelink}/bin/nativelink";
           };
         };
-        packages = {
-          inherit publish-ghcr local-image-test;
+        packages = rec {
+          inherit publish-ghcr local-image-test nativelink;
           default = nativelink;
-          lre = import ./local-remote-execution/image.nix {inherit pkgs nativelink;};
-          image = pkgs.dockerTools.streamLayeredImage {
+
+          lre-cc = import ./local-remote-execution/lre-cc.nix {inherit pkgs buildImage;};
+          rbe-autogen-lre-cc = rbe-autogen lre-cc;
+          nativelink-worker-lre-cc = createWorker lre-cc;
+          lre-java = import ./local-remote-execution/lre-java.nix {inherit pkgs buildImage;};
+          rbe-autogen-lre-java = rbe-autogen lre-java;
+          nativelink-worker-lre-java = createWorker lre-java;
+          image = buildImage {
             name = "nativelink";
-            contents = [
-              nativelink
-              pkgs.dockerTools.caCertificates
-            ];
             config = {
-              Entrypoint = ["/bin/nativelink"];
+              Entrypoint = [(pkgs.lib.getExe' nativelink "nativelink")];
               Labels = {
                 "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
                 "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
