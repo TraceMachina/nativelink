@@ -68,12 +68,9 @@ struct AwaitedAction {
     /// Possible last error set by the worker. If empty and attempts is set, it may be due to
     /// something like a worker timeout.
     last_error: Option<Error>,
-}
 
-/// Holds the relationship of a worker that is executing a specific action.
-struct RunningAction {
-    worker_id: WorkerId,
-    action: AwaitedAction,
+    /// Worker that is currently running this action, None if unassigned.
+    worker_id: Option<WorkerId>,
 }
 
 struct Workers {
@@ -215,7 +212,7 @@ struct SimpleSchedulerImpl {
     queued_actions_set: HashSet<Arc<ActionInfo>>,
     queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction>,
     workers: Workers,
-    active_actions: HashMap<Arc<ActionInfo>, RunningAction>,
+    active_actions: HashMap<Arc<ActionInfo>, AwaitedAction>,
     // These actions completed recently but had no listener, they might have
     // completed while the caller was thinking about calling wait_execution, so
     // keep their completion state around for a while to send back.
@@ -256,7 +253,7 @@ impl SimpleSchedulerImpl {
         // Check to see if the action is running, if it is and cacheable, merge the actions.
         if let Some(running_action) = self.active_actions.get_mut(&action_info) {
             self.metrics.add_action_joined_running_action.inc();
-            return Ok(Self::subscribe_to_channel(&running_action.action));
+            return Ok(Self::subscribe_to_channel(running_action));
         }
 
         // Check to see if the action is queued, if it is and cacheable, merge the actions.
@@ -307,6 +304,7 @@ impl SimpleSchedulerImpl {
                 notify_channel: tx,
                 attempts: 0,
                 last_error: None,
+                worker_id: None,
             },
         );
 
@@ -338,18 +336,14 @@ impl SimpleSchedulerImpl {
         self.queued_actions_set
             .get(unique_qualifier)
             .and_then(|action_info| self.queued_actions.get(action_info))
-            .or_else(|| {
-                self.active_actions
-                    .get(unique_qualifier)
-                    .map(|running_action| &running_action.action)
-            })
+            .or_else(|| self.active_actions.get(unique_qualifier))
             .map(Self::subscribe_to_channel)
     }
 
     fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
         match self.active_actions.remove(action_info) {
             Some(running_action) => {
-                let mut awaited_action = running_action.action;
+                let mut awaited_action = running_action;
                 let send_result = if awaited_action.attempts >= self.max_job_retries {
                     self.metrics.retry_action_max_attempts_reached.inc();
                     Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Completed(ActionResult {
@@ -480,6 +474,7 @@ impl SimpleSchedulerImpl {
                 "queued_actions_set should always have same keys as queued_actions"
             );
             Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
+            awaited_action.worker_id = Some(worker_id);
             let send_result = awaited_action
                 .notify_channel
                 .send(awaited_action.current_state.clone());
@@ -493,13 +488,7 @@ impl SimpleSchedulerImpl {
                 );
             }
             awaited_action.attempts += 1;
-            self.active_actions.insert(
-                action_info.clone(),
-                RunningAction {
-                    worker_id,
-                    action: awaited_action,
-                },
-            );
+            self.active_actions.insert(action_info, awaited_action);
         }
     }
 
@@ -526,21 +515,31 @@ impl SimpleSchedulerImpl {
             self.metrics
                 .update_action_with_internal_error_backpressure
                 .inc();
-            running_action.action.attempts -= 1;
+            running_action.attempts -= 1;
         }
 
-        if running_action.worker_id == *worker_id {
+        if running_action.worker_id == Some(*worker_id) {
             // Don't set the error on an action that's running somewhere else.
             warn!("Internal error for worker {}: {}", worker_id, err);
-            running_action.action.last_error = Some(err.clone());
+            running_action.last_error = Some(err.clone());
         } else {
             self.metrics
                 .update_action_with_internal_error_from_wrong_worker
                 .inc();
-            error!(
-                "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {}",
-                    running_action.worker_id, worker_id
-            );
+            match running_action.worker_id {
+                Some(running_action_worker_id) => {
+                    error!(
+                        "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {}",
+                        running_action_worker_id, worker_id
+                    )
+                }
+                None => {
+                    error!(
+                        "Got a result from a worker that should not be running the action, Removing worker. Expected action to be unassigned got worker {}",
+                        worker_id
+                    )
+                }
+            }
         }
 
         // Now put it back. retry_action() needs it to be there to send errors properly.
@@ -588,13 +587,20 @@ impl SimpleSchedulerImpl {
                 format!("Could not find action info in active actions : {action_info_hash_key:?}")
             })?;
 
-        if running_action.worker_id != *worker_id {
+        if running_action.worker_id != Some(*worker_id) {
             self.metrics.update_action_from_wrong_worker.inc();
-            let err = make_err!(
-                Code::Internal,
-                "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {worker_id}",
-                running_action.worker_id,
-            );
+            let err = match running_action.worker_id {
+
+                Some(running_action_worker_id) => make_err!(
+                    Code::Internal,
+                    "Got a result from a worker that should not be running the action, Removing worker. Expected worker {} got worker {worker_id}",
+                    running_action_worker_id
+                ),
+                None => make_err!(
+                    Code::Internal,
+                    "Got a result from a worker that should not be running the action, Removing worker. Expected action to be unassigned got worker {worker_id}",
+                ),
+            };
             error!("{:?}", err);
             // First put it back in our active_actions or we will drop the task.
             self.active_actions.insert(action_info, running_action);
@@ -602,14 +608,13 @@ impl SimpleSchedulerImpl {
             return Err(err);
         }
 
-        Arc::make_mut(&mut running_action.action.current_state).stage = action_stage;
+        Arc::make_mut(&mut running_action.current_state).stage = action_stage;
 
         let send_result = running_action
-            .action
             .notify_channel
-            .send(running_action.action.current_state.clone());
+            .send(running_action.current_state.clone());
 
-        if !running_action.action.current_state.stage.is_finished() {
+        if !running_action.current_state.stage.is_finished() {
             if send_result.is_err() {
                 self.metrics.update_action_no_more_listeners.inc();
                 warn!(
@@ -626,7 +631,7 @@ impl SimpleSchedulerImpl {
         // Keep in case this is asked for soon.
         self.recently_completed_actions.insert(CompletedAction {
             completed_time: SystemTime::now(),
-            state: running_action.action.current_state,
+            state: running_action.current_state,
         });
 
         let worker = self.workers.workers.get_mut(worker_id).ok_or_else(|| {
@@ -1003,20 +1008,20 @@ impl MetricsComponent for SimpleScheduler {
             }
             for (_, active_action) in inner.active_actions.iter() {
                 let action_name = active_action
-                    .action
                     .action_info
                     .unique_qualifier
                     .action_name()
                     .into();
+                let worker_id_str = match active_action.worker_id {
+                    Some(id) => id.to_string(),
+                    None => "Unassigned".to_string(),
+                };
                 c.publish_with_labels(
                     "active_actions",
                     active_action,
                     "",
                     vec![
-                        (
-                            "worker_id".into(),
-                            active_action.worker_id.to_string().into(),
-                        ),
+                        ("worker_id".into(), worker_id_str.into()),
                         ("digest".into(), action_name),
                     ],
                 );
@@ -1039,12 +1044,6 @@ impl MetricsComponent for CompletedAction {
             self.state.as_ref(),
             "The current stage of the action.",
         );
-    }
-}
-
-impl MetricsComponent for RunningAction {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish("action", &self.action, "");
     }
 }
 
