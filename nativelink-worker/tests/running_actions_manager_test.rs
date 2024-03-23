@@ -2823,7 +2823,7 @@ exit 1
             let err = action_result
                 .error
                 .as_ref()
-                .err_tip(|| format!("No error exists in result : {:?}", action_result))?;
+                .err_tip(|| format!("No error exists in result : {action_result:?}"))?;
             assert_eq!(
                 err.code,
                 Code::Aborted,

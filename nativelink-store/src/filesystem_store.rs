@@ -119,7 +119,7 @@ impl Drop for EncodedFilePath {
             );
             let result = fs::remove_file(&file_path)
                 .await
-                .err_tip(|| format!("Failed to remove file {:?}", file_path));
+                .err_tip(|| format!("Failed to remove file {file_path:?}"));
             if let Err(err) = result {
                 error!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
             }
@@ -213,18 +213,14 @@ impl FileEntry for FileEntryImpl {
         let temp_file_result = fs::create_file(temp_full_path.clone())
             .or_else(|mut err| async {
                 let remove_result = fs::remove_file(&temp_full_path).await.err_tip(|| {
-                    format!(
-                        "Failed to remove file {:?} in filesystem store",
-                        temp_full_path
-                    )
+                    format!("Failed to remove file {temp_full_path:?} in filesystem store")
                 });
                 if let Err(remove_err) = remove_result {
                     err = err.merge(remove_err);
                 }
                 warn!("\x1b[0;31mFilesystem Store\x1b[0m: {:?}", err);
-                Err(err).err_tip(|| {
-                    format!("Failed to create {:?} in filesystem store", temp_full_path)
-                })
+                Err(err)
+                    .err_tip(|| format!("Failed to create {temp_full_path:?} in filesystem store"))
             })
             .await?;
 
@@ -261,10 +257,7 @@ impl FileEntry for FileEntryImpl {
                 let file = fs::open_file(full_content_path.clone(), length)
                     .await
                     .err_tip(|| {
-                        format!(
-                            "Failed to open file in filesystem store {:?}",
-                            full_content_path
-                        )
+                        format!("Failed to open file in filesystem store {full_content_path:?}")
                     })?;
                 Ok((file, full_content_path))
             })
@@ -276,12 +269,7 @@ impl FileEntry for FileEntryImpl {
             .get_mut()
             .seek(SeekFrom::Start(offset))
             .await
-            .err_tip(|| {
-                format!(
-                    "Failed to seek file: {:?}",
-                    full_content_path_for_debug_only
-                )
-            })?;
+            .err_tip(|| format!("Failed to seek file: {full_content_path_for_debug_only:?}"))?;
         Ok(file)
     }
 
@@ -334,10 +322,7 @@ impl LenEntry for FileEntryImpl {
                 let full_content_path = full_content_path.to_os_string();
                 spawn_blocking(move || {
                     set_file_atime(&full_content_path, FileTime::now()).err_tip(|| {
-                        format!(
-                            "Failed to touch file in filesystem store {:?}",
-                            full_content_path
-                        )
+                        format!("Failed to touch file in filesystem store {full_content_path:?}")
                     })
                 })
                 .await
@@ -766,7 +751,7 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
 
         self.update_file(entry, temp_file, digest, reader)
             .await
-            .err_tip(|| format!("While processing with temp file {:?}", temp_full_path))
+            .err_tip(|| format!("While processing with temp file {temp_full_path:?}"))
     }
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
@@ -786,16 +771,13 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
                 .as_reader()
                 .await
                 .err_tip(|| {
-                    format!(
-                        "While getting metadata for {:?} in update_with_whole_file",
-                        path
-                    )
+                    format!("While getting metadata for {path:?} in update_with_whole_file")
                 })?
                 .get_ref()
                 .as_ref()
                 .metadata()
                 .await
-                .err_tip(|| format!("While reading metadata for {:?}", path))?
+                .err_tip(|| format!("While reading metadata for {path:?}"))?
                 .len(),
         };
         let entry = Fe::create(

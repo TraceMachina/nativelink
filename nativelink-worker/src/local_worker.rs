@@ -100,12 +100,7 @@ async fn preconditions_met(precondition_script: Option<String>) -> Result<(), Er
         .stderr(Stdio::null())
         .env_clear()
         .spawn()
-        .err_tip(|| {
-            format!(
-                "Could not execute precondition command {:?}",
-                precondition_script
-            )
-        })?;
+        .err_tip(|| format!("Could not execute precondition command {precondition_script:?}"))?;
     let output = precondition_process.wait_with_output().await?;
     if output.status.code() == Some(0) {
         Ok(())

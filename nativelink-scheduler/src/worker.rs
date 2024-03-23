@@ -39,7 +39,7 @@ impl std::fmt::Display for WorkerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buf = Uuid::encode_buffer();
         let worker_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
-        write!(f, "{}", worker_id_str)
+        write!(f, "{worker_id_str}")
     }
 }
 
@@ -188,7 +188,7 @@ impl Worker {
         let id = self.id;
         self.metrics.keep_alive.wrap(move || {
             send_msg_to_worker(tx, update_for_worker::Update::KeepAlive(()))
-                .err_tip(|| format!("Failed to send KeepAlive to worker : {}", id))
+                .err_tip(|| format!("Failed to send KeepAlive to worker : {id}"))
         })
     }
 

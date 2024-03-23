@@ -98,9 +98,7 @@ mod verify_store_tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains(EXPECTED_ERR),
-            "Error should contain '{}', got: {:?}",
-            EXPECTED_ERR,
-            err
+            "Error should contain '{EXPECTED_ERR}', got: {err:?}"
         );
         assert_eq!(
             Pin::new(inner_store.as_ref()).has(digest).await,
@@ -237,15 +235,11 @@ mod verify_store_tests {
         let err = result.unwrap_err().to_string();
         const ACTUAL_HASH: &str =
             "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
-        let expected_err = format!(
-            "Hashes do not match, got: {} but digest hash was {}",
-            HASH, ACTUAL_HASH
-        );
+        let expected_err =
+            format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
         assert!(
             err.contains(&expected_err),
-            "Error should contain '{}', got: {:?}",
-            expected_err,
-            err
+            "Error should contain '{expected_err}', got: {err:?}"
         );
         assert_eq!(
             Pin::new(inner_store.as_ref()).has(digest).await,
@@ -315,15 +309,11 @@ mod verify_store_tests {
         let err = result.unwrap_err().to_string();
         const ACTUAL_HASH: &str =
             "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
-        let expected_err = format!(
-            "Hashes do not match, got: {} but digest hash was {}",
-            HASH, ACTUAL_HASH
-        );
+        let expected_err =
+            format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
         assert!(
             err.contains(&expected_err),
-            "Error should contain '{}', got: {:?}",
-            expected_err,
-            err
+            "Error should contain '{expected_err}', got: {err:?}"
         );
         assert_eq!(
             Pin::new(inner_store.as_ref()).has(digest).await,
