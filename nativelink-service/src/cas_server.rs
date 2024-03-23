@@ -73,7 +73,7 @@ impl CasServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         let mut requested_blobs = Vec::with_capacity(inner_request.blob_digests.len());
@@ -105,7 +105,7 @@ impl CasServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
@@ -164,7 +164,7 @@ impl CasServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
@@ -227,7 +227,7 @@ impl CasServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
