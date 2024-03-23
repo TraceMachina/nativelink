@@ -163,6 +163,12 @@ pub enum StoreConfig {
     /// side effects and is the most efficient way to use it.
     grpc(GrpcStore),
 
+    /// This store will take in smaller data in a Redis store.
+    ///
+    /// Pairs well with the SizePartitioning store to accept only
+    /// small data that is optimally sized to fit in the Redis store.
+    redis_store(RedisStore),
+
     /// Noop store is a store that sends streams into the void and all data
     /// retrieval will return 404 (NotFound). This can be useful for cases
     /// where you may need to partition your data and part of your data needs
@@ -582,6 +588,23 @@ pub enum ErrorCode {
     DataLoss = 15,
     Unauthenticated = 16,
     // Note: This list is duplicated from nativelink-error/lib.rs.
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RedisStore {
+    /// The hostname or IP address of the Redis server can include username, passowrd, tls, and database number.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub url: String,
+    // // TODO: Remove this boolean
+    // /// If store is being used in unit tests set this to true
+    // pub use_mock: Option<bool>,
+
+    // // TODO: Figure out how to move this configuration to test suite
+    // /// If store is being used in unit tests set this to true
+    // pub mock_commands: Option<Vec<String>>,
+
+    // /// If store is being used in unit tests set this to true
+    // pub mock_data: Option<Vec<String>>,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
