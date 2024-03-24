@@ -25,3 +25,4 @@ mutex
 parsable
 rebase
 remoteable
+Chromium
