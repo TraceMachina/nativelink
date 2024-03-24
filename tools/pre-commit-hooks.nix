@@ -51,6 +51,26 @@ in {
     entry = "${pkgs.python311Packages.pre-commit-hooks}/bin/detect-private-key";
     types = ["text"];
   };
+  forbid-binary-files = {
+    excludes = [
+      "nativelink-docs/static/img/hero-dark.png"
+      "nativelink-util/tests/data/SekienAkashita.jpg"
+    ];
+    enable = true;
+    types = ["binary"];
+    entry = let
+      script = pkgs.writeShellScriptBin "forbid-binary-files" ''
+        set -eu
+
+        if [ $# -gt 0 ]; then
+          for filename in "''${@}"; do
+            printf "[\033[31mERROR\033[0m] Found binary file: ''${filename}"
+          done
+          exit 1
+        fi
+      '';
+    in "${script}/bin/forbid-binary-files";
+  };
 
   # Documentation
   vale.enable = true;
