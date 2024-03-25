@@ -346,7 +346,7 @@ pub async fn open_file(path: impl AsRef<Path>, limit: u64) -> Result<ResumeableF
     let (permit, os_file, path) = call_with_permit(move |permit| {
         Ok((
             permit,
-            std::fs::File::open(&path).err_tip(|| format!("Could not open {:?}", path))?,
+            std::fs::File::open(&path).err_tip(|| format!("Could not open {path:?}"))?,
             path,
         ))
     })
@@ -367,7 +367,7 @@ pub async fn create_file(path: impl AsRef<Path>) -> Result<ResumeableFileSlot, E
     let (permit, os_file, path) = call_with_permit(move |permit| {
         Ok((
             permit,
-            std::fs::File::create(&path).err_tip(|| format!("Could not open {:?}", path))?,
+            std::fs::File::create(&path).err_tip(|| format!("Could not open {path:?}"))?,
             path,
         ))
     })

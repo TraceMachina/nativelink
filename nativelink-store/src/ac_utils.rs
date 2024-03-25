@@ -74,7 +74,7 @@ pub async fn get_size_and_decode_digest<T: Message + Default>(
         .err_tip_with_code(|e| {
             (
                 Code::NotFound,
-                format!("Stored value appears to be corrupt: {}", e),
+                format!("Stored value appears to be corrupt: {e}"),
             )
         })
         .map(|v| (v, store_data_len))

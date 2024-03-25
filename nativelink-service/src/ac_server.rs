@@ -82,7 +82,7 @@ impl AcServer {
         let store_info = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?;
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
 
         // TODO(blaise.bruer) We should write a test for these errors.
         let digest: DigestInfo = get_action_request
@@ -115,7 +115,7 @@ impl AcServer {
         let store_info = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?;
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
 
         if store_info.read_only {
             return Err(make_err!(

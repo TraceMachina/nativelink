@@ -53,7 +53,7 @@ impl DigestInfo {
         T: TryInto<i64> + std::fmt::Display + Copy,
     {
         let packed_hash =
-            <[u8; 32]>::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {}", hash))?;
+            <[u8; 32]>::from_hex(hash).err_tip(|| format!("Invalid sha256 hash: {hash}"))?;
         let size_bytes = size_bytes
             .try_into()
             .map_err(|_| make_input_err!("Could not convert {} into i64", size_bytes))?;

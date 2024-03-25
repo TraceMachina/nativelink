@@ -101,7 +101,7 @@ impl<'a> ResourceInfo<'a> {
             State::Unknown,
             &mut end_bytes_processed,
         )
-        .err_tip(|| format!("{} in {}", ERROR_MSG, resource_name))?;
+        .err_tip(|| format!("{ERROR_MSG} in {resource_name}"))?;
         error_if!(
             end_state != State::OptionalMetadata,
             "Expected the final state to be OptionalMetadata. Got: {end_state:?} for {resource_name} is_upload: {is_upload}"
@@ -126,13 +126,13 @@ impl<'a> ResourceInfo<'a> {
         output.uuid = Some(
             parts
                 .next()
-                .err_tip(|| format!("{} in {}", ERROR_MSG, resource_name))?,
+                .err_tip(|| format!("{ERROR_MSG} in {resource_name}"))?,
         );
         {
             // Sanity check that our next item is "uploads".
             let uploads = parts
                 .next()
-                .err_tip(|| format!("{} in {}", ERROR_MSG, resource_name))?;
+                .err_tip(|| format!("{ERROR_MSG} in {resource_name}"))?;
             error_if!(
                 uploads != "uploads",
                 "Expected part to be 'uploads'. Got: {uploads} for {resource_name} is_upload: {is_upload}"

@@ -25,7 +25,7 @@ mod cas_utils_tests {
             packed_hash: Sha256::new().finalize().into(),
             size_bytes: 0,
         };
-        assert_eq!(is_zero_digest(&digest), true);
+        assert!(is_zero_digest(&digest));
     }
 
     #[test]
@@ -36,7 +36,7 @@ mod cas_utils_tests {
             packed_hash: hasher.finalize().into(),
             size_bytes: 1,
         };
-        assert_eq!(is_zero_digest(&digest), false);
+        assert!(!is_zero_digest(&digest));
     }
 
     #[test]
@@ -45,7 +45,7 @@ mod cas_utils_tests {
             packed_hash: Blake3::new().finalize().into(),
             size_bytes: 0,
         };
-        assert_eq!(is_zero_digest(&digest), true);
+        assert!(is_zero_digest(&digest));
     }
 
     #[test]
@@ -56,6 +56,6 @@ mod cas_utils_tests {
             packed_hash: hasher.finalize().into(),
             size_bytes: 1,
         };
-        assert_eq!(is_zero_digest(&digest), false);
+        assert!(!is_zero_digest(&digest));
     }
 }

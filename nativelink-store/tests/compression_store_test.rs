@@ -149,10 +149,7 @@ mod compression_store_tests {
                     .get_part_unchunked(digest, offset, Some(read_slice_size), None)
                     .await
                     .err_tip(|| {
-                        format!(
-                            "Failed to get from inner store at {} - {}",
-                            offset, read_slice_size
-                        )
+                        format!("Failed to get from inner store at {offset} - {read_slice_size}")
                     })?;
 
                 let start_pos = cmp::min(RAW_DATA.len(), offset);

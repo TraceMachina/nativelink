@@ -125,7 +125,7 @@ mod buf_channel_tests {
         let rx_fut = async move {
             assert_eq!(
                 rx.collect_all_with_size_hint(0).await?,
-                Bytes::from(format!("{}{}{}{}", DATA1, DATA2, DATA1, DATA2))
+                Bytes::from(format!("{DATA1}{DATA2}{DATA1}{DATA2}"))
             );
             Result::<(), Error>::Ok(())
         };
@@ -168,7 +168,7 @@ mod buf_channel_tests {
             Result::<(), Error>::Ok(())
         };
         let rx_fut = async move {
-            let all_data = Bytes::from(format!("{}{}{}{}", DATA1, DATA2, DATA1, DATA2));
+            let all_data = Bytes::from(format!("{DATA1}{DATA2}{DATA1}{DATA2}"));
             assert_eq!(rx.take(1).await?, all_data.slice(0..1));
             assert_eq!(rx.take(3).await?, all_data.slice(1..4));
             assert_eq!(rx.take(4).await?, all_data.slice(4..8));

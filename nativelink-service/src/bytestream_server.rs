@@ -268,7 +268,7 @@ impl ByteStreamServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         let digest = DigestInfo::try_new(resource_info.hash, resource_info.expected_size)?;
@@ -379,7 +379,7 @@ impl ByteStreamServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{}'", instance_name))?
+            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         let digest = DigestInfo::try_new(&stream.hash, stream.expected_size)

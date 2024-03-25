@@ -32,7 +32,7 @@ async fn make_temp_path(data: &str) -> OsString {
         thread_rng().gen::<u64>(),
     );
     fs::create_dir_all(&dir).await.unwrap();
-    OsString::from(format!("{}/{}", dir, data))
+    OsString::from(format!("{dir}/{data}"))
 }
 
 static TEST_EXCLUSIVE_SEMAPHORE: Semaphore = Semaphore::const_new(1);

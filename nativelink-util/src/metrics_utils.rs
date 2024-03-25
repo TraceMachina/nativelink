@@ -181,7 +181,7 @@ impl CollectorState {
             let value = data
                 .get(if index < data.len() { index } else { index - 1 })
                 .unwrap();
-            let labels = vec![("quantile".into(), format!("{:.2}", i).into())];
+            let labels = vec![("quantile".into(), format!("{i:.2}").into())];
             self.publish_number(name.clone(), *value, help.clone(), labels);
         }
     }
@@ -622,7 +622,7 @@ where
         let mut state = CollectorState {
             module_name: match (&parent_state.module_name, module_name) {
                 (Some(parent), None) => Some(parent.clone()),
-                (Some(parent), Some(child)) => Some(format!("{parent}_{}", child)),
+                (Some(parent), Some(child)) => Some(format!("{parent}_{child}")),
                 (None, child) => child,
             },
             metrics: Vec::default(),

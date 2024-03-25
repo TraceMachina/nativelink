@@ -129,7 +129,7 @@ pub struct HealthRegistryBuilder {
 impl HealthRegistryBuilder {
     pub fn new(namespace: Cow<'static, str>) -> Self {
         Self {
-            namespace: format!("/{}", namespace).into(),
+            namespace: format!("/{namespace}").into(),
             state: Arc::new(Mutex::new(HashMap::new())),
         }
     }

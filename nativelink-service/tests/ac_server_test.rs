@@ -150,8 +150,7 @@ mod get_action_result {
 
         assert!(
             raw_response.is_ok(),
-            "Expected value, got error {:?}",
-            raw_response
+            "Expected value, got error {raw_response:?}"
         );
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
         Ok(())
@@ -236,8 +235,7 @@ mod update_action_result {
 
         assert!(
             raw_response.is_ok(),
-            "Expected success, got error {:?}",
-            raw_response
+            "Expected success, got error {raw_response:?}"
         );
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
 

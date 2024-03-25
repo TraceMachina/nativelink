@@ -329,7 +329,7 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         if let Err(e) = self.update_oneshot(digest_info, digest_bytes.clone()).await {
             return HealthStatus::new_failed(
                 self.get_ref(),
-                format!("Store.update_oneshot() failed: {}", e).into(),
+                format!("Store.update_oneshot() failed: {e}").into(),
             );
         }
 
@@ -351,7 +351,7 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
             Err(e) => {
                 return HealthStatus::new_failed(
                     self.get_ref(),
-                    format!("Store.has() failed: {}", e).into(),
+                    format!("Store.has() failed: {e}").into(),
                 );
             }
         }
@@ -371,7 +371,7 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
             Err(e) => {
                 return HealthStatus::new_failed(
                     self.get_ref(),
-                    format!("Store.get_part_unchunked() failed: {}", e).into(),
+                    format!("Store.get_part_unchunked() failed: {e}").into(),
                 );
             }
         }
