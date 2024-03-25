@@ -12,7 +12,12 @@ permissions: read-all
 
 jobs:
   publish-image:
-    runs-on: large-ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [image, nativelink-worker-lre-cc]
+    name: Publish ${{ matrix.image }}
+    runs-on: ubuntu-22.04
     permissions:
       packages: write
       id-token: write
@@ -35,7 +40,7 @@ jobs:
 
       - name: Test image
         run: |
-          nix run .#local-image-test
+          nix run .#local-image-test ${{ matrix.image }}
 
       - name: Upload image
         run: |
@@ -45,4 +50,10 @@ jobs:
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           GHCR_IMAGE_NAME: ${{ github.repository }}
-        if: github.ref == 'refs/heads/main'
+        # if: github.ref == 'refs/heads/main'
+
+      - name: Upload trivy scan results to GitHub Security tab
+        uses: >- # v2.16.3
+          github/codeql-action/upload-sarif@592977e6ae857384aa79bb31e7a1d62d63449ec5
+        with:
+          sarif_file: 'trivy-results.sarif'

@@ -36,4 +36,10 @@ pkgs.writeShellScriptBin "publish-ghcr" ''
         --format "{{ .Digest }}" \
         docker://''${TAGGED_IMAGE} \
   )
+
+  ${pkgs.trivy}/bin/trivy \
+    image \
+    --format sarif \
+    ''${TAGGED_IMAGE} \
+  > trivy-results.sarif
 ''
