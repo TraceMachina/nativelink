@@ -523,7 +523,7 @@ mod local_worker_tests {
         fs::create_dir_all(temp_path.clone()).await?;
         #[cfg(target_family = "unix")]
         let precondition_script = {
-            let precondition_script = format!("{}/precondition.sh", temp_path);
+            let precondition_script = format!("{temp_path}/precondition.sh");
             // We use std::fs::File here because we sometimes get strange bugs here
             // that result in: "Text file busy (os error 26)" if it is an executeable.
             // It is likley because somewhere the file descriotor does not get closed

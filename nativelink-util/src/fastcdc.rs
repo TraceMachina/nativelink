@@ -52,8 +52,8 @@ pub struct FastCDC {
 
 impl FastCDC {
     pub fn new(min_size: usize, avg_size: usize, max_size: usize) -> Self {
-        assert!(min_size < avg_size, "Expected {} < {}", min_size, avg_size);
-        assert!(avg_size < max_size, "Expected {} < {}", avg_size, max_size);
+        assert!(min_size < avg_size, "Expected {min_size} < {avg_size}");
+        assert!(avg_size < max_size, "Expected {avg_size} < {max_size}");
         let norm_size = {
             let mut offset = min_size + ((min_size + 1) / 2);
             if offset > avg_size {

@@ -63,8 +63,7 @@ async fn check_data<S: Store>(
 ) -> Result<(), Error> {
     assert!(
         check_store.has(digest).await?.is_some(),
-        "Expected data to exist in {} store",
-        debug_name
+        "Expected data to exist in {debug_name} store"
     );
 
     let store_data = check_store
@@ -72,8 +71,7 @@ async fn check_data<S: Store>(
         .await?;
     assert_eq!(
         store_data, original_data,
-        "Expected data to match in {} store",
-        debug_name
+        "Expected data to match in {debug_name} store"
     );
     Ok(())
 }
