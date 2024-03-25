@@ -130,7 +130,7 @@
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
         rbe-autogen = import ./local-remote-execution/rbe-autogen.nix {inherit pkgs nativelink buildImage;};
-        createWorker = import ./tools/create-worker.nix {inherit pkgs nativelink buildImage;};
+        createWorker = import ./tools/create-worker.nix {inherit pkgs nativelink buildImage self;};
       in rec {
         _module.args.pkgs = import self.inputs.nixpkgs {
           inherit system;
@@ -203,6 +203,7 @@
               pkgs.cilium-cli
               pkgs.yarn
               pkgs.vale
+              pkgs.trivy
 
               # Additional tools from within our development environment.
               local-image-test

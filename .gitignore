@@ -13,3 +13,4 @@ __pycache__
 result
 .bazelrc.user
 MODULE.bazel.lock
+trivy-results.sarif
