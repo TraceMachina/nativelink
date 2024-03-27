@@ -14,6 +14,11 @@ Supports Unix-based operating systems and Windows.
 
 Below, you will find a few different options for getting started with NativeLink.
 
+### 📝 Clone the nativelink repository
+1. Go to the [nativelink](https://github.com/TraceMachina/nativelink) repository on GitHub. Clone the repository via SSH or HTTPS. In this example the repository is cloned via SSH:
+```bash
+git clone git@github.com:TraceMachina/nativelink.git
+```
 
 ### 📦 Installing with Cargo
 
@@ -43,10 +48,13 @@ nativelink basic_cas.json
 
 ## 🧪 Evaluating NativeLink
 
-Once you've built NativeLink and have an instance running with the
-`basic_cas.json` configuration, launch a separate terminal session and run the
-following command to connect the running server launched above to Bazel or
-another RBE client:
+1. Once you've built NativeLink and have an instance running with the
+`basic_cas.json` configuration, launch a separate terminal session. 
+2. Navigate to where you cloned the nativelink repoistory:
+```bash
+cd $HOME/nativelink
+```
+3. In the new terminal, run the following command to connect the running server launched above to Bazel or another RBE client:
 
 ```sh
 bazel test //... \
@@ -67,6 +75,9 @@ bazel test //... `
 ```
 This causes Bazel to run the commands through an all-in-one `CAS`, `scheduler`
 and `worker`.
+
+> [!WARNING]
+> If you're using MacOS, encountering errors is anticipated at this stage. Our team is actively working on enhancing support for executing remoteable Bazel builds with MacOS. For now, you can run with [Docker](https://github.com/blakehatch/nativelink/tree/main/deployment-examples/docker-compose) or a Linux virtual machine. 
 
 ## How it Works
 
