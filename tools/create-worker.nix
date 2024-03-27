@@ -2,6 +2,7 @@
   pkgs,
   nativelink,
   buildImage,
+  self,
   ...
 }: let
   # A temporary directory. Note that this doesn't set any permissions. Those
@@ -99,5 +100,14 @@ in
       config = {
         User = user;
         WorkingDir = "/home/${user}";
+        Labels = {
+          "org.opencontainers.image.description" = "NativeLink worker generated from ${image.imageName}.";
+          "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
+          "org.opencontainers.image.licenses" = "Apache-2.0";
+          "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
+          "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
+          "org.opencontainers.image.title" = "NativeLink worker for ${image.imageName}";
+          "org.opencontainers.image.vendor" = "Trace Machina, Inc.";
+        };
       };
     }
