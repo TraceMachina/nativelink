@@ -111,7 +111,7 @@ nix run github:TraceMachina/nativelink/<revision> ./basic_cas.json
 
 **Build requirements:**
 
-* Bazel 6.4.0+
+* Bazel 7.0.2+
 * A recent C++ toolchain with LLD as linker
 
 > [!TIP]
