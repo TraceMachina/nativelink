@@ -152,8 +152,7 @@ mod find_missing_blobs {
         let error = raw_response.unwrap_err();
         assert!(
             error.to_string().contains("Invalid sha256 hash: BAD_HASH"),
-            "'Invalid sha256 hash: BAD_HASH' not found in: {:?}",
-            error
+            "'Invalid sha256 hash: BAD_HASH' not found in: {error:?}"
         );
         Ok(())
     }

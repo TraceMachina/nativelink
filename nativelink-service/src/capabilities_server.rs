@@ -61,7 +61,7 @@ impl CapabilitiesServer {
                 for platform_key in scheduler
                     .get_platform_property_manager(instance_name)
                     .await
-                    .err_tip(|| format!("Failed to get platform properties for {}", instance_name))?
+                    .err_tip(|| format!("Failed to get platform properties for {instance_name}"))?
                     .get_known_properties()
                     .keys()
                 {
