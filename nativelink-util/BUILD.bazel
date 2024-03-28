@@ -16,7 +16,7 @@ rust_library(
         "src/evicting_map.rs",
         "src/fastcdc.rs",
         "src/fs.rs",
-        "src/grpc_utils.rs",
+        "src/connection_manager.rs",
         "src/health_utils.rs",
         "src/lib.rs",
         "src/metrics_utils.rs",
