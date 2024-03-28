@@ -111,6 +111,20 @@ pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(
     Ok((*(shellexpand::env(&value).map_err(de::Error::custom)?)).to_string())
 }
 
+/// Same as convert_string_with_shellexpand, but supports Vec<String>.
+pub fn convert_vec_string_with_shellexpand<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    let vec = Vec::<String>::deserialize(deserializer)?;
+    vec.into_iter()
+        .map(|s| {
+            shellexpand::env(&s)
+                .map_err(de::Error::custom)
+                .map(|expanded| expanded.into_owned())
+        })
+        .collect()
+}
+
 /// Same as convert_string_with_shellexpand, but supports Option<String>.
 pub fn convert_optional_string_with_shellexpand<'de, D: Deserializer<'de>>(
     deserializer: D,
