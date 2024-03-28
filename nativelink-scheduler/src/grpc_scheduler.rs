@@ -81,6 +81,7 @@ impl GrpcScheduler {
             ),
             connection_manager: ConnectionManager::new(
                 std::iter::once(endpoint),
+                config.connections_per_endpoint,
                 config.max_concurrent_requests,
             ),
         })
@@ -164,16 +165,13 @@ impl ActionScheduler for GrpcScheduler {
 
         self.perform_request(instance_name, |instance_name| async move {
             // Not in the cache, lookup the capabilities with the upstream.
-            let (connection, channel) = self.connection_manager.get_connection().await;
+            let channel = self.connection_manager.connection().await?;
             let capabilities_result = CapabilitiesClient::new(channel)
                 .get_capabilities(GetCapabilitiesRequest {
                     instance_name: instance_name.to_string(),
                 })
                 .await
                 .err_tip(|| "Retrieving upstream GrpcScheduler capabilities");
-            if let Err(err) = &capabilities_result {
-                connection.on_error(err);
-            }
             let capabilities = capabilities_result?.into_inner();
             let platform_property_manager = Arc::new(PlatformPropertyManager::new(
                 capabilities
@@ -220,15 +218,11 @@ impl ActionScheduler for GrpcScheduler {
         };
         let result_stream = self
             .perform_request(request, |request| async move {
-                let (connection, channel) = self.connection_manager.get_connection().await;
-                let result = ExecutionClient::new(channel)
+                let channel = self.connection_manager.connection().await?;
+                ExecutionClient::new(channel)
                     .execute(Request::new(request))
                     .await
-                    .err_tip(|| "Sending action to upstream scheduler");
-                if let Err(err) = &result {
-                    connection.on_error(err);
-                }
-                result
+                    .err_tip(|| "Sending action to upstream scheduler")
             })
             .await?
             .into_inner();
@@ -244,15 +238,11 @@ impl ActionScheduler for GrpcScheduler {
         };
         let result_stream = self
             .perform_request(request, |request| async move {
-                let (connection, channel) = self.connection_manager.get_connection().await;
-                let result = ExecutionClient::new(channel)
+                let channel = self.connection_manager.connection().await?;
+                ExecutionClient::new(channel)
                     .wait_execution(Request::new(request))
                     .await
-                    .err_tip(|| "While getting wait_execution stream");
-                if let Err(err) = &result {
-                    connection.on_error(err);
-                }
-                result
+                    .err_tip(|| "While getting wait_execution stream")
             })
             .and_then(|result_stream| Self::stream_state(result_stream.into_inner()))
             .await;

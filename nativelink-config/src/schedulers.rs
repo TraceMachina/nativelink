@@ -140,6 +140,11 @@ pub struct GrpcScheduler {
     /// request is queued.
     #[serde(default)]
     pub max_concurrent_requests: usize,
+
+    /// The number of connections to make to each specified endpoint to balance
+    /// the load over multiple TCP connections.  Zero is always changed to 1.
+    #[serde(default)]
+    pub connections_per_endpoint: usize,
 }
 
 #[derive(Deserialize, Debug)]
