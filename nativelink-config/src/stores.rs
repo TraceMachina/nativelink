@@ -39,6 +39,18 @@ pub enum ConfigDigestHashFunction {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum StoreConfig {
     /// Memory store will store all data in a hashmap in memory.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "memory": {
+    ///     "eviction_policy": {
+    ///       // 10mb.
+    ///       "max_bytes": 10000000,
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
     memory(MemoryStore),
 
     /// S3 store will use Amazon's S3 service as a backend to store
@@ -47,6 +59,22 @@ pub enum StoreConfig {
     ///
     /// This configuration will never delete files, so you are
     /// responsible for purging old files in other ways.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "experimental_s3_store": {
+    ///   "region": "eu-north-1",
+    ///   "bucket": "crossplane-bucket-af79aeca9",
+    ///   "key_prefix": "test-prefix-index/",
+    ///   "retry": {
+    ///     "max_retries": 6,
+    ///     "delay": 0.3,
+    ///     "jitter": 0.5
+    ///   },
+    ///   "multipart_max_concurrent_uploads": 10
+    /// }
+    /// ```
+    ///
     experimental_s3_store(S3Store),
 
     /// Verify store is used to apply verifications to an underlying
@@ -57,12 +85,48 @@ pub enum StoreConfig {
     ///
     /// The suggested configuration is to have the CAS validate the
     /// hash and size and the AC validate nothing.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "verify": {
+    ///   "memory": {
+    ///     "eviction_policy": {
+    ///       "max_bytes": 500000000 // 500mb.
+    ///     }
+    ///   },
+    ///   "verify_size": true,
+    ///   "hash_verification_function": "sha256"
+    /// }
+    /// ```
+    ///
     verify(Box<VerifyStore>),
 
     /// Completeness checking store verifies if the
     /// output files & folders exist in the CAS before forwarding
     /// the request to the underlying store.
     /// Note: This store should only be used on AC stores.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "completeness_checking": {
+    ///     "backend": {
+    ///       "filesystem": {
+    ///         "content_path": "~/.cache/nativelink/content_path-ac",
+    ///         "temp_path": "~/.cache/nativelink/tmp_path-ac",
+    ///         "eviction_policy": {
+    ///           // 500mb.
+    ///           "max_bytes": 500000000,
+    ///         }
+    ///       }
+    ///     },
+    ///     "cas_store": {
+    ///       "ref_store": {
+    ///         "name": "CAS_MAIN_STORE"
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     completeness_checking(Box<CompletenessCheckingStore>),
 
     /// A compression store that will compress the data inbound and
@@ -71,6 +135,26 @@ pub enum StoreConfig {
     /// a store that requires network transport and/or storage space
     /// is a concern it is often faster and more efficient to use this
     /// store before those stores.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "compression": {
+    ///     "compression_algorithm": {
+    ///       "lz4": {}
+    ///     },
+    ///     "backend": {
+    ///       "filesystem": {
+    ///         "content_path": "/tmp/nativelink/data/content_path-cas",
+    ///         "temp_path": "/tmp/nativelink/data/tmp_path-cas",
+    ///         "eviction_policy": {
+    ///           // 2gb.
+    ///           "max_bytes": 2000000000,
+    ///         }
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     compression(Box<CompressionStore>),
 
     /// A dedup store will take the inputs and run a rolling hash
@@ -97,6 +181,45 @@ pub enum StoreConfig {
     /// Note: When running `.has()` on this store, it will only check
     /// to see if the entry exists in the `index_store` and not check
     /// if the individual chunks exist in the `content_store`.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "dedup": {
+    ///     "index_store": {
+    ///       "memory_store": {
+    ///         "max_size": 1000000000, // 1GB
+    ///         "eviction_policy": "LeastRecentlyUsed"
+    ///       }
+    ///     },
+    ///     "content_store": {
+    ///       "compression": {
+    ///         "compression_algorithm": {
+    ///           "lz4": {}
+    ///         },
+    ///         "backend": {
+    ///           "fast_slow": {
+    ///             "fast": {
+    ///               "memory_store": {
+    ///                 "max_size": 500000000, // 500MB
+    ///                 "eviction_policy": "LeastRecentlyUsed"
+    ///               }
+    ///             },
+    ///             "slow": {
+    ///               "filesystem": {
+    ///                 "content_path": "/tmp/nativelink/data/content_path-content",
+    ///                 "temp_path": "/tmp/nativelink/data/tmp_path-content",
+    ///                 "eviction_policy": {
+    ///                   "max_bytes": 2000000000 // 2gb.
+    ///                 }
+    ///               }
+    ///             }
+    ///           }
+    ///         }
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     dedup(Box<DedupStore>),
 
     /// Existence store will wrap around another store and cache calls
@@ -104,6 +227,26 @@ pub enum StoreConfig {
     /// faster. This is useful for cases when you have a store that
     /// is slow to respond to has calls.
     /// Note: This store should only be used on CAS stores.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "existence_cache": {
+    ///     "backend": {
+    ///       "memory": {
+    ///         "eviction_policy": {
+    ///           // 500mb.
+    ///           "max_bytes": 500000000,
+    ///         }
+    ///       }
+    ///     },
+    ///     "cas_store": {
+    ///       "ref_store": {
+    ///         "name": "CAS_MAIN_STORE"
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     existence_cache(Box<ExistenceCacheStore>),
 
     /// FastSlow store will first try to fetch the data from the `fast`
@@ -120,12 +263,55 @@ pub enum StoreConfig {
     /// `slow` store if it exists in the `fast` store (ie: it assumes
     /// that if an object exists `fast` store it will exist in `slow`
     /// store).
+    ///
+    /// ***Example JSON Config:***
+    /// ```json
+    /// "fast_slow": {
+    ///     "fast": {
+    ///       "filesystem": {
+    ///         "content_path": "/tmp/nativelink/data/content_path-index",
+    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///         "eviction_policy": {
+    ///           // 500mb.
+    ///           "max_bytes": 500000000,
+    ///         }
+    ///       }
+    ///     },
+    ///     "slow": {
+    ///       "filesystem": {
+    ///         "content_path": "/tmp/nativelink/data/content_path-index",
+    ///         "temp_path": "/tmp/nativelink/data/tmp_path-index",
+    ///         "eviction_policy": {
+    ///           // 500mb.
+    ///           "max_bytes": 500000000,
+    ///         }
+    ///       }
+    ///     }
+    ///   }
+    /// ```
+    ///
     fast_slow(Box<FastSlowStore>),
 
     /// Shards the data to multiple stores. This is useful for cases
     /// when you want to distribute the load across multiple stores.
     /// The digest hash is used to determine which store to send the
     /// data to.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "shard": {
+    ///     "stores": [
+    ///         "memory": {
+    ///             "eviction_policy": {
+    ///                 // 10mb.
+    ///                 "max_bytes": 10000000
+    ///             },
+    ///             "weight": 1
+    ///         }
+    ///     ]
+    /// }
+    /// ```
+    ///
     shard(ShardStore),
 
     /// Stores the data on the filesystem. This store is designed for
@@ -134,6 +320,19 @@ pub enum StoreConfig {
     /// as long as the filesystem integrity holds. This store uses the
     /// filesystem's `atime` (access time) to hold the last touched time
     /// of the file(s).
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "filesystem": {
+    ///     "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
+    ///     "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
+    ///     "eviction_policy": {
+    ///       // 10gb.
+    ///       "max_bytes": 10000000000,
+    ///     }
+    /// }
+    /// ```
+    ///
     filesystem(FilesystemStore),
 
     /// Store used to reference a store in the root store manager.
@@ -141,6 +340,14 @@ pub enum StoreConfig {
     /// nested stores. Example, you may want to share the same memory store
     /// used for the action cache, but use a FastSlowStore and have the fast
     /// store also share the memory store for efficiency.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "ref_store": {
+    ///     "name": "FS_CONTENT_STORE"
+    /// }
+    /// ```
+    ///
     ref_store(RefStore),
 
     /// Uses the size field of the digest to separate which store to send the
@@ -150,6 +357,25 @@ pub enum StoreConfig {
     /// words, don't use on AC (Action Cache) stores. Any store where you can
     /// safely use VerifyStore.verify_size = true, this store should be safe
     /// to use (ie: CAS stores).
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "size_partitioning": {
+    ///     "size": 134217728, // 128mib.
+    ///     "lower_store": {
+    ///       "memory": {
+    ///         "eviction_policy": {
+    ///           "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100000000}"
+    ///         }
+    ///       }
+    ///     },
+    ///     "upper_store": {
+    ///       /// This store discards data larger than 128mib.
+    ///       "noop": {}
+    ///     }
+    ///   }
+    /// ```
+    ///
     size_partitioning(Box<SizePartitioningStore>),
 
     /// This store will pass-through calls to another GRPC store. This store
@@ -161,12 +387,30 @@ pub enum StoreConfig {
     /// when this store is serving the a CAS store, not an AC store. If using
     /// this store directly without being a child of any store there are no
     /// side effects and is the most efficient way to use it.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "grpc": {
+    ///     "instance_name": "main",
+    ///     "endpoints": [
+    ///       {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+    ///     ],
+    ///     "store_type": "ac"
+    ///   }
+    /// ```
+    ///
     grpc(GrpcStore),
 
     /// Noop store is a store that sends streams into the void and all data
     /// retrieval will return 404 (NotFound). This can be useful for cases
     /// where you may need to partition your data and part of your data needs
     /// to be discarded.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "noop": {}
+    /// ```
+    ///
     noop,
 }
 
