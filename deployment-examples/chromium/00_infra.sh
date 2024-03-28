@@ -1,0 +1,1 @@
+../kubernetes/00_infra.sh

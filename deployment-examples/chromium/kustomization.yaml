@@ -1,0 +1,23 @@
+---
+resources:
+  - cas.yaml
+  - scheduler.yaml
+  - worker-chromium.yaml
+  - routes.yaml
+
+configMapGenerator:
+  - name: cas
+    files:
+      - cas.json
+  - name: scheduler
+    files:
+      - scheduler.json
+  - name: worker-chromium
+    files:
+      - worker-chromium.json
+
+secretGenerator:
+  - name: tls-secret
+    files:
+      - example-do-not-use-in-prod-rootca.crt
+      - example-do-not-use-in-prod-key.pem

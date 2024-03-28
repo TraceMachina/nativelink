@@ -1,0 +1,35 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink-worker-chromium
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nativelink-worker-chromium
+  template:
+    metadata:
+      labels:
+        app: nativelink-worker-chromium
+    spec:
+      containers:
+        - name: nativelink-worker-chromium
+          image: "localhost:5001/nativelink-worker-siso-chromium:local"
+          env:
+            - name: RUST_LOG
+              value: info
+            - name: CAS_ENDPOINT
+              value: nativelink-cas
+            - name: SCHEDULER_ENDPOINT
+              value: nativelink-scheduler
+          volumeMounts:
+            - name: worker-chromium-config
+              mountPath: /worker-chromium.json
+              subPath: worker-chromium.json
+          command: ["/bin/nativelink"]
+          args: ["/worker-chromium.json"]
+      volumes:
+        - name: worker-chromium-config
+          configMap:
+            name: worker-chromium
