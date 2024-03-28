@@ -27,5 +27,5 @@ uuid = { version = "1.8.0", features = ["v4"] }
 hyper = "0.14.28"
 maplit = "1.0.2"
 pretty_assertions = "1.4.0"
-prometheus-client = "0.21.2"
+prometheus-client = "0.22.2"
 prost-types = "0.12.3"
