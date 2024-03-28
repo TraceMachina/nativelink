@@ -119,6 +119,12 @@ pub struct SimpleScheduler {
     /// The strategy used to assign workers jobs.
     #[serde(default)]
     pub allocation_strategy: WorkerAllocationStrategy,
+
+    /// Remove action from queue after this much time has elapsed without a listener
+    /// amount of time in seconds.
+    /// Default: 60 (seconds)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub disconnect_timeout_s: u64,
 }
 
 /// A scheduler that simply forwards requests to an upstream scheduler.  This
