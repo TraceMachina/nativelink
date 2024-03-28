@@ -426,12 +426,12 @@ mod running_actions_manager_tests {
         }
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
-                root_work_directory,
+                root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -540,12 +540,12 @@ mod running_actions_manager_tests {
         }
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
-                root_work_directory,
+                root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -656,12 +656,12 @@ mod running_actions_manager_tests {
         }
 
         let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
-                root_work_directory,
+                root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -828,12 +828,12 @@ mod running_actions_manager_tests {
         }
 
         let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
-                root_work_directory,
+                root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -1001,12 +1001,12 @@ mod running_actions_manager_tests {
         }
 
         let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
-                root_work_directory,
+                root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -1200,12 +1200,12 @@ mod running_actions_manager_tests {
         }
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
-                root_work_directory: root_work_directory.clone(),
+                root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -1313,10 +1313,10 @@ mod running_actions_manager_tests {
                 message: String::new(),
             }
         );
-        let mut dir_stream = fs::read_dir(&root_work_directory).await?;
+        let mut dir_stream = fs::read_dir(&root_action_directory).await?;
         assert!(
             dir_stream.as_mut().next_entry().await?.is_none(),
-            "Expected empty directory at {root_work_directory}"
+            "Expected empty directory at {root_action_directory}"
         );
         Ok(())
     }
@@ -1327,12 +1327,12 @@ mod running_actions_manager_tests {
         const SALT: u64 = 55;
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-                root_work_directory: root_work_directory.clone(),
+                root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -1457,8 +1457,8 @@ exit 0
         const EXPECTED_STDOUT: &str = "Action did run";
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let test_wrapper_script = {
             let test_wrapper_dir = make_temp_path("wrapper_dir");
@@ -1488,7 +1488,7 @@ exit 0
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-                root_work_directory: root_work_directory.clone(),
+                root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: None,
@@ -1600,8 +1600,8 @@ exit 0
         const EXPECTED_STDOUT: &str = "Action did run";
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let test_wrapper_script = {
             let test_wrapper_dir = make_temp_path("wrapper_dir");
@@ -1631,7 +1631,7 @@ exit 0
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-                root_work_directory: root_work_directory.clone(),
+                root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([
@@ -1765,8 +1765,8 @@ exit 1
         const SALT: u64 = 66;
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let test_wrapper_script = {
             let test_wrapper_dir = make_temp_path("wrapper_dir");
@@ -1796,7 +1796,7 @@ exit 1
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-                root_work_directory: root_work_directory.clone(),
+                root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([(
@@ -1876,7 +1876,7 @@ exit 1
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-                root_work_directory: String::new(),
+                root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -1949,7 +1949,7 @@ exit 1
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-                root_work_directory: String::new(),
+                root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2021,7 +2021,7 @@ exit 1
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-                root_work_directory: String::new(),
+                root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2122,7 +2122,7 @@ exit 1
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-                root_work_directory: String::new(),
+                root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2162,7 +2162,7 @@ exit 1
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_work_directory: String::new(),
+            root_action_directory: String::new(),
             execution_configuration: ExecutionConfiguration::default(),
             cas_store: Pin::into_inner(cas_store.clone()),
             ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2228,7 +2228,7 @@ exit 1
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-                root_work_directory: String::new(),
+                root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2284,8 +2284,8 @@ exit 1
             monotonic_clock(&CLOCK)
         }
 
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
@@ -2342,7 +2342,7 @@ exit 1
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 RunningActionsManagerArgs {
-                    root_work_directory: root_work_directory.clone(),
+                    root_action_directory: root_action_directory.clone(),
                     execution_configuration: ExecutionConfiguration::default(),
                     cas_store: Pin::into_inner(cas_store.clone()),
                     ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2419,7 +2419,7 @@ exit 1
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 RunningActionsManagerArgs {
-                    root_work_directory: root_work_directory.clone(),
+                    root_action_directory: root_action_directory.clone(),
                     execution_configuration: ExecutionConfiguration::default(),
                     cas_store: Pin::into_inner(cas_store.clone()),
                     ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2496,7 +2496,7 @@ exit 1
 
             let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
                 RunningActionsManagerArgs {
-                    root_work_directory: root_work_directory.clone(),
+                    root_action_directory: root_action_directory.clone(),
                     execution_configuration: ExecutionConfiguration::default(),
                     cas_store: Pin::into_inner(cas_store.clone()),
                     ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2565,13 +2565,13 @@ exit 1
             let (tx, rx) = oneshot::channel();
             Mutex::new((Some(tx), Some(rx)))
         });
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
-                root_work_directory: root_work_directory.clone(),
+                root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2687,13 +2687,13 @@ exit 1
             monotonic_clock(&CLOCK)
         }
 
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
-                root_work_directory: root_work_directory.clone(),
+                root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration::default(),
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
@@ -2847,12 +2847,12 @@ exit 1
         }
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
-        let root_work_directory = make_temp_path("root_work_directory");
-        fs::create_dir_all(&root_work_directory).await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
 
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
-                root_work_directory,
+                root_action_directory,
                 cas_store: Pin::into_inner(cas_store.clone()),
                 ac_store: Some(Pin::into_inner(ac_store.clone())),
                 execution_configuration: ExecutionConfiguration::default(),
@@ -2927,6 +2927,94 @@ exit 1
         assert!(
             action_result.output_files[0].is_executable,
             "Expected output file to be executable"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let temp_action_directory = make_temp_path("root_action_directory/temp");
+        fs::create_dir_all(&temp_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: Pin::into_inner(cas_store.clone()),
+                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                historical_store: Pin::into_inner(cas_store.clone()),
+                upload_action_result_config:
+                    &nativelink_config::cas_server::UploadActionResultConfig {
+                        upload_ac_results_strategy:
+                            nativelink_config::cas_server::UploadCacheResultsStrategy::never,
+                        ..Default::default()
+                    },
+                max_action_timeout: Duration::MAX,
+                timeout_handled_externally: false,
+            })?);
+        let queued_timestamp = make_system_time(1000);
+
+        #[cfg(target_family = "unix")]
+        let arguments = vec!["sh".to_string(), "-c".to_string(), "exit 0".to_string()];
+        #[cfg(target_family = "windows")]
+        let arguments = vec!["cmd".to_string(), "/C".to_string(), "exit 0".to_string()];
+
+        const SALT: u64 = 55;
+        let command = Command {
+            arguments,
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_ref(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }),
+                    salt: SALT,
+                    queued_timestamp: Some(queued_timestamp.into()),
+                },
+            )
+            .await?;
+
+        run_action(running_action_impl.clone()).await?;
+
+        let mut dir_stream = fs::read_dir(&root_action_directory).await?;
+        assert!(
+            dir_stream.as_mut().next_entry().await?.is_none(),
+            "Expected empty directory at {root_action_directory}"
         );
         Ok(())
     }
