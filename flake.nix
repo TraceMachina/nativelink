@@ -154,6 +154,9 @@
           nativelink-worker-lre-java = createWorker lre-java;
           image = buildImage {
             name = "nativelink";
+            copyToRoot = [
+              pkgs.cacert
+            ];
             config = {
               Entrypoint = [(pkgs.lib.getExe' nativelink "nativelink")];
               Labels = {
