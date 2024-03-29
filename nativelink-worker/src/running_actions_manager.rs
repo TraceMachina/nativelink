@@ -73,7 +73,6 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::{oneshot, watch};
 use tokio::task::spawn_blocking;
-use tokio::time::timeout;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
 use tracing::{error, info};
@@ -256,44 +255,32 @@ fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) ->
 }
 
 async fn upload_file(
-    mut resumeable_file: fs::ResumeableFileSlot,
     cas_store: Pin<&dyn Store>,
     full_path: impl AsRef<Path> + Debug,
     hasher: DigestHasherFunc,
+    metadata: std::fs::Metadata,
 ) -> Result<FileInfo, Error> {
-    let (is_executable, file_size) = {
-        let file_handle = resumeable_file.as_reader().await.err_tip(|| {
-            "Could not get reader from file slot in RunningActionsManager::upload_file()"
-        })?;
-        let metadata = file_handle
-            .get_ref()
-            .as_ref()
-            .metadata()
-            .await
-            .err_tip(|| format!("While reading metadata for {:?}", full_path.as_ref()))?;
-        (is_executable(&metadata, &full_path), metadata.len())
-    };
-    let (digest, resumeable_file) = {
-        let (digest, mut resumeable_file) = hasher
-            .hasher()
-            .digest_for_file(resumeable_file, Some(file_size))
-            .await
-            .err_tip(|| {
-                format!("Failed to hash file in digest_for_file failed for {full_path:?}")
-            })?;
+    let is_executable = is_executable(&metadata, &full_path);
+    let file_size = metadata.len();
+    let resumeable_file = fs::open_file(&full_path, u64::MAX)
+        .await
+        .err_tip(|| format!("Could not open file {full_path:?}"))?;
 
-        resumeable_file
-            .as_reader()
-            .await
-            .err_tip(|| {
-                "Could not get reader from file slot in RunningActionsManager::upload_file()"
-            })?
-            .get_mut()
-            .rewind()
-            .await
-            .err_tip(|| "Could not rewind file")?;
-        (digest, resumeable_file)
-    };
+    let (digest, mut resumeable_file) = hasher
+        .hasher()
+        .digest_for_file(resumeable_file, Some(file_size))
+        .await
+        .err_tip(|| format!("Failed to hash file in digest_for_file failed for {full_path:?}"))?;
+
+    resumeable_file
+        .as_reader()
+        .await
+        .err_tip(|| "Could not get reader from file slot in RunningActionsManager::upload_file()")?
+        .get_mut()
+        .rewind()
+        .await
+        .err_tip(|| "Could not rewind file")?;
+
     cas_store
         .update_with_whole_file(
             digest,
@@ -395,11 +382,8 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
             // lived as possible. This is why we iterate the directory and then build a bunch of
             // futures with all the work we are wanting to do then execute it. It allows us to
             // close the directory iterator file descriptor, then open the child files/folders.
-            while let Some(entry) = dir_stream.next().await {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(e) => return Err(e).err_tip(|| "Error while iterating directory")?,
-                };
+            while let Some(entry_result) = dir_stream.next().await {
+                let entry = entry_result.err_tip(|| "Error while iterating directory")?;
                 let file_type = entry
                     .file_type()
                     .await
@@ -445,11 +429,10 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                     );
                 } else if file_type.is_file() {
                     file_futures.push(async move {
-                        let file_handle =
-                            fs::open_file(full_path.as_os_str().to_os_string(), u64::MAX)
-                                .await
-                                .err_tip(|| format!("Could not open file {full_path:?}"))?;
-                        upload_file(file_handle, cas_store, &full_path, hasher)
+                        let metadata = fs::metadata(&full_path)
+                            .await
+                            .err_tip(|| format!("Could not open file {full_path:?}"))?;
+                        upload_file(cas_store, &full_path, hasher, metadata)
                             .map_ok(|v| v.into())
                             .await
                     });
@@ -1018,8 +1001,7 @@ impl RunningActionImpl {
             let work_directory = &self.work_directory;
             output_path_futures.push(async move {
                 let metadata = {
-                    let mut resumeable_file = match fs::open_file(full_path.clone(), u64::MAX).await
-                    {
+                    let metadata = match fs::symlink_metadata(&full_path).await {
                         Ok(file) => file,
                         Err(e) => {
                             if e.code == Code::NotFound {
@@ -1030,32 +1012,10 @@ impl RunningActionImpl {
                             return Err(e).err_tip(|| format!("Could not open file {full_path:?}"));
                         }
                     };
-                    // We cannot rely on the file_handle's metadata, because it follows symlinks, so
-                    // we need to instead use `symlink_metadata`.
-                    let metadata_fut = fs::symlink_metadata(&full_path);
-                    tokio::pin!(metadata_fut);
 
-                    // Just in case we are starved for open file descriptors, we timeout the metadata
-                    // call and close the file, then try again.
-                    let metadata = match timeout(
-                        fs::idle_file_descriptor_timeout(),
-                        &mut metadata_fut,
-                    )
-                    .await
-                    {
-                        Ok(result) => result,
-                        Err(_) => {
-                            resumeable_file
-                                .close_file()
-                                .await
-                                .err_tip(|| "In inner_upload_results()")?;
-                            (&mut metadata_fut).await
-                        }
-                    }
-                    .err_tip(|| format!("While querying symlink metadata for {entry}"))?;
                     if metadata.is_file() {
                         return Ok(OutputType::File(
-                            upload_file(resumeable_file, cas_store, &full_path, hasher)
+                            upload_file(cas_store, &full_path, hasher, metadata)
                                 .await
                                 .map(|mut file_info| {
                                     file_info.name_or_path = NameOrPath::Path(entry);
