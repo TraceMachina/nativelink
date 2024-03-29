@@ -17,6 +17,7 @@ if [ "$(docker inspect -f '{{.State.Running}}' "${reg_name}" 2>/dev/null || true
 fi
 
 # Start a basic cluster. We use cilium's CNI and eBPF kube-proxy replacement.
+SRC_ROOT=$(git rev-parse --show-toplevel)
 
 cat <<EOF |  kind create cluster --config -
 ---
@@ -24,8 +25,17 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+    extraMounts:
+      - hostPath: $SRC_ROOT
+        containerPath: /mnt/src_root
   - role: worker
+    extraMounts:
+      - hostPath: $SRC_ROOT
+        containerPath: /mnt/src_root
   - role: worker
+    extraMounts:
+      - hostPath: $SRC_ROOT
+        containerPath: /mnt/src_root
 networking:
   disableDefaultCNI: true
   kubeProxyMode: none
