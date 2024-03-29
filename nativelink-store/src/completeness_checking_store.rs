@@ -21,7 +21,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{select, FutureExt, TryFutureExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ActionResult as ProtoActionResult, OutputDirectory as ProtoOutputDirectory, Tree as ProtoTree,
+    ActionResult as ProtoActionResult, Tree as ProtoTree,
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -31,7 +31,9 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tracing::warn;
 
-use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
+use crate::ac_utils::{
+    get_and_decode_digest, get_digests_and_output_dirs, get_size_and_decode_digest,
+};
 
 pub struct CompletenessCheckingStore {
     cas_store: Arc<dyn Store>,
@@ -47,44 +49,17 @@ impl CompletenessCheckingStore {
     }
 }
 
-/// Given a proto action result, return all relevant digests and
-/// output directories that need to be checked.
-fn get_digests_and_output_dirs(
-    action_result: ProtoActionResult,
-) -> Result<(Vec<DigestInfo>, Vec<ProtoOutputDirectory>), Error> {
-    // TODO(allada) When `try_collect()` is stable we can use it instead.
-    let mut digest_iter = action_result
-        .output_files
-        .into_iter()
-        .filter_map(|file| file.digest.map(DigestInfo::try_from))
-        .chain(action_result.stdout_digest.map(DigestInfo::try_from))
-        .chain(action_result.stderr_digest.map(DigestInfo::try_from));
-    let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
-    digest_iter
-        .try_for_each(|maybe_digest| {
-            digest_infos.push(maybe_digest?);
-            Result::<_, Error>::Ok(())
-        })
-        .err_tip(|| "Some digests could not be converted to DigestInfos")?;
-    Ok((digest_infos, action_result.output_directories))
-}
-
 /// Given a list of output directories recursively get all digests
 /// that need to be checked and pass them into `handle_digest_infos_fn`
 /// as they are found.
 async fn check_output_directories(
     cas_store: Pin<&dyn Store>,
-    output_directories: Vec<ProtoOutputDirectory>,
+    tree_digests: Vec<DigestInfo>,
     handle_digest_infos_fn: &impl Fn(Vec<DigestInfo>),
 ) -> Result<(), Error> {
     let mut futures = FuturesUnordered::new();
 
-    let tree_digests = output_directories
-        .into_iter()
-        .filter_map(|output_dir| output_dir.tree_digest.map(DigestInfo::try_from));
-    for maybe_tree_digest in tree_digests {
-        let tree_digest = maybe_tree_digest
-            .err_tip(|| "Could not decode tree digest CompletenessCheckingStore::has")?;
+    for tree_digest in tree_digests {
         futures.push(async move {
             let tree = get_and_decode_digest::<ProtoTree>(cas_store, &tree_digest).await?;
             // TODO(allada) When `try_collect()` is stable we can use it instead.
@@ -158,7 +133,7 @@ async fn inner_has_with_results(
                 let (action_result, size) =
                     get_size_and_decode_digest::<ProtoActionResult>(ac_store, digest).await?;
 
-                let (mut digest_infos, output_directories) =
+                let (mut digest_infos, _, tree_digests) =
                     get_digests_and_output_dirs(action_result)?;
 
                 {
@@ -185,11 +160,11 @@ async fn inner_has_with_results(
 
                 // Hot path: It is very common for no output directories to be defined.
                 // So we can avoid any needless work by early returning.
-                if output_directories.is_empty() {
+                if tree_digests.is_empty() {
                     return Ok(());
                 }
 
-                check_output_directories(cas_store, output_directories, &move |digest_infos| {
+                check_output_directories(cas_store, tree_digests, &move |digest_infos| {
                     let mut state = state_mux.lock();
                     let rep_len = digest_infos.len();
                     state.digests_to_check.extend(digest_infos);

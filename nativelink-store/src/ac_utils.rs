@@ -22,6 +22,7 @@ use std::pin::Pin;
 use bytes::BytesMut;
 use futures::TryFutureExt;
 use nativelink_error::{Code, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::ActionResult;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasher;
 use nativelink_util::store_trait::Store;
@@ -78,6 +79,51 @@ pub async fn get_size_and_decode_digest<T: Message + Default>(
             )
         })
         .map(|v| (v, store_data_len))
+}
+
+/// Given a action result, return all relevant digests and
+/// output directories that need to be checked.
+pub fn get_digests_and_output_dirs(
+    action_result: ActionResult,
+) -> Result<(Vec<DigestInfo>, Vec<DigestInfo>, Vec<DigestInfo>), Error> {
+    // TODO(allada) When `try_collect()` is stable we can use it instead.
+    let mut digest_iter = action_result
+        .output_files
+        .into_iter()
+        .filter_map(|file| file.digest.map(DigestInfo::try_from));
+    let mut digest_iter_width_std = digest_iter
+        .clone()
+        .chain(action_result.stdout_digest.map(DigestInfo::try_from))
+        .chain(action_result.stderr_digest.map(DigestInfo::try_from));
+    let mut digest_infos_with_std =
+        Vec::with_capacity(digest_iter_width_std.size_hint().1.unwrap_or(0));
+    digest_iter_width_std
+        .try_for_each(|maybe_digest| {
+            digest_infos_with_std.push(maybe_digest?);
+            Result::<_, Error>::Ok(())
+        })
+        .err_tip(|| "Some digests could not be converted to DigestInfos")?;
+
+    let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
+    digest_iter
+        .try_for_each(|maybe_digest| {
+            digest_infos.push(maybe_digest?);
+            Result::<_, Error>::Ok(())
+        })
+        .err_tip(|| "Some digests could not be converted to DigestInfos")?;
+
+    let mut tree_digests_iter = action_result
+        .output_directories
+        .into_iter()
+        .filter_map(|output_dir| output_dir.tree_digest.map(DigestInfo::try_from));
+    let mut tree_digests = Vec::with_capacity(tree_digests_iter.size_hint().1.unwrap_or(0));
+    tree_digests_iter
+        .try_for_each(|maybe_tree_digest| {
+            tree_digests.push(maybe_tree_digest?);
+            Result::<_, Error>::Ok(())
+        })
+        .err_tip(|| "Some tree digests could not be converted to DigestInfos")?;
+    Ok((digest_infos_with_std, digest_infos, tree_digests))
 }
 
 /// Computes the digest of a message.
