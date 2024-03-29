@@ -59,18 +59,11 @@
         },
         "container-image": {
           "values": [
-            // WARNING: This is *not* the container that is actually deployed
-            // here. The generator container in this example was
-            // `rbe-autogen-lre-java:<sometag>` and the platform was modified
-            // after the fact to be `lre-java:<sometag>`. The deployed container
-            // we use as worker is `nativelink-worker-lre-java:<sometag>` which
-            // is a completely separate extension of the `lre-java` base image.
-            //
-            // Treat the `docker//:...` string below as nothing more than a raw
-            // string that is matched by the scheduler against the value
-            // specified in the `exec_properties` of the corresponding platform
-            // at `local-remote-execution/generated-java/config/BUILD`.
-            "docker://lre-java:__LRE_JAVA_TOOLCHAIN_TAG__",
+            // WARNING: Treat the string below as nothing more than a raw string
+            // that is matched by the scheduler against the value specified in
+            // the `exec_properties` of the corresponding platform at
+            // `local-remote-execution/generated-cc/config/BUILD`.
+            "${NATIVELINK_WORKER_PLATFORM:-error_undefined_platform}"
           ]
         }
       }

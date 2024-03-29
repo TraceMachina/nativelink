@@ -13,6 +13,31 @@ spec:
       labels:
         app: nativelink-worker-lre-java
     spec:
+      initContainers:
+      - name: setup-entrypoint
+        image: nixpkgs/nix-flakes:latest
+        command: ["/bin/sh", "-c"]
+        # The kind setup mounts the nativelink repository into the kind nodes at
+        # `/mnt/src_root`. This ensures that the tags between the worker configs
+        # and bazel toolchains match when this setup is run in CI.
+        #
+        # WARNING: The platform is *not* necessarily the container that is
+        # actually deployed here. The generator container in this example was
+        # `rbe-autogen-lre-java:<sometag>` and the platform was modified
+        # after the fact to be `lre-java:<sometag>`. The deployed container
+        # we use as worker is
+        # `nativelink-worker-lre-java:<some_potentially_other_tag>` which is a
+        # completely separate extension of the `lre-java` base image.
+        args:
+          - |
+            NATIVELINK_WORKER_PLATFORM=docker://lre-java:$(nix eval /mnt/src_root#lre-java.imageTag --raw) &&
+            printf '#!/bin/sh\nexport NATIVELINK_WORKER_PLATFORM=%s\nexec "$@"' "$NATIVELINK_WORKER_PLATFORM" > /entrypoint/entrypoint.sh &&
+            chmod +x /entrypoint/entrypoint.sh
+        volumeMounts:
+          - name: entrypoint
+            mountPath: /entrypoint
+          - name: mnt
+            mountPath: /mnt
       containers:
         - name: nativelink-worker-lre-java
           image: "localhost:5001/nativelink-worker-lre-java:local"
@@ -24,12 +49,19 @@ spec:
             - name: SCHEDULER_ENDPOINT
               value: nativelink-scheduler
           volumeMounts:
-            - name: worker-lre-java-config
-              mountPath: /worker-lre-java.json
-              subPath: worker-lre-java.json
-          command: ["/bin/nativelink"]
-          args: ["/worker-lre-java.json"]
+            - name: worker-config
+              mountPath: /worker.json
+              subPath: worker.json
+            - name: entrypoint
+              mountPath: /entrypoint
+          command: ["/entrypoint/entrypoint.sh"]
+          args: ["/bin/nativelink", "/worker.json"]
       volumes:
-        - name: worker-lre-java-config
+        - name: entrypoint
+          emptyDir: {}
+        - name: worker-config
           configMap:
-            name: worker-lre-java
+            name: worker
+        - name: mnt
+          hostPath:
+            path: /mnt
