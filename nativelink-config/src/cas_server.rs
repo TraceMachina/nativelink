@@ -20,6 +20,7 @@ use crate::schedulers::SchedulerConfig;
 use crate::serde_utils::{
     convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
     convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
+    convert_vec_string_with_shellexpand,
 };
 use crate::stores::{ClientTlsConfig, ConfigDigestHashFunction, StoreConfig, StoreRefName};
 
@@ -378,6 +379,7 @@ pub enum WorkerProperty {
     /// List of static values.
     /// Note: Generally there should only ever be 1 value, but if the platform
     /// property key is PropertyType::Priority it may have more than one value.
+    #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     values(Vec<String>),
 
     /// A dynamic configuration. The string will be executed as a command
