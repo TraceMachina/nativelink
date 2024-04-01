@@ -143,7 +143,7 @@ impl GrpcStore {
         );
 
         let mut request = grpc_request.into_inner();
-        request.instance_name = self.instance_name.clone();
+        request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let (connection, channel) = self.connection_manager.get_connection().await;
             let result = ContentAddressableStorageClient::new(channel)
@@ -168,7 +168,7 @@ impl GrpcStore {
         );
 
         let mut request = grpc_request.into_inner();
-        request.instance_name = self.instance_name.clone();
+        request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let (connection, channel) = self.connection_manager.get_connection().await;
             let result = ContentAddressableStorageClient::new(channel)
@@ -193,7 +193,7 @@ impl GrpcStore {
         );
 
         let mut request = grpc_request.into_inner();
-        request.instance_name = self.instance_name.clone();
+        request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let (connection, channel) = self.connection_manager.get_connection().await;
             let result = ContentAddressableStorageClient::new(channel)
@@ -218,7 +218,7 @@ impl GrpcStore {
         );
 
         let mut request = grpc_request.into_inner();
-        request.instance_name = self.instance_name.clone();
+        request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let (connection, channel) = self.connection_manager.get_connection().await;
             let result = ContentAddressableStorageClient::new(channel)
@@ -377,7 +377,7 @@ impl GrpcStore {
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Error> {
         let mut request = grpc_request.into_inner();
-        request.instance_name = self.instance_name.clone();
+        request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let (connection, channel) = self.connection_manager.get_connection().await;
             let result = ActionCacheClient::new(channel)
@@ -397,7 +397,7 @@ impl GrpcStore {
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Error> {
         let mut request = grpc_request.into_inner();
-        request.instance_name = self.instance_name.clone();
+        request.instance_name.clone_from(&self.instance_name);
         self.perform_request(request, |request| async move {
             let (connection, channel) = self.connection_manager.get_connection().await;
             let result = ActionCacheClient::new(channel)

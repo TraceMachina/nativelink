@@ -237,7 +237,7 @@ where
     }
 
     pub fn resume(&mut self) {
-        self.resume_queue = self.cached_messages.clone();
+        self.resume_queue.clone_from(&self.cached_messages);
         self.is_resumed = true;
     }
 

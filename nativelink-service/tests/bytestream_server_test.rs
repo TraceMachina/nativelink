@@ -865,7 +865,6 @@ pub mod read_tests {
             .into_inner();
         {
             let mut roundtrip_data = Vec::with_capacity(VALUE1.len());
-            assert!(!VALUE1.is_empty(), "Expected at least one byte to be sent");
             while let Some(result_read_response) = read_stream.next().await {
                 roundtrip_data.append(&mut result_read_response?.data.to_vec());
             }

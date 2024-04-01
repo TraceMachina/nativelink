@@ -1545,7 +1545,7 @@ impl UploadActionResults {
                 .await;
             match maybe_message {
                 Ok(message) => {
-                    action_result.message = message.clone();
+                    action_result.message.clone_from(&message);
                     execute_response.message = message;
                     Ok(())
                 }
@@ -1555,7 +1555,7 @@ impl UploadActionResults {
             match Self::format_execute_response_message(message_template, action_info, None, hasher)
             {
                 Ok(message) => {
-                    action_result.message = message.clone();
+                    action_result.message.clone_from(&message);
                     execute_response.message = message;
                     Ok(())
                 }
