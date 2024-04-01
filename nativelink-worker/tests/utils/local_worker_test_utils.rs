@@ -43,12 +43,14 @@ use super::mock_running_actions_manager::MockRunningActionsManager;
 enum WorkerClientApiCalls {
     ConnectWorker(SupportedProperties),
     ExecutionResponse(ExecuteResult),
+    GoingAwayRequest(GoingAwayRequest),
 }
 
 #[derive(Debug)]
 enum WorkerClientApiReturns {
     ConnectWorker(Result<Response<Streaming<UpdateForWorker>>, Status>),
     ExecutionResponse(Result<Response<()>, Status>),
+    GoingAwayRequest(Result<Response<()>, Status>),
 }
 
 #[derive(Clone)]
@@ -79,6 +81,29 @@ impl Default for MockWorkerApiClient {
 }
 
 impl MockWorkerApiClient {
+    pub async fn expect_going_away(
+        &mut self,
+        result: Result<Response<()>, Status>,
+    ) -> GoingAwayRequest {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let req = match rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiCalls::GoingAwayRequest(req) => req,
+            req @ WorkerClientApiCalls::ConnectWorker(_) => {
+                panic!("expect_going_away expected GoingAwayRequest, got : {req:?}")
+            }
+            req @ WorkerClientApiCalls::ExecutionResponse(_) => {
+                panic!("expect_going_away expected GoingAwayRequest, got : {req:?}")
+            }
+        };
+        self.tx_resp
+            .send(WorkerClientApiReturns::GoingAwayRequest(result))
+            .expect("Could not send request to mpsc");
+        req
+    }
     pub async fn expect_connect_worker(
         &mut self,
         result: Result<Response<Streaming<UpdateForWorker>>, Status>,
@@ -91,6 +116,9 @@ impl MockWorkerApiClient {
         {
             WorkerClientApiCalls::ConnectWorker(req) => req,
             req @ WorkerClientApiCalls::ExecutionResponse(_) => {
+                panic!("expect_connect_worker expected ConnectWorker, got : {req:?}")
+            }
+            req @ WorkerClientApiCalls::GoingAwayRequest(_) => {
                 panic!("expect_connect_worker expected ConnectWorker, got : {req:?}")
             }
         };
@@ -112,6 +140,9 @@ impl MockWorkerApiClient {
         {
             WorkerClientApiCalls::ExecutionResponse(req) => req,
             req @ WorkerClientApiCalls::ConnectWorker(_) => {
+                panic!("expect_execution_response expected ExecutionResponse, got : {req:?}")
+            }
+            req @ WorkerClientApiCalls::GoingAwayRequest(_) => {
                 panic!("expect_execution_response expected ExecutionResponse, got : {req:?}")
             }
         };
@@ -141,6 +172,9 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             resp @ WorkerClientApiReturns::ExecutionResponse(_) => {
                 panic!("connect_worker expected ConnectWorker response, received {resp:?}")
             }
+            resp @ WorkerClientApiReturns::GoingAwayRequest(_) => {
+                panic!("connect_worker expected ConnectWorker response, received {resp:?}")
+            }
         }
     }
 
@@ -148,8 +182,24 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         unreachable!();
     }
 
-    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<Response<()>, Status> {
-        unreachable!();
+    async fn going_away(&mut self, request: GoingAwayRequest) -> Result<Response<()>, Status> {
+        self.tx_call
+            .send(WorkerClientApiCalls::GoingAwayRequest(request))
+            .expect("Could not send request to mpsc");
+        let mut rx_resp_lock = self.rx_resp.lock().await;
+        match rx_resp_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiReturns::GoingAwayRequest(result) => result,
+            resp @ WorkerClientApiReturns::ConnectWorker(_) => {
+                panic!("going_away_response expected GoingAwayRequest response, received {resp:?}")
+            }
+            resp @ WorkerClientApiReturns::ExecutionResponse(_) => {
+                panic!("going_away_response expected GoingAwayRequest response, received {resp:?}")
+            }
+        }
     }
 
     async fn execution_response(&mut self, request: ExecuteResult) -> Result<Response<()>, Status> {
@@ -164,6 +214,9 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         {
             WorkerClientApiReturns::ExecutionResponse(result) => result,
             resp @ WorkerClientApiReturns::ConnectWorker(_) => {
+                panic!("execution_response expected ExecutionResponse response, received {resp:?}")
+            }
+            resp @ WorkerClientApiReturns::GoingAwayRequest(_) => {
                 panic!("execution_response expected ExecutionResponse response, received {resp:?}")
             }
         }

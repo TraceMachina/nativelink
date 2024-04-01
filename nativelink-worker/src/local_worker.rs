@@ -27,7 +27,7 @@ use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteResult, KeepAliveRequest, UpdateForWorker,
+    execute_result, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage};
@@ -79,6 +79,10 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> {
     // always be zero if there are no actions running and no actions being waited
     // on by the scheduler.
     actions_in_transit: Arc<AtomicU64>,
+    // The number of actions a worker has completed.
+    actions_completed: Arc<AtomicU64>,
+    // The number of actions a worker has been assigned.
+    actions_assigned: Arc<AtomicU64>,
     metrics: Arc<Metrics>,
 }
 
@@ -126,6 +130,8 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
             config,
             grpc_client,
             worker_id,
+            actions_completed: Arc::new(AtomicU64::new(0)),
+            actions_assigned: Arc::new(AtomicU64::new(0)),
             running_actions_manager,
             // Number of actions that have been received in `Update::StartAction`, but
             // not yet processed by running_actions_manager's spawn. This number should
@@ -226,6 +232,9 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let worker_id_clone = worker_id.clone();
                             let precondition_script_cfg = self.config.experimental_precondition_script.clone();
                             let actions_in_transit = self.actions_in_transit.clone();
+
+                            let actions_completed = self.actions_completed.clone();
+
                             let start_action_fut = self.metrics.clone().wrap(move |metrics| async move {
                                 metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
                                 .and_then(|_| running_actions_manager.create_and_add_action(worker_id_clone, start_execute))
@@ -244,6 +253,8 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         .and_then(RunningAction::get_finished_result)
                                         // Note: We need ensure we run cleanup even if one of the other steps fail.
                                         .then(|result| async move {
+
+                                            actions_completed.fetch_add(1, Ordering::Release);
                                             if let Err(e) = action.cleanup().await {
                                                 return Result::<ActionResult, Error>::Err(e).merge(result);
                                             }
@@ -267,7 +278,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         let action_stage = ActionStage::Completed(action_result);
                                         grpc_client.execution_response(
                                             ExecuteResult{
-                                                worker_id,
+                                                worker_id: worker_id.clone(),
                                                 instance_name,
                                                 action_digest,
                                                 salt,
@@ -291,6 +302,19 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             };
 
                             self.actions_in_transit.fetch_add(1, Ordering::Release);
+                            self.actions_assigned.fetch_add(1, Ordering::Release);
+                            let execution_limit = &self.config.execution_limit;
+                            if Some(self.actions_assigned.load(Ordering::Acquire)) == *execution_limit {
+
+                                let mut grpc_client = self.grpc_client.clone();
+                                grpc_client.going_away(
+                                    GoingAwayRequest {
+                                        worker_id: self.worker_id.clone(),
+                                    }
+                                )
+                                .await
+                                .err_tip(|| "Error while calling execution_response")?;
+                            }
                             futures.push(
                                 tokio::spawn(start_action_fut).map(move |res| {
                                     let res = res.err_tip(|| "Failed to launch spawn")?;
@@ -300,6 +324,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                     add_future_channel
                                         .send(make_publish_future(res).boxed())
                                         .map_err(|_| make_err!(Code::Internal, "LocalWorker could not send future"))?;
+
                                     Ok(())
                                 })
                                 .boxed()
@@ -313,6 +338,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                 },
                 res = futures.next() => res.err_tip(|| "Keep-alive should always pending. Likely unable to send data to scheduler")??,
             };
+            if let Some(limit) = self.config.execution_limit {
+                let completed = self.actions_completed.load(Ordering::Acquire);
+                let assigned = self.actions_assigned.load(Ordering::Acquire);
+                // Futures will never be empty due to keep alive
+                if futures.len() == 1 && assigned == limit && completed == assigned {
+                    std::process::exit(0);
+                }
+            }
         }
         // Unreachable.
     }
