@@ -21,7 +21,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{select, FutureExt, TryFutureExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ActionResult as ProtoActionResult, OutputDirectory as ProtoOutputDirectory, Tree as ProtoTree,
+    ActionResult as ProtoActionResult, Tree as ProtoTree,
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -31,7 +31,7 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tracing::warn;
 
-use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
+use crate::ac_utils::{get_and_decode_digest, get_digests_info, get_size_and_decode_digest};
 
 pub struct CompletenessCheckingStore {
     cas_store: Arc<dyn Store>,
@@ -47,61 +47,31 @@ impl CompletenessCheckingStore {
     }
 }
 
-/// Given a proto action result, return all relevant digests and
-/// output directories that need to be checked.
-fn get_digests_and_output_dirs(
-    action_result: ProtoActionResult,
-) -> Result<(Vec<DigestInfo>, Vec<ProtoOutputDirectory>), Error> {
-    // TODO(allada) When `try_collect()` is stable we can use it instead.
-    let mut digest_iter = action_result
-        .output_files
-        .into_iter()
-        .filter_map(|file| file.digest.map(DigestInfo::try_from))
-        .chain(action_result.stdout_digest.map(DigestInfo::try_from))
-        .chain(action_result.stderr_digest.map(DigestInfo::try_from));
-    let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
-    digest_iter
-        .try_for_each(|maybe_digest| {
-            digest_infos.push(maybe_digest?);
-            Result::<_, Error>::Ok(())
-        })
-        .err_tip(|| "Some digests could not be converted to DigestInfos")?;
-    Ok((digest_infos, action_result.output_directories))
-}
-
 /// Given a list of output directories recursively get all digests
 /// that need to be checked and pass them into `handle_digest_infos_fn`
 /// as they are found.
 async fn check_output_directories(
     cas_store: Pin<&dyn Store>,
-    output_directories: Vec<ProtoOutputDirectory>,
+    tree_digests: Vec<DigestInfo>,
     handle_digest_infos_fn: &impl Fn(Vec<DigestInfo>),
 ) -> Result<(), Error> {
     let mut futures = FuturesUnordered::new();
 
-    let tree_digests = output_directories
-        .into_iter()
-        .filter_map(|output_dir| output_dir.tree_digest.map(DigestInfo::try_from));
-    for maybe_tree_digest in tree_digests {
-        let tree_digest = maybe_tree_digest
-            .err_tip(|| "Could not decode tree digest CompletenessCheckingStore::has")?;
+    for tree_digest in tree_digests {
         futures.push(async move {
             let tree = get_and_decode_digest::<ProtoTree>(cas_store, &tree_digest).await?;
             // TODO(allada) When `try_collect()` is stable we can use it instead.
             // https://github.com/rust-lang/rust/issues/94047
-            let mut digest_iter = tree.children.into_iter().chain(tree.root).flat_map(|dir| {
-                dir.files
-                    .into_iter()
-                    .filter_map(|f| f.digest.map(DigestInfo::try_from))
-            });
-
-            let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
-            digest_iter
-                .try_for_each(|maybe_digest| {
-                    digest_infos.push(maybe_digest?);
-                    Result::<_, Error>::Ok(())
-                })
-                .err_tip(|| "Expected digest to exist and be convertable")?;
+            let digest_infos = get_digests_info(
+                tree.children.into_iter().chain(tree.root).collect(),
+                &move |tree| {
+                    Box::new(tree.into_iter().flat_map(|dir| {
+                        dir.files
+                            .into_iter()
+                            .filter_map(|f| f.digest.map(DigestInfo::try_from))
+                    }))
+                },
+            )?;
             handle_digest_infos_fn(digest_infos);
             Ok(())
         });
@@ -158,8 +128,33 @@ async fn inner_has_with_results(
                 let (action_result, size) =
                     get_size_and_decode_digest::<ProtoActionResult>(ac_store, digest).await?;
 
-                let (mut digest_infos, output_directories) =
-                    get_digests_and_output_dirs(action_result)?;
+                let mut digest_infos =
+                    get_digests_info(action_result.output_files, &move |digests| {
+                        Box::new(
+                            digests
+                                .into_iter()
+                                .filter_map(|file| file.digest.map(DigestInfo::try_from))
+                                .chain(
+                                    action_result
+                                        .stdout_digest
+                                        .clone()
+                                        .map(DigestInfo::try_from),
+                                )
+                                .chain(
+                                    action_result
+                                        .stderr_digest
+                                        .clone()
+                                        .map(DigestInfo::try_from),
+                                ),
+                        )
+                    })?;
+
+                let output_directories =
+                    get_digests_info(action_result.output_directories, &move |directories| {
+                        Box::new(directories.into_iter().filter_map(|output_dir| {
+                            output_dir.tree_digest.map(DigestInfo::try_from)
+                        }))
+                    })?;
 
                 {
                     let mut state = state_mux.lock();

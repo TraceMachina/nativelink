@@ -80,6 +80,24 @@ pub async fn get_size_and_decode_digest<T: Message + Default>(
         .map(|v| (v, store_data_len))
 }
 
+/// Given a proto action result, return all relevant digests and
+/// output directories that need to be checked.
+pub fn get_digests_info<T>(
+    digests: Vec<T>,
+    handle_digest: &impl Fn(Vec<T>) -> Box<dyn Iterator<Item = Result<DigestInfo, Error>>>,
+) -> Result<Vec<DigestInfo>, Error> {
+    // TODO(allada) When `try_collect()` is stable we can use it instead.
+    let mut digest_iter = handle_digest(digests);
+    let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
+    digest_iter
+        .try_for_each(|maybe_digest| {
+            digest_infos.push(maybe_digest?);
+            Result::<_, Error>::Ok(())
+        })
+        .err_tip(|| "Some digests could not be converted to DigestInfos")?;
+    Ok(digest_infos)
+}
+
 /// Computes the digest of a message.
 pub fn message_to_digest(
     message: &impl Message,
