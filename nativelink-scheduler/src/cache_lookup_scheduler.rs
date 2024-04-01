@@ -22,7 +22,7 @@ use nativelink_error::Error;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     digest_function, ActionResult as ProtoActionResult, GetActionResultRequest,
 };
-use nativelink_store::ac_utils::get_and_decode_digest;
+use nativelink_store::ac_utils::{get_and_decode_digest, get_digests_info, DigestInputType};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState,
@@ -90,30 +90,24 @@ async fn validate_outputs_exist(
     action_result: &ProtoActionResult,
 ) -> bool {
     // Verify that output_files and output_directories are available in the cas.
-    let mut required_digests = Vec::with_capacity(
-        action_result.output_files.len() + action_result.output_directories.len(),
-    );
-    for digest in action_result
-        .output_files
-        .iter()
-        .filter_map(|output_file| output_file.digest.as_ref())
-        .chain(
-            action_result
-                .output_directories
-                .iter()
-                .filter_map(|output_file| output_file.tree_digest.as_ref()),
-        )
-    {
-        let Ok(digest) = DigestInfo::try_from(digest) else {
-            return false;
-        };
-        required_digests.push(digest);
-    }
 
-    let Ok(sizes) = Pin::new(cas_store.as_ref())
-        .has_many(&required_digests)
-        .await
-    else {
+    let Ok(mut digest_infos) = get_digests_info(
+        action_result,
+        DigestInputType::OutputFiles(&action_result.output_files),
+        false,
+    ) else {
+        return false;
+    };
+    let Ok(mut digest_output_infos) = get_digests_info(
+        action_result,
+        DigestInputType::OutputDirectories(&action_result.output_directories),
+        false,
+    ) else {
+        return false;
+    };
+    digest_infos.append(&mut digest_output_infos);
+
+    let Ok(sizes) = Pin::new(cas_store.as_ref()).has_many(&digest_infos).await else {
         return false;
     };
     sizes.into_iter().all(|size| size.is_some())

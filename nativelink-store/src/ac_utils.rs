@@ -22,6 +22,9 @@ use std::pin::Pin;
 use bytes::BytesMut;
 use futures::TryFutureExt;
 use nativelink_error::{Code, Error, ResultExt};
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    ActionResult, Directory, OutputDirectory, OutputFile,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasher;
 use nativelink_util::store_trait::Store;
@@ -78,6 +81,72 @@ pub async fn get_size_and_decode_digest<T: Message + Default>(
             )
         })
         .map(|v| (v, store_data_len))
+}
+
+/// Given a proto action result, return all relevant digests and
+/// output directories that need to be checked.
+pub enum DigestInputType<'a> {
+    OutputFiles(&'a Vec<OutputFile>),
+    OutputDirectories(&'a Vec<OutputDirectory>),
+    Directories(&'a Vec<Directory>),
+}
+
+pub fn get_digests_info(
+    action_result: &ActionResult,
+    digest_input: DigestInputType,
+    is_contain_std: bool,
+) -> Result<Vec<DigestInfo>, Error> {
+    // TODO(allada) When `try_collect()` is stable we can use it instead.
+    let mut digest_iter = match digest_input {
+        DigestInputType::OutputFiles(output_files) => {
+            let output_files = output_files
+                .iter()
+                .filter_map(|output_file| output_file.digest.as_ref().map(DigestInfo::try_from));
+
+            if is_contain_std {
+                output_files
+                    .chain(
+                        action_result
+                            .stdout_digest
+                            .as_ref()
+                            .map(DigestInfo::try_from),
+                    )
+                    .chain(
+                        action_result
+                            .stderr_digest
+                            .as_ref()
+                            .map(DigestInfo::try_from),
+                    )
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            } else {
+                output_files.collect::<Vec<_>>().into_iter()
+            }
+        }
+        DigestInputType::OutputDirectories(output_files) => output_files
+            .iter()
+            .filter_map(|output_file| output_file.tree_digest.as_ref().map(DigestInfo::try_from))
+            .collect::<Vec<_>>()
+            .into_iter(),
+        DigestInputType::Directories(dir) => dir
+            .iter()
+            .flat_map(|dir| {
+                dir.files
+                    .iter()
+                    .filter_map(|f| f.digest.as_ref().map(DigestInfo::try_from))
+            })
+            .collect::<Vec<_>>()
+            .into_iter(),
+    };
+
+    let mut digest_infos = Vec::with_capacity(digest_iter.size_hint().1.unwrap_or(0));
+    digest_iter
+        .try_for_each(|maybe_digest| {
+            digest_infos.push(maybe_digest?);
+            Result::<_, Error>::Ok(())
+        })
+        .err_tip(|| "Some digests could not be converted to DigestInfos")?;
+    Ok(digest_infos)
 }
 
 /// Computes the digest of a message.
