@@ -119,6 +119,14 @@
             inherit cargoArtifacts;
           });
 
+        nativelink-debug = craneLib.buildPackage (commonArgs
+          // {
+            inherit cargoArtifacts;
+            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static --cfg tokio_unstable";
+            CARGO_PROFILE = "smol";
+            cargoExtraArgs = "--features enable_tokio_console";
+          });
+
         hooks = import ./tools/pre-commit-hooks.nix {inherit pkgs;};
 
         publish-ghcr = import ./tools/publish-ghcr.nix {inherit pkgs;};
@@ -143,7 +151,7 @@
           };
         };
         packages = rec {
-          inherit publish-ghcr local-image-test nativelink;
+          inherit publish-ghcr local-image-test nativelink nativelink-debug;
           default = nativelink;
 
           lre-cc = import ./local-remote-execution/lre-cc.nix {inherit pkgs buildImage;};
