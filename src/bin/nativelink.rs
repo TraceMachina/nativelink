@@ -21,7 +21,7 @@ use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
 use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use hyper::server::conn::Http;
 use hyper::{Response, StatusCode};
 use mimalloc::MiMalloc;
@@ -37,14 +37,12 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
+use nativelink_service::health_server::HealthServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
 use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
-use nativelink_util::health_utils::{
-    HealthRegistryBuilder, HealthStatus, HealthStatusDescription, HealthStatusReporter,
-};
 use nativelink_util::metrics_utils::{
     set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent,
     Registry,
@@ -104,13 +102,11 @@ async fn inner_main(
     server_start_timestamp: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut root_metrics_registry = <Registry>::with_prefix("nativelink");
-    let health_registry_builder = Arc::new(AsyncMutex::new(HealthRegistryBuilder::new(
-        "nativelink".into(),
-    )));
+    let health_server = HealthServer::new("nativelink").await?;
 
     let store_manager = Arc::new(StoreManager::new());
     {
-        let mut health_registry_lock = health_registry_builder.lock().await;
+        let mut health_registry_lock = health_server.get_health_registry().await?;
         let root_store_metrics = root_metrics_registry.sub_registry_with_prefix("stores");
 
         for (name, store_cfg) in cfg.stores {
@@ -397,7 +393,7 @@ async fn inner_main(
             );
 
         let root_metrics_registry = root_metrics_registry.clone();
-        let health_registry_status = health_registry_builder.lock().await.build();
+        let health_server_cloned = health_server.clone();
 
         let mut svc = Router::new()
             // This is the default service that executes if no other endpoint matches.
@@ -412,48 +408,9 @@ async fn inner_main(
                     }
 
                     spawn_blocking(move || {
-                        futures::executor::block_on(async {
-                            let health_status_descriptions: Vec<HealthStatusDescription> =
-                                health_registry_status
-                                    .health_status_report()
-                                    .collect()
-                                    .await;
-
-                            match serde_json5::to_string(&health_status_descriptions) {
-                                Ok(body) => {
-                                    let contains_failed_report =
-                                        health_status_descriptions.iter().any(|description| {
-                                            matches!(
-                                                description.status,
-                                                HealthStatus::Failed { .. }
-                                            )
-                                        });
-                                    let status_code = if contains_failed_report {
-                                        StatusCode::SERVICE_UNAVAILABLE
-                                    } else {
-                                        StatusCode::OK
-                                    };
-                                    Response::builder()
-                                        .status(status_code)
-                                        .header(
-                                            hyper::header::CONTENT_TYPE,
-                                            hyper::header::HeaderValue::from_static(
-                                                JSON_CONTENT_TYPE,
-                                            ),
-                                        )
-                                        .body(body)
-                                        .unwrap()
-                                }
-                                Err(e) => Response::builder()
-                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                    .header(
-                                        hyper::header::CONTENT_TYPE,
-                                        hyper::header::HeaderValue::from_static(JSON_CONTENT_TYPE),
-                                    )
-                                    .body(format!("Internal Failure: {e:?}"))
-                                    .unwrap(),
-                            }
-                        })
+                        futures::executor::block_on(
+                            health_server_cloned.check_health_status(JSON_CONTENT_TYPE),
+                        )
                     })
                     .await
                     .unwrap_or_else(error_to_response)
