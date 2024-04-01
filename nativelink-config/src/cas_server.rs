@@ -600,6 +600,15 @@ pub struct LocalWorkerConfig {
     /// of the environment variable being the value of the property of the
     /// action being executed of that name or the fixed value.
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
+
+    /// The maximum number of actions a worker can executions .
+    /// After this limit is reached, the nativelink binary will exit.
+    /// A value of None means no limit.
+    ///
+    /// For Example:
+    /// If you would like for each individual action to spin up a kubernetes
+    /// pod and then exit on completion, you would set this value to 1.
+    pub actions_before_termination: Option<u64>,
 }
 
 #[allow(non_camel_case_types)]

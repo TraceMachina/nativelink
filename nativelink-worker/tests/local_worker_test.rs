@@ -29,7 +29,7 @@ mod utils {
     pub(crate) mod mock_running_actions_manager;
 }
 
-use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
+use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use nativelink_error::{make_err, make_input_err, Code, Error};
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
@@ -636,6 +636,154 @@ mod local_worker_tests {
             }
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn worker_action_limit_test() -> Result<(), Box<dyn std::error::Error>> {
+        const SALT_1: u64 = 1000;
+
+        const ARBITRARY_LARGE_TIMEOUT: f32 = 10000.;
+        let local_worker_config = LocalWorkerConfig {
+            platform_properties: HashMap::new(),
+            worker_api_endpoint: EndpointConfig {
+                timeout: Some(ARBITRARY_LARGE_TIMEOUT),
+                ..Default::default()
+            },
+            actions_before_termination: Some(1),
+            ..Default::default()
+        };
+        let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+        let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+        {
+            // Ensure our worker connects and properties were sent.
+            let props = test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response))
+                .await;
+            assert_eq!(props, SupportedProperties::default());
+        }
+
+        let expected_worker_id = "foobar".to_string();
+
+        let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+        {
+            // First initialize our worker by sending the response to the connection request.
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+
+        let action_digest_1 = DigestInfo::new([3u8; 32], 10);
+        let action_info_1 = ActionInfo {
+            command_digest: DigestInfo::new([1u8; 32], 10),
+            input_root_digest: DigestInfo::new([2u8; 32], 10),
+            timeout: Duration::from_secs(1),
+            platform_properties: PlatformProperties::default(),
+            priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::UNIX_EPOCH,
+            unique_qualifier: ActionInfoHashKey {
+                instance_name: INSTANCE_NAME.to_string(),
+                digest: action_digest_1,
+                salt: SALT_1,
+            },
+            skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Sha256,
+        };
+
+        {
+            // Send execution request.
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some(action_info_1.into()),
+                        salt: SALT_1,
+                        queued_timestamp: None,
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+
+        // going_away should trigger once execution_limit actions have been assigned
+        test_context
+            .client
+            .expect_going_away(Ok(Response::new(())))
+            .await;
+
+        let action_result = ActionResult {
+            output_files: vec![],
+            output_folders: vec![],
+            output_file_symlinks: vec![],
+            output_directory_symlinks: vec![],
+            exit_code: 5,
+            stdout_digest: DigestInfo::new([21u8; 32], 10),
+            stderr_digest: DigestInfo::new([22u8; 32], 10),
+            execution_metadata: ExecutionMetadata {
+                worker: expected_worker_id.clone(),
+                queued_timestamp: SystemTime::UNIX_EPOCH,
+                worker_start_timestamp: SystemTime::UNIX_EPOCH,
+                worker_completed_timestamp: SystemTime::UNIX_EPOCH,
+                input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
+                input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
+                execution_start_timestamp: SystemTime::UNIX_EPOCH,
+                execution_completed_timestamp: SystemTime::UNIX_EPOCH,
+                output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
+                output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+            },
+            server_logs: HashMap::new(),
+            error: None,
+            message: String::new(),
+        };
+        let running_action = Arc::new(MockRunningAction::new());
+
+        // Send and wait for response from create_and_add_action to RunningActionsManager.
+        test_context
+            .actions_manager
+            .expect_create_and_add_action(Ok(running_action.clone()))
+            .await;
+
+        // Now the RunningAction needs to send a series of state updates. This shortcuts them
+        // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
+        running_action
+            .simple_expect_get_finished_result(Ok(action_result.clone()))
+            .await?;
+
+        // Expect the action to be updated in the action cache.
+        let (stored_digest, stored_result, digest_hasher) = test_context
+            .actions_manager
+            .expect_cache_action_result()
+            .await;
+        assert_eq!(stored_digest, action_digest_1);
+        assert_eq!(stored_result, action_result.clone());
+        assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
+
+        // Now our client should be notified that our runner finished.
+        let execution_response = test_context
+            .client
+            .expect_execution_response(Ok(Response::new(())))
+            .await;
+
+        // Now ensure the final results match our expectations.
+        assert_eq!(
+            execution_response,
+            ExecuteResult {
+                worker_id: expected_worker_id.clone(),
+                instance_name: INSTANCE_NAME.to_string(),
+                action_digest: Some(action_digest_1.into()),
+                salt: SALT_1,
+                result: Some(execute_result::Result::ExecuteResponse(
+                    ActionStage::Completed(action_result).into()
+                )),
+            }
+        );
         Ok(())
     }
 }
