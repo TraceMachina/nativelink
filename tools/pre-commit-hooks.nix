@@ -43,6 +43,7 @@ in {
       excludes
       ++ [
         # Integration testfiles not intended for production.
+        "deployment-examples/chromium/example-do-not-use-in-prod-key.pem"
         "deployment-examples/docker-compose/example-do-not-use-in-prod-key.pem"
         "deployment-examples/kubernetes/example-do-not-use-in-prod-key.pem"
       ];
