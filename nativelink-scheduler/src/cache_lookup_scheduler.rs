@@ -22,7 +22,11 @@ use nativelink_error::Error;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     digest_function, ActionResult as ProtoActionResult, GetActionResultRequest,
 };
+<<<<<<< Updated upstream
 use nativelink_store::ac_utils::{get_and_decode_digest, get_digests_info};
+=======
+use nativelink_store::ac_utils::{get_and_decode_digest, get_digests_info, DigestInputType};
+>>>>>>> Stashed changes
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState,
@@ -90,6 +94,7 @@ async fn validate_outputs_exist(
     action_result: &ProtoActionResult,
 ) -> bool {
     // Verify that output_files and output_directories are available in the cas.
+<<<<<<< Updated upstream
     let Ok(mut digest_infos) =
         get_digests_info(action_result.output_files.clone(), &move |digests| {
             Box::new(
@@ -99,6 +104,26 @@ async fn validate_outputs_exist(
             )
         })
     else {
+=======
+
+    let Ok(mut digest_infos) = get_digests_info(
+        action_result,
+        DigestInputType::OutputFiles(&action_result.output_files),
+        false,
+    ) else {
+        return false;
+    };
+    let Ok(mut digest_output_infos) = get_digests_info(
+        action_result,
+        DigestInputType::OutputDirectories(&action_result.output_directories),
+        false,
+    ) else {
+        return false;
+    };
+    digest_infos.append(&mut digest_output_infos);
+
+    let Ok(sizes) = Pin::new(cas_store.as_ref()).has_many(&digest_infos).await else {
+>>>>>>> Stashed changes
         return false;
     };
 

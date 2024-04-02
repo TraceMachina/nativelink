@@ -31,7 +31,13 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tracing::warn;
 
+<<<<<<< Updated upstream
 use crate::ac_utils::{get_and_decode_digest, get_digests_info, get_size_and_decode_digest};
+=======
+use crate::ac_utils::{
+    get_and_decode_digest, get_digests_info, get_size_and_decode_digest, DigestInputType,
+};
+>>>>>>> Stashed changes
 
 pub struct CompletenessCheckingStore {
     cas_store: Arc<dyn Store>,
@@ -51,6 +57,7 @@ impl CompletenessCheckingStore {
 /// that need to be checked and pass them into `handle_digest_infos_fn`
 /// as they are found.
 async fn check_output_directories(
+    action_result: &ProtoActionResult,
     cas_store: Pin<&dyn Store>,
     tree_digests: Vec<DigestInfo>,
     handle_digest_infos_fn: &impl Fn(Vec<DigestInfo>),
@@ -63,6 +70,7 @@ async fn check_output_directories(
             // TODO(allada) When `try_collect()` is stable we can use it instead.
             // https://github.com/rust-lang/rust/issues/94047
             let digest_infos = get_digests_info(
+<<<<<<< Updated upstream
                 tree.children.into_iter().chain(tree.root).collect(),
                 &move |tree| {
                     Box::new(tree.into_iter().flat_map(|dir| {
@@ -71,6 +79,17 @@ async fn check_output_directories(
                             .filter_map(|f| f.digest.map(DigestInfo::try_from))
                     }))
                 },
+=======
+                action_result,
+                DigestInputType::Directories(
+                    &tree
+                        .children
+                        .into_iter()
+                        .chain(tree.root)
+                        .collect::<Vec<_>>(),
+                ),
+                false,
+>>>>>>> Stashed changes
             )?;
             handle_digest_infos_fn(digest_infos);
             Ok(())
@@ -128,6 +147,7 @@ async fn inner_has_with_results(
                 let (action_result, size) =
                     get_size_and_decode_digest::<ProtoActionResult>(ac_store, digest).await?;
 
+<<<<<<< Updated upstream
                 let mut digest_infos =
                     get_digests_info(action_result.output_files, &move |digests| {
                         Box::new(
@@ -155,6 +175,18 @@ async fn inner_has_with_results(
                             output_dir.tree_digest.map(DigestInfo::try_from)
                         }))
                     })?;
+=======
+                let mut digest_infos = get_digests_info(
+                    &action_result,
+                    DigestInputType::OutputFiles(&action_result.output_files),
+                    true,
+                )?;
+                let digest_output_infos = get_digests_info(
+                    &action_result,
+                    DigestInputType::OutputDirectories(&action_result.output_directories),
+                    true,
+                )?;
+>>>>>>> Stashed changes
 
                 {
                     let mut state = state_mux.lock();
@@ -180,19 +212,24 @@ async fn inner_has_with_results(
 
                 // Hot path: It is very common for no output directories to be defined.
                 // So we can avoid any needless work by early returning.
-                if output_directories.is_empty() {
+                if digest_output_infos.is_empty() {
                     return Ok(());
                 }
 
-                check_output_directories(cas_store, output_directories, &move |digest_infos| {
-                    let mut state = state_mux.lock();
-                    let rep_len = digest_infos.len();
-                    state.digests_to_check.extend(digest_infos);
-                    state
-                        .digests_to_check_idxs
-                        .extend(iter::repeat(i).take(rep_len));
-                    state.notify.notify_one();
-                })
+                check_output_directories(
+                    &action_result,
+                    cas_store,
+                    digest_output_infos,
+                    &move |digest_infos| {
+                        let mut state = state_mux.lock();
+                        let rep_len = digest_infos.len();
+                        state.digests_to_check.extend(digest_infos);
+                        state
+                            .digests_to_check_idxs
+                            .extend(iter::repeat(i).take(rep_len));
+                        state.notify.notify_one();
+                    },
+                )
                 .await?;
 
                 Result::<(), Error>::Ok(())
