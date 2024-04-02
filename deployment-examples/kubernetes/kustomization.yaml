@@ -13,12 +13,9 @@ configMapGenerator:
   - name: scheduler
     files:
       - scheduler.json
-  - name: worker-lre-cc
+  - name: worker
     files:
-      - worker-lre-cc.json
-  - name: worker-lre-java
-    files:
-      - worker-lre-java.json
+      - worker.json
 
 secretGenerator:
   - name: tls-secret
