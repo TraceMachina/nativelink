@@ -73,7 +73,7 @@ sudo rm -rf ~/.cache/nativelink
 mkdir -p ~/.cache/nativelink
 
 # Ensure our docker compose is not running.
-sudo docker-compose rm --stop -f
+sudo docker compose rm --stop -f
 
 export TMPDIR=$HOME/.cache/nativelink/
 mkdir -p "$TMPDIR"
@@ -86,7 +86,7 @@ else
 fi
 
 export BAZEL_CACHE_DIR="$CACHE_DIR/bazel"
-trap "sudo rm -rf $CACHE_DIR; sudo docker-compose rm --stop -f" EXIT
+trap "sudo rm -rf $CACHE_DIR; sudo docker compose rm --stop -f" EXIT
 
 echo "" # New line.
 
@@ -109,8 +109,8 @@ for pattern in "${TEST_PATTERNS[@]}"; do
     bazel --output_base="$BAZEL_CACHE_DIR" clean
     FILENAME=$(basename $fullpath)
     echo "Running test $FILENAME"
-    sudo docker-compose up -d
-    if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker-compose logs | grep -q "Ready, listening on"; do sleep 1; done'
+    sudo docker compose up -d
+    if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker compose logs | grep -q "Ready, listening on"; do sleep 1; done'
     then
       echo "String 'Ready, listening on' found in the logs."
     else
@@ -124,10 +124,10 @@ for pattern in "${TEST_PATTERNS[@]}"; do
       echo "$FILENAME passed"
     else
       echo "$FILENAME failed with exit code $EXIT_CODE"
-      sudo docker-compose logs
+      sudo docker compose logs
       exit $EXIT_CODE
     fi
-    sudo docker-compose rm --stop -f
+    sudo docker compose rm --stop -f
     echo "" # New line.
   done
 done
