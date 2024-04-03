@@ -145,14 +145,10 @@ pub struct GrpcScheduler {
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct CacheLookupScheduler {
-    /// The reference to the action cache store to use to returned cached
+    /// The reference to the action cache store used to return cached
     /// actions from rather than running them again.
+    /// To prevent unintended issues, this store should probably be a CompletenessCheckingStore.
     pub ac_store: StoreRefName,
-
-    /// The reference to the CAS which contains the outputs from the cached
-    /// actions to verify that the outputs still exist before returning a
-    /// cached result.
-    pub cas_store: StoreRefName,
 
     /// The nested scheduler to use if cache lookup fails.
     pub scheduler: Box<SchedulerConfig>,
