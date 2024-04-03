@@ -127,7 +127,7 @@
             cargoExtraArgs = "--features enable_tokio_console";
           });
 
-        hooks = import ./tools/pre-commit-hooks.nix {inherit pkgs;};
+        hooks = import ./tools/pre-commit-hooks.nix {inherit pkgs nightly-rust;};
 
         publish-ghcr = import ./tools/publish-ghcr.nix {inherit pkgs;};
 
@@ -203,15 +203,7 @@
           #   partitionType = "count";
           # });
         };
-        pre-commit.settings = {
-          inherit hooks;
-          settings.vale.configPath = ".vale.ini";
-          tools = let
-            mkOverrideTools = pkgs.lib.mkOverride (pkgs.lib.modules.defaultOverridePriority - 1);
-          in {
-            rustfmt = mkOverrideTools nightly-rust.rustfmt;
-          };
-        };
+        pre-commit.settings = {inherit hooks;};
         devShells.default = pkgs.mkShell {
           nativeBuildInputs =
             [
