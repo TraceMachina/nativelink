@@ -7,7 +7,7 @@ in {
     enable = true;
     name = "trailing-whitespace";
     description = "Remove trailing whitespace";
-    entry = "${pkgs.python311Packages.pre-commit-hooks}/bin/trailing-whitespace-fixer";
+    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/trailing-whitespace-fixer";
     types = ["text"];
   };
   end-of-file-fixer = {
@@ -15,27 +15,27 @@ in {
     enable = true;
     name = "end-of-file-fixer";
     description = "Remove trailing whitespace";
-    entry = "${pkgs.python311Packages.pre-commit-hooks}/bin/end-of-file-fixer";
+    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/end-of-file-fixer";
     types = ["text"];
   };
   fix-byte-order-marker = {
     inherit excludes;
     enable = true;
     name = "fix-byte-order-marker";
-    entry = "${pkgs.python311Packages.pre-commit-hooks}/bin/fix-byte-order-marker";
+    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/fix-byte-order-marker";
   };
   mixed-line-ending = {
     inherit excludes;
     enable = true;
     name = "mixed-line-ending";
-    entry = "${pkgs.python311Packages.pre-commit-hooks}/bin/mixed-line-ending";
+    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/mixed-line-ending";
     types = ["text"];
   };
   check-case-conflict = {
     inherit excludes;
     enable = true;
     name = "check-case-conflict";
-    entry = "${pkgs.python311Packages.pre-commit-hooks}/bin/check-case-conflict";
+    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/check-case-conflict";
     types = ["text"];
   };
   detect-private-key = {
@@ -49,7 +49,7 @@ in {
       ];
     enable = true;
     name = "detect-private-key";
-    entry = "${pkgs.python311Packages.pre-commit-hooks}/bin/detect-private-key";
+    entry = "${pkgs.python312Packages.pre-commit-hooks}/bin/detect-private-key";
     types = ["text"];
   };
   forbid-binary-files = {
@@ -77,7 +77,10 @@ in {
   };
 
   # Documentation
-  vale.enable = true;
+  vale = {
+    enable = true;
+    settings.configPath = ".vale.ini";
+  };
 
   # Nix
   alejandra.enable = true;
