@@ -15,54 +15,288 @@ Should you wish to work on an issue, please claim it first by commenting on
 the GitHub issue that you want to work on it. This is to prevent duplicated
 efforts from contributors on the same issue.
 
-## Nix development flake
+## Git setup
 
-You can use the Nix development flake to automatically set up Bazel, Cargo and
-various Cloud tools for you:
+NativeLink has a somewhat specific contribution process to ensure consistent
+quality across all commits. If anything in the following guide is unclear to you
+please raise an issue so that we can clarify this document.
 
-1. Install the [nix package manger](https://nixos.org/download.html) and enable
-   [flakes](https://nixos.wiki/wiki/Flakes).
-2. Optionally, install [`direnv`](https://direnv.net/docs/installation.html) and
-   hook it into your shell.
-3. We currently don't ship a C++ toolchain as part of the flake. Make sure to
-   install a recent version of Clang.
+1. In your [GitHub settings](https://github.com/settings/keys), set up distinct
+   authentication and signing keys. For further information see:
+   - https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent
+   - https://docs.github.com/en/authentication/connecting-to-github-with-ssh/adding-a-new-ssh-key-to-your-github-account
 
-## Pull Request Checklist
+2. Fork the `TraceMachina/nativelink` repository by clicking on the `Fork`
+   button.
 
-- Branch from the main branch and, if needed, rebase to the current main
-  branch before submitting your pull request. If it doesn't merge cleanly with
-  main you may be asked to rebase your changes.
+3. Clone your fork:
 
-- Commits should be as small as possible, while ensuring that each commit is
-  correct independently (that is, each commit should compile and pass tests).
+   ```bash
+   git clone git@github.com:yourusername/nativelink
+   ```
 
-- Commits should be accompanied by a [Developer Certificate of Origin](http://developercertificate.org)
-  sign-off, which indicates that you (and your employer if applicable) agree to
-  be bound by the terms of the [project license](LICENSE). In git, this is the
-  `-s` option to `git commit`.
+> [!WARNING]
+> Don't use
+> ```bash
+> git clone git@github.com:TraceMachina/nativelink
+> ```
 
-- If your patch isn't getting reviewed or you need a specific person to review
-  it, you can @-reply a reviewer asking for a review in the pull request or a
-  comment.
+4. `cd` into the cloned repository:
 
-- Add tests relevant to the fixed bug or new feature.
+   ```bash
+   cd nativelink
+   ```
 
-- If `rustfmt` complains you can use the following command to apply its
-  suggested changes to the Rust sources:
+5. Add `TraceMachina/nativelink` as a `remote` repository and call it
+   `upstream`:
 
-  ```bash
-  bazel run \
-    --@rules_rust//:rustfmt.toml=//:.rustfmt.toml \
-    @rules_rust//:rustfmt
-  ```
+   ```bash
+   git remote add upstream git@github.com:TraceMachina/nativelink
+   ```
 
-  For Windows PowerShell;
+> [!TIP]
+> To verify whether the setup was successful, run `git remote -v`. The output
+> should look like this:
+>
+> ```bash
+> origin   git@github.com:yourusername/nativelink (fetch)
+> origin   git@github.com:yourusername/nativelink (push)
+> upstream     git@github.com:TraceMachina/nativelink (fetch)
+> upstream     git@github.com:TraceMachina/nativelink (push)
+> ```
 
-  ```powershell
-  bazel run `
-    --@rules_rust//:rustfmt.toml=//:.rustfmt.toml `
-    @rules_rust//:rustfmt
-  ```
+6. Finally, configure `git` to sign your commits with the keys you set up
+   previously. Create a `.gitconfig` file in your home directory like so:
+
+    ```ini
+    [user]
+         name = Your Full Name
+         email = the-email-you-use-on-github@example.com
+         signingkey = ~/.ssh/your_private_signing_key
+
+    [gpg]
+         format = ssh  # Or gpg if you use a GPG key.
+
+    [commit]
+         gpgsign = true
+
+    [tag]
+         gpgsign = true
+    ```
+
+## Local development setup
+
+NativeLink ships almost all of it's tooling in a nix flake which is configured
+via a [`flake.nix`](./flake.nix) file in the root of the repository. While it's
+possible to work on some parts of the codebase without this environment, it'll
+make your life much easier since it lets you reproduce most of CI locally.
+
+1. Install Nix with flakes: https://github.com/NixOS/experimental-nix-installer
+   For further information on Nix Flakes see: https://nixos.wiki/wiki/Flakes.
+2. Optionally (but highly recommended), install [`direnv`](https://direnv.net/docs/installation.html) and
+   hook it into your shell:
+
+   ```bash
+   nix profile install nixpkgs#direnv
+
+   # Add the right hook for your shell: https://direnv.net/docs/hook.html
+
+   # Restart your terminal.
+
+   # When you `cd` into the nativelink repository, you should see a message
+   # asking you to run `direnv allow`. Do this and you're good to go.
+   ```
+
+> [!NOTE]
+> If you don't want to use `direnv`, you'll need to enter the flake manually
+> with `nix develop` every time you enter the `nativelink` directory, switch
+> branches or make changes to the nix files.
+
+> [!TIP]
+> To verify that the environment is active, run `env | grep NIX`. You should
+> see several `*NIX_*` environment variables.
+
+3. The environment doesn't ship a full C++ toolchain yet. Install a recent
+   version of Clang manually:
+
+   ```bash
+   # Use your distros preferred package manager (pacman, emerge, apt etc), or
+   # install via nix:
+   nix profile install nixpkgs#clang
+   ```
+
+## Common workflows
+
+These are some common workflows that you'll encounter during development on
+NativeLink.
+
+### Creating pull requests
+
+NativeLink doesn't allow direct commits or human-created side branches in the
+`TraceMachina/nativelink` repository. This holds for contributors in the
+`TraceMachina` organization. To create a pull request:
+
+1. Ensure that your personal fork is up-to-date with upstream:
+
+   ```bash
+   git switch main  # Switch to your local main branch
+   git pull -r upstream main  # Fetch upstream and rebase your current branch
+                              # against upstream's main branch
+   git push  # Push your updated main to your own fork
+   ```
+
+> [!TIP]
+> Use `git log` to check that your branches are in order:
+>
+> ```bash
+> # A `git log` should look like this:
+> commit ... (HEAD -> main, upstream/main, origin/main, origin/HEAD)
+> ...
+> ```
+
+2. Create a new branch for the change you want to make:
+
+   ```bash
+   git switch -c some-feature
+   ```
+
+3. After making changes to the source code create a commit with `git commit`. To
+   keep commits and the git history uniform and readable keep the following
+   rules in mind:
+
+   - Use a capital letter to start the commit and use an imperative tone for the
+     title.
+   - Don't end the title with a period.
+   - Keep the first line as short as possible. If your feature is complex, add
+     additional information in the commit message body.
+   - If you feel like you need the word `and` in the commit title, the commit
+     might try to do too many things at once and you should consider splitting
+     it into separate commits.
+   - The commit message body should have a maximum line length of 72 characters.
+     This is to keep the `git log` readable with raw terminals.
+
+   ```bash
+   # Good.
+   Add some feature
+
+   # Bad - trailing period
+   Add some feature.
+
+   # Bad - not imperative
+   Adds some feature
+
+   # Bad - details should be in the body
+   Add some complex feature and try to put all info in the title
+
+   # Bad - commit should be split
+   Add some feature and actually some other feature as well
+   ```
+
+4. Push your commit with `git push`. This will prompt you to set a remote branch
+   for the commit:
+
+   ```bash
+   git push --set-upstream origin some-feature
+   ```
+
+6. Go to https://github.com/TraceMachina/nativelink/pulls where you should see a
+   button that you can click to create to create a new pull request from your
+   fork to the main repository.
+
+7. Once you opened the pull request, click on the purple `Reviewable` button in
+   the GitHub page for the pull request to add reviewers with `+@somereviewer`.
+
+   The reviewers will take it from there and guide you through any potential
+   remaining issues. Feel free to ask for help if you have trouble getting CI
+   for your pull request green.
+
+8. If you need to make additional changes, don't use a regular `git commit` on
+   the pull request branch. Instead use `git commit --amend` and `git push -f`
+   to update the commit in-place. The changes between the commit versions will
+   remain visible in the Reviewable UI.
+
+
+### Using `git rebase`
+
+When you start working on a feature your `git log` looks something like this:
+
+```mermaid
+gitGraph
+    commit id: "aaa"
+    branch origin/main
+    branch origin/some-complex-feature
+    commit id: "Add some complex feature"
+```
+
+For complex features your commit might become outdated over time:
+
+```mermaid
+gitGraph
+    commit id: "aaa"
+    branch origin/some-complex-feature
+    commit id: "Add some complex feature"
+    checkout main
+    commit id: "bbb"
+    commit id: "ccc"
+```
+
+To get up-to-date with the latest branch, get the latest upstream commit and
+rebase your branch onto the new `main` branch:
+
+```bash
+git switch main                 # Switch to the origin/main branch
+git pull -r upstream main       # Sync the local main branch with upstream/main
+git push                        # Push the new local main to origin/main
+git switch some-complex-feature # Go back to the feature branch
+git rebase main                 # Rebase the feature branch onto the local main
+git push -f                     # Update the PR on GitHub
+```
+
+After this the history will be fine again:
+
+```mermaid
+gitGraph
+    commit id: "aaa"
+    commit id: "bbb"
+    commit id: "ccc"
+    branch origin/some-complex-feature
+    commit id: "Add some complex feature"
+```
+
+### Fixing rust formatting
+
+When working on Rust code `bazel test` commands automatically run `rustfmt` on
+all source files. If you get errors from these checks, run the `rustfmt` Bazel
+target to format the sources.
+
+For Bash/Zsh:
+
+```bash
+bazel run \
+  --@rules_rust//:rustfmt.toml=//:.rustfmt.toml \
+  @rules_rust//:rustfmt
+```
+
+For Windows PowerShell:
+
+```powershell
+bazel run `
+  --@rules_rust//:rustfmt.toml=//:.rustfmt.toml `
+  @rules_rust//:rustfmt
+```
+
+### Running pre-commit hooks
+
+Ensure you're in the Nix development environment as described in the [Local Development Setup](#local-development-setup).
+To run the hooks:
+
+```bash
+pre-commit run -a
+```
+
+This will automatically apply some fixes like automated line fixes and format
+changes. Note that changed files aren't automatically staged. Use `git add` to
+add the changed files manually to the staging area.
 
 ## Writing documentation
 
