@@ -61,9 +61,6 @@ fn inner_scheduler_factory(
         }
         SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
         SchedulerConfig::cache_lookup(config) => {
-            let cas_store = store_manager
-                .get_store(&config.cas_store)
-                .err_tip(|| format!("'cas_store': '{}' does not exist", config.cas_store))?;
             let ac_store = store_manager
                 .get_store(&config.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", config.ac_store))?;
@@ -71,7 +68,6 @@ fn inner_scheduler_factory(
                 inner_scheduler_factory(&config.scheduler, store_manager, None, visited_schedulers)
                     .err_tip(|| "In nested CacheLookupScheduler construction")?;
             let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
-                cas_store,
                 ac_store,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
             )?);

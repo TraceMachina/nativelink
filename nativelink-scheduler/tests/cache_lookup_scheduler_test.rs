@@ -23,11 +23,12 @@ mod utils {
 }
 
 use futures::join;
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::Error;
 use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
+use nativelink_store::completeness_checking_store::CompletenessCheckingStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
     ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo,
@@ -37,8 +38,6 @@ use nativelink_util::store_trait::Store;
 use prost::Message;
 use tokio::sync::watch;
 use tokio::{self};
-use tokio_stream::wrappers::WatchStream;
-use tokio_stream::StreamExt;
 use utils::mock_scheduler::MockActionScheduler;
 use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
 
@@ -50,14 +49,15 @@ struct TestContext {
 
 fn make_cache_scheduler() -> Result<TestContext, Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
-    let cas_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
+    let ac_store = Arc::new(CompletenessCheckingStore::new(
+        Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        )),
+        Arc::new(MemoryStore::new(
+            &nativelink_config::stores::MemoryStore::default(),
+        )),
     ));
-    let ac_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
-    let cache_scheduler =
-        CacheLookupScheduler::new(cas_store, ac_store.clone(), mock_scheduler.clone())?;
+    let cache_scheduler = CacheLookupScheduler::new(ac_store.clone(), mock_scheduler.clone())?;
     Ok(TestContext {
         mock_scheduler,
         ac_store,
@@ -89,43 +89,6 @@ mod cache_lookup_scheduler_tests {
             Arc::as_ptr(&actual_manager?)
         );
         assert_eq!(instance_name, actual_instance_name);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn add_action_does_cache_lookup() -> Result<(), Error> {
-        let context = make_cache_scheduler()?;
-        let action_info = make_base_action_info(UNIX_EPOCH);
-        let action_result = ProtoActionResult::from(ActionResult::default());
-        let store_pin = Pin::new(context.ac_store.as_ref());
-        store_pin
-            .update_oneshot(*action_info.digest(), action_result.encode_to_vec().into())
-            .await?;
-        let watch_channel = context
-            .cache_scheduler
-            .add_action(action_info.clone())
-            .await?;
-        let mut watch_stream = WatchStream::new(watch_channel);
-        if watch_stream
-            .next()
-            .await
-            .err_tip(|| "Getting initial state")?
-            .stage
-            != ActionStage::CacheCheck
-        {
-            panic!("Not performing a cache check");
-        }
-        let cached_action_state = watch_stream
-            .next()
-            .await
-            .err_tip(|| "Getting post-cache result")?;
-        let ActionStage::CompletedFromCache(proto_action_result) =
-            cached_action_state.stage.clone()
-        else {
-            panic!("Did not complete from cache");
-        };
-        assert_eq!(action_info.digest(), cached_action_state.action_digest());
-        assert_eq!(action_result, proto_action_result);
         Ok(())
     }
 
