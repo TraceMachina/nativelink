@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::Future;
@@ -57,6 +57,10 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
+/// Default timeout for actions without any listeners
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_DISCONNECT_TIMEOUT_S: u64 = 60;
+
 /// An action that is being awaited on and last known state.
 struct AwaitedAction {
     action_info: Arc<ActionInfo>,
@@ -71,6 +75,19 @@ struct AwaitedAction {
 
     /// Worker that is currently running this action, None if unassigned.
     worker_id: Option<WorkerId>,
+
+    /// Updated on every client connect and periodically while it has listeners.
+    last_update_timestamp: Arc<AtomicU64>,
+}
+
+impl AwaitedAction {
+    pub fn set_last_update_timestamp(&self, timestamp: u64) {
+        self.last_update_timestamp
+            .store(timestamp, Ordering::Relaxed);
+    }
+    pub fn get_last_update_timestamp(&self) -> u64 {
+        self.last_update_timestamp.load(Ordering::Relaxed)
+    }
 }
 
 struct Workers {
@@ -227,6 +244,8 @@ struct SimpleSchedulerImpl {
     /// Notify task<->worker matching engine that work needs to be done.
     tasks_or_workers_change_notify: Arc<Notify>,
     metrics: Arc<Metrics>,
+    /// How long the server will wait for a client to reconnect before removing the action from the queue.
+    disconnect_timeout_s: u64,
 }
 
 impl SimpleSchedulerImpl {
@@ -305,6 +324,7 @@ impl SimpleSchedulerImpl {
                 attempts: 0,
                 last_error: None,
                 worker_id: None,
+                last_update_timestamp: Arc::new(AtomicU64::new(0)),
             },
         );
 
@@ -434,6 +454,22 @@ impl SimpleSchedulerImpl {
         let action_infos: Vec<Arc<ActionInfo>> =
             self.queued_actions.keys().rev().cloned().collect();
         for action_info in action_infos {
+            // add update to queued action update timestamp here
+            let action = self.queued_actions.get_mut(&action_info).unwrap();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            if action.notify_channel.receiver_count() > 0 {
+                action.set_last_update_timestamp(now);
+            } else if action.get_last_update_timestamp() + self.disconnect_timeout_s < now {
+                warn!(
+                    "Client disconnect timeout elapsed - Removing action with digest hash {}",
+                    action_info.unique_qualifier.digest.hash_str()
+                );
+                self.queued_actions_set.remove(&action_info);
+                self.queued_actions.remove(&action_info);
+            }
             let Some(awaited_action) = self.queued_actions.get(action_info.as_ref()) else {
                 error!(
                     "queued_actions out of sync with itself for action {}",
@@ -490,6 +526,21 @@ impl SimpleSchedulerImpl {
             awaited_action.attempts += 1;
             self.active_actions.insert(action_info, awaited_action);
         }
+
+        let mut remove_actions = Vec::new();
+        for running_action in self.active_actions.values() {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            if running_action.notify_channel.receiver_count() > 0 {
+                running_action.set_last_update_timestamp(now);
+            } else if running_action.get_last_update_timestamp() + self.disconnect_timeout_s < now {
+                remove_actions.push(running_action.action_info.clone())
+            }
+        }
+        self.active_actions
+            .retain(|x, _| !remove_actions.contains(x));
     }
 
     fn update_action_with_internal_error(
@@ -688,6 +739,11 @@ impl SimpleScheduler {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
 
+        let mut disconnect_timeout_s = scheduler_cfg.disconnect_timeout_s;
+        if disconnect_timeout_s == 0 {
+            disconnect_timeout_s = DEFAULT_DISCONNECT_TIMEOUT_S;
+        }
+
         let tasks_or_workers_change_notify = Arc::new(Notify::new());
 
         let metrics = Arc::new(Metrics::default());
@@ -703,6 +759,7 @@ impl SimpleScheduler {
             max_job_retries,
             tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
             metrics: metrics.clone(),
+            disconnect_timeout_s,
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
@@ -773,6 +830,23 @@ impl SimpleScheduler {
             .fetch_add(1, Ordering::Relaxed);
         lock
     }
+
+    /// Set the last update timestamp.
+    pub fn set_action_last_update_for_test(
+        &self,
+        unique_qualifier: &ActionInfoHashKey,
+        timestamp: u64,
+    ) {
+        let inner = self.get_inner_lock();
+        let awaited_action = inner
+            .queued_actions_set
+            .get(unique_qualifier)
+            .and_then(|action_info| inner.queued_actions.get(action_info))
+            .or_else(|| inner.active_actions.get(unique_qualifier))
+            .expect("Could not find action");
+        awaited_action.set_last_update_timestamp(timestamp)
+    }
+
 }
 
 #[async_trait]
