@@ -221,6 +221,7 @@
               pkgs.yarn
               pkgs.vale
               pkgs.trivy
+              pkgs.docker-client
 
               # Additional tools from within our development environment.
               local-image-test
