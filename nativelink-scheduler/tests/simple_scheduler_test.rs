@@ -1602,4 +1602,79 @@ mod scheduler_tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn ensure_actions_with_disconnected_clients_are_dropped() -> Result<(), Error> {
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
+        const DISCONNECT_TIMEOUT_S: u64 = 1;
+
+        let scheduler = SimpleScheduler::new_with_callback(
+            &nativelink_config::schedulers::SimpleScheduler {
+                disconnect_timeout_s: DISCONNECT_TIMEOUT_S,
+                ..Default::default()
+            },
+            || async move {},
+        );
+        let action1_digest = DigestInfo::new([98u8; 32], 512);
+        let action2_digest = DigestInfo::new([99u8; 32], 512);
+
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let insert_timestamp = make_system_time(1);
+
+        let client_rx = setup_action(
+            &scheduler,
+            action1_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+
+        // Drop our receiver.
+        let unique_qualifier = client_rx.borrow().unique_qualifier.clone();
+        drop(client_rx);
+
+        // Allow task<->worker matcher to run.
+        tokio::task::yield_now().await;
+
+        // Set last update timestamp to be older than DISCONNECT_TIMEOUT_S.
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - (DISCONNECT_TIMEOUT_S + 1);
+        scheduler.set_action_last_update_for_test(&unique_qualifier, timestamp);
+
+        {
+            // Other tests check full data. We only care if we got StartAction.
+            match rx_from_worker.recv().await.unwrap().update {
+                Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+                v => panic!("Expected StartAction, got : {v:?}"),
+            }
+        }
+
+        // Setup a second action so matching engine is scheduled to rerun.
+        let client_rx = setup_action(
+            &scheduler,
+            action2_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+        drop(client_rx);
+
+        // Allow task<->worker matcher to run.
+        tokio::task::yield_now().await;
+
+        // Check to make sure that the action was removed.
+        assert!(
+            scheduler
+                .find_existing_action(&unique_qualifier)
+                .await
+                .is_none(),
+            "Expected action to be removed"
+        );
+
+        Ok(())
+    }
 }
