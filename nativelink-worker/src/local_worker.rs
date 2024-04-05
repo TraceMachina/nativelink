@@ -210,6 +210,18 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         Update::KeepAlive(()) => {
                             self.metrics.keep_alives_received.inc();
                         }
+                        Update::KillActionRequest(kill_action_request) => {
+                            let kill_action_result = self.running_actions_manager
+                                .kill_action(kill_action_request.clone())
+                                .await;
+                            if let Err(e) = kill_action_result {
+                                warn!(
+                                    "Kill action {} failed with error - {}",
+                                    kill_action_request.action_id,
+                                    e
+                                )
+                            }
+                        }
                         Update::StartAction(start_execute) => {
                             self.metrics.start_actions_received.inc();
                             let add_future_channel = add_future_channel.clone();

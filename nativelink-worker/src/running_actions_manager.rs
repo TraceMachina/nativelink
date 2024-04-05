@@ -46,7 +46,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Tree as ProtoTree, UpdateActionResultRequest,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    HistoricalExecuteResponse, StartExecute,
+    HistoricalExecuteResponse, KillActionRequest, StartExecute,
 };
 use nativelink_store::ac_utils::{
     compute_buf_digest, get_and_decode_digest, serialize_and_upload_message, ESTIMATED_DIGEST_SIZE,
@@ -1285,6 +1285,8 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
 
     async fn kill_all(&self);
 
+    async fn kill_action(&self, kill_action_request: KillActionRequest) -> Result<(), Error>;
+
     fn metrics(&self) -> &Arc<Metrics>;
 }
 
@@ -1781,6 +1783,29 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 hasher,
             ))
             .await
+    }
+
+    async fn kill_action(&self, kill_action_request: KillActionRequest) -> Result<(), Error> {
+        let mut action_id: ActionId = [0u8; 32];
+
+        assert_eq!(
+            hex::decode_to_slice(kill_action_request.action_id, &mut action_id as &mut [u8]),
+            Ok(()),
+            "Failed to decode action id"
+        );
+
+        let running_actions = self.running_actions.lock();
+        running_actions.get(&action_id).map_or(
+            Err(make_err!(
+                Code::Internal,
+                "Failed to get running action {}",
+                hex::encode(action_id)
+            )),
+            |action| {
+                action.upgrade().map(Self::kill_action);
+                Ok(())
+            },
+        )
     }
 
     // Note: When the future returns the process should be fully killed and cleaned up.

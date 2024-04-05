@@ -131,6 +131,12 @@ message ConnectionResult {
     reserved 2; // NextId.
 }
 
+/// Request to kill a running action sent from the scheduler to a worker.
+message KillActionRequest {
+    /// The the hash of the unique qualifier for the action to be killed.
+    string action_id = 1;
+    reserved 2;
+}
 /// Communication from the scheduler to the worker.
 message UpdateForWorker {
     oneof update {
@@ -152,8 +158,11 @@ message UpdateForWorker {
         /// Informs the worker that it has been disconnected from the pool.
         /// The worker may discard any outstanding work that is being executed.
         google.protobuf.Empty disconnect = 4;
+
+        /// Instructs the worker to kill a specific running action.
+        KillActionRequest kill_action_request = 5;
     }
-    reserved 5; // NextId.
+    reserved 6; // NextId.
 }
 
 message StartExecute {
