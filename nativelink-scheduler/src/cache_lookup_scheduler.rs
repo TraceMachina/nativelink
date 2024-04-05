@@ -35,6 +35,7 @@ use tokio::select;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::Request;
+use tracing::warn;
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -45,10 +46,8 @@ use crate::platform_property_manager::PlatformPropertyManager;
 type CheckActions = HashMap<ActionInfoHashKey, Arc<watch::Sender<Arc<ActionState>>>>;
 
 pub struct CacheLookupScheduler {
-    /// A reference to the CAS which is used to validate all the outputs of a
-    /// cached ActionResult still exist.
-    cas_store: Arc<dyn Store>,
     /// A reference to the AC to find existing actions in.
+    /// To prevent unintended issues, this store should probably be a CompletenessCheckingStore.
     ac_store: Arc<dyn Store>,
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
@@ -85,40 +84,6 @@ async fn get_action_from_store(
     }
 }
 
-async fn validate_outputs_exist(
-    cas_store: &Arc<dyn Store>,
-    action_result: &ProtoActionResult,
-) -> bool {
-    // Verify that output_files and output_directories are available in the cas.
-    let mut required_digests = Vec::with_capacity(
-        action_result.output_files.len() + action_result.output_directories.len(),
-    );
-    for digest in action_result
-        .output_files
-        .iter()
-        .filter_map(|output_file| output_file.digest.as_ref())
-        .chain(
-            action_result
-                .output_directories
-                .iter()
-                .filter_map(|output_file| output_file.tree_digest.as_ref()),
-        )
-    {
-        let Ok(digest) = DigestInfo::try_from(digest) else {
-            return false;
-        };
-        required_digests.push(digest);
-    }
-
-    let Ok(sizes) = Pin::new(cas_store.as_ref())
-        .has_many(&required_digests)
-        .await
-    else {
-        return false;
-    };
-    sizes.into_iter().all(|size| size.is_some())
-}
-
 fn subscribe_to_existing_action(
     cache_check_actions: &MutexGuard<CheckActions>,
     unique_qualifier: &ActionInfoHashKey,
@@ -136,12 +101,10 @@ fn subscribe_to_existing_action(
 
 impl CacheLookupScheduler {
     pub fn new(
-        cas_store: Arc<dyn Store>,
         ac_store: Arc<dyn Store>,
         action_scheduler: Arc<dyn ActionScheduler>,
     ) -> Result<Self, Error> {
         Ok(Self {
-            cas_store,
             ac_store,
             action_scheduler,
             cache_check_actions: Default::default(),
@@ -193,7 +156,6 @@ impl ActionScheduler for CacheLookupScheduler {
         };
 
         let ac_store = self.ac_store.clone();
-        let cas_store = self.cas_store.clone();
         let action_scheduler = self.action_scheduler.clone();
         // We need this spawn because we are returning a stream and this spawn will populate the stream's data.
         tokio::spawn(async move {
@@ -207,12 +169,20 @@ impl ActionScheduler for CacheLookupScheduler {
                 get_action_from_store(Pin::new(ac_store.as_ref()), *action_digest, instance_name)
                     .await
             {
-                if validate_outputs_exist(&cas_store, &action_result).await {
-                    // Found in the cache, return the result immediately.
-                    Arc::make_mut(&mut current_state).stage =
-                        ActionStage::CompletedFromCache(action_result);
-                    let _ = tx.send(current_state);
-                    return;
+                match Pin::new(ac_store.clone().as_ref())
+                    .has(*action_digest)
+                    .await
+                {
+                    Ok(Some(_)) => {
+                        Arc::make_mut(&mut current_state).stage =
+                            ActionStage::CompletedFromCache(action_result);
+                        let _ = tx.send(current_state);
+                        return;
+                    }
+                    Err(err) => {
+                        warn!("Error while calling `has` on `ac_store` in `CacheLookupScheduler`'s `add_action` function: {}", err);
+                    }
+                    _ => {}
                 }
             }
             // Not in cache, forward to upstream and proxy state.
