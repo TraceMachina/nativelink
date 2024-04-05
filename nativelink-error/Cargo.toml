@@ -11,7 +11,7 @@ autobenches = false
 nativelink-proto = { path = "../nativelink-proto" }
 
 hex = "0.4.3"
-prost = "0.12.3"
+prost = "0.12.4"
 prost-types = "0.12.3"
 tokio = { version = "1.37.0" }
 tonic = { version = "0.11.0", features = ["gzip"] }

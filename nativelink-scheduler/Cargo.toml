@@ -16,7 +16,7 @@ nativelink-store = { path = "../nativelink-store" }
 async-lock = "3.3.0"
 async-trait = "0.1.79"
 blake3 = "1.5.1"
-prost = "0.12.3"
+prost = "0.12.4"
 uuid = { version = "1.8.0", features = ["v4"] }
 futures = "0.3.30"
 hashbrown = "0.14"
