@@ -102,11 +102,19 @@ pub struct ConnectionResult {
     #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
 }
+/// / Request to kill a running action sent from the scheduler to a worker.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KillActionRequest {
+    /// / The the hex encoded unique qualifier for the action to be killed.
+    #[prost(string, tag = "1")]
+    pub action_id: ::prost::alloc::string::String,
+}
 /// / Communication from the scheduler to the worker.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateForWorker {
-    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5")]
     pub update: ::core::option::Option<update_for_worker::Update>,
 }
 /// Nested message and enum types in `UpdateForWorker`.
@@ -133,6 +141,9 @@ pub mod update_for_worker {
         /// / The worker may discard any outstanding work that is being executed.
         #[prost(message, tag = "4")]
         Disconnect(()),
+        /// / Instructs the worker to kill a specific running action.
+        #[prost(message, tag = "5")]
+        KillActionRequest(super::KillActionRequest),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]

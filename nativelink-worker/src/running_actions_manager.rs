@@ -1285,6 +1285,8 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
 
     async fn kill_all(&self);
 
+    async fn kill_action(&self, action_id: ActionId) -> Result<(), Error>;
+
     fn metrics(&self) -> &Arc<Metrics>;
 }
 
@@ -1781,6 +1783,20 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 hasher,
             ))
             .await
+    }
+
+    async fn kill_action(&self, action_id: ActionId) -> Result<(), Error> {
+        let running_action = {
+            let running_actions = self.running_actions.lock();
+            running_actions
+                .get(&action_id)
+                .and_then(|action| action.upgrade())
+                .ok_or_else(|| {
+                    make_input_err!("Failed to get running action {}", hex::encode(action_id))
+                })?
+        };
+        Self::kill_action(running_action).await;
+        Ok(())
     }
 
     // Note: When the future returns the process should be fully killed and cleaned up.
