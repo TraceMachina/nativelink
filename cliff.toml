@@ -63,28 +63,36 @@ commit_preprocessors = [
 ]
 # regex for parsing and grouping commits
 commit_parsers = [
+  { message = "Breaking", group = "<!-- 0 -->❌️  Breaking Changes" },
+
+  # Pull this in early but show it later in the changelog.
   { message = "docs", group = "<!-- 3 -->📚 Documentation" },
   { message = "document", group = "<!-- 3 -->📚 Documentation" },
   { message = "documentation", group = "<!-- 3 -->📚 Documentation" },
-  { message = "Make", group = "<!-- 2 -->🛠️ Refactor" },
-  { message = "to [0-9.]+", group = "<!-- 4 -->⬆️ Bumps & Version Updates" },
-  { message = "Bumb+", group = "<!-- 4 -->⬆️ Bumps & Version Updates" },
-  { message = "Fix", group = "<!-- 1 -->🐛 Bug Fixes" },
-  { message = "test", group = "<!-- 6 -->🧪 Testing" },
-  { message = "Add", group = "<!-- 0 -->⛰️  Features" },
-  { message = "Migrate", group = "<!-- 2 -->🛠️ Refactor" },
-  { message = "Integrate", group = "<!-- 0 -->⛰️  Features" },
-  { message = "Update", group = "<!-- 2 -->🛠️ Refactor" },
-  { message = "Move", group = "<!-- 2 -->🛠️ Refactor" },
-  { message = "Avoid", group = "<!-- 1 -->🐛 Bug Fixes" },
-  { message = "Introduce", group = "<!-- 0 -->⛰️  Features" },
-  { message = "Breaking", group = "<!-- 8 -->❌️  Breaking Changes" },
-  { message = "Rename", group = "<!-- 2 -->🛠️ Refactor" },
-  { message = "Handle", group = "<!-- 1 -->🐛 Bug Fixes" },
-  { message = "Temporarily disable", group = "<!-- 7 -->⚙️ Miscellaneous" },
-  { message = "Remove", group = "<!-- 7 -->⚙️ Miscellaneous" },
-  { message = "Separate", group = "<!-- 2 -->🛠️ Refactor" },
-  { message = ".*", group = "<!-- 7 -->⚙️ Miscellaneous" },
+
+  { message = "Add", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Integrate", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Introduce", group = "<!-- 1 -->⛰️  Features" },
+
+  { message = "Avoid", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Fix", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Handle", group = "<!-- 2 -->🐛 Bug Fixes" },
+
+  { message = "test", group = "<!-- 4 -->🧪 Testing" },
+
+  { message = "Make", group = "<!-- 5 -->🛠️ Refactor" },
+  { message = "Migrate", group = "<!-- 5 -->🛠️ Refactor" },
+  { message = "Update", group = "<!-- 5 -->🛠️ Refactor" },
+  { message = "Move", group = "<!-- 5 -->🛠️ Refactor" },
+  { message = "Rename", group = "<!-- 5 -->🛠️ Refactor" },
+  { message = "Separate", group = "<!-- 5 -->🛠️ Refactor" },
+
+  { message = "Temporarily disable", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Remove", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = ".*", group = "<!-- 6 -->⚙️ Miscellaneous" },
+
+  { message = "to [0-9.]+", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "Bumb+", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
 ]
 # protect breaking changes from being skipped due to matching a skipping commit_parser
 protect_breaking_commits = false
