@@ -210,6 +210,28 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         Update::KeepAlive(()) => {
                             self.metrics.keep_alives_received.inc();
                         }
+                        Update::KillActionRequest(kill_action_request) => {
+                            let mut action_id = [0u8; 32];
+                            let decode_result = hex::decode_to_slice(kill_action_request.action_id, &mut action_id as &mut [u8]);
+
+                            if let Err(e) = decode_result {
+                                return Err(make_input_err!(
+                                    "KillActionRequest failed to decode ActionId hex with error {}",
+                                    e
+                                ));
+                            }
+                            let kill_action_result = self.running_actions_manager
+                                .kill_action(action_id)
+                                .await;
+
+                            if let Err(e) = kill_action_result {
+                                return Err(make_input_err!(
+                                    "Kill action {} failed with error - {}",
+                                    hex::encode(action_id),
+                                    e
+                                ));
+                            }
+                        }
                         Update::StartAction(start_execute) => {
                             self.metrics.start_actions_received.inc();
                             let add_future_channel = add_future_channel.clone();
