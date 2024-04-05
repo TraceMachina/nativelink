@@ -30,7 +30,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 2. Install NativeLink with Cargo.
 ```bash
-cargo install --git https://github.com/TraceMachina/nativelink --tag v0.2.0
+cargo install --git https://github.com/TraceMachina/nativelink --tag v0.3.0
 ```
 
 ### ⚙️ Configure and 🦾 Start NativeLink
