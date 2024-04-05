@@ -1815,6 +1815,7 @@ dependencies = [
 name = "nativelink-service"
 version = "0.3.0"
 dependencies = [
+ "async-lock",
  "bytes",
  "futures",
  "hyper",
@@ -1832,6 +1833,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rand",
+ "serde_json5",
  "tokio",
  "tokio-stream",
  "tonic 0.11.0",
