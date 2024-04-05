@@ -24,5 +24,5 @@ prost-types = "0.12.3"
 tonic = { version = "0.11.0", features = ["gzip"] }
 
 [dev-dependencies]
-prost-build = "0.12.3"
+prost-build = "0.12.4"
 tonic-build = "0.11.0"
