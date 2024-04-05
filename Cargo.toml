@@ -43,7 +43,7 @@ futures = "0.3.30"
 hyper = { version = "0.14.28" }
 mimalloc = "0.1.39"
 parking_lot = "0.12.1"
-prometheus-client = "0.21.2"
+prometheus-client = "0.22.2"
 rustls-pemfile = "2.1.1"
 scopeguard = "1.2.0"
 serde_json5 = "0.1.0"
