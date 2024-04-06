@@ -26,19 +26,26 @@ zig_toolchains = use_extension(
 )
 use_repo(zig_toolchains, "zig_sdk")
 
-bazel_dep(name = "rules_rust", version = "0.40.0")
+bazel_dep(name = "rules_rust", version = "0.41.1")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
+    sha256s = {
+        "2024-04-03/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "0b2164f91906a2fde9b3a518c4d5652c5265ef0b5ba7b1b3573884f16ee02508",
+        "2024-04-03/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "905e3714f811d0efb1f0836c12c1db424de3d194259fa01b853dad30a37f1abe",
+        "2024-04-03/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "aff8ab9422a234d48c7dd65b752c1443678387f61c22f273f4a723895ab4ab69",
+        "2024-04-03/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "4e183c1baabd75198c870d59357cc1992cbd2184fae08edb36a541774eaa15dc",
+        "2024-04-03/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "aaa22601f3106224ecf35ec67ad0e6481838b6ec4cae506f11c5bbf79e94cb65",
+    },
     versions = [
-        "1.76.0",
-        "nightly/2024-03-01",
+        "1.77.0",
+        "nightly/2024-04-03",
     ],
 )
 rust.host_tools(
     edition = "2021",
-    version = "1.76.0",
+    version = "1.77.0",
 )
 use_repo(rust, "rust_toolchains")
 
