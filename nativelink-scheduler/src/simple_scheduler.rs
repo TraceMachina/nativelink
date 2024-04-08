@@ -920,6 +920,22 @@ impl WorkerScheduler for SimpleScheduler {
         inner.set_drain_worker(worker_id, is_draining)
     }
 
+    async fn kill_running_action_on_worker(
+        &self,
+        worker_id: &WorkerId,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Result<(), Error> {
+        let mut inner = self.get_inner_lock();
+        let maybe_worker = inner.workers.workers.get_mut(worker_id);
+        match maybe_worker {
+            Some(worker) => worker.send_kill_action_request(unique_qualifier),
+            None => Err(make_input_err!(
+                "WorkerId '{}' does not exist in workers map",
+                worker_id
+            )),
+        }
+    }
+
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
         // We do not register anything here because we only want to register metrics
         // once and we rely on the `ActionScheduler::register_metrics()` to do that.

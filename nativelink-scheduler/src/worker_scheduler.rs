@@ -56,6 +56,13 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error>;
 
+    /// Send a request to kill a running action
+    async fn kill_running_action_on_worker(
+        &self,
+        worker_id: &WorkerId,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Result<(), Error>;
+
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     async fn remove_worker(&self, worker_id: WorkerId);
 

@@ -28,6 +28,7 @@ tokio = { version = "1.37.0", features = ["sync", "rt", "parking_lot"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tonic = { version = "0.11.0", features = ["gzip", "tls"] }
 tracing = "0.1.40"
+hex = "0.4.3"
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"

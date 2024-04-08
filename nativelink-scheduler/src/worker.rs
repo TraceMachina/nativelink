@@ -19,9 +19,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
+    update_for_worker, ConnectionResult, KillActionRequest, StartExecute, UpdateForWorker,
 };
-use nativelink_util::action_messages::ActionInfo;
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey};
 use nativelink_util::metrics_utils::{
     CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent,
 };
@@ -158,6 +158,18 @@ impl Worker {
                 notify_disconnect: CounterWithTime::default(),
             }),
         }
+    }
+
+    pub fn send_kill_action_request(
+        &mut self,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Result<(), Error> {
+        send_msg_to_worker(
+            &mut self.tx,
+            update_for_worker::Update::KillActionRequest(KillActionRequest {
+                action_id: hex::encode(unique_qualifier.get_hash()),
+            }),
+        )
     }
 
     /// Sends the initial connection information to the worker. This generally is just meta info.
