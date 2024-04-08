@@ -71,6 +71,7 @@ fn make_temp_path(data: &str) -> String {
 
 #[cfg(test)]
 mod local_worker_tests {
+    use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::KillActionRequest;
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -635,6 +636,96 @@ mod local_worker_tests {
                 )),
             }
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Error>> {
+        const SALT: u64 = 1000;
+
+        let mut test_context = setup_local_worker(HashMap::new()).await;
+
+        let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+        {
+            // Ensure our worker connects and properties were sent.
+            let props = test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response))
+                .await;
+            assert_eq!(props, SupportedProperties::default());
+        }
+
+        // Handle registration (kill_all not called unless registered).
+        let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+        {
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: "foobar".to_string(),
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+
+        let action_digest = DigestInfo::new([3u8; 32], 10);
+        let action_info = ActionInfo {
+            command_digest: DigestInfo::new([1u8; 32], 10),
+            input_root_digest: DigestInfo::new([2u8; 32], 10),
+            timeout: Duration::from_secs(1),
+            platform_properties: PlatformProperties::default(),
+            priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::UNIX_EPOCH,
+            unique_qualifier: ActionInfoHashKey {
+                instance_name: INSTANCE_NAME.to_string(),
+                digest: action_digest,
+                salt: SALT,
+            },
+            skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Blake3,
+        };
+
+        {
+            // Send execution request.
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some(action_info.clone().into()),
+                        salt: SALT,
+                        queued_timestamp: None,
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+        let running_action = Arc::new(MockRunningAction::new());
+
+        // Send and wait for response from create_and_add_action to RunningActionsManager.
+        test_context
+            .actions_manager
+            .expect_create_and_add_action(Ok(running_action.clone()))
+            .await;
+
+        let action_id = action_info.unique_qualifier.get_hash();
+        {
+            // Send kill request.
+            tx_stream
+                .send_data(encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::KillActionRequest(KillActionRequest {
+                        action_id: hex::encode(action_id),
+                    })),
+                })?)
+                .await
+                .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+        }
+
+        let killed_action_id = test_context.actions_manager.expect_kill_action().await;
+
+        // Make sure that the killed action is the one we intended
+        assert_eq!(killed_action_id, action_id);
 
         Ok(())
     }
