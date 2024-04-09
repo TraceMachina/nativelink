@@ -63,59 +63,28 @@ commit_preprocessors = [
 ]
 # regex for parsing and grouping commits
 commit_parsers = [
-  # Custom rules for specific commits.
-  { message = "Create directory for action", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Build nativelink with musl", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Shard store weight scale distribution", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Use mimalloc", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Build nativelink with musl", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Add configuration breakdown page", group = "<!-- 3 -->📚 Documentation" },
-  { message = "Draw a General Purpose Diagram", group = "<!-- 3 -->📚 Documentation" },
-  { message = "Basic config updated", group = "<!-- 3 -->📚 Documentation" },
-  { message = "Account for block size in filesystem store for eviction purposes", group = "<!-- 2 -->🐛 Bug Fixes" },
-  { message = "Add OSFamily property in basic_cas.json", group = "<!-- 3 -->📚 Documentation" },
-  { message = "Fix incorrect bazel version 6.4.0", group = "<!-- 3 -->📚 Documentation" },
-  { message = "Completeness checking store should not check if directory digests exist", group = "<!-- 2 -->🐛 Bug Fixes" },
-  { message = "Don't retry permanent failures", group = "<!-- 2 -->🐛 Bug Fixes" },
-  { message = "Retry GrpcStore get_part_ref", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Evict on touch failure", group = "<!-- 2 -->🐛 Bug Fixes" },
-
-  # Get all breaking changes first.
-  { message = "Breaking", group = "<!-- 0 -->❌️  Breaking Changes" },
-  { message = "BREAKING", group = "<!-- 0 -->❌️  Breaking Changes" },
-
-  # Filter these out early but show them later in the changelog.
   { message = "docs", group = "<!-- 3 -->📚 Documentation" },
   { message = "document", group = "<!-- 3 -->📚 Documentation" },
   { message = "documentation", group = "<!-- 3 -->📚 Documentation" },
-  { message = "README", group = "<!-- 3 -->📚 Documentation" },
-  { message = "Example", group = "<!-- 3 -->📚 Documentation" },
-  { message = "Breakdown", group = "<!-- 3 -->📚 Documentation" },
-
-  # Filter out all updates, but show them last.
-  { message = "to [0-9.]+", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
-  { message = "Bumb+", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
-  { message = "Bump", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
-  { message = "Update", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
-
-  # Filter these out early but show them later in the changelog.
-  { message = "test", group = "<!-- 4 -->🧪 Testing & CI" },
-  { message = "CI", group = "<!-- 4 -->🧪 Testing & CI" },
-  { message = "pre-commit", group = "<!-- 4 -->🧪 Testing & CI" },
-
-  { message = "Add", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Allow", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Integrate", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Introduce", group = "<!-- 1 -->⛰️  Features" },
-  { message = "Optimize", group = "<!-- 1 -->⛰️  Features" },
-
-  { message = "Avoid", group = "<!-- 2 -->🐛 Bug Fixes" },
-  { message = "Fix", group = "<!-- 2 -->🐛 Bug Fixes" },
-  { message = "Handle", group = "<!-- 2 -->🐛 Bug Fixes" },
-  { message = "Resolve", group = "<!-- 2 -->🐛 Bug Fixes" },
-
-  # Catch-all in miscellaneous
-  { message = ".*", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Make", group = "<!-- 2 -->🛠️ Refactor" },
+  { message = "to [0-9.]+", group = "<!-- 4 -->⬆️ Bumps & Version Updates" },
+  { message = "Bumb+", group = "<!-- 4 -->⬆️ Bumps & Version Updates" },
+  { message = "Fix", group = "<!-- 1 -->🐛 Bug Fixes" },
+  { message = "test", group = "<!-- 6 -->🧪 Testing" },
+  { message = "Add", group = "<!-- 0 -->⛰️  Features" },
+  { message = "Migrate", group = "<!-- 2 -->🛠️ Refactor" },
+  { message = "Integrate", group = "<!-- 0 -->⛰️  Features" },
+  { message = "Update", group = "<!-- 2 -->🛠️ Refactor" },
+  { message = "Move", group = "<!-- 2 -->🛠️ Refactor" },
+  { message = "Avoid", group = "<!-- 1 -->🐛 Bug Fixes" },
+  { message = "Introduce", group = "<!-- 0 -->⛰️  Features" },
+  { message = "Breaking", group = "<!-- 8 -->❌️  Breaking Changes" },
+  { message = "Rename", group = "<!-- 2 -->🛠️ Refactor" },
+  { message = "Handle", group = "<!-- 1 -->🐛 Bug Fixes" },
+  { message = "Temporarily disable", group = "<!-- 7 -->⚙️ Miscellaneous" },
+  { message = "Remove", group = "<!-- 7 -->⚙️ Miscellaneous" },
+  { message = "Separate", group = "<!-- 2 -->🛠️ Refactor" },
+  { message = ".*", group = "<!-- 7 -->⚙️ Miscellaneous" },
 ]
 # protect breaking changes from being skipped due to matching a skipping commit_parser
 protect_breaking_commits = false

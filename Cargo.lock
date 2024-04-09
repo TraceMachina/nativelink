@@ -1723,7 +1723,7 @@ checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 
 [[package]]
 name = "nativelink"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "async-lock",
  "axum",
@@ -1755,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "shellexpand",
@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "nativelink-proto",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -1786,7 +1786,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1813,7 +1813,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
@@ -1841,7 +1841,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1884,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "async-lock",
  "async-trait",
