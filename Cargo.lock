@@ -1803,6 +1803,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rand",
+ "scopeguard",
  "tokio",
  "tokio-stream",
  "tonic 0.11.0",

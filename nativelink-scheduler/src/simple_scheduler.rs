@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
-use futures::Future;
+use futures::future::{BoxFuture, Future};
 use hashbrown::{HashMap, HashSet};
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
@@ -56,6 +56,10 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
+
+/// Default timeout for actions without any listeners.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_DISCONNECT_TIMEOUT_S: u64 = 60;
 
 /// An action that is being awaited on and last known state.
 struct AwaitedAction {
@@ -198,6 +202,35 @@ impl Borrow<ActionInfoHashKey> for CompletedAction {
     }
 }
 
+type NowFn = fn() -> SystemTime;
+type SleepFn = fn(Duration) -> BoxFuture<'static, ()>;
+
+/// Functions that may be injected for testing purposes, during standard control
+/// flows these are specified by the new function.
+pub struct Callbacks {
+    /// A function that gets the current time.
+    pub now_fn: NowFn,
+    /// A function that sleeps for a given Duration.
+    pub sleep_fn: SleepFn,
+}
+
+impl Callbacks {
+    fn now(&self) -> SystemTime {
+        (self.now_fn)()
+    }
+    async fn sleep(&self, duration: Duration) {
+        (self.sleep_fn)(duration).await
+    }
+}
+
+impl Default for Callbacks {
+    fn default() -> Self {
+        Self {
+            now_fn: SystemTime::now,
+            sleep_fn: |duration| Box::pin(tokio::time::sleep(duration)),
+        }
+    }
+}
 struct SimpleSchedulerImpl {
     // BTreeMap uses `cmp` to do it's comparisons, this is a problem because we want to sort our
     // actions based on priority and insert timestamp but also want to find and join new actions
@@ -227,6 +260,9 @@ struct SimpleSchedulerImpl {
     /// Notify task<->worker matching engine that work needs to be done.
     tasks_or_workers_change_notify: Arc<Notify>,
     metrics: Arc<Metrics>,
+    /// How long the server will wait for a client to reconnect before removing the action from the queue.
+    disconnect_timeout_s: u64,
+    callbacks: Arc<Callbacks>,
 }
 
 impl SimpleSchedulerImpl {
@@ -313,7 +349,9 @@ impl SimpleSchedulerImpl {
     }
 
     fn clean_recently_completed_actions(&mut self) {
-        let expiry_time = SystemTime::now()
+        let expiry_time = self
+            .callbacks
+            .now()
             .checked_sub(self.retain_completed_for)
             .unwrap();
         self.recently_completed_actions
@@ -422,6 +460,16 @@ impl SimpleSchedulerImpl {
         Ok(())
     }
 
+    fn get_queued_action(&self, unique_qualifier: &ActionInfoHashKey) -> Option<&AwaitedAction> {
+        self.queued_actions_set
+            .get(unique_qualifier)
+            .and_then(|action_info| self.queued_actions.get(action_info))
+    }
+
+    fn get_active_action(&self, unique_qualifier: &ActionInfoHashKey) -> Option<&AwaitedAction> {
+        self.active_actions.get(unique_qualifier)
+    }
+
     // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we can create a map
     // of capabilities of each worker and then try and match the actions to the worker using
     // the map lookup (ie. map reduce).
@@ -434,6 +482,7 @@ impl SimpleSchedulerImpl {
         let action_infos: Vec<Arc<ActionInfo>> =
             self.queued_actions.keys().rev().cloned().collect();
         for action_info in action_infos {
+            // add update to queued action update timestamp here
             let Some(awaited_action) = self.queued_actions.get(action_info.as_ref()) else {
                 error!(
                     "queued_actions out of sync with itself for action {}",
@@ -619,7 +668,7 @@ impl SimpleSchedulerImpl {
 
         // Keep in case this is asked for soon.
         self.recently_completed_actions.insert(CompletedAction {
-            completed_time: SystemTime::now(),
+            completed_time: self.callbacks.now(),
             state: running_action.current_state,
         });
 
@@ -647,7 +696,7 @@ impl SimpleScheduler {
     #[inline]
     #[must_use]
     pub fn new(scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler) -> Self {
-        Self::new_with_callback(scheduler_cfg, || {
+        Self::new_with_callback(scheduler_cfg, Callbacks::default(), || {
             // The cost of running `do_try_match()` is very high, but constant
             // in relation to the number of changes that have happened. This means
             // that grabbing this lock to process `do_try_match()` should always
@@ -664,6 +713,7 @@ impl SimpleScheduler {
         F: Fn() -> Fut + Send + Sync + 'static,
     >(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+        callbacks: Callbacks,
         on_matching_engine_run: F,
     ) -> Self {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
@@ -688,6 +738,11 @@ impl SimpleScheduler {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
 
+        let mut disconnect_timeout_s = scheduler_cfg.disconnect_timeout_s;
+        if disconnect_timeout_s == 0 {
+            disconnect_timeout_s = DEFAULT_DISCONNECT_TIMEOUT_S;
+        }
+
         let tasks_or_workers_change_notify = Arc::new(Notify::new());
 
         let metrics = Arc::new(Metrics::default());
@@ -703,6 +758,8 @@ impl SimpleScheduler {
             max_job_retries,
             tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
             metrics: metrics.clone(),
+            disconnect_timeout_s,
+            callbacks: Arc::new(callbacks),
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
@@ -777,6 +834,91 @@ impl SimpleScheduler {
 
 #[async_trait]
 impl ActionScheduler for SimpleScheduler {
+    fn notify_client_disconnected(&self, unique_qualifier: ActionInfoHashKey) {
+        // TODO: Make this prettier.
+        // It's a bit tricky to comply with borrow checker
+        // but it should be possible to make this nicer.
+        let inner = self.get_inner_lock();
+        let Some(action) = inner
+            .get_queued_action(&unique_qualifier)
+            .or_else(|| inner.get_active_action(&unique_qualifier))
+        else {
+            warn!(
+                "Scheduler notified that client disconnected, but failed to find action {}",
+                unique_qualifier.digest.hash_str()
+            );
+            return;
+        };
+
+        if action.notify_channel.receiver_count() != 0 {
+            return;
+        }
+        let sleep_time = Duration::from_secs(inner.disconnect_timeout_s);
+        let callbacks = inner.callbacks.clone();
+        // Drop the mutex guard so we don't hold up access.
+        drop(inner);
+
+        let weak_inner = Arc::downgrade(&self.inner);
+
+        // We create a spawn here which sleeps for disconnect_timeout_s
+        // and then checks to see if the listener count is still 0.
+        // If so, it moves to the removal stage, otherwise returns.
+        tokio::spawn(async move {
+            callbacks.sleep(sleep_time).await;
+            let Some(inner_mux) = weak_inner.upgrade() else {
+                return;
+            };
+            let mut inner = inner_mux.lock();
+            let Some(action) = inner
+                .queued_actions_set
+                .get(&unique_qualifier)
+                .and_then(|action_info| inner.queued_actions.get(action_info))
+                .or_else(|| inner.active_actions.get(&unique_qualifier))
+            else {
+                dbg!(format!(
+                    "Action {} completed while client disconnected",
+                    unique_qualifier.digest.hash_str()
+                ));
+                return;
+            };
+
+            // If listener count is 0, remove the action from queued actions
+            // or active actions, whichever is applicable, and kill the action
+            // on the worker if it was active.
+            // If the listener count is not still 0, a client has reconencted
+            // and there is no more work to be done.
+            if action.notify_channel.receiver_count() != 0 {
+                dbg!(format!(
+                    "Client reconnected before disconnect_timeout elsapsed for Action {}",
+                    unique_qualifier.digest.hash_str()
+                ));
+                return;
+            }
+
+            warn!(
+                "Client disconnect timeout elapsed - Removing action with digest hash {}",
+                action.action_info.unique_qualifier.digest.hash_str()
+            );
+
+            match inner.get_queued_action(&unique_qualifier) {
+                Some(_) => {
+                    // We can't use the action info from the above call due to borrow checker.
+                    let action_info = inner
+                        .queued_actions_set
+                        .get(&unique_qualifier)
+                        .unwrap()
+                        .clone();
+                    inner.queued_actions_set.remove(&action_info);
+                    inner.queued_actions.remove(&action_info);
+                }
+                None => {
+                    inner.active_actions.remove(&unique_qualifier);
+                    // TODO: Send kill on worker signal - PR: #842.
+                }
+            };
+        });
+    }
+
     async fn get_platform_property_manager(
         &self,
         _instance_name: &str,
