@@ -38,11 +38,11 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::store_trait::Store;
 use rand::{thread_rng, Rng};
+use scopeguard::guard;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
-
 struct InstanceInfo {
     scheduler: Arc<dyn ActionScheduler>,
     cas_store: Arc<dyn Store>,
@@ -182,11 +182,26 @@ impl ExecutionServer {
         Server::new(self)
     }
 
-    fn to_execute_stream(receiver: watch::Receiver<Arc<ActionState>>) -> Response<ExecuteStream> {
-        let receiver_stream = Box::pin(WatchStream::new(receiver).map(|action_update| {
+    fn to_execute_stream(
+        &self,
+        receiver: watch::Receiver<Arc<ActionState>>,
+        unique_qualifier: ActionInfoHashKey,
+    ) -> Response<ExecuteStream> {
+        let scheduler = self
+            .instance_infos
+            .get(&unique_qualifier.instance_name)
+            .unwrap()
+            .scheduler
+            .clone();
+        let scope_guard = guard(scheduler, move |scheduler| {
+            scheduler.notify_client_disconnected(unique_qualifier)
+        });
+        let receiver_stream = Box::pin(WatchStream::new(receiver).map(move |action_update| {
+            let _scope_guard = &scope_guard;
             info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
             Ok(Into::<Operation>::into(action_update.as_ref().clone()))
         }));
+
         tonic::Response::new(receiver_stream)
     }
 
@@ -230,11 +245,11 @@ impl ExecutionServer {
 
         let rx = instance_info
             .scheduler
-            .add_action(action_info)
+            .add_action(action_info.clone())
             .await
             .err_tip(|| "Failed to schedule task")?;
 
-        Ok(Self::to_execute_stream(rx))
+        Ok(self.to_execute_stream(rx, action_info.unique_qualifier))
     }
 
     async fn inner_wait_execution(
@@ -256,7 +271,7 @@ impl ExecutionServer {
         else {
             return Err(Status::not_found("Failed to find existing task"));
         };
-        Ok(Self::to_execute_stream(rx))
+        Ok(self.to_execute_stream(rx, unique_qualifier))
     }
 }
 

@@ -120,6 +120,8 @@ impl MockActionScheduler {
 
 #[async_trait]
 impl ActionScheduler for MockActionScheduler {
+    fn notify_client_disconnected(&self, _unique_qualifier: ActionInfoHashKey) {}
+
     async fn get_platform_property_manager(
         &self,
         instance_name: &str,
