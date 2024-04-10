@@ -9,6 +9,10 @@ permissions: read-all
 
 jobs:
   publish-image:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [image, nativelink-worker-lre-cc]
     runs-on: ubuntu-22.04
     permissions:
       packages: write
@@ -32,13 +36,12 @@ jobs:
 
       - name: Test image
         run: |
-          nix run .#local-image-test
+          nix run .#local-image-test ${{ matrix.image }}
 
       - name: Upload image
         run: |
-          nix run .#publish-ghcr ${{github.ref_name}}
+          nix run .#publish-ghcr ${{ matrix.image }} ${{github.ref_name}}
         env:
-          GHCR_REGISTRY: ghcr.io
+          GHCR_REGISTRY: ghcr.io/${{ github.repository_owner }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_IMAGE_NAME: ${{ github.repository }}
