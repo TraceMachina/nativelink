@@ -311,7 +311,7 @@ impl ByteStreamServer {
             let mut state = state?; // If None our stream is done.
             loop {
                 tokio::select! {
-                    read_result = state.rx.take(state.max_bytes_per_stream) => {
+                    read_result = state.rx.consume(Some(state.max_bytes_per_stream)) => {
                         match read_result {
                             Ok(bytes) => {
                                 if bytes.is_empty() {

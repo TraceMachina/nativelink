@@ -112,8 +112,8 @@ mod buf_channel_tests {
     }
 
     #[tokio::test]
-    async fn collect_all_with_size_hint_test() -> Result<(), Error> {
-        let (mut tx, rx) = make_buf_channel_pair();
+    async fn consume_test() -> Result<(), Error> {
+        let (mut tx, mut rx) = make_buf_channel_pair();
         let tx_fut = async move {
             tx.send(DATA1.into()).await?;
             tx.send(DATA2.into()).await?;
@@ -124,7 +124,7 @@ mod buf_channel_tests {
         };
         let rx_fut = async move {
             assert_eq!(
-                rx.collect_all_with_size_hint(0).await?,
+                rx.consume(None).await?,
                 Bytes::from(format!("{DATA1}{DATA2}{DATA1}{DATA2}"))
             );
             Result::<(), Error>::Ok(())
@@ -136,8 +136,8 @@ mod buf_channel_tests {
     /// Test to ensure data is optimized so that the exact same pointer is received
     /// when calling `collect_all_with_size_hint` when a copy is not needed.
     #[tokio::test]
-    async fn collect_all_with_size_hint_is_optimized_test() -> Result<(), Error> {
-        let (mut tx, rx) = make_buf_channel_pair();
+    async fn consume_is_optimized_test() -> Result<(), Error> {
+        let (mut tx, mut rx) = make_buf_channel_pair();
         let sent_data = Bytes::from(DATA1);
         let send_data_ptr = sent_data.as_ptr();
         let tx_fut = async move {
@@ -148,7 +148,7 @@ mod buf_channel_tests {
         let rx_fut = async move {
             // Because data is 1 chunk and an EOF, we should not need to copy
             // and should get the exact same pointer.
-            let received_data = rx.collect_all_with_size_hint(0).await?;
+            let received_data = rx.consume(None).await?;
             assert_eq!(received_data.as_ptr(), send_data_ptr);
             Result::<(), Error>::Ok(())
         };
@@ -169,11 +169,11 @@ mod buf_channel_tests {
         };
         let rx_fut = async move {
             let all_data = Bytes::from(format!("{DATA1}{DATA2}{DATA1}{DATA2}"));
-            assert_eq!(rx.take(1).await?, all_data.slice(0..1));
-            assert_eq!(rx.take(3).await?, all_data.slice(1..4));
-            assert_eq!(rx.take(4).await?, all_data.slice(4..8));
+            assert_eq!(rx.consume(Some(1)).await?, all_data.slice(0..1));
+            assert_eq!(rx.consume(Some(3)).await?, all_data.slice(1..4));
+            assert_eq!(rx.consume(Some(4)).await?, all_data.slice(4..8));
             // Last chunk take too much data and expect EOF to be hit.
-            assert_eq!(rx.take(100).await?, all_data.slice(8..12));
+            assert_eq!(rx.consume(Some(100)).await?, all_data.slice(8..12));
             Result::<(), Error>::Ok(())
         };
         try_join!(tx_fut, rx_fut)?;
@@ -194,8 +194,8 @@ mod buf_channel_tests {
             Result::<(), Error>::Ok(())
         };
         let rx_fut = async move {
-            assert_eq!(rx.take(1).await?.as_ptr(), first_chunk_ptr);
-            assert_eq!(rx.take(100).await?.as_ptr(), unsafe {
+            assert_eq!(rx.consume(Some(1)).await?.as_ptr(), first_chunk_ptr);
+            assert_eq!(rx.consume(Some(100)).await?.as_ptr(), unsafe {
                 first_chunk_ptr.add(1)
             });
             Result::<(), Error>::Ok(())
@@ -264,7 +264,7 @@ mod buf_channel_tests {
                     let rx_fut = async move {
                         let mut round_trip_data = BytesMut::new();
                         for _ in (0..data_size).step_by(read_size) {
-                            round_trip_data.extend(rx.take(read_size).await?.iter());
+                            round_trip_data.extend(rx.consume(Some(read_size)).await?.iter());
                         }
                         assert_eq!(round_trip_data.freeze(), expected_data);
                         Result::<(), Error>::Ok(())

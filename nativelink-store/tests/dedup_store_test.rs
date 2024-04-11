@@ -77,7 +77,7 @@ mod dedup_store_tests {
             .err_tip(|| "Failed to write data to dedup store")?;
 
         let rt_data = store
-            .get_part_unchunked(digest, 0, None, Some(original_data.len()))
+            .get_part_unchunked(digest, 0, None)
             .await
             .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -118,7 +118,7 @@ mod dedup_store_tests {
 
         assert_eq!(did_delete, true, "Expected item to exist in store");
 
-        let result = store.get_part_unchunked(digest, 0, None, None).await;
+        let result = store.get_part_unchunked(digest, 0, None).await;
         assert!(result.is_err(), "Expected result to be an error");
         assert_eq!(
             result.unwrap_err().code,
@@ -155,7 +155,7 @@ mod dedup_store_tests {
 
         const ONE_THIRD_SZ: usize = DATA_SIZE / 3;
         let rt_data = store
-            .get_part_unchunked(digest, ONE_THIRD_SZ, Some(ONE_THIRD_SZ), None)
+            .get_part_unchunked(digest, ONE_THIRD_SZ, Some(ONE_THIRD_SZ))
             .await
             .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -209,7 +209,7 @@ mod dedup_store_tests {
         // This value must be larger than `max_size` in the config above.
         const START_READ_BYTE: usize = 7;
         let rt_data = store
-            .get_part_unchunked(digest, START_READ_BYTE, None, None)
+            .get_part_unchunked(digest, START_READ_BYTE, None)
             .await
             .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -265,7 +265,7 @@ mod dedup_store_tests {
                 let len = if maybe_len.is_none() { DATA_SIZE } else { len };
 
                 let rt_data = store
-                    .get_part_unchunked(digest, offset, maybe_len, None)
+                    .get_part_unchunked(digest, offset, maybe_len)
                     .await
                     .err_tip(|| "Failed to get_part from dedup store")?;
 
@@ -286,7 +286,7 @@ mod dedup_store_tests {
         // This value must be larger than `max_size` in the config above.
         const START_READ_BYTE: usize = 10;
         let rt_data = store
-            .get_part_unchunked(digest, START_READ_BYTE, None, None)
+            .get_part_unchunked(digest, START_READ_BYTE, None)
             .await
             .err_tip(|| "Failed to get_part from dedup store")?;
 

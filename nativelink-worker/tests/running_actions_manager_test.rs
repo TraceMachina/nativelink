@@ -761,17 +761,17 @@ mod running_actions_manager_tests {
         };
         let file_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.output_files[0].digest, 0, None, None)
+            .get_part_unchunked(action_result.output_files[0].digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&file_content)?, "123 ");
         let stdout_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.stdout_digest, 0, None, None)
+            .get_part_unchunked(action_result.stdout_digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&stdout_content)?, "foo-stdout ");
         let stderr_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.stderr_digest, 0, None, None)
+            .get_part_unchunked(action_result.stderr_digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&stderr_content)?, "bar-stderr  ");
         let mut clock_time = make_system_time(0);
@@ -932,17 +932,17 @@ mod running_actions_manager_tests {
         };
         let file_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.output_files[0].digest, 0, None, None)
+            .get_part_unchunked(action_result.output_files[0].digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&file_content)?, "123 ");
         let stdout_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.stdout_digest, 0, None, None)
+            .get_part_unchunked(action_result.stdout_digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&stdout_content)?, "foo-stdout ");
         let stderr_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.stderr_digest, 0, None, None)
+            .get_part_unchunked(action_result.stderr_digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&stderr_content)?, "bar-stderr  ");
         let mut clock_time = make_system_time(0);
@@ -1737,7 +1737,7 @@ exit 0
 
         let actual_stderr: prost::bytes::Bytes = cas_store
             .as_ref()
-            .get_part_unchunked(result.stderr_digest, 0, None, Some(expected_stderr.len()))
+            .get_part_unchunked(result.stderr_digest, 0, None)
             .await?;
         let actual_stderr_decoded = std::str::from_utf8(&actual_stderr)?;
         assert_eq!(expected_stderr, actual_stderr_decoded);
@@ -3146,17 +3146,17 @@ exit 1
         };
         let file_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.output_files[0].digest, 0, None, None)
+            .get_part_unchunked(action_result.output_files[0].digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&file_content)?, "123 ");
         let stdout_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.stdout_digest, 0, None, None)
+            .get_part_unchunked(action_result.stdout_digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&stdout_content)?, "foo-stdout ");
         let stderr_content = slow_store
             .as_ref()
-            .get_part_unchunked(action_result.stderr_digest, 0, None, None)
+            .get_part_unchunked(action_result.stderr_digest, 0, None)
             .await?;
         assert_eq!(from_utf8(&stderr_content)?, "bar-stderr  ");
         let mut clock_time = make_system_time(0);

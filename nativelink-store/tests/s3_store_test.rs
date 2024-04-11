@@ -26,7 +26,7 @@ use http::status::StatusCode;
 use hyper::Body;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::s3_store::S3Store;
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
+use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
 use nativelink_util::store_trait::Store;
 use sha2::{Digest, Sha256};
@@ -257,12 +257,7 @@ mod s3_store_tests {
         let store_pin = Pin::new(&store);
 
         let store_data = store_pin
-            .get_part_unchunked(
-                DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
-                0,
-                None,
-                None,
-            )
+            .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?, 0, None)
             .await?;
         assert_eq!(
             store_data,
@@ -311,7 +306,6 @@ mod s3_store_tests {
                 DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
                 OFFSET,
                 Some(LENGTH),
-                None,
             )
             .await?;
 
@@ -374,9 +368,7 @@ mod s3_store_tests {
         )?;
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = Pin::new(&store)
-            .get_part_unchunked(digest, 0, None, None)
-            .await;
+        let result = Pin::new(&store).get_part_unchunked(digest, 0, None).await;
         assert!(result.is_ok(), "Expected to find item, got: {result:?}");
         Ok(())
     }
@@ -546,7 +538,6 @@ mod s3_store_tests {
                 DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE)?,
                 0,
                 Some(CAS_ENTRY_SIZE),
-                None
             )
         );
         assert_eq!(
@@ -590,7 +581,8 @@ mod s3_store_tests {
                 .err_tip(|| "Failed to get_part_ref");
         }));
 
-        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+        let file_data = reader
+            .consume(Some(1024))
             .await
             .err_tip(|| "Error reading bytes")?;
 

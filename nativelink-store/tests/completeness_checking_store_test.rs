@@ -240,7 +240,7 @@ mod completeness_checking_store_tests {
 
             assert!(
                 pinned_store
-                    .get_part_unchunked(action_result_digest, 0, None, None)
+                    .get_part_unchunked(action_result_digest, 0, None)
                     .await
                     .is_ok(),
                 ".get() should succeed with all items in CAS",
@@ -258,7 +258,7 @@ mod completeness_checking_store_tests {
 
             assert!(
                 pinned_store
-                    .get_part_unchunked(action_result_digest, 0, None, None)
+                    .get_part_unchunked(action_result_digest, 0, None)
                     .await
                     .is_err(),
                 ".get() should fail with item missing in CAS",
