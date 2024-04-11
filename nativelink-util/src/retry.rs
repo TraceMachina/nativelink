@@ -42,7 +42,7 @@ impl Iterator for ExponentialBackoff {
 }
 
 type SleepFn = Arc<dyn Fn(Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> + Sync + Send>;
-type JitterFn = Arc<dyn Fn(Duration) -> Duration + Send + Sync>;
+pub(crate) type JitterFn = Arc<dyn Fn(Duration) -> Duration + Send + Sync>;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum RetryResult<T> {
