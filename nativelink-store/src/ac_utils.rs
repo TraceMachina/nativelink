@@ -52,12 +52,7 @@ pub async fn get_size_and_decode_digest<T: Message + Default>(
     digest: &DigestInfo,
 ) -> Result<(T, usize), Error> {
     let mut store_data_resp = store
-        .get_part_unchunked(
-            *digest,
-            0,
-            Some(MAX_ACTION_MSG_SIZE),
-            Some(ESTIMATED_DIGEST_SIZE),
-        )
+        .get_part_unchunked(*digest, 0, Some(MAX_ACTION_MSG_SIZE))
         .await;
     if let Err(err) = &mut store_data_resp {
         if err.code == Code::NotFound {

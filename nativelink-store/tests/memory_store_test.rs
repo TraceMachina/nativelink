@@ -19,7 +19,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use memory_stats::memory_stats;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
+use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
 use nativelink_util::store_trait::Store;
 use sha2::{Digest, Sha256};
@@ -71,12 +71,7 @@ mod memory_store_tests {
                 )
                 .await?;
             store
-                .get_part_unchunked(
-                    DigestInfo::try_new(VALID_HASH1, VALUE2.len())?,
-                    0,
-                    None,
-                    None,
-                )
+                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE2.len())?, 0, None)
                 .await?
         };
 
@@ -146,7 +141,7 @@ mod memory_store_tests {
         let digest = DigestInfo::try_new(VALID_HASH1, 4).unwrap();
         store.update_oneshot(digest, VALUE1.into()).await?;
 
-        let store_data = store.get_part_unchunked(digest, 1, Some(2), None).await?;
+        let store_data = store.get_part_unchunked(digest, 1, Some(2)).await?;
 
         assert_eq!(
             VALUE1[1..3].as_bytes(),
@@ -172,12 +167,7 @@ mod memory_store_tests {
             .await?;
         assert_eq!(
             store
-                .get_part_unchunked(
-                    DigestInfo::try_new(VALID_HASH1, VALUE.len())?,
-                    0,
-                    None,
-                    None
-                )
+                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE.len())?, 0, None,)
                 .await,
             Ok("".into()),
             "Expected memory store to have empty value"
@@ -236,7 +226,7 @@ mod memory_store_tests {
                 assert!(
                     digest.is_err()
                         || store
-                            .get_part_unchunked(digest.unwrap(), 0, None, None)
+                            .get_part_unchunked(digest.unwrap(), 0, None)
                             .await
                             .is_err(),
                     ".get() should have failed: {hash} {expected_size}",
@@ -272,7 +262,8 @@ mod memory_store_tests {
                 .err_tip(|| "Failed to get_part_ref");
         }));
 
-        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+        let file_data = reader
+            .consume(Some(1024))
             .await
             .err_tip(|| "Error reading bytes")?;
 

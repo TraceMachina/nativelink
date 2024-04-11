@@ -36,7 +36,7 @@ use nativelink_error::{Code, Error, ResultExt};
 use nativelink_store::filesystem_store::{
     digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
 };
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
+use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo, JoinHandleDropGuard};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
@@ -274,10 +274,7 @@ mod filesystem_store_tests {
                 .await?,
             );
 
-            let content = store
-                .as_ref()
-                .get_part_unchunked(digest, 0, None, None)
-                .await?;
+            let content = store.as_ref().get_part_unchunked(digest, 0, None).await?;
             assert_eq!(content, VALUE1.as_bytes());
         }
 
@@ -422,7 +419,8 @@ mod filesystem_store_tests {
 
         {
             // Check to ensure our first byte has been received. The future should be stalled here.
-            let first_byte = DropCloserReadHalf::take(&mut reader, 1)
+            let first_byte = reader
+                .consume(Some(1))
                 .await
                 .err_tip(|| "Error reading first byte")?;
             assert_eq!(
@@ -465,7 +463,8 @@ mod filesystem_store_tests {
             );
         }
 
-        let remaining_file_data = DropCloserReadHalf::take(&mut reader, 1024)
+        let remaining_file_data = reader
+            .consume(Some(1024))
             .await
             .err_tip(|| "Error reading remaining bytes")?;
 
@@ -582,7 +581,8 @@ mod filesystem_store_tests {
             );
         }
 
-        let reader_data = DropCloserReadHalf::take(&mut reader, 1024)
+        let reader_data = reader
+            .consume(Some(1024))
             .await
             .err_tip(|| "Error reading remaining bytes")?;
 
@@ -646,10 +646,7 @@ mod filesystem_store_tests {
             .await?;
 
         // Now touch digest1.
-        let data = store
-            .as_ref()
-            .get_part_unchunked(digest1, 0, None, None)
-            .await?;
+        let data = store.as_ref().get_part_unchunked(digest1, 0, None).await?;
         assert_eq!(data, VALUE1.as_bytes());
 
         file_entry
@@ -752,10 +749,7 @@ mod filesystem_store_tests {
             .await?;
 
         // Now touch digest1.
-        let data = store
-            .as_ref()
-            .get_part_unchunked(digest1, 0, None, None)
-            .await?;
+        let data = store.as_ref().get_part_unchunked(digest1, 0, None).await?;
         assert_eq!(data, VALUE1.as_bytes());
 
         file_entry
@@ -1054,7 +1048,8 @@ mod filesystem_store_tests {
                 .await
         }));
 
-        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+        let file_data = reader
+            .consume(Some(1024))
             .await
             .err_tip(|| "Error reading bytes")?;
 
@@ -1100,7 +1095,8 @@ mod filesystem_store_tests {
                 .err_tip(|| "Failed to get_part_ref");
         }));
 
-        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+        let file_data = reader
+            .consume(Some(1024))
             .await
             .err_tip(|| "Error reading bytes")?;
 

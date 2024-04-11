@@ -112,7 +112,7 @@ mod verify_store_tests {
         let store = ExistenceCacheStore::new(&config, inner_store.clone());
 
         let _ = Pin::new(&store)
-            .get_part_unchunked(digest, 0, None, None)
+            .get_part_unchunked(digest, 0, None)
             .await
             .err_tip(|| "Expected get_part to succeed")?;
 

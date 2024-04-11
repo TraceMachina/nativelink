@@ -257,54 +257,12 @@ impl DropCloserReadHalf {
         self.close_after_size = size;
     }
 
-    /// Utility function that will collect all the data of the stream into a Bytes struct.
-    /// This method is optimized to reduce copies when possible.
-    pub async fn collect_all_with_size_hint(mut self, size_hint: usize) -> Result<Bytes, Error> {
-        let (first_chunk, second_chunk) = {
-            // This is an optimization for when there's only one chunk and an EOF.
-            // This prevents us from any copies and we just shuttle the bytes.
-            let first_chunk = self
-                .recv()
-                .await
-                .err_tip(|| "Failed to recv first chunk in collect_all_with_size_hint")?;
-
-            if first_chunk.is_empty() {
-                return Ok(first_chunk);
-            }
-
-            let second_chunk = self
-                .recv()
-                .await
-                .err_tip(|| "Failed to recv second chunk in collect_all_with_size_hint")?;
-
-            if second_chunk.is_empty() {
-                return Ok(first_chunk);
-            }
-            (first_chunk, second_chunk)
-        };
-
-        let mut buf = BytesMut::with_capacity(size_hint);
-        buf.put(first_chunk);
-        buf.put(second_chunk);
-
-        loop {
-            let chunk = self
-                .recv()
-                .await
-                .err_tip(|| "Failed to recv in collect_all_with_size_hint")?;
-            if chunk.is_empty() {
-                break; // EOF.
-            }
-            buf.put(chunk);
-        }
-        Ok(buf.freeze())
-    }
-
     /// Takes exactly `size` number of bytes from the stream and returns them.
     /// This means the stream will keep polling until either an EOF is received or
     /// `size` bytes are received and concat them all together then return them.
     /// This method is optimized to reduce copies when possible.
-    pub async fn take(&mut self, size: usize) -> Result<Bytes, Error> {
+    /// If `size` is None, it will take all the bytes in the stream.
+    pub async fn consume(&mut self, size: Option<usize>) -> Result<Bytes, Error> {
         fn populate_partial_if_needed(
             current_size: usize,
             desired_size: usize,
@@ -325,7 +283,7 @@ impl DropCloserReadHalf {
                 Some(Ok(local_partial))
             };
         }
-
+        let max_size = size.unwrap_or(usize::MAX);
         let (first_chunk, second_chunk) = {
             // This is an optimization for a relatively common case when the first chunk in the
             // stream satisfies all the requirements to fill this `take()`.
@@ -344,7 +302,7 @@ impl DropCloserReadHalf {
             );
             // 2. Split our data so `first_chunk` is <= `size` and puts any remaining
             //    in `self.partial` (or set it to None).
-            populate_partial_if_needed(0, size, &mut first_chunk, &mut self.partial);
+            populate_partial_if_needed(0, max_size, &mut first_chunk, &mut self.partial);
             // 3a. If our `first_chunk` is EOF, we are done.
             if first_chunk.is_empty() {
                 return Ok(first_chunk);
@@ -352,7 +310,7 @@ impl DropCloserReadHalf {
             // 3b. If our first_chunk has data and it our self.partial was filled it means our stream has more data.
             if self.partial.is_some() {
                 assert!(
-                    first_chunk.len() == size,
+                    first_chunk.len() == max_size,
                     "Length should be exactly size here"
                 );
                 return Ok(first_chunk);
@@ -364,33 +322,33 @@ impl DropCloserReadHalf {
                 .err_tip(|| "During second buf_channel::take()")?;
             if second_chunk.is_empty() {
                 assert!(
-                    first_chunk.len() <= size,
+                    first_chunk.len() <= max_size,
                     "Length should never be larger than size here"
                 );
                 return Ok(first_chunk);
             }
             populate_partial_if_needed(
                 first_chunk.len(),
-                size,
+                max_size,
                 &mut second_chunk,
                 &mut self.partial,
             );
             (first_chunk, second_chunk)
         };
-        let mut output = BytesMut::with_capacity(size);
+        let mut output = size.map_or_else(BytesMut::new, BytesMut::with_capacity);
         output.put(first_chunk);
         output.put(second_chunk);
 
         loop {
             if self.partial.is_some() {
                 assert!(
-                    output.len() == size,
-                    "If partial is set expected output length to be {size}"
+                    output.len() == max_size,
+                    "If partial is set, expected output length to be {max_size}"
                 );
                 return Ok(output.freeze());
             }
             assert!(
-                output.len() <= size,
+                output.len() <= max_size,
                 "Length should never be larger than size in take()"
             );
 
@@ -405,7 +363,7 @@ impl DropCloserReadHalf {
                 return Ok(output.freeze());
             }
 
-            populate_partial_if_needed(output.len(), size, &mut chunk, &mut self.partial);
+            populate_partial_if_needed(output.len(), max_size, &mut chunk, &mut self.partial);
 
             output.put(chunk);
         }

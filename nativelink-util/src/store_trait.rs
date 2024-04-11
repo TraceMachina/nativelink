@@ -284,15 +284,14 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         digest: DigestInfo,
         offset: usize,
         length: Option<usize>,
-        size_hint: Option<usize>,
     ) -> Result<Bytes, Error> {
         // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
-        let (tx, rx) = make_buf_channel_pair();
+        let (tx, mut rx) = make_buf_channel_pair();
 
         let (data_res, get_part_res) = join!(
-            rx.collect_all_with_size_hint(length.unwrap_or(size_hint.unwrap_or(0))),
+            rx.consume(length),
             self.get_part(digest, tx, offset, length),
         );
         get_part_res
@@ -357,7 +356,7 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         }
 
         match self
-            .get_part_unchunked(digest_info, 0, Some(digest_data_len), Some(digest_data_len))
+            .get_part_unchunked(digest_info, 0, Some(digest_data_len))
             .await
         {
             Ok(b) => {

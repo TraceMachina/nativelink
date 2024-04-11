@@ -81,7 +81,7 @@ mod ac_utils_tests {
         }
         {
             // Check to make sure the file was saved correctly to the store.
-            let store_data = store_pin.get_part_unchunked(digest, 0, None, None).await?;
+            let store_data = store_pin.get_part_unchunked(digest, 0, None).await?;
             assert_eq!(store_data.len(), expected_data.len());
             assert_eq!(store_data, expected_data);
         }

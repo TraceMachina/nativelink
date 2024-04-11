@@ -299,7 +299,7 @@ impl Store for CompressionStore {
             let mut index_count: u32 = 0;
             for index in &mut output_state.footer.indexes {
                 let chunk = reader
-                    .take(self.config.block_size as usize)
+                    .consume(Some(self.config.block_size as usize))
                     .await
                     .err_tip(|| "Failed to read take in update in compression store")?;
                 if chunk.is_empty() {
@@ -431,7 +431,7 @@ impl Store for CompressionStore {
                 };
                 let header_size = self.bincode_options.serialized_size(&EMPTY_HEADER).unwrap();
                 let chunk = rx
-                    .take(header_size as usize)
+                    .consume(Some(header_size as usize))
                     .await
                     .err_tip(|| "Failed to read header in get_part compression store")?;
                 error_if!(
@@ -462,7 +462,7 @@ impl Store for CompressionStore {
             );
 
             let mut chunk = rx
-                .take(1 + 4)
+                .consume(Some(1 + 4))
                 .await
                 .err_tip(|| "Failed to read init frame info in compression store")?;
             error_if!(
@@ -485,7 +485,7 @@ impl Store for CompressionStore {
                 );
 
                 let chunk = rx
-                    .take(frame_sz as usize)
+                    .consume(Some(frame_sz as usize))
                     .await
                     .err_tip(|| "Failed to read chunk in get_part compression store")?;
                 if chunk.len() < frame_sz as usize {
@@ -537,7 +537,7 @@ impl Store for CompressionStore {
                 chunks_count += 1;
 
                 let mut chunk = rx
-                    .take(1 + 4)
+                    .consume(Some(1 + 4))
                     .await
                     .err_tip(|| "Failed to read frame info in compression store")?;
                 error_if!(
@@ -553,7 +553,7 @@ impl Store for CompressionStore {
             {
                 // Read and validate footer.
                 let chunk = rx
-                    .take(frame_sz as usize)
+                    .consume(Some(frame_sz as usize))
                     .await
                     .err_tip(|| "Failed to read chunk in get_part compression store")?;
                 error_if!(

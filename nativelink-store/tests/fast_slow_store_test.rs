@@ -66,9 +66,7 @@ async fn check_data<S: Store>(
         "Expected data to exist in {debug_name} store"
     );
 
-    let store_data = check_store
-        .get_part_unchunked(digest, 0, None, None)
-        .await?;
+    let store_data = check_store.get_part_unchunked(digest, 0, None).await?;
     assert_eq!(
         store_data, original_data,
         "Expected data to match in {debug_name} store"
@@ -143,9 +141,7 @@ mod fast_slow_store_tests {
         assert_eq!(slow_store.has(digest).await, Ok(Some(original_data.len())));
 
         // This get() request should place the data in fast_store too.
-        fast_slow_store
-            .get_part_unchunked(digest, 0, None, None)
-            .await?;
+        fast_slow_store.get_part_unchunked(digest, 0, None).await?;
 
         // Now the data should exist in all the stores.
         check_data(fast_store, digest, &original_data, "fast_store").await?;
@@ -171,7 +167,7 @@ mod fast_slow_store_tests {
         assert_eq!(
             original_data[10..60],
             fast_slow_store
-                .get_part_unchunked(digest, 10, Some(50), None)
+                .get_part_unchunked(digest, 10, Some(50))
                 .await?
         );
 
@@ -486,7 +482,7 @@ mod fast_slow_store_tests {
 
         assert_eq!(
             Pin::new(fast_slow_store.as_ref())
-                .get_part_unchunked(digest, 0, None, None)
+                .get_part_unchunked(digest, 0, None)
                 .await,
             Ok(data.into()),
             "Data read from store is not correct"

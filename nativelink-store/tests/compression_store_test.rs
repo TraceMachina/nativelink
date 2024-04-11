@@ -26,7 +26,7 @@ use nativelink_store::compression_store::{
     DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE,
 };
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::buf_channel::{make_buf_channel_pair, DropCloserReadHalf};
+use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use rand::rngs::SmallRng;
@@ -96,7 +96,7 @@ mod compression_store_tests {
         store.update_oneshot(digest, RAW_INPUT.into()).await?;
 
         let store_data = store
-            .get_part_unchunked(digest, 0, None, None)
+            .get_part_unchunked(digest, 0, None)
             .await
             .err_tip(|| "Failed to get from inner store")?;
 
@@ -146,7 +146,7 @@ mod compression_store_tests {
         for read_slice_size in 0..(RAW_DATA.len() + 5) {
             for offset in 0..(RAW_DATA.len() + 5) {
                 let store_data = store
-                    .get_part_unchunked(digest, offset, Some(read_slice_size), None)
+                    .get_part_unchunked(digest, offset, Some(read_slice_size))
                     .await
                     .err_tip(|| {
                         format!("Failed to get from inner store at {offset} - {read_slice_size}")
@@ -195,7 +195,7 @@ mod compression_store_tests {
         store.update_oneshot(digest, value.clone().into()).await?;
 
         let store_data = store
-            .get_part_unchunked(digest, 0, None, None)
+            .get_part_unchunked(digest, 0, None)
             .await
             .err_tip(|| "Failed to get from inner store")?;
 
@@ -228,7 +228,7 @@ mod compression_store_tests {
         store.update_oneshot(digest, vec![].into()).await?;
 
         let store_data = store
-            .get_part_unchunked(digest, 0, None, None)
+            .get_part_unchunked(digest, 0, None)
             .await
             .err_tip(|| "Failed to get from inner store")?;
 
@@ -239,7 +239,7 @@ mod compression_store_tests {
         );
 
         let compressed_data = Pin::new(inner_store.as_ref())
-            .get_part_unchunked(digest, 0, None, None)
+            .get_part_unchunked(digest, 0, None)
             .await
             .err_tip(|| "Failed to get from inner store")?;
         assert_eq!(
@@ -297,7 +297,7 @@ mod compression_store_tests {
         res1.merge(res2)?;
 
         let compressed_data = Pin::new(inner_store.as_ref())
-            .get_part_unchunked(digest, 0, None, None)
+            .get_part_unchunked(digest, 0, None)
             .await
             .err_tip(|| "Failed to get from inner store")?;
 
@@ -382,7 +382,7 @@ mod compression_store_tests {
         store.update_oneshot(digest, value.clone().into()).await?;
 
         let compressed_data = Pin::new(inner_store.as_ref())
-            .get_part_unchunked(digest, 0, None, None)
+            .get_part_unchunked(digest, 0, None)
             .await
             .err_tip(|| "Failed to get from inner store")?;
 
@@ -533,7 +533,8 @@ mod compression_store_tests {
                 .err_tip(|| "Failed to get_part_ref");
         }));
 
-        let file_data = DropCloserReadHalf::take(&mut reader, 1024)
+        let file_data = reader
+            .consume(Some(1024))
             .await
             .err_tip(|| "Error reading bytes")?;
 

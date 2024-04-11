@@ -241,7 +241,7 @@ mod update_action_result {
 
         let digest = DigestInfo::try_new(HASH1, size_bytes)?;
         let ac_store = Pin::new(ac_store_owned.as_ref());
-        let raw_data = ac_store.get_part_unchunked(digest, 0, None, None).await?;
+        let raw_data = ac_store.get_part_unchunked(digest, 0, None).await?;
 
         let decoded_action_result = ActionResult::decode(raw_data)?;
         assert_eq!(decoded_action_result, action_result);
