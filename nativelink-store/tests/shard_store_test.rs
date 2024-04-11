@@ -217,7 +217,7 @@ mod shard_store_tests {
             .await?;
 
         assert_eq!(
-            shard_store.get_part_unchunked(digest1, 0, None, None).await,
+            shard_store.get_part_unchunked(digest1, 0, None).await,
             Ok(original_data1.into())
         );
         Ok(())
@@ -239,7 +239,7 @@ mod shard_store_tests {
             .await?;
 
         assert_eq!(
-            shard_store.get_part_unchunked(digest1, 0, None, None).await,
+            shard_store.get_part_unchunked(digest1, 0, None).await,
             Ok(original_data1.into())
         );
         Ok(())
@@ -261,7 +261,7 @@ mod shard_store_tests {
             .await?;
 
         assert_eq!(
-            stores[0].get_part_unchunked(digest1, 0, None, None).await,
+            stores[0].get_part_unchunked(digest1, 0, None).await,
             Ok(original_data1.into())
         );
         Ok(())
@@ -283,7 +283,7 @@ mod shard_store_tests {
             .await?;
 
         assert_eq!(
-            stores[1].get_part_unchunked(digest1, 0, None, None).await,
+            stores[1].get_part_unchunked(digest1, 0, None).await,
             Ok(original_data1.into())
         );
         Ok(())
@@ -302,7 +302,7 @@ mod shard_store_tests {
             .update_oneshot(digest1, original_data1.clone().into())
             .await?;
         assert_eq!(
-            shard_store.get_part_unchunked(digest1, 0, None, None).await,
+            shard_store.get_part_unchunked(digest1, 0, None).await,
             Ok(original_data1.into())
         );
         assert_eq!(shard_store.has(digest1).await, Ok(Some(MEGABYTE_SZ)));

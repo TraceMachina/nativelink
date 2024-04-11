@@ -132,12 +132,7 @@ mod ref_store_tests {
         {
             // Read the partition store small data.
             let data = Pin::new(&size_part_store)
-                .get_part_unchunked(
-                    DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?,
-                    0,
-                    None,
-                    None,
-                )
+                .get_part_unchunked(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, 0, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -150,12 +145,7 @@ mod ref_store_tests {
         {
             // Read the partition store big data.
             let data = Pin::new(&size_part_store)
-                .get_part_unchunked(
-                    DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
-                    0,
-                    None,
-                    None,
-                )
+                .get_part_unchunked(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, 0, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -193,12 +183,7 @@ mod ref_store_tests {
         {
             // Check if we read small data from size_partition_store it has same data.
             let data = Pin::new(lower_memory_store.as_ref())
-                .get_part_unchunked(
-                    DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?,
-                    0,
-                    None,
-                    None,
-                )
+                .get_part_unchunked(DigestInfo::try_new(SMALL_HASH, SMALL_VALUE.len())?, 0, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -211,12 +196,7 @@ mod ref_store_tests {
         {
             // Check if we read big data from size_partition_store it has same data.
             let data = Pin::new(upper_memory_store.as_ref())
-                .get_part_unchunked(
-                    DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?,
-                    0,
-                    None,
-                    None,
-                )
+                .get_part_unchunked(DigestInfo::try_new(BIG_HASH, BIG_VALUE.len())?, 0, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(

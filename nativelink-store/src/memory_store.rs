@@ -97,7 +97,7 @@ impl Store for MemoryStore {
     async fn update(
         self: Pin<&Self>,
         digest: DigestInfo,
-        reader: DropCloserReadHalf,
+        mut reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let max_size = match size_info {
@@ -109,7 +109,7 @@ impl Store for MemoryStore {
         // this potential case, we make a full copy of our data for long-term storage.
         let final_buffer = {
             let buffer = reader
-                .collect_all_with_size_hint(max_size)
+                .consume(Some(max_size))
                 .await
                 .err_tip(|| "Failed to collect all bytes from reader in memory_store::update")?;
             let mut new_buffer = BytesMut::with_capacity(buffer.len());

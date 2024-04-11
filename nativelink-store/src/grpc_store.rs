@@ -54,8 +54,6 @@ use tonic::{IntoRequest, Request, Response, Status, Streaming};
 use tracing::error;
 use uuid::Uuid;
 
-use crate::ac_utils::ESTIMATED_DIGEST_SIZE;
-
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
@@ -466,14 +464,10 @@ impl GrpcStore {
     async fn update_action_result_from_bytes(
         &self,
         digest: DigestInfo,
-        reader: DropCloserReadHalf,
+        mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
-        let action_result = ActionResult::decode(
-            reader
-                .collect_all_with_size_hint(ESTIMATED_DIGEST_SIZE)
-                .await?,
-        )
-        .err_tip(|| "Failed to decode ActionResult in update_action_result_from_bytes")?;
+        let action_result = ActionResult::decode(reader.consume(None).await?)
+            .err_tip(|| "Failed to decode ActionResult in update_action_result_from_bytes")?;
         let update_action_request = UpdateActionResultRequest {
             instance_name: self.instance_name.clone(),
             action_digest: Some(digest.into()),

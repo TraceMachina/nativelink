@@ -160,7 +160,7 @@ pub mod write_tests {
                 "Not found in store",
             );
             let store_data = store
-                .get_part_unchunked(DigestInfo::try_new(HASH1, raw_data.len())?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(HASH1, raw_data.len())?, 0, None)
                 .await?;
             assert_eq!(
                 std::str::from_utf8(&store_data),
@@ -259,7 +259,7 @@ pub mod write_tests {
             // Check to make sure our store recorded the data properly.
             let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
             assert_eq!(
-                store.get_part_unchunked(digest, 0, None, None).await?,
+                store.get_part_unchunked(digest, 0, None).await?,
                 WRITE_DATA,
                 "Data written to store did not match expected data",
             );
@@ -361,7 +361,7 @@ pub mod write_tests {
             // Check to make sure our store recorded the data properly.
             let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
             assert_eq!(
-                store.get_part_unchunked(digest, 0, None, None).await?,
+                store.get_part_unchunked(digest, 0, None).await?,
                 WRITE_DATA,
                 "Data written to store did not match expected data",
             );
@@ -463,7 +463,7 @@ pub mod write_tests {
             // Check to make sure our store recorded the data properly.
             let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
             assert_eq!(
-                store.get_part_unchunked(digest, 0, None, None).await?,
+                store.get_part_unchunked(digest, 0, None).await?,
                 WRITE_DATA,
                 "Data written to store did not match expected data",
             );
@@ -554,7 +554,7 @@ pub mod write_tests {
             // Check to make sure our store recorded the data properly.
             let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
             assert_eq!(
-                store.get_part_unchunked(digest, 0, None, None).await?,
+                store.get_part_unchunked(digest, 0, None).await?,
                 WRITE_DATA,
                 "Data written to store did not match expected data",
             );
@@ -705,7 +705,7 @@ pub mod write_tests {
         {
             // Check to make sure our store recorded the data properly.
             let data = store
-                .get_part_unchunked(DigestInfo::try_new(HASH1, 0)?, 0, None, None)
+                .get_part_unchunked(DigestInfo::try_new(HASH1, 0)?, 0, None)
                 .await?;
             assert_eq!(data, "", "Expected data to exist and be empty");
         }

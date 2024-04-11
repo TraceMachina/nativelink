@@ -99,7 +99,7 @@ impl DedupStore {
         let index_entries = {
             let maybe_data = self
                 .pin_index_store()
-                .get_part_unchunked(digest, 0, None, Some(self.upload_normal_size))
+                .get_part_unchunked(digest, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store");
             let data = match maybe_data {
@@ -246,7 +246,7 @@ impl Store for DedupStore {
         let index_entries = {
             let data = self
                 .pin_index_store()
-                .get_part_unchunked(digest, 0, None, Some(self.upload_normal_size))
+                .get_part_unchunked(digest, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
 
@@ -304,15 +304,7 @@ impl Store for DedupStore {
 
                 async move {
                     let data = Pin::new(content_store.as_ref())
-                        .get_part_unchunked(
-                            index_entry,
-                            0,
-                            None,
-                            Some(
-                                usize::try_from(index_entry.size_bytes)
-                                    .err_tip(|| "Failed to convert to usize in DedupStore")?,
-                            ),
-                        )
+                        .get_part_unchunked(index_entry, 0, None)
                         .await
                         .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
 

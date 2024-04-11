@@ -93,12 +93,7 @@ mod ref_store_tests {
         {
             // Now check if we read it from ref_store it has same data.
             let data = Pin::new(ref_store_owned.as_ref())
-                .get_part_unchunked(
-                    DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
-                    0,
-                    None,
-                    None,
-                )
+                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, 0, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(
@@ -128,12 +123,7 @@ mod ref_store_tests {
         {
             // Now check if we read it from memory_store it has same data.
             let data = Pin::new(memory_store_owned.as_ref())
-                .get_part_unchunked(
-                    DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
-                    0,
-                    None,
-                    None,
-                )
+                .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, 0, None)
                 .await
                 .expect("Get should have succeeded");
             assert_eq!(

@@ -214,7 +214,7 @@ mod batch_update_blobs {
             }
         );
         let new_data = store
-            .get_part_unchunked(DigestInfo::try_new(HASH1, VALUE1.len())?, 0, None, None)
+            .get_part_unchunked(DigestInfo::try_new(HASH1, VALUE1.len())?, 0, None)
             .await
             .expect("Get should have succeeded");
         assert_eq!(

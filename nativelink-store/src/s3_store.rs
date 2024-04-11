@@ -288,14 +288,17 @@ impl Store for S3Store {
                 reader.set_close_after_size(sz as u64);
                 (
                     ByteStream::new(SdkBody::from(
-                        DropCloserReadHalf::take(&mut reader, sz)
+                        reader
+                            .consume(Some(sz))
                             .await
                             .err_tip(|| "Failed to take {sz} bytes from reader in S3")?,
                     )),
                     sz as i64,
                 )
             } else {
-                let write_buf = DropCloserReadHalf::take(&mut reader, max_size + 1) // Just in case, we want to capture the EOF, so +1.
+                // Just in case, we want to capture the EOF, so +1.
+                let write_buf = reader
+                    .consume(Some(max_size + 1))
                     .await
                     .err_tip(|| "Failed to read file in upload to s3 in single chunk")?;
                 error_if!(
@@ -356,7 +359,8 @@ impl Store for S3Store {
 
             let read_stream_fut = async move {
                 loop {
-                    let write_buf = DropCloserReadHalf::take(&mut reader, bytes_per_upload_part)
+                    let write_buf = reader
+                        .consume(Some(bytes_per_upload_part))
                         .await
                         .err_tip(|| "Failed to read chunk in s3_store")?;
                     if write_buf.is_empty() {
