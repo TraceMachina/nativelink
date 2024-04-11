@@ -228,8 +228,8 @@ mod filesystem_store_tests {
 
     const HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
     const HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
-    const VALUE1: &str = "123";
-    const VALUE2: &str = "321";
+    const VALUE1: &str = "1234";
+    const VALUE2: &str = "4321";
 
     #[tokio::test]
     async fn valid_results_after_shutdown_test() -> Result<(), Error> {
@@ -975,7 +975,7 @@ mod filesystem_store_tests {
 
         // Because send_eof() waits for shutdown of the rx side, we cannot just await in this thread.
         tokio::spawn(async move {
-            tx.send_eof().await.unwrap();
+            tx.send_eof().unwrap();
         });
 
         // Now finish waiting on update(). This should reuslt in an error because we deleted our dest

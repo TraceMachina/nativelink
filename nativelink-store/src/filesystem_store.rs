@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
-use futures::{join, Future, TryFutureExt};
+use futures::{Future, TryFutureExt};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
@@ -716,9 +716,9 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
                 continue;
             }
             let (mut tx, rx) = make_buf_channel_pair();
-            let update_fut = self.update(*digest, rx, UploadSizeInfo::ExactSize(0));
-            let (update_result, send_eof_result) = join!(update_fut, tx.send_eof());
-            update_result
+            let send_eof_result = tx.send_eof();
+            self.update(*digest, rx, UploadSizeInfo::ExactSize(0))
+                .await
                 .err_tip(|| format!("Failed to create zero file for digest {digest:?}"))
                 .merge(
                     send_eof_result
@@ -808,7 +808,6 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
                 .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
             writer
                 .send_eof()
-                .await
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
             return Ok(());
         }
@@ -823,8 +822,8 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         let read_limit = length.unwrap_or(usize::MAX) as u64;
         let mut resumeable_temp_file = entry.read_file_part(offset as u64, read_limit).await?;
 
-        let mut buf = BytesMut::with_capacity(length.unwrap_or(self.read_buffer_size));
         loop {
+            let mut buf = BytesMut::with_capacity(self.read_buffer_size);
             resumeable_temp_file
                 .as_reader()
                 .await
@@ -841,7 +840,7 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
             // because it is waiting for a file descriptor to open before receiving data.
             // Using `ResumeableFileSlot` will re-open the file in the event it gets closed on the
             // next iteration.
-            let buf_content = buf.split().freeze();
+            let buf_content = buf.freeze();
             loop {
                 let sleep_fn = (self.sleep_fn)(fs::idle_file_descriptor_timeout());
                 tokio::pin!(sleep_fn);
@@ -866,7 +865,6 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         }
         writer
             .send_eof()
-            .await
             .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
 
         Ok(())

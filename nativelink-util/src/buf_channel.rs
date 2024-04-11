@@ -12,14 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::task::Poll;
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use futures::task::Context;
-use futures::{Future, Stream};
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
-use tokio::sync::{mpsc, oneshot};
+use futures::{Future, Stream, TryFutureExt};
+use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use tokio::sync::mpsc;
 pub use tokio_util::io::StreamReader;
 
 /// Create a channel pair that can be used to transport buffer objects around to
@@ -34,19 +37,20 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
     // a little time for another thread to wake up and consume data if another
     // thread is pumping large amounts of data into the channel.
     let (tx, rx) = mpsc::channel(2);
-    let (close_tx, close_rx) = oneshot::channel();
+    let eof_sent = Arc::new(AtomicBool::new(false));
     (
         DropCloserWriteHalf {
             tx: Some(tx),
             bytes_written: 0,
-            close_rx,
-            disable_eof_check: false,
+            eof_sent: eof_sent.clone(),
         },
         DropCloserReadHalf {
             rx,
-            partial: None,
-            close_tx: Some(close_tx),
-            close_after_size: u64::MAX,
+            queued_data: VecDeque::new(),
+            eof_sent,
+            bytes_received: 0,
+            recent_data: Vec::new(),
+            max_recent_data_size: 0,
         },
     )
 }
@@ -55,51 +59,91 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
 pub struct DropCloserWriteHalf {
     tx: Option<mpsc::Sender<Result<Bytes, Error>>>,
     bytes_written: u64,
-    /// Receiver channel used to know the error (or success) value of the
-    /// receiver end's drop status (ie: if the receiver dropped unexpectedly).
-    close_rx: oneshot::Receiver<Result<(), Error>>,
-    disable_eof_check: bool,
+    eof_sent: Arc<AtomicBool>,
 }
 
 impl DropCloserWriteHalf {
     /// Sends data over the channel to the receiver.
-    pub async fn send(&mut self, buf: Bytes) -> Result<(), Error> {
-        let tx = self
+    pub fn send(&mut self, buf: Bytes) -> impl Future<Output = Result<(), Error>> + '_ {
+        self.send_get_bytes_on_error(buf).map_err(|err| err.0)
+    }
+
+    /// Sends data over the channel to the receiver.
+    #[inline]
+    async fn send_get_bytes_on_error(&mut self, buf: Bytes) -> Result<(), (Error, Bytes)> {
+        let tx = match self
             .tx
             .as_ref()
-            .ok_or_else(|| make_err!(Code::Internal, "Tried to send while stream is closed"))?;
-        let buf_len = buf.len() as u64;
-        error_if!(
-            buf_len == 0,
-            "Cannot send EOF in send(). Instead use send_eof()"
-        );
-        let result = tx.send(Ok(buf)).await.map_err(|_| {
-            make_err!(
-                Code::Internal,
-                "Failed to write to data, receiver disconnected"
-            )
-        });
-        if result.is_err() {
-            // Close our channel to prevent drop() from spawning a task.
+            .ok_or_else(|| make_err!(Code::Internal, "Tried to send while stream is closed"))
+        {
+            Ok(tx) => tx,
+            Err(e) => return Err((e, buf)),
+        };
+        let Ok(buf_len) = u64::try_from(buf.len()) else {
+            return Err((
+                make_err!(Code::Internal, "Could not convert usize to u64"),
+                buf,
+            ));
+        };
+        if buf_len == 0 {
+            return Err((
+                make_input_err!("Cannot send EOF in send(). Instead use send_eof()"),
+                buf,
+            ));
+        }
+        if let Err(err) = tx.send(Ok(buf)).await {
+            // Close our channel.
             self.tx = None;
+            return Err((
+                make_err!(
+                    Code::Internal,
+                    "Failed to write to data, receiver disconnected"
+                ),
+                err.0
+                    .expect("Data should never be Err in send_get_bytes_on_error()"),
+            ));
         }
         self.bytes_written += buf_len;
-        result
+        Ok(())
+    }
+
+    /// Binds a reader and a writer together. This will send all the data from the reader
+    /// to the writer until an EOF is received.
+    pub async fn bind(&mut self, reader: &mut DropCloserReadHalf) -> Result<(), Error> {
+        loop {
+            let chunk = reader
+                .recv()
+                .await
+                .err_tip(|| "In DropCloserWriteHalf::bind::recv")?;
+            if chunk.is_empty() {
+                self.send_eof()
+                    .err_tip(|| "In DropCloserWriteHalf::bind::send_eof")?;
+                break; // EOF.
+            }
+            match self.send_get_bytes_on_error(chunk).await {
+                Ok(()) => {}
+                Err(e) => {
+                    reader.queued_data.push_front(Ok(e.1));
+                    return Err(e.0).err_tip(|| "In DropCloserWriteHalf::bind::send");
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Sends an EOF (End of File) message to the receiver which will gracefully let the
     /// stream know it has no more data. This will close the stream.
-    pub async fn send_eof(&mut self) -> Result<(), Error> {
+    pub fn send_eof(&mut self) -> Result<(), Error> {
         error_if!(
             self.tx.is_none(),
             "Tried to send an EOF when pipe is broken"
         );
-        self.tx = None;
+        // Flag that we have sent the EOF.
+        self.eof_sent.store(true, Ordering::Release);
 
-        // The final result will be provided in this oneshot channel.
-        Pin::new(&mut self.close_rx)
-            .await
-            .map_err(|_| make_err!(Code::Internal, "Receiver went away before receiving EOF"))?
+        // Now close our stream.
+        self.tx = None;
+        Ok(())
     }
 
     /// Returns the number of bytes written so far. This does not mean the receiver received
@@ -116,65 +160,36 @@ impl DropCloserWriteHalf {
     pub const fn is_pipe_broken(&self) -> bool {
         self.tx.is_none()
     }
-
-    /// Some remote receivers drop connections before we can send the EOF check.
-    /// If the receiver handles failing streams it is safe to disable it.
-    pub fn set_ignore_eof(&mut self) {
-        self.disable_eof_check = true;
-    }
-}
-
-impl Drop for DropCloserWriteHalf {
-    /// This will notify the reader of an error if we did not send an EOF.
-    fn drop(&mut self) {
-        if tokio::runtime::Handle::try_current().is_err() {
-            eprintln!("No tokio runtime active. Tx was dropped but can't send error.");
-            return; // Cant send error, no runtime.
-        }
-        // Some remote receivers out of our control may close connections before
-        // we can send the EOF check. If the remote receiver can be trusted to
-        // handle incomplete data on its side we can disable this check.
-        if !self.disable_eof_check {
-            if let Some(tx) = self.tx.take() {
-                // If we do not notify the receiver of the premature close of the stream (ie: without EOF)
-                // we could end up with the receiver thinking everything is good and saving this bad data.
-                tokio::spawn(async move {
-                    let _ = tx
-                        .send(Err(make_err!(
-                            Code::Internal,
-                            "Writer was dropped before EOF was sent",
-                        )))
-                        .await; // Nowhere to send failure to write here.
-                });
-            }
-        }
-    }
 }
 
 /// Reader half of the pair.
 pub struct DropCloserReadHalf {
     rx: mpsc::Receiver<Result<Bytes, Error>>,
-    /// Represents a partial chunk of data. This is used when we only wanted
-    /// to take a part of the chunk in the stream and leave the rest.
-    partial: Option<Result<Bytes, Error>>,
-    /// A channel used to notify the sender that we are closed (with error).
-    close_tx: Option<oneshot::Sender<Result<(), Error>>>,
-    /// Once this number of bytes is sent the stream will be considered closed.
-    /// This is a work around for cases when we never receive an EOF because the
-    /// reader's future is dropped because it got the exact amount of data and
-    /// will never poll more. This prevents the `drop()` handle from sending an
-    /// error to our writer that we dropped the stream before receiving an EOF
-    /// if we know the exact amount of data we will receive in this stream.
-    close_after_size: u64,
+    /// Number of bytes received over the stream.
+    bytes_received: u64,
+    eof_sent: Arc<AtomicBool>,
+    /// If not empty, this is the data that needs to be sent out before
+    /// data from the underlying channel can should be sent.
+    queued_data: VecDeque<Result<Bytes, Error>>,
+    /// As data is being read from the stream, this buffer will be filled
+    /// with the most recent data. Once `max_recent_data_size` is reached
+    /// this buffer will be cleared and no longer be populated.
+    /// This is useful if the caller wants to reset the the reader to before
+    /// any of the data was received if possible (eg: something failed and
+    /// we want to retry).
+    recent_data: Vec<Bytes>,
+    /// Amount of data to keep in the recent_data buffer before clearing it
+    /// and no longer populating it.
+    max_recent_data_size: u64,
 }
 
 impl DropCloserReadHalf {
     /// Receive a chunk of data.
     pub async fn recv(&mut self) -> Result<Bytes, Error> {
-        let maybe_chunk = match self.partial.take() {
-            // `partial` is allowed to have empty bytes that represent EOF (as
+        let maybe_chunk = match self.queued_data.pop_front() {
+            // `queued_data` is allowed to have empty bytes that represent EOF (as
             // returned in the None case below), but `self.rx.recv()` should
-            // never respond with empty bytes as EOF.  If `partial` is empty,
+            // never respond with empty bytes as EOF.  If `queued_data` is empty,
             // then pass None to simulate the stream's version of EOF.
             Some(Ok(result_bytes)) => (!result_bytes.is_empty()).then(|| Ok(result_bytes)),
             Some(Err(cached_error)) => Some(Err(cached_error)),
@@ -187,39 +202,76 @@ impl DropCloserReadHalf {
                     chunk_len == 0,
                     "Chunk should never be EOF, expected None in this case"
                 );
-                error_if!(
-                    self.close_after_size < chunk_len,
-                    "Received too much data. This only happens when `close_after_size` is set."
-                );
-                self.close_after_size -= chunk_len;
-                if self.close_after_size == 0 {
-                    error_if!(self.close_tx.is_none(), "Expected stream to not be closed");
-                    self.close_tx.take().unwrap().send(Ok(())).map_err(|_| {
-                        make_err!(
-                            Code::Internal,
-                            "Failed to send closing ok message to write with size"
-                        )
-                    })?;
-                }
+                self.bytes_received += chunk_len;
+                self.maybe_populate_recent_data(&chunk);
                 Ok(chunk)
             }
 
             Some(Err(e)) => Err(make_err!(
                 Code::Internal,
-                "Received erroneous partial chunk: {e}"
+                "Received erroneous queued_data chunk: {e}"
             )),
 
             // None is a safe EOF received.
             None => {
-                // Notify our sender that we received the EOF with success.
-                if let Some(close_tx) = self.close_tx.take() {
-                    close_tx.send(Ok(())).map_err(|_| {
-                        make_err!(Code::Internal, "Failed to send closing ok message to write")
-                    })?;
+                if !self.eof_sent.load(Ordering::Acquire) {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "EOF received before sending EOF; sender was probably dropped"
+                    ));
                 }
-                Ok(Bytes::new())
+                const ZERO_DATA: Bytes = Bytes::new();
+                self.maybe_populate_recent_data(&ZERO_DATA);
+                Ok(ZERO_DATA)
             }
         }
+    }
+
+    fn maybe_populate_recent_data(&mut self, chunk: &Bytes) {
+        if self.max_recent_data_size == 0 {
+            return; // Fast path.
+        }
+        if self.bytes_received > self.max_recent_data_size {
+            if !self.recent_data.is_empty() {
+                self.recent_data.clear();
+            }
+            return;
+        }
+        self.recent_data.push(chunk.clone());
+    }
+
+    /// Sets the maximum size of the recent_data buffer. If the number of bytes
+    /// received exceeds this size, the recent_data buffer will be cleared and
+    /// no longer populated.
+    pub fn set_max_recent_data_size(&mut self, size: u64) {
+        self.max_recent_data_size = size;
+    }
+
+    /// Attempts to reset the stream to before any data was received. This will
+    /// only work if the number of bytes received is less than max_recent_data_size.
+    ///
+    /// On error the state of the stream is undefined and the caller should not
+    /// attempt to use the stream again.
+    pub fn try_reset_stream(&mut self) -> Result<(), Error> {
+        if self.bytes_received > self.max_recent_data_size {
+            return Err(make_err!(
+                Code::Internal,
+                "Cannot reset stream, max_recent_data_size exceeded"
+            ));
+        }
+        let mut data_sum = 0;
+        for chunk in self.recent_data.drain(..).rev() {
+            data_sum += chunk.len() as u64;
+            self.queued_data.push_front(Ok(chunk));
+        }
+        assert!(self.recent_data.is_empty(), "Recent_data should be empty");
+        // Ensure the sum of the bytes in recent_data is equal to the bytes_received.
+        error_if!(
+            data_sum != self.bytes_received,
+            "Sum of recent_data bytes does not equal bytes_received"
+        );
+        self.bytes_received = 0;
+        Ok(())
     }
 
     /// Drains the reader until an EOF is received, but sends data to the void.
@@ -239,22 +291,18 @@ impl DropCloserReadHalf {
 
     /// Peek the next set of bytes in the stream without consuming them.
     pub async fn peek(&mut self) -> &Result<Bytes, Error> {
-        assert!(
-            self.close_after_size == u64::MAX,
-            "Can't call peek() when take() was called"
-        );
-        if self.partial.is_none() {
-            self.partial = Some(self.recv().await);
+        if self.queued_data.is_empty() {
+            let chunk = self.recv().await;
+            self.queued_data.push_front(chunk);
         }
-        if let Some(result) = &self.partial {
-            return result;
-        }
-        unreachable!();
+        self.queued_data
+            .front()
+            .expect("Should have data in the queue")
     }
 
-    /// Sets the number of bytes before the stream will be considered closed.
-    pub fn set_close_after_size(&mut self, size: u64) {
-        self.close_after_size = size;
+    /// The number of bytes received over this stream so far.
+    pub fn get_bytes_received(&self) -> u64 {
+        self.bytes_received
     }
 
     /// Takes exactly `size` number of bytes from the stream and returns them.
@@ -263,110 +311,57 @@ impl DropCloserReadHalf {
     /// This method is optimized to reduce copies when possible.
     /// If `size` is None, it will take all the bytes in the stream.
     pub async fn consume(&mut self, size: Option<usize>) -> Result<Bytes, Error> {
-        fn populate_partial_if_needed(
-            current_size: usize,
-            desired_size: usize,
-            chunk: &mut Bytes,
-            partial: &mut Option<Result<Bytes, Error>>,
-        ) {
-            if current_size + chunk.len() <= desired_size {
-                return;
-            }
-            assert!(
-                partial.is_none(),
-                "Partial should have been consumed during the recv()"
-            );
-            let local_partial = chunk.split_off(desired_size - current_size);
-            *partial = if local_partial.is_empty() {
-                None
-            } else {
-                Some(Ok(local_partial))
-            };
-        }
-        let max_size = size.unwrap_or(usize::MAX);
-        let (first_chunk, second_chunk) = {
-            // This is an optimization for a relatively common case when the first chunk in the
-            // stream satisfies all the requirements to fill this `take()`.
-            // This will prevent us from needing to copy the data into a new buffer and instead we can
-            // just forward on the original Bytes object. If we need more than the first chunk
-            // we will then go the slow path and actually copy our data.
-
-            // 1. Read some data from our stream (or self.partial).
-            let mut first_chunk = self
+        let size = size.unwrap_or(usize::MAX);
+        let first_chunk = {
+            let mut chunk = self
                 .recv()
                 .await
-                .err_tip(|| "During first buf_channel::take()")?;
-            assert!(
-                self.partial.is_none(),
-                "Partial should have been consumed during the recv()"
-            );
-            // 2. Split our data so `first_chunk` is <= `size` and puts any remaining
-            //    in `self.partial` (or set it to None).
-            populate_partial_if_needed(0, max_size, &mut first_chunk, &mut self.partial);
-            // 3a. If our `first_chunk` is EOF, we are done.
-            if first_chunk.is_empty() {
-                return Ok(first_chunk);
+                .err_tip(|| "During first read of buf_channel::take()")?;
+            if chunk.is_empty() {
+                return Ok(chunk); // EOF.
             }
-            // 3b. If our first_chunk has data and it our self.partial was filled it means our stream has more data.
-            if self.partial.is_some() {
-                assert!(
-                    first_chunk.len() == max_size,
-                    "Length should be exactly size here"
-                );
-                return Ok(first_chunk);
+            if chunk.len() > size {
+                let remaining = chunk.split_off(size);
+                self.queued_data.push_front(Ok(remaining));
             }
-
-            let mut second_chunk = self
-                .recv()
-                .await
-                .err_tip(|| "During second buf_channel::take()")?;
-            if second_chunk.is_empty() {
-                assert!(
-                    first_chunk.len() <= max_size,
-                    "Length should never be larger than size here"
-                );
-                return Ok(first_chunk);
+            if chunk.len() == size {
+                return Ok(chunk);
             }
-            populate_partial_if_needed(
-                first_chunk.len(),
-                max_size,
-                &mut second_chunk,
-                &mut self.partial,
-            );
-            (first_chunk, second_chunk)
+            // If we are a partial chunk and our next chunk is EOF, we are done.
+            match self.peek().await {
+                Ok(peeked_chunk) => {
+                    if peeked_chunk.is_empty() {
+                        return Ok(chunk);
+                    }
+                }
+                Err(e) => {
+                    return Err(e.clone()).err_tip(|| "Failed to check if next chunk is EOF")?
+                }
+            }
+            chunk
         };
-        let mut output = size.map_or_else(BytesMut::new, BytesMut::with_capacity);
-        output.put(first_chunk);
-        output.put(second_chunk);
+        let mut output = BytesMut::new();
+        output.extend_from_slice(&first_chunk);
 
         loop {
-            if self.partial.is_some() {
-                assert!(
-                    output.len() == max_size,
-                    "If partial is set, expected output length to be {max_size}"
-                );
-                return Ok(output.freeze());
-            }
-            assert!(
-                output.len() <= max_size,
-                "Length should never be larger than size in take()"
-            );
-
-            let mut chunk = self.recv().await.err_tip(|| "During buf_channel::take()")?;
-            assert!(
-                self.partial.is_none(),
-                "Partial should have been consumed during the recv()"
-            );
+            let mut chunk = self
+                .recv()
+                .await
+                .err_tip(|| "During first read of buf_channel::take()")?;
             if chunk.is_empty() {
-                // Forward EOF to next recv() and return our current buffer.
-                self.partial = Some(Ok(chunk));
-                return Ok(output.freeze());
+                break; // EOF.
             }
-
-            populate_partial_if_needed(output.len(), max_size, &mut chunk, &mut self.partial);
-
-            output.put(chunk);
+            if output.len() + chunk.len() > size {
+                // Slice off the extra data and put it back into the queue. We are done.
+                let remaining = chunk.split_off(size - output.len());
+                self.queued_data.push_front(Ok(remaining));
+            }
+            output.extend_from_slice(&chunk);
+            if output.len() == size {
+                break; // We are done.
+            }
         }
+        Ok(output.freeze())
     }
 }
 

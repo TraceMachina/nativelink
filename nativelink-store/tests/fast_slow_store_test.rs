@@ -314,7 +314,7 @@ mod fast_slow_store_tests {
                 let bytes = length.unwrap_or(digest.size_bytes as usize) - offset;
                 let data = vec![0_u8; bytes];
                 writer.send(Bytes::copy_from_slice(&data)).await?;
-                writer.send_eof().await
+                writer.send_eof()
             }
 
             fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
