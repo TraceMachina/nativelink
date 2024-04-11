@@ -96,7 +96,6 @@ pub async fn slow_update_store_with_file<S: Store + ?Sized>(
                 .await
                 .err_tip(|| "Error in upload_file_to_store::read_buf_cb section")?;
             tx.send_eof()
-                .await
                 .err_tip(|| "Could not send EOF to store in upload_file_to_store")?;
             Ok(())
         },
@@ -216,7 +215,6 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
                     .err_tip(|| "Failed to write data in update_oneshot")?;
             }
             tx.send_eof()
-                .await
                 .err_tip(|| "Failed to write EOF in update_oneshot")?;
             Ok(())
         };

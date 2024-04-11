@@ -288,7 +288,7 @@ mod compression_store_tests {
         let (mut tx, rx) = make_buf_channel_pair();
         let send_fut = async move {
             tx.send(RAW_INPUT.into()).await?;
-            tx.send_eof().await
+            tx.send_eof()
         };
         let (res1, res2) = futures::join!(
             send_fut,
