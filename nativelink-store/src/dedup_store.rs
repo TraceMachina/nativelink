@@ -21,13 +21,14 @@ use bincode::config::{FixintEncoding, WithOtherIntEncoding};
 use bincode::{DefaultOptions, Options};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
-use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf, StreamReader};
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
+use tokio_util::io::StreamReader;
 use tracing::warn;
 
 // NOTE: If these change update the comments in `stores.rs` to reflect
@@ -47,7 +48,6 @@ pub struct DedupStore {
     content_store: Arc<dyn Store>,
     fast_cdc_decoder: FastCDC,
     max_concurrent_fetch_per_get: usize,
-    upload_normal_size: usize,
     bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
 }
 
@@ -82,9 +82,6 @@ impl DedupStore {
             content_store,
             fast_cdc_decoder: FastCDC::new(min_size, normal_size, max_size),
             max_concurrent_fetch_per_get,
-            // We add 30% because the normal_size is not super accurate and we'd prefer to
-            // over estimate than under estimate.
-            upload_normal_size: (normal_size * 13) / 10,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
         }
     }
@@ -237,7 +234,6 @@ impl Store for DedupStore {
         if length == Some(0) {
             writer
                 .send_eof()
-                .await
                 .err_tip(|| "Failed to write EOF out from get_part dedup")?;
             return Ok(());
         }
@@ -342,7 +338,6 @@ impl Store for DedupStore {
         // Finish our stream by writing our EOF and shutdown the stream.
         writer
             .send_eof()
-            .await
             .err_tip(|| "Failed to write EOF out from get_part dedup")?;
         Ok(())
     }

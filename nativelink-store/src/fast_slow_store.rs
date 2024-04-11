@@ -179,12 +179,11 @@ impl Store for FastSlowStore {
                     .err_tip(|| "Failed to read buffer in fastslow store")?;
                 if buffer.is_empty() {
                     // EOF received.
-                    fast_tx.send_eof().await.err_tip(|| {
+                    fast_tx.send_eof().err_tip(|| {
                         "Failed to write eof to fast store in fast_slow store update"
                     })?;
                     slow_tx
                         .send_eof()
-                        .await
                         .err_tip(|| "Failed to write eof to writer in fast_slow store update")?;
                     return Result::<(), Error>::Ok(());
                 }
@@ -307,7 +306,7 @@ impl Store for FastSlowStore {
                     // Write out our EOF.
                     // We are dropped as soon as we send_eof to writer_pin, so
                     // we wait until we've finished all of our joins to do that.
-                    let fast_res = fast_tx.send_eof().await;
+                    let fast_res = fast_tx.send_eof();
                     return Ok::<_, Error>((fast_res, writer_pin));
                 }
 
@@ -340,7 +339,7 @@ impl Store for FastSlowStore {
                 fast_eof_res
                     .merge(fast_res)
                     .merge(slow_res)
-                    .merge(writer_pin.send_eof().await)
+                    .merge(writer_pin.send_eof())
             }
             Err(err) => fast_res.merge(slow_res).merge(Err(err)),
         }

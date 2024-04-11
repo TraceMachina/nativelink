@@ -98,18 +98,13 @@ impl Store for MemoryStore {
         self: Pin<&Self>,
         digest: DigestInfo,
         mut reader: DropCloserReadHalf,
-        size_info: UploadSizeInfo,
+        _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let max_size = match size_info {
-            UploadSizeInfo::ExactSize(sz) => sz,
-            UploadSizeInfo::MaxSize(sz) => sz,
-        };
-
         // Internally Bytes might hold a reference to more data than just our data. To prevent
         // this potential case, we make a full copy of our data for long-term storage.
         let final_buffer = {
             let buffer = reader
-                .consume(Some(max_size))
+                .consume(None)
                 .await
                 .err_tip(|| "Failed to collect all bytes from reader in memory_store::update")?;
             let mut new_buffer = BytesMut::with_capacity(buffer.len());
@@ -133,7 +128,6 @@ impl Store for MemoryStore {
         if is_zero_digest(&digest) {
             writer
                 .send_eof()
-                .await
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
             return Ok(());
         }
@@ -158,7 +152,6 @@ impl Store for MemoryStore {
         }
         writer
             .send_eof()
-            .await
             .err_tip(|| "Failed to write EOF in memory store get_part")?;
         Ok(())
     }

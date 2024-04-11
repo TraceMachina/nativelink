@@ -96,9 +96,7 @@ impl VerifyStore {
                         ));
                     }
                 }
-                tx.send_eof()
-                    .await
-                    .err_tip(|| "In verify_store::check_update")?;
+                tx.send_eof().err_tip(|| "In verify_store::check_update")?;
                 break;
             }
 

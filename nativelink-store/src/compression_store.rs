@@ -378,7 +378,6 @@ impl Store for CompressionStore {
                     .await
                     .err_tip(|| "Failed to write footer to inner store in compression store")?;
                 tx.send_eof()
-                    .await
                     .err_tip(|| "Failed writing EOF in compression store update")?;
             }
 
@@ -398,7 +397,6 @@ impl Store for CompressionStore {
         if is_zero_digest(&digest) {
             writer
                 .send_eof()
-                .await
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
             return Ok(());
         }
@@ -599,7 +597,6 @@ impl Store for CompressionStore {
 
             writer
                 .send_eof()
-                .await
                 .err_tip(|| "Failed to send eof in compression store write")?;
             Ok(())
         };

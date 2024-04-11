@@ -309,65 +309,71 @@ impl ByteStreamServer {
 
         Ok(Response::new(Box::pin(unfold(state, move |state| async {
             let mut state = state?; // If None our stream is done.
-            loop {
-                tokio::select! {
-                    read_result = state.rx.consume(Some(state.max_bytes_per_stream)) => {
-                        match read_result {
-                            Ok(bytes) => {
-                                if bytes.is_empty() {
-                                    // EOF.
-                                    return Some((Ok(ReadResponse { ..Default::default() }), None));
+            let mut response = ReadResponse::default();
+            {
+                let consume_fut = state.rx.consume(Some(state.max_bytes_per_stream));
+                tokio::pin!(consume_fut);
+                loop {
+                    tokio::select! {
+                        read_result = &mut consume_fut => {
+                            match read_result {
+                                Ok(bytes) => {
+                                    if bytes.is_empty() {
+                                        // EOF.
+                                        return Some((Ok(response), None));
+                                    }
+                                    if bytes.len() > state.max_bytes_per_stream {
+                                        let err = make_err!(Code::Internal, "Returned store size was larger than read size");
+                                        return Some((Err(err.into()), None));
+                                    }
+                                    response.data = bytes;
+                                    info!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: {:?}", response);
+                                    break;
                                 }
-                                if bytes.len() > state.max_bytes_per_stream {
-                                    let err = make_err!(Code::Internal, "Returned store size was larger than read size");
-                                    return Some((Err(err.into()), None));
+                                Err(mut e) => {
+                                    // We may need to propagate the error from reading the data through first.
+                                    // For example, the NotFound error will come through `get_part_fut`, and
+                                    // will not be present in `e`, but we need to ensure we pass NotFound error
+                                    // code or the client won't know why it failed.
+                                    let get_part_result = if let Some(result) = state.maybe_get_part_result {
+                                        result
+                                    } else {
+                                        // This should never be `future::pending()` if maybe_get_part_result is
+                                        // not set.
+                                        state.get_part_fut.await
+                                    };
+                                    if let Err(err) = get_part_result {
+                                        e = err.merge(e);
+                                    }
+                                    if e.code == Code::NotFound {
+                                        // Trim the error code. Not Found is quite common and we don't want to send a large
+                                        // error (debug) message for something that is common. We resize to just the last
+                                        // message as it will be the most relevant.
+                                        e.messages.truncate(1);
+                                    }
+                                    info!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: Error {:?}", e);
+                                    return Some((Err(e.into()), None))
                                 }
-                                let response = ReadResponse { data: bytes };
-                                info!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: {:?}", response);
-                                return Some((Ok(response), Some(state)))
                             }
-                            Err(mut e) => {
-                                // We may need to propagate the error from reading the data through first.
-                                // For example, the NotFound error will come through `get_part_fut`, and
-                                // will not be present in `e`, but we need to ensure we pass NotFound error
-                                // code or the client won't know why it failed.
-                                let get_part_result = if let Some(result) = state.maybe_get_part_result {
-                                    result
-                                } else {
-                                    // This should never be `future::pending()` if maybe_get_part_result is
-                                    // not set.
-                                    state.get_part_fut.await
-                                };
-                                if let Err(err) = get_part_result {
-                                    e = err.merge(e);
-                                }
-                                if e.code == Code::NotFound {
-                                    // Trim the error code. Not Found is quite common and we don't want to send a large
-                                    // error (debug) message for something that is common. We resize to just the last
-                                    // message as it will be the most relevant.
-                                    e.messages.truncate(1);
-                                }
-                                info!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: Error {:?}", e);
-                                return Some((Err(e.into()), None))
-                            }
-                        }
-                    },
-                    result = &mut state.get_part_fut => {
-                        state.maybe_get_part_result = Some(result);
-                        // It is non-deterministic on which future will finish in what order.
-                        // It is also possible that the `state.rx.take()` call above may not be able to
-                        // respond even though the publishing future is done.
-                        // Because of this we set the writing future to pending so it never finishes.
-                        // The `state.rx.take()` future will eventually finish and return either the
-                        // data or an error.
-                        // An EOF will terminate the `state.rx.take()` future, but we are also protected
-                        // because we are dropping the writing future, it will drop the `tx` channel
-                        // which will eventually propagate an error to the `state.rx.take()` future if
-                        // the EOF was not sent due to some other error.
-                        state.get_part_fut = Box::pin(pending());
-                    },
+                        },
+                        result = &mut state.get_part_fut => {
+                            state.maybe_get_part_result = Some(result);
+                            // It is non-deterministic on which future will finish in what order.
+                            // It is also possible that the `state.rx.consume()` call above may not be able to
+                            // respond even though the publishing future is done.
+                            // Because of this we set the writing future to pending so it never finishes.
+                            // The `state.rx.consume()` future will eventually finish and return either the
+                            // data or an error.
+                            // An EOF will terminate the `state.rx.consume()` future, but we are also protected
+                            // because we are dropping the writing future, it will drop the `tx` channel
+                            // which will eventually propagate an error to the `state.rx.consume()` future if
+                            // the EOF was not sent due to some other error.
+                            state.get_part_fut = Box::pin(pending());
+                        },
+                    }
                 }
             }
+            Some((Ok(response), Some(state)))
         }))))
     }
 
@@ -474,7 +480,6 @@ impl ByteStreamServer {
                 if write_request.finish_write {
                     // Gracefully close our stream.
                     tx.send_eof()
-                        .await
                         .err_tip(|| "Failed to send EOF in ByteStream::write")?;
                     return Ok(());
                 }
