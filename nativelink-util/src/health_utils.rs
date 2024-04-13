@@ -162,13 +162,17 @@ pub struct HealthRegistry {
 }
 
 pub trait HealthStatusReporter {
-    fn health_status_report(&self) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + '_>>;
+    fn health_status_report(
+        &self,
+    ) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + '_ + Send>>;
 }
 
 /// Health status reporter implementation for the health registry that provides a stream
 /// of health status descriptions.
 impl HealthStatusReporter for HealthRegistry {
-    fn health_status_report(&self) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + '_>> {
+    fn health_status_report(
+        &self,
+    ) -> Pin<Box<dyn Stream<Item = HealthStatusDescription> + '_ + Send>> {
         Box::pin(futures::stream::iter(self.indicators.iter()).then(
             |(namespace, indicator)| async move {
                 HealthStatusDescription {

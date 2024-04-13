@@ -21,7 +21,7 @@ use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
 use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use hyper::server::conn::Http;
 use hyper::{Response, StatusCode};
 use mimalloc::MiMalloc;
@@ -37,14 +37,13 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
+use nativelink_service::health_server::HealthServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
 use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
-use nativelink_util::health_utils::{
-    HealthRegistryBuilder, HealthStatus, HealthStatusDescription, HealthStatusReporter,
-};
+use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::metrics_utils::{
     set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent,
     Registry,
@@ -79,11 +78,11 @@ const DEFAULT_PROMETHEUS_METRICS_PATH: &str = "/metrics";
 /// Note: This must be kept in sync with the documentation in `AdminConfig::path`.
 const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 
+// Note: This must be kept in sync with the documentation in `HealthConfig::path`.
+const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
+
 /// Name of environment variable to disable metrics.
 const METRICS_DISABLE_ENV: &str = "NATIVELINK_DISABLE_METRICS";
-
-/// Content type header value for JSON.
-const JSON_CONTENT_TYPE: &str = "application/json; charset=utf-8";
 
 /// Backend for bazel remote execution / cache API.
 #[derive(Parser, Debug)]
@@ -401,64 +400,21 @@ async fn inner_main(
 
         let mut svc = Router::new()
             // This is the default service that executes if no other endpoint matches.
-            .fallback_service(tonic_services.into_service().map_err(|e| panic!("{e}")))
-            .route_service(
-                "/status",
-                axum::routing::get(move || async move {
-                    fn error_to_response<E: std::error::Error>(e: E) -> Response<String> {
-                        let mut response = Response::new(format!("Error: {e:?}"));
-                        *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                        response
-                    }
+            .fallback_service(tonic_services.into_service().map_err(|e| panic!("{e}")));
 
-                    spawn_blocking(move || {
-                        futures::executor::block_on(async {
-                            let health_status_descriptions: Vec<HealthStatusDescription> =
-                                health_registry_status
-                                    .health_status_report()
-                                    .collect()
-                                    .await;
-
-                            match serde_json5::to_string(&health_status_descriptions) {
-                                Ok(body) => {
-                                    let contains_failed_report =
-                                        health_status_descriptions.iter().any(|description| {
-                                            matches!(
-                                                description.status,
-                                                HealthStatus::Failed { .. }
-                                            )
-                                        });
-                                    let status_code = if contains_failed_report {
-                                        StatusCode::SERVICE_UNAVAILABLE
-                                    } else {
-                                        StatusCode::OK
-                                    };
-                                    Response::builder()
-                                        .status(status_code)
-                                        .header(
-                                            hyper::header::CONTENT_TYPE,
-                                            hyper::header::HeaderValue::from_static(
-                                                JSON_CONTENT_TYPE,
-                                            ),
-                                        )
-                                        .body(body)
-                                        .unwrap()
-                                }
-                                Err(e) => Response::builder()
-                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                    .header(
-                                        hyper::header::CONTENT_TYPE,
-                                        hyper::header::HeaderValue::from_static(JSON_CONTENT_TYPE),
-                                    )
-                                    .body(format!("Internal Failure: {e:?}"))
-                                    .unwrap(),
-                            }
-                        })
-                    })
-                    .await
-                    .unwrap_or_else(error_to_response)
-                }),
+        if let Some(health_cfg) = services.health {
+            let path = if health_cfg.path.is_empty() {
+                DEFAULT_HEALTH_STATUS_CHECK_PATH
+            } else {
+                &health_cfg.path
+            };
+            svc = svc.route_service(
+                path,
+                HealthServer {
+                    health_registry_status,
+                },
             );
+        }
 
         if let Some(prometheus_cfg) = services.experimental_prometheus {
             fn error_to_response<E: std::error::Error>(e: E) -> Response<String> {
