@@ -10,7 +10,7 @@ nativelink-util = { path = "../nativelink-util" }
 nativelink-proto = { path = "../nativelink-proto" }
 
 async-lock = "3.3.0"
-async-trait = "0.1.79"
+async-trait = "0.1.80"
 aws-config = "1.1.9"
 aws-sdk-s3 = { version = "1.21.0" }
 aws-smithy-runtime = { version = "1.2.1" }
