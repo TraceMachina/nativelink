@@ -3,7 +3,7 @@
   nightly-rust,
   ...
 }: let
-  excludes = ["^nativelink-proto/genproto"];
+  excludes = ["^nativelink-proto/genproto" "native-cli/vendor"];
 in {
   # Default hooks
   trailing-whitespace-fixer = {
@@ -80,10 +80,61 @@ in {
     in "${script}/bin/forbid-binary-files";
   };
 
+  # Dockerfile
+  hadolint.enable = true;
+
   # Documentation
   vale = {
+    inherit excludes;
     enable = true;
     settings.configPath = ".vale.ini";
+  };
+
+  # Go
+  gci = {
+    excludes = ["native-cli/vendor"];
+    enable = true;
+    name = "gci";
+    entry = "${pkgs.gci}/bin/gci write";
+    description = "Fix go imports.";
+    types = ["go"];
+  };
+  gofumpt = {
+    excludes = ["native-cli/vendor"];
+    enable = true;
+    name = "gofumpt";
+    entry = "${pkgs.gofumpt}/bin/gofumpt -w -l";
+    description = "Format Go.";
+    types = ["go"];
+  };
+  golines = {
+    excludes = ["native-cli/vendor"];
+    enable = true;
+    name = "golines";
+    entry = "${pkgs.golines}/bin/golines --max-len=80 -w";
+    description = "Shorten Go lines.";
+    types = ["go"];
+  };
+  # TODO(aaronmondal): This linter works in the nix developmen environment, but
+  #                    not with `nix flake check`. It's unclear how to fix this.
+  golangci-lint-in-shell = {
+    enable = true;
+    entry = let
+      script = pkgs.writeShellScript "precommit-golangci-lint" ''
+        # TODO(aaronmondal): This linter works in the nix development
+        #                    environment, but not with `nix flake check`. It's
+        #                    unclear how to fix this.
+        if [ ''${IN_NIX_SHELL} = "impure" ]; then
+          export PATH=${pkgs.go}/bin:$PATH
+          cd native-cli
+          ${pkgs.golangci-lint}/bin/golangci-lint run --modules-download-mode=readonly
+        fi
+      '';
+    in
+      builtins.toString script;
+    types = ["go"];
+    require_serial = true;
+    pass_filenames = false;
   };
 
   # Nix
@@ -113,7 +164,4 @@ in {
     entry = "${pkgs.bazel-buildtools}/bin/buildifier -lint=warn";
     types = ["bazel"];
   };
-
-  # Dockerfile
-  hadolint.enable = true;
 }

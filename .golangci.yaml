@@ -1,0 +1,21 @@
+---
+linters:
+  enable-all: true
+  disable:
+    # Deprecated.
+    - nosnakecase
+    - interfacer
+    - exhaustivestruct
+    - ifshort
+    - deadcode
+    - varcheck
+    - golint
+    - maligned
+    - scopelint
+    - structcheck
+
+    # Allow all packages for now.
+    - depguard
+
+    # TODO(aaronmondal): Fix these at some point.
+    - exhaustruct
