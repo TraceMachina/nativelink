@@ -26,3 +26,4 @@ parsable
 rebase
 remoteable
 Chromium
+namespace
