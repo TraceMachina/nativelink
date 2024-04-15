@@ -31,7 +31,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, Exe
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
-use nativelink_scheduler::simple_scheduler::SimpleScheduler;
+use nativelink_scheduler::simple_scheduler::{Callbacks, SimpleScheduler};
 use nativelink_scheduler::worker::{Worker, WorkerId};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::common::DigestInfo;
@@ -95,6 +95,8 @@ async fn setup_action(
 
 #[cfg(test)]
 mod scheduler_tests {
+    use std::time::Instant;
+
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -107,6 +109,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -160,6 +163,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -224,6 +228,7 @@ mod scheduler_tests {
                 worker_timeout_s: WORKER_TIMEOUT_S,
                 ..Default::default()
             },
+            Callbacks::default(),
             || async move {},
         );
         let action_digest1 = DigestInfo::new([99u8; 32], 512);
@@ -367,6 +372,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -442,6 +448,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -524,6 +531,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -625,6 +633,7 @@ mod scheduler_tests {
         const WORKER_ID: WorkerId = WorkerId(0x0010_0010);
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -666,6 +675,7 @@ mod scheduler_tests {
                 worker_timeout_s: WORKER_TIMEOUT_S,
                 ..Default::default()
             },
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -765,6 +775,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -868,6 +879,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -971,6 +983,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -1066,6 +1079,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -1195,6 +1209,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest1 = DigestInfo::new([11u8; 32], 512);
@@ -1339,6 +1354,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest1 = DigestInfo::new([11u8; 32], 512);
@@ -1394,6 +1410,7 @@ mod scheduler_tests {
                 max_job_retries: 2,
                 ..Default::default()
             },
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -1523,6 +1540,7 @@ mod scheduler_tests {
         // DropChecker.
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             move || {
                 // This will ensure dropping happens if this function is ever dropped.
                 let _drop_checker = drop_checker.clone();
@@ -1548,6 +1566,7 @@ mod scheduler_tests {
 
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
+            Callbacks::default(),
             || async move {},
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
@@ -1602,4 +1621,202 @@ mod scheduler_tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn ensure_actions_with_disconnected_clients_are_dropped() -> Result<(), Error> {
+        const DISCONNECT_TIMEOUT_S: u64 = 1;
+
+        let scheduler = SimpleScheduler::new_with_callback(
+            &nativelink_config::schedulers::SimpleScheduler {
+                disconnect_timeout_s: DISCONNECT_TIMEOUT_S,
+                ..Default::default()
+            },
+            Callbacks::new(Instant::now, |_| Box::pin(futures::future::ready(()))),
+            || async move {},
+        );
+
+        let client_rx = setup_action(
+            &scheduler,
+            DigestInfo::new([98u8; 32], 512),
+            PlatformProperties::default(),
+            make_system_time(1),
+        )
+        .await?;
+
+        // Drop our receiver.
+        let unique_qualifier = client_rx.borrow().unique_qualifier.clone();
+        drop(client_rx);
+        // Inform the scheduler the client has been dropped.
+        // Normally this would happen automatically in the service api.
+        scheduler.notify_client_disconnected(&unique_qualifier);
+
+        // Allow the action removal spawn to run.
+        tokio::task::yield_now().await;
+
+        // Check to make sure that the action was removed.
+        assert!(
+            scheduler
+                .find_existing_action(&unique_qualifier)
+                .await
+                .is_none(),
+            "Expected action to be removed"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_notify_disconnected_does_not_block() -> Result<(), Error> {
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
+        const DISCONNECT_TIMEOUT_S: u64 = 1;
+
+        let scheduler = SimpleScheduler::new_with_callback(
+            &nativelink_config::schedulers::SimpleScheduler {
+                disconnect_timeout_s: DISCONNECT_TIMEOUT_S,
+                ..Default::default()
+            },
+            Callbacks::new(Instant::now, |_| Box::pin(futures::future::pending())),
+            || async move {},
+        );
+        let action1_digest = DigestInfo::new([98u8; 32], 512);
+        let action2_digest = DigestInfo::new([99u8; 32], 512);
+
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let insert_timestamp = make_system_time(1);
+
+        let client_rx = setup_action(
+            &scheduler,
+            action1_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+
+        // Drop our receiver.
+        let unique_qualifier_1 = client_rx.borrow().unique_qualifier.clone();
+        drop(client_rx);
+
+        scheduler.notify_client_disconnected(&unique_qualifier_1);
+
+        {
+            // Other tests check full data. We only care if we got StartAction.
+            match rx_from_worker.recv().await.unwrap().update {
+                Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+                v => panic!("Expected StartAction, got : {v:?}"),
+            }
+        }
+
+        // Setup a second action so matching engine is scheduled to rerun.
+        let client_rx = setup_action(
+            &scheduler,
+            action2_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+
+        {
+            // Make sure the action sent after dropping the first reciever is registered.
+            match rx_from_worker.recv().await.unwrap().update {
+                Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+                v => panic!("Expected StartAction, got : {v:?}"),
+            }
+        }
+
+        // Check to make sure that the first action was not removed.
+        assert!(
+            scheduler
+                .find_existing_action(&unique_qualifier_1)
+                .await
+                .is_some(),
+            "Expected action to be removed"
+        );
+
+        let unique_qualifier_2 = client_rx.borrow().unique_qualifier.clone();
+        // Check to make sure that the first action was not removed.
+        assert!(
+            scheduler
+                .find_existing_action(&unique_qualifier_2)
+                .await
+                .is_some(),
+            "Expected action to be removed"
+        );
+        Ok(())
+    }
+
+    // #[tokio::test]
+    // async fn ensure_active_actions_with_client_disconnect_are_dropped() -> Result<(), Error> {
+    //     const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
+    //     const DISCONNECT_TIMEOUT_S: u64 = 1;
+
+    //     let scheduler = SimpleScheduler::new_with_callback(
+    //         &nativelink_config::schedulers::SimpleScheduler {
+    //             disconnect_timeout_s: DISCONNECT_TIMEOUT_S,
+    //             ..Default::default()
+    //         },
+    //         Callbacks::new(Instant::now, |_| Box::pin(futures::future::ready(()))),
+    //         || async move {},
+    //     );
+    //     let action_digest = DigestInfo::new([98u8; 32], 512);
+    //     let action_digest = DigestInfo::new([98u8; 32], 512);
+
+    //     let mut rx_from_worker =
+    //         setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+    //     let insert_timestamp = make_system_time(1);
+
+    //     let client_rx = setup_action(
+    //         &scheduler,
+    //         action1_digest,
+    //         PlatformProperties::default(),
+    //         insert_timestamp,
+    //     )
+    //     .await?;
+
+    //     // Drop our receiver.
+    //     let unique_qualifier = client_rx.borrow().unique_qualifier.clone();
+    //     drop(client_rx);
+
+    //     // Allow task<->worker matcher to run.
+    //     tokio::task::yield_now().await;
+
+    //     // Inform the scheduler the client has been dropped.
+    //     // Normally this would happen automatically due to Tonic.
+    //     scheduler.notify_client_disconnected(&unique_qualifier);
+
+    //     {
+    //         // Other tests check full data. We only care if we got StartAction.
+    //         match rx_from_worker.recv().await.unwrap().update {
+    //             Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+    //             v => panic!("Expected StartAction, got : {v:?}"),
+    //         }
+    //     }
+
+    //     // Setup a second action so matching engine is scheduled to rerun.
+    //     let client_rx = setup_action(
+    //         &scheduler,
+    //         action2_digest,
+    //         PlatformProperties::default(),
+    //         insert_timestamp,
+    //     )
+    //     .await?;
+    // println!("About to drop rx");
+    //     drop(client_rx);
+    //     // scheduler.notify_client_disconnected_for_test(&unique_qualifier).await;
+
+    //     // Allow task<->worker matcher to run.
+    //     tokio::task::yield_now().await;
+    //     println!("yield did run");
+
+    //     // Check to make sure that the action was removed.
+    //     assert!(
+    //         scheduler
+    //             .find_existing_action(&unique_qualifier)
+    //             .await
+    //             .is_none(),
+    //         "Expected action to be removed"
+    //     );
+
+    //     Ok(())
+    // }
 }
