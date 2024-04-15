@@ -126,17 +126,20 @@ impl Retrier {
             .take(self.config.max_retries) // Remember this is number of retries, so will run max_retries + 1.
     }
 
-    pub fn retry<'a, T, Fut>(
+    // Clippy complains that this function can be `async fn`, but this is not true.
+    // If we use `async fn`, other places in our code will fail to compile stating
+    // something about the async blocks not matching.
+    // This appears to happen due to a compiler bug while inlining, because the
+    // function that it complained about was calling another function that called
+    // this one.
+    #[allow(clippy::manual_async_fn)]
+    pub fn retry<'a, T: Send>(
         &'a self,
-        operation: Fut,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Error>> + 'a + Send>>
-    where
-        Fut: futures::stream::Stream<Item = RetryResult<T>> + Send + 'a,
-        T: Send,
-    {
-        Box::pin(async move {
+        operation: impl futures::stream::Stream<Item = RetryResult<T>> + Send + 'a,
+    ) -> impl Future<Output = Result<T, Error>> + Send + 'a {
+        async move {
             let mut iter = self.get_retry_config();
-            let mut operation = Box::pin(operation);
+            tokio::pin!(operation);
             let mut attempt = 0;
             loop {
                 attempt += 1;
@@ -149,7 +152,7 @@ impl Retrier {
                     }
                     Some(RetryResult::Ok(value)) => return Ok(value),
                     Some(RetryResult::Err(e)) => {
-                        return Err(e.append(format!("On attempt {attempt}")))
+                        return Err(e.append(format!("On attempt {attempt}")));
                     }
                     Some(RetryResult::Retry(e)) => {
                         if !self.should_retry(&e.code) {
@@ -164,6 +167,6 @@ impl Retrier {
                     }
                 }
             }
-        })
+        }
     }
 }

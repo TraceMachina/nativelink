@@ -22,7 +22,7 @@ use std::{cmp, env};
 
 use async_trait::async_trait;
 use aws_config::default_provider::credentials;
-use aws_config::BehaviorVersion;
+use aws_config::{AppName, BehaviorVersion};
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
@@ -31,35 +31,102 @@ use aws_sdk_s3::primitives::{ByteStream, SdkBody};
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
 use aws_sdk_s3::Client;
 use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
+use bytes::Bytes;
+use futures::future::FusedFuture;
 use futures::stream::{unfold, FuturesUnordered};
-use futures::{try_join, FutureExt, StreamExt, TryStreamExt};
-use hyper::client::connect::HttpConnector;
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use http_body::{Frame, SizeHint};
+use hyper::client::connect::{Connected, Connection, HttpConnector};
 use hyper::service::Service;
 use hyper::Uri;
 use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
-use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
-use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_util::buf_channel::{
+    make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
+};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::fs;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use rand::rngs::OsRng;
 use rand::Rng;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, SemaphorePermit};
 use tokio::time::sleep;
-use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
 use crate::cas_utils::is_zero_digest;
 
 // S3 parts cannot be smaller than this number. See:
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
-const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
+const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5MB.
+
+// S3 parts cannot be larger than this number. See:
+// https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
+const MAX_MULTIPART_SIZE: usize = 5 * 1024 * 1024 * 1024; // 5GB.
+
+// S3 parts cannot be more than this number. See:
+// https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
+const MAX_UPLOAD_PARTS: usize = 10_000;
+
+// Default max buffer size for retrying upload requests.
+// Note: If you change this, adjust the docs in the config.
+const DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST: usize = 5 * 1024 * 1024; // 5MB.
 
 // Default limit for concurrent part uploads per multipart upload.
 // Note: If you change this, adjust the docs in the config.
 const DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS: usize = 10;
+
+pub struct ConnectionWithPermit<T: Connection + AsyncRead + AsyncWrite + Unpin> {
+    connection: T,
+    _permit: SemaphorePermit<'static>,
+}
+
+impl<T: Connection + AsyncRead + AsyncWrite + Unpin> Connection for ConnectionWithPermit<T> {
+    fn connected(&self) -> Connected {
+        self.connection.connected()
+    }
+}
+
+impl<T: Connection + AsyncRead + AsyncWrite + Unpin> AsyncRead for ConnectionWithPermit<T> {
+    #[inline]
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<(), tokio::io::Error>> {
+        Pin::new(&mut Pin::get_mut(self).connection).poll_read(cx, buf)
+    }
+}
+
+impl<T: Connection + AsyncWrite + AsyncRead + Unpin> AsyncWrite for ConnectionWithPermit<T> {
+    #[inline]
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, tokio::io::Error>> {
+        Pin::new(&mut Pin::get_mut(self).connection).poll_write(cx, buf)
+    }
+
+    #[inline]
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), tokio::io::Error>> {
+        Pin::new(&mut Pin::get_mut(self).connection).poll_flush(cx)
+    }
+
+    #[inline]
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), tokio::io::Error>> {
+        Pin::new(&mut Pin::get_mut(self).connection).poll_shutdown(cx)
+    }
+}
 
 #[derive(Clone)]
 pub struct TlsConnector {
@@ -97,10 +164,20 @@ impl TlsConnector {
         }
     }
 
-    async fn call_with_retry(&self, req: &Uri) -> Result<MaybeHttpsStream<TcpStream>, Error> {
+    async fn call_with_retry(
+        &self,
+        req: &Uri,
+    ) -> Result<ConnectionWithPermit<MaybeHttpsStream<TcpStream>>, Error> {
         let retry_stream_fn = unfold(self.connector.clone(), move |mut connector| async move {
+            let _permit = fs::get_permit().await.unwrap();
             match connector.call(req.clone()).await {
-                Ok(stream) => Some((RetryResult::Ok(stream), connector)),
+                Ok(connection) => Some((
+                    RetryResult::Ok(ConnectionWithPermit {
+                        connection,
+                        _permit,
+                    }),
+                    connector,
+                )),
                 Err(e) => Some((
                     RetryResult::Retry(make_err!(
                         Code::Unavailable,
@@ -115,7 +192,7 @@ impl TlsConnector {
 }
 
 impl Service<Uri> for TlsConnector {
-    type Response = MaybeHttpsStream<TcpStream>;
+    type Response = ConnectionWithPermit<MaybeHttpsStream<TcpStream>>;
     type Error = Error;
     type Future =
         Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
@@ -132,11 +209,36 @@ impl Service<Uri> for TlsConnector {
     }
 }
 
+pub struct BodyWrapper {
+    reader: DropCloserReadHalf,
+    size: u64,
+}
+
+impl http_body::Body for BodyWrapper {
+    type Data = Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let reader = Pin::new(&mut Pin::get_mut(self).reader);
+        reader
+            .poll_next(cx)
+            .map(|maybe_bytes_res| maybe_bytes_res.map(|res| res.map(Frame::data)))
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.size)
+    }
+}
+
 pub struct S3Store {
     s3_client: Arc<Client>,
     bucket: String,
     key_prefix: String,
     retrier: Retrier,
+    max_retry_buffer_per_request: usize,
     multipart_max_concurrent_uploads: usize,
 }
 
@@ -157,6 +259,12 @@ impl S3Store {
             let credential_provider = credentials::default_provider().await;
             let mut config_builder = aws_config::defaults(BehaviorVersion::v2023_11_09())
                 .credentials_provider(credential_provider)
+                .app_name(AppName::new("nativelink").expect("valid app name"))
+                .timeout_config(
+                    aws_config::timeout::TimeoutConfig::builder()
+                        .connect_timeout(Duration::from_secs(15))
+                        .build(),
+                )
                 .region(Region::new(Cow::Owned(config.region.clone())))
                 .http_client(http_client);
             // TODO(allada) When aws-sdk supports this env variable we should be able
@@ -184,6 +292,9 @@ impl S3Store {
                 jitter_fn,
                 config.retry.to_owned(),
             ),
+            max_retry_buffer_per_request: config
+                .max_retry_buffer_per_request
+                .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
             multipart_max_concurrent_uploads: config
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
@@ -278,86 +389,120 @@ impl Store for S3Store {
         let max_size = match upload_size {
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
-        // NOTE(blaise.bruer) It might be more optimal to use a different
+
+        // Note(allada) It might be more optimal to use a different
         // heuristic here, but for simplicity we use a hard coded value.
         // Anything going down this if-statement will have the advantage of only
         // 1 network request for the upload instead of minimum of 3 required for
         // multipart upload requests.
-        if max_size < MIN_MULTIPART_SIZE {
-            let (body, content_length) = if let UploadSizeInfo::ExactSize(sz) = upload_size {
-                (
-                    ByteStream::new(SdkBody::from(
-                        reader
-                            .consume(Some(sz))
-                            .await
-                            .err_tip(|| "Failed to take {sz} bytes from reader in S3")?,
-                    )),
-                    sz as i64,
-                )
-            } else {
-                // Just in case, we want to capture the EOF, so +1.
-                let write_buf = reader
-                    .consume(Some(max_size + 1))
-                    .await
-                    .err_tip(|| "Failed to read file in upload to s3 in single chunk")?;
-                error_if!(
-                    write_buf.len() > max_size,
-                    "More data than provided max_size in s3_store {}",
-                    digest.hash_str()
-                );
-                let content_length = write_buf.len();
-                (
-                    ByteStream::new(SdkBody::from(write_buf)),
-                    content_length as i64,
-                )
-            };
-
+        //
+        // Note(allada) If the upload size is not known, we go down the multipart upload path.
+        // This is not very efficient, but it greatly reduces the complexity of the code.
+        if max_size < MIN_MULTIPART_SIZE && matches!(upload_size, UploadSizeInfo::ExactSize(_)) {
+            reader.set_max_recent_data_size(self.max_retry_buffer_per_request);
             return self
-                .s3_client
-                .put_object()
-                .bucket(&self.bucket)
-                .key(s3_path.clone())
-                .content_length(content_length)
-                .body(body)
-                .send()
-                .await
-                .map_or_else(|e| Err(make_err!(Code::Internal, "{e:?}")), |_| Ok(()))
-                .err_tip(|| "Failed to upload file to s3 in single chunk");
+                .retrier
+                .retry(unfold(reader, move |mut reader| async move {
+                    let UploadSizeInfo::ExactSize(sz) = upload_size else {
+                        unreachable!("upload_size must be UploadSizeInfo::ExactSize here");
+                    };
+                    // We need to make a new pair here because the aws sdk does not give us
+                    // back the body after we send it in order to retry.
+                    let (mut tx, rx) = make_buf_channel_pair();
+
+                    // Upload the data to the S3 backend.
+                    let result = {
+                        let reader_ref = &mut reader;
+                        let (upload_res, bind_res) = tokio::join!(
+                            self.s3_client
+                                .put_object()
+                                .bucket(&self.bucket)
+                                .key(s3_path.clone())
+                                .content_length(sz as i64)
+                                .body(ByteStream::from_body_1_x(BodyWrapper {
+                                    reader: rx,
+                                    size: sz as u64,
+                                }))
+                                .send()
+                                .map_ok_or_else(|e| Err(make_err!(Code::Aborted, "{e:?}")), |_| Ok(())),
+                            // Stream all data from the reader channel to the writer channel.
+                            tx.bind(reader_ref)
+                        );
+                        upload_res
+                            .merge(bind_res)
+                            .err_tip(|| "Failed to upload file to s3 in single chunk")
+                    };
+
+                    // If we failed to upload the file, check to see if we can retry.
+                    let retry_result = result.map_or_else(|mut e| {
+                        // Ensure our code is Code::Aborted, so the client can retry if possible.
+                        e.code = Code::Aborted;
+                        let bytes_received = reader.get_bytes_received();
+                        if let Err(try_reset_err) = reader.try_reset_stream() {
+                            let e = e
+                                .merge(try_reset_err)
+                                .append(format!("Failed to retry upload with {bytes_received} bytes received in S3Store::update"));
+                            log::error!("{e:?}");
+                            return RetryResult::Err(e);
+                        }
+                        let e = e.append(format!("Retry on upload happened with {bytes_received} bytes received in S3Store::update"));
+                        log::info!("{e:?}");
+                        RetryResult::Retry(e)
+                    }, |()| RetryResult::Ok(()));
+                    Some((retry_result, reader))
+                }))
+                .await;
         }
 
+        let upload_id = &self
+            .retrier
+            .retry(unfold((), move |()| async move {
+                let retry_result = self
+                    .s3_client
+                    .create_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(s3_path)
+                    .send()
+                    .await
+                    .map_or_else(
+                        |e| {
+                            RetryResult::Retry(make_err!(
+                                Code::Aborted,
+                                "Failed to create multipart upload to s3: {e:?}"
+                            ))
+                        },
+                        |CreateMultipartUploadOutput { upload_id, .. }| {
+                            upload_id.map_or_else(
+                                || {
+                                    RetryResult::Err(make_err!(
+                                        Code::Internal,
+                                        "Expected upload_id to be set by s3 response"
+                                    ))
+                                },
+                                RetryResult::Ok,
+                            )
+                        },
+                    );
+                Some((retry_result, ()))
+            }))
+            .await?;
+
         // S3 requires us to upload in parts if the size is greater than 5GB. The part size must be at least
-        // 5mb and can have up to 10,000 parts.
-        let bytes_per_upload_part =
-            cmp::max(MIN_MULTIPART_SIZE, max_size / (MIN_MULTIPART_SIZE - 1));
+        // 5mb (except last part) and can have up to 10,000 parts.
+        let bytes_per_upload_part = cmp::min(
+            cmp::max(MIN_MULTIPART_SIZE, max_size / (MIN_MULTIPART_SIZE - 1)),
+            MAX_MULTIPART_SIZE,
+        );
 
-        let response: CreateMultipartUploadOutput = self
-            .s3_client
-            .create_multipart_upload()
-            .bucket(&self.bucket)
-            .key(s3_path)
-            .send()
-            .await
-            .map_err(|e| {
-                make_err!(
-                    Code::Internal,
-                    "Failed to create multipart upload to s3: {e:?}"
-                )
-            })?;
-
-        let upload_id = response
-            .upload_id
-            .err_tip(|| "Expected upload_id to be set by s3 response")?;
-
-        let complete_result = {
-            let mut part_number: i32 = 1;
-
+        let upload_parts = move || async move {
             // This will ensure we only have `multipart_max_concurrent_uploads` * `bytes_per_upload_part`
             // bytes in memory at any given time waiting to be uploaded.
-            let (tx, rx) = mpsc::channel(self.multipart_max_concurrent_uploads);
-            let upload_id_clone = upload_id.clone();
+            let (tx, mut rx) = mpsc::channel(self.multipart_max_concurrent_uploads);
 
             let read_stream_fut = async move {
-                loop {
+                let retrier = &Pin::get_ref(self).retrier;
+                // Note: Our break condition is when we reach EOF.
+                for part_number in 1..i32::MAX {
                     let write_buf = reader
                         .consume(Some(bytes_per_upload_part))
                         .await
@@ -366,92 +511,125 @@ impl Store for S3Store {
                         break; // Reached EOF.
                     }
 
-                    let upload_fut = self
-                        .s3_client
-                        .upload_part()
-                        .bucket(self.bucket.clone())
-                        .key(s3_path)
-                        .upload_id(upload_id_clone.clone())
-                        .body(ByteStream::new(SdkBody::from(write_buf)))
-                        .part_number(part_number)
-                        .send()
-                        .map(move |result| {
-                            result.map_or_else(
-                                |e| {
-                                    Err(make_err!(
-                                        Code::Internal,
-                                        "Failed to upload part {part_number} in S3 store: {e:?}"
-                                    ))
-                                },
-                                |mut response| {
-                                    Ok(CompletedPartBuilder::default()
-                                        // Only set an entity tag if it exists. This saves
-                                        // 13 bytes per part on the final request if it can
-                                        // omit the `<ETAG><ETAG/>` string.
-                                        .set_e_tag(response.e_tag.take())
-                                        .part_number(part_number)
-                                        .build())
-                                },
-                            )
-                        });
-                    tx.send(upload_fut).await.map_err(|e| {
-                        make_err!(
-                            Code::Internal,
-                            "Could not send across mpsc for {part_number} in S3 store: {e:?}"
-                        )
-                    })?;
-                    part_number += 1;
+                    tx.send(retrier.retry(unfold(
+                        write_buf,
+                        move |write_buf| {
+                            async move {
+                                let retry_result = self
+                                    .s3_client
+                                    .upload_part()
+                                    .bucket(&self.bucket)
+                                    .key(s3_path)
+                                    .upload_id(upload_id)
+                                    .body(ByteStream::new(SdkBody::from(write_buf.clone())))
+                                    .part_number(part_number)
+                                    .send()
+                                    .await
+                                    .map_or_else(
+                                        |e| {
+                                            RetryResult::Retry(make_err!(
+                                                Code::Aborted,
+                                                "Failed to upload part {part_number} in S3 store: {e:?}"
+                                            ))
+                                        },
+                                        |mut response| {
+                                            RetryResult::Ok(
+                                                CompletedPartBuilder::default()
+                                                    // Only set an entity tag if it exists. This saves
+                                                    // 13 bytes per part on the final request if it can
+                                                    // omit the `<ETAG><ETAG/>` string.
+                                                    .set_e_tag(response.e_tag.take())
+                                                    .part_number(part_number)
+                                                    .build(),
+                                            )
+                                        },
+                                    );
+                                Some((retry_result, write_buf))
+                            }
+                        }
+                    ))).await.map_err(|_| make_err!(Code::Internal, "Failed to send part to channel in s3_store"))?;
                 }
-                Ok(())
-            };
+                Result::<_, Error>::Ok(())
+            }.fuse();
 
-            // This will ensure we only have `multipart_max_concurrent_uploads` requests in flight
-            // at any given time.
-            let completed_parts_fut = ReceiverStream::new(rx)
-                .buffer_unordered(self.multipart_max_concurrent_uploads)
-                .try_collect::<Vec<_>>();
+            let mut upload_futures = FuturesUnordered::new();
 
-            // Wait for the entire stream to be read and all parts to be uploaded.
-            let ((), mut completed_parts) =
-                try_join!(read_stream_fut, completed_parts_fut).err_tip(|| "In s3 store")?;
+            let mut completed_parts = Vec::with_capacity(cmp::min(
+                MAX_UPLOAD_PARTS,
+                (max_size / bytes_per_upload_part) + 1,
+            ));
+            tokio::pin!(read_stream_fut);
+            loop {
+                if read_stream_fut.is_terminated() && rx.is_empty() && upload_futures.is_empty() {
+                    break; // No more data to process.
+                }
+                tokio::select! {
+                    result = &mut read_stream_fut => result?, // Return error or wait for other futures.
+                    Some(upload_result) = upload_futures.next() => completed_parts.push(upload_result?),
+                    Some(fut) = rx.recv() => upload_futures.push(fut),
+                }
+            }
 
             // Even though the spec does not require parts to be sorted by number, we do it just in case
             // there's an S3 implementation that requires it.
             completed_parts.sort_unstable_by_key(|part| part.part_number);
 
-            self.s3_client
-                .complete_multipart_upload()
-                .bucket(&self.bucket)
-                .key(s3_path.clone())
-                .multipart_upload(
-                    CompletedMultipartUploadBuilder::default()
-                        .set_parts(Some(completed_parts))
-                        .build(),
-                )
-                .upload_id(upload_id.clone())
-                .send()
+            self.retrier
+                .retry(unfold(completed_parts, move |completed_parts| async move {
+                    Some((
+                        self.s3_client
+                            .complete_multipart_upload()
+                            .bucket(&self.bucket)
+                            .key(s3_path)
+                            .multipart_upload(
+                                CompletedMultipartUploadBuilder::default()
+                                    .set_parts(Some(completed_parts.clone()))
+                                    .build(),
+                            )
+                            .upload_id(upload_id)
+                            .send()
+                            .await
+                            .map_or_else(
+                                |e| {
+                                    RetryResult::Retry(make_err!(
+                                        Code::Aborted,
+                                        "Failed to complete multipart upload in S3 store: {e:?}"
+                                    ))
+                                },
+                                |_| RetryResult::Ok(()),
+                            ),
+                        completed_parts,
+                    ))
+                }))
                 .await
-                .map_or_else(|e| Err(make_err!(Code::Internal, "{e:?}")), |_| Ok(()))
-                .err_tip(|| "Failed to complete multipart to s3")?;
-            Ok(())
         };
-        if complete_result.is_err() {
-            let abort_result = self
-                .s3_client
-                .abort_multipart_upload()
-                .bucket(&self.bucket)
-                .key(s3_path.clone())
-                .upload_id(upload_id.clone())
-                .send()
-                .await;
-            if let Err(err) = abort_result {
-                info!(
-                    "\x1b[0;31ms3_store\x1b[0m: Failed to abort_multipart_upload: {:?}",
-                    err
-                );
-            }
-        }
-        complete_result
+        // Upload our parts and complete the multipart upload.
+        // If we fail attempt to abort the multipart upload (cleanup).
+        upload_parts()
+            .or_else(move |e| async move {
+                Result::<(), _>::Err(e).merge(
+                    // Note: We don't retry here because this is just a best attempt.
+                    self.s3_client
+                        .abort_multipart_upload()
+                        .bucket(&self.bucket)
+                        .key(s3_path)
+                        .upload_id(upload_id)
+                        .send()
+                        .await
+                        .map_or_else(
+                            |e| {
+                                let err = make_err!(
+                                    Code::Aborted,
+                                    "Failed to abort multipart upload in S3 store : {e:?}"
+                                );
+                                info!("{err:?}");
+                                Err(err)
+                            },
+                            |_| Ok(()),
+                        ),
+                )
+            })
+            .await
     }
 
     async fn get_part_ref(
