@@ -285,7 +285,6 @@ impl Store for S3Store {
         // multipart upload requests.
         if max_size < MIN_MULTIPART_SIZE {
             let (body, content_length) = if let UploadSizeInfo::ExactSize(sz) = upload_size {
-                reader.set_close_after_size(sz as u64);
                 (
                     ByteStream::new(SdkBody::from(
                         reader
@@ -465,7 +464,6 @@ impl Store for S3Store {
         if is_zero_digest(&digest) {
             writer
                 .send_eof()
-                .await
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
             return Ok(());
         }
@@ -474,11 +472,6 @@ impl Store for S3Store {
         let end_read_byte = length
             .map_or(Some(None), |length| Some(offset.checked_add(length)))
             .err_tip(|| "Integer overflow protection triggered")?;
-
-        // S3 drops connections when a stream is done. This means that we can't
-        // run the EOF error check. It's safe to disable it since S3 can be
-        // trusted to handle incomplete data properly.
-        writer.set_ignore_eof();
 
         self.retrier
             .retry(unfold(writer, move |writer| async move {
@@ -547,7 +540,7 @@ impl Store for S3Store {
                         }
                     }
                 }
-                if let Err(e) = writer.send_eof().await {
+                if let Err(e) = writer.send_eof() {
                     return Some((
                         RetryResult::Err(make_input_err!(
                             "Failed to send EOF to consumer in S3: {e}"
