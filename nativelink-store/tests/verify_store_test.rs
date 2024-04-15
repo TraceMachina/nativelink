@@ -87,7 +87,7 @@ mod verify_store_tests {
         let (mut tx, rx) = make_buf_channel_pair();
         let send_fut = async move {
             tx.send(VALUE1.into()).await?;
-            tx.send_eof().await
+            tx.send_eof()
         };
         let result = try_join!(
             send_fut,
@@ -164,7 +164,7 @@ mod verify_store_tests {
         });
         tx.send("foo".into()).await?;
         tx.send("bar".into()).await?;
-        tx.send_eof().await?;
+        tx.send_eof()?;
         let result = future.await.err_tip(|| "Failed to join spawn future")?;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(

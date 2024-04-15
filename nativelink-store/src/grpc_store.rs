@@ -466,7 +466,6 @@ impl GrpcStore {
         }
         writer
             .send_eof()
-            .await
             .err_tip(|| "Failed to write EOF in grpc store get_action_result_as_part")?;
         Ok(())
     }
@@ -639,7 +638,7 @@ impl Store for GrpcStore {
 
         // Shortcut for empty blobs.
         if digest.size_bytes == 0 {
-            return writer.send_eof().await;
+            return writer.send_eof();
         }
 
         let resource_name = format!(
@@ -700,7 +699,6 @@ impl Store for GrpcStore {
                         let eof_result = local_state
                             .writer
                             .send_eof()
-                            .await
                             .err_tip(|| "Could not send eof in GrpcStore::get_part()")
                             .map_or_else(RetryResult::Err, RetryResult::Ok);
                         return Some((eof_result, local_state));
