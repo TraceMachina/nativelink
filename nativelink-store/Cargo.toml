@@ -21,8 +21,10 @@ bytes = "1.6.0"
 filetime = "0.2.23"
 futures = "0.3.30"
 hex = "0.4.3"
+http-body = "1.0.0"
 hyper = { version = "0.14.28" }
 hyper-rustls = { version = "0.24.2", features = ["webpki-tokio"] }
+log = "0.4.21"
 lz4_flex = "0.11.3"
 parking_lot = "0.12.1"
 prost = "0.12.4"
@@ -46,3 +48,4 @@ http = "1.1.0"
 aws-smithy-types = "1.1.8"
 aws-sdk-s3 = { version = "1.21.0"  }
 aws-smithy-runtime = { version = "1.2.1", features = ["test-util"] }
+aws-smithy-runtime-api = "1.4.0"

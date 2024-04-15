@@ -17,18 +17,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
+use aws_sdk_s3::primitives::ByteStream;
 use aws_smithy_runtime::client::http::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use futures::join;
+use futures::task::Poll;
 use http::header;
 use http::status::StatusCode;
 use hyper::Body;
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_store::s3_store::S3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use sha2::{Digest, Sha256};
 
 // TODO(aaronmondal): Figure out how to test the connector retry mechanism.
@@ -183,30 +185,25 @@ mod s3_store_tests {
     async fn simple_update_ac() -> Result<(), Error> {
         const AC_ENTRY_SIZE: u64 = 199;
         const CONTENT_LENGTH: usize = 50;
-        let mut send_data = Vec::with_capacity(CONTENT_LENGTH);
-        for i in 0..send_data.capacity() {
-            send_data.push(((i * 3) % 256) as u8);
+        let mut send_data = BytesMut::new();
+        for i in 0..CONTENT_LENGTH {
+            send_data.put_u8(((i % 93) + 33) as u8); // Printable characters only.
         }
+        let send_data = send_data.freeze();
 
-        let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
-            http::Request::builder()
-                .uri(format!(
-                    "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject",
-                ))
-                .method("PUT")
-                .header("content-type", "application/octet-stream")
-                .header("content-length", CONTENT_LENGTH.to_string())
-                .body(SdkBody::from(send_data.clone()))
+        let (mock_client, request_receiver) =
+            aws_smithy_runtime::client::http::test_util::capture_request(Some(
+                aws_smithy_runtime_api::http::Response::new(
+                    StatusCode::OK.into(),
+                    SdkBody::empty(), // This is an upload, so server does not send a body.
+                )
+                .try_into_http02x()
                 .unwrap(),
-            http::Response::builder()
-                .status(StatusCode::OK)
-                .body(SdkBody::empty())
-                .unwrap(),
-        )]);
+            ));
         let test_config = Builder::new()
             .behavior_version(BehaviorVersion::v2023_11_09())
             .region(Region::from_static(REGION))
-            .http_client(mock_client.clone())
+            .http_client(mock_client)
             .build();
         let s3_client = aws_sdk_s3::Client::from_conf(test_config);
         let store = S3Store::new_with_client_and_jitter(
@@ -217,14 +214,64 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let store_pin = Pin::new(&store);
-        store_pin
-            .update_oneshot(
-                DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
-                send_data.clone().into(),
-            )
-            .await?;
-        mock_client.assert_requests_match(&[]);
+        let (mut tx, rx) = make_buf_channel_pair();
+        // Make future responsible for processing the datastream
+        // and forwarding it to the s3 backend/server.
+        let mut update_fut = Box::pin(async move {
+            Pin::new(&store)
+                .update(
+                    DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
+                    rx,
+                    UploadSizeInfo::ExactSize(CONTENT_LENGTH),
+                )
+                .await
+        });
+
+        // Extract out the body stream sent by the s3 store.
+        let body_stream = {
+            // We need to poll here to get the request sent, but future
+            // wont be done until we send all the data (which we do later).
+            assert_eq!(Poll::Pending, futures::poll!(&mut update_fut));
+            let sent_request = request_receiver.expect_request();
+            assert_eq!(sent_request.method(), "PUT");
+            assert_eq!(sent_request.uri(), format!("https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject"));
+            ByteStream::from_body_0_4(sent_request.into_body())
+        };
+
+        let send_data_copy = send_data.clone();
+        // Create spawn that is responsible for sending the stream of data
+        // to the S3Store and processing/forwarding to the S3 backend.
+        let spawn_fut = tokio::spawn(async move {
+            tokio::try_join!(update_fut, async move {
+                for i in 0..CONTENT_LENGTH {
+                    tx.send(send_data_copy.slice(i..(i + 1))).await?;
+                }
+                tx.send_eof()
+            })
+            .or_else(|e| {
+                // Printing error to make it easier to debug, since ordering
+                // of futures is not guaranteed.
+                eprintln!("Error updating or sending in spawn: {e:?}");
+                Err(e)
+            })
+        });
+
+        // Wait for all the data to be received by the s3 backend server.
+        let data_sent_to_s3 = body_stream
+            .collect()
+            .await
+            .map_err(|e| make_input_err!("{e:?}"))?;
+        assert_eq!(
+            send_data,
+            data_sent_to_s3.into_bytes(),
+            "Expected data to match"
+        );
+
+        // Collect our spawn future to ensure it completes without error.
+        spawn_fut
+            .await
+            .err_tip(|| "Failed to launch spawn")?
+            .err_tip(|| "In spawn")?;
         Ok(())
     }
 

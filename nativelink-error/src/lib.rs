@@ -58,6 +58,11 @@ impl Error {
         }
     }
 
+    pub fn set_code(mut self, code: Code) -> Self {
+        self.code = code;
+        self
+    }
+
     #[inline]
     #[must_use]
     pub fn append<S: std::string::ToString>(mut self, msg: S) -> Self {
