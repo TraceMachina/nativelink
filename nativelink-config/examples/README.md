@@ -365,7 +365,8 @@ The `public` server consists of a `listener` object and a `services` object. The
       "worker_api": {
         "scheduler": "MAIN_SCHEDULER",
       },
-      "admin": {}
+      "admin": {},
+      "health": {},
     }
   }],
   "global": {},

@@ -184,6 +184,18 @@ pub struct AdminConfig {
     pub path: String,
 }
 
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HealthConfig {
+    /// Path to register the health status check. If path is "/status", and your
+    /// domain is "example.com", you can reach the endpoint with:
+    /// <http://example.com/status>.
+    ///
+    /// Default: "/status"
+    #[serde(default)]
+    pub path: String,
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ServicesConfig {
@@ -228,6 +240,9 @@ pub struct ServicesConfig {
     /// This is the service for any administrative tasks.
     /// It provides a REST API endpoint for administrative purposes.
     pub admin: Option<AdminConfig>,
+
+    /// This is the service for health status check.
+    pub health: Option<HealthConfig>,
 }
 
 #[derive(Deserialize, Debug)]

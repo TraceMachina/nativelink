@@ -171,7 +171,8 @@
       // are a frontend api.
       "worker_api": {
         "scheduler": "MAIN_SCHEDULER"
-      }
+      },
+      "health": {},
     }
   }]
 }

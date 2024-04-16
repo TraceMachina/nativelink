@@ -112,7 +112,8 @@
     "services": {
       "experimental_prometheus": {
         "path": "/metrics"
-      }
+      },
+      "health": {},
     }
   }]
 }

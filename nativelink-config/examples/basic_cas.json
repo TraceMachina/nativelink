@@ -154,7 +154,8 @@
       "worker_api": {
         "scheduler": "MAIN_SCHEDULER",
       },
-      "admin": {}
+      "admin": {},
+      "health": {},
     }
   }],
   "global": {

@@ -146,7 +146,8 @@
         "cas_stores": {
           "main": "CAS_STORE"
         }
-      }
+      },
+      "health": {},
     }
   }]
 }

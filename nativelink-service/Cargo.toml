@@ -13,6 +13,8 @@ nativelink-scheduler = { path = "../nativelink-scheduler" }
 
 bytes = "1.6.0"
 futures = "0.3.30"
+hyper = { version = "0.14.28" }
+serde_json5 = "0.1.0"
 log = "0.4.21"
 parking_lot = "0.12.1"
 prost = "0.12.4"
@@ -20,6 +22,7 @@ rand = "0.8.5"
 tokio = { version = "1.37.0", features = ["sync", "rt"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tonic = { version = "0.11.0", features = ["gzip", "tls"] }
+tower = "0.4.13"
 tracing = "0.1.40"
 uuid = { version = "1.8.0", features = ["v4"] }
 
