@@ -163,6 +163,7 @@
       "worker_api": {
         "scheduler": "MAIN_SCHEDULER",
       }
-    }
+    },
+    "health": {},
   }]
 }
