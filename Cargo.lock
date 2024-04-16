@@ -1838,9 +1838,11 @@ dependencies = [
  "prost",
  "prost-types",
  "rand",
+ "serde_json5",
  "tokio",
  "tokio-stream",
  "tonic 0.11.0",
+ "tower",
  "tracing",
  "uuid",
 ]
