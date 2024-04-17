@@ -67,8 +67,7 @@ jobs:
 
       - name: Start Kubernetes cluster (Infra)
         run: >
-          nix develop --impure --command
-          bash -c "./deployment-examples/kubernetes/00_infra.sh"
+          nix run .#native up
 
       - name: Start Kubernetes cluster (Operations)
         run: >

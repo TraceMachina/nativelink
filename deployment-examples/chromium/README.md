@@ -19,8 +19,12 @@ In this example we're using `kind` to set up the cluster `cilium` to provide a
 First set up a local development cluster:
 
 ```bash
-./00_infra.sh
+native up
 ```
+
+> [!TIP]
+> The `native up` command uses Pulumi under the hood. You can view and delete
+> the stack with `pulumi stack` and `pulumi destroy`.
 
 Next start a few standard deployments. This part also builds the remote
 execution containers and makes them available to the cluster:
@@ -28,6 +32,11 @@ execution containers and makes them available to the cluster:
 ```bash
 ./01_operations.sh
 ```
+
+> [!TIP]
+> The operations invoke cluster-internal Tekton Pipelines to build and push the
+> `nativelink` and worker images. You can view the state of the pipelines with
+> `tkn pr ls` and `tkn pr logs`/`tkn pr logs --follow`.
 
 Finally, deploy NativeLink:
 

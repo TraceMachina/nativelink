@@ -27,3 +27,5 @@ rebase
 remoteable
 Chromium
 namespace
+Pulumi
+Tekton
