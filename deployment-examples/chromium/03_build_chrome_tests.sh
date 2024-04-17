@@ -40,7 +40,7 @@ else
         exit 0
     fi
 
-    # Add deport_tools to path
+    # Add depot_tools to path
     if [[ "$PATH" != *"/depot_tools"* ]]; then
         cd ${HOME}
         git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
