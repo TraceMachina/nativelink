@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::task::Poll;
+
 use bytes::{Bytes, BytesMut};
+use futures::poll;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use tokio::try_join;
@@ -67,7 +70,7 @@ mod buf_channel_tests {
     }
 
     #[tokio::test]
-    async fn consume_test() -> Result<(), Error> {
+    async fn consume_all_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let tx_fut = async move {
             tx.send(DATA1.into()).await?;
@@ -91,7 +94,7 @@ mod buf_channel_tests {
     /// Test to ensure data is optimized so that the exact same pointer is received
     /// when calling `collect_all_with_size_hint` when a copy is not needed.
     #[tokio::test]
-    async fn consume_is_optimized_test() -> Result<(), Error> {
+    async fn consume_all_is_optimized_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let sent_data = Bytes::from(DATA1);
         let send_data_ptr = sent_data.as_ptr();
@@ -112,7 +115,7 @@ mod buf_channel_tests {
     }
 
     #[tokio::test]
-    async fn take_test() -> Result<(), Error> {
+    async fn consume_some_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let tx_fut = async move {
             tx.send(DATA1.into()).await?;
@@ -139,7 +142,7 @@ mod buf_channel_tests {
     /// we don't need to concat the data together and instead return a view to
     /// the original data instead of making a copy.
     #[tokio::test]
-    async fn take_optimized_test() -> Result<(), Error> {
+    async fn consume_some_optimized_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let first_chunk = Bytes::from(DATA1);
         let first_chunk_ptr = first_chunk.as_ptr();
@@ -156,6 +159,23 @@ mod buf_channel_tests {
             Result::<(), Error>::Ok(())
         };
         try_join!(tx_fut, rx_fut)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn consume_some_reads_eof() -> Result<(), Error> {
+        let (mut tx, mut rx) = make_buf_channel_pair();
+        tx.send(DATA1.into()).await?;
+
+        let consume_fut = rx.consume(Some(DATA1.len()));
+        tokio::pin!(consume_fut);
+        assert_eq!(
+            poll!(&mut consume_fut),
+            Poll::Pending,
+            "Consume should not have completed yet"
+        );
+        tx.send_eof()?;
+        assert_eq!(consume_fut.await?, Bytes::from(DATA1));
         Ok(())
     }
 
@@ -245,7 +265,7 @@ mod buf_channel_tests {
                 rx.recv().await,
                 Err(make_err!(
                     Code::Internal,
-                    "EOF received before sending EOF; sender was probably dropped"
+                    "Sender dropped before sending EOF"
                 ))
             );
             Result::<(), Error>::Ok(())
