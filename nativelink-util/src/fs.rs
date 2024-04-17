@@ -287,10 +287,8 @@ static TOTAL_FILE_SEMAPHORES: AtomicUsize = AtomicUsize::new(DEFAULT_OPEN_FILE_P
 pub static OPEN_FILE_SEMAPHORE: Semaphore = Semaphore::const_new(DEFAULT_OPEN_FILE_PERMITS);
 
 /// Try to acquire a permit from the open file semaphore.
-/// This function will block, so it must be run from a thread that
-/// can be blocked.
 #[inline]
-async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
+pub async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
     OPEN_FILE_SEMAPHORE
         .acquire()
         .await
