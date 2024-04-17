@@ -7,16 +7,29 @@ set -xeuo pipefail
 
 SRC_ROOT=$(git rev-parse --show-toplevel)
 
-kubectl apply -f ${SRC_ROOT}/deployment-examples/chromium/gateway.yaml
+EVENTLISTENER=$(kubectl get gtw eventlistener -o=jsonpath='{.status.addresses[0].value}')
 
 # The image for the scheduler and CAS.
-nix run .#image.copyTo \
-    docker://localhost:5001/nativelink:local \
-    -- \
-    --dest-tls-verify=false
+curl -v \
+    -H 'content-Type: application/json' \
+    -d '{
+        "flakeOutput": "./src_root#image",
+        "imageTagOverride": "local"
+    }' \
+    http://${EVENTLISTENER}:8080
 
-# Wrap it with nativelink to turn it into a worker.
-nix run .#nativelink-worker-siso-chromium.copyTo \
-    docker://localhost:5001/nativelink-worker-siso-chromium:local \
-    -- \
-    --dest-tls-verify=false
+# Wrap it nativelink to turn it into a worker.
+curl -v \
+    -H 'content-Type: application/json' \
+    -d '{
+        "flakeOutput": "./src_root#nativelink-worker-siso-chromium",
+        "imageTagOverride": "local"
+    }' \
+    http://${EVENTLISTENER}:8080
+
+# Wait for the pipelines to finish.
+kubectl wait \
+    --for=condition=Succeeded \
+    --timeout=30m \
+    pipelinerun \
+        -l tekton.dev/pipeline=rebuild-nativelink

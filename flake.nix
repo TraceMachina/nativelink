@@ -135,9 +135,7 @@
 
         generate-toolchains = import ./tools/generate-toolchains.nix {inherit pkgs;};
 
-        # inherit (nix2container.packages.${system}.nix2container) buildImage;
-        # rbe-autogen = import ./local-remote-execution/rbe-autogen.nix {inherit pkgs nativelink buildImage;};
-        # createWorker = import ./tools/create-worker.nix {inherit pkgs nativelink buildImage;};
+        native-cli = import ./native-cli/default.nix {inherit pkgs;};
 
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
@@ -165,9 +163,13 @@
             type = "app";
             program = "${nativelink}/bin/nativelink";
           };
+          native = {
+            type = "app";
+            program = "${native-cli}/bin/native";
+          };
         };
         packages = rec {
-          inherit publish-ghcr local-image-test nativelink nativelink-debug;
+          inherit publish-ghcr local-image-test nativelink nativelink-debug native-cli;
           default = nativelink;
 
           lre-cc = import ./local-remote-execution/lre-cc.nix {inherit pkgs buildImage;};
@@ -222,11 +224,16 @@
               pkgs.vale
               pkgs.trivy
               pkgs.docker-client
+              pkgs.kind
+              pkgs.tektoncd-cli
+              (pkgs.pulumi.withPackages (ps: [ps.pulumi-language-go]))
+              pkgs.go
 
               # Additional tools from within our development environment.
               local-image-test
               generate-toolchains
               customClang
+              native-cli
             ]
             ++ maybeDarwinDeps;
           shellHook = ''
