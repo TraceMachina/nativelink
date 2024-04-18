@@ -228,8 +228,8 @@ mod filesystem_store_tests {
 
     const HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
     const HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
-    const VALUE1: &str = "1234";
-    const VALUE2: &str = "4321";
+    const VALUE1: &str = "0123456789";
+    const VALUE2: &str = "9876543210";
 
     #[tokio::test]
     async fn valid_results_after_shutdown_test() -> Result<(), Error> {
@@ -814,8 +814,9 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
+        const SMALL_VALUE: &str = "01";
         const BIG_VALUE: &str = "0123";
-        let small_digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+        let small_digest = DigestInfo::try_new(HASH1, SMALL_VALUE.len())?;
         let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
         static UNREFED_DIGESTS: Lazy<Mutex<Vec<DigestInfo>>> = Lazy::new(|| Mutex::new(Vec::new()));
@@ -851,7 +852,7 @@ mod filesystem_store_tests {
         // Insert data into store.
         store
             .as_ref()
-            .update_oneshot(small_digest, VALUE1.into())
+            .update_oneshot(small_digest, SMALL_VALUE.into())
             .await?;
         store
             .as_ref()
