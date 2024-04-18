@@ -218,7 +218,7 @@ impl DropCloserReadHalf {
                 if !self.eof_sent.load(Ordering::Acquire) {
                     return Err(make_err!(
                         Code::Internal,
-                        "EOF received before sending EOF; sender was probably dropped"
+                        "Sender dropped before sending EOF"
                     ));
                 }
                 self.maybe_populate_recent_data(&ZERO_DATA);
@@ -323,14 +323,13 @@ impl DropCloserReadHalf {
             if chunk.len() > size {
                 let remaining = chunk.split_off(size);
                 self.queued_data.push_front(Ok(remaining));
-            }
-            if chunk.len() == size {
+                // No need to read EOF if we are a partial chunk.
                 return Ok(chunk);
             }
-            // If we are a partial chunk and our next chunk is EOF, we are done.
+            // Try to read our EOF to ensure our sender did not error out.
             match self.peek().await {
                 Ok(peeked_chunk) => {
-                    if peeked_chunk.is_empty() {
+                    if peeked_chunk.is_empty() || chunk.len() == size {
                         return Ok(chunk);
                     }
                 }
