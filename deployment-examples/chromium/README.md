@@ -7,7 +7,7 @@ and worker. Don't use this example deployment in production. It's insecure.
 > The client build request is best done from a Ubuntu image, `./03_build_chrome_tests.sh`
 > will check if the image is Ubuntu and fail otherwise.
 
-All commands should be run from nix to ensure all dependencies exist in the environment.
+Before you get started, ensure you have [Nix](https://nixos.org/manual/nix/stable/installation/) and [Docker](https://docs.docker.com/engine/install/)installed. All commands should be run from nix to ensure all dependencies exist in the environment.
 
 ```bash
 nix develop
