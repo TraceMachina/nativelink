@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
@@ -48,7 +49,7 @@ func (component *Cilium) Install(
 			"k8sServicePort": pulumi.String("6443"),
 
 			// Required for proper Cilium operation.
-			"kubeProxyReplacement": pulumi.String("strict"),
+			"kubeProxyReplacement": pulumi.Bool(true),
 
 			// Use the Gateway API instead of the older Ingress resource.
 			"gatewayAPI": pulumi.Map{"enabled": pulumi.Bool(true)},
@@ -103,6 +104,10 @@ func l2Announcements(
 
 			OtherFields: map[string]interface{}{
 				"spec": pulumi.Map{
+					"interfaces": pulumi.StringArray{
+						pulumi.String("^eth[0-9]+"),
+						pulumi.String("^enp[0-9]+"),
+					},
 					"externalIPs":     pulumi.Bool(true),
 					"loadBalancerIPs": pulumi.Bool(true),
 				},
@@ -117,8 +122,8 @@ func l2Announcements(
 	return []pulumi.Resource{l2Announcements}, nil
 }
 
-// kindCIDRs returns the container id range of the kind network.
-func kindCIDRs() (string, error) {
+// kindIPv4Subnet gets the IPv4 subnet from `docker network inspect kind`.
+func kindIPv4Subnet() (string, error) {
 	dockerCtx := context.Background()
 
 	cli, err := client.NewClientWithOpts(
@@ -136,15 +141,21 @@ func kindCIDRs() (string, error) {
 
 	for _, network := range networks {
 		if network.Name == "kind" {
-			if len(network.IPAM.Config) > 0 {
-				kindNetCIDR := network.IPAM.Config[0].Subnet
+			for _, config := range network.IPAM.Config {
+				if strings.Contains(config.Subnet, ":") {
+					// Ignore IPv6 subnets.
+					continue
+				}
 
-				return kindNetCIDR, nil
+				if strings.Contains(config.Subnet, ".") {
+					// The IPv4 subnet.
+					return config.Subnet, nil
+				}
 			}
 		}
 	}
 
-	return "", fmt.Errorf("%w: %s", errPulumi, "no kind network found")
+	return "", fmt.Errorf("%w: %s", errPulumi, "no kind IPv4 subnet found")
 }
 
 // defaultPool creates a CiliumLoadBalancerIPPool which allocates IPs on the
@@ -154,7 +165,7 @@ func defaultPool(
 	ctx *pulumi.Context,
 	ciliumResources []pulumi.Resource,
 ) ([]pulumi.Resource, error) {
-	kindNetCIDR, err := kindCIDRs()
+	kindNetCIDR, err := kindIPv4Subnet()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errPulumi, err)
 	}
