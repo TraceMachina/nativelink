@@ -27,7 +27,9 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
-use redis::aio::{ConnectionLike, ConnectionManager};
+use redis::aio::ConnectionLike;
+use redis::cluster::ClusterClient;
+use redis::cluster_async::ClusterConnection;
 use redis::AsyncCommands;
 
 use crate::cas_utils::is_zero_digest;
@@ -45,7 +47,7 @@ pub enum LazyConnection<T: ConnectionLike + Unpin + Clone + Send + Sync> {
     Future(Shared<BoxFuture<'static, Result<T, Error>>>),
 }
 
-pub struct RedisStore<T: ConnectionLike + Unpin + Clone + Send + Sync = ConnectionManager> {
+pub struct RedisStore<T: ConnectionLike + Unpin + Clone + Send + Sync = ClusterConnection> {
     lazy_conn: ArcCell<LazyConnection<T>>,
     temp_name_generator_fn: fn() -> String,
 }
@@ -53,20 +55,14 @@ pub struct RedisStore<T: ConnectionLike + Unpin + Clone + Send + Sync = Connecti
 impl RedisStore {
     pub fn new(
         config: &nativelink_config::stores::RedisStore,
-    ) -> Result<RedisStore<ConnectionManager>, Error> {
-        // Note: Currently only one connection is supported.
-        error_if!(
-            config.addresses.len() != 1,
-            "Only one address is supported for Redis store"
-        );
+    ) -> Result<RedisStore<ClusterConnection>, Error> {
+        let nodes = config.addresses.clone();
 
-        let address = config.addresses[0].clone();
         let conn_fut = async move {
-            redis::Client::open(address)
-                .map_err(from_redis_err)?
-                .get_connection_manager()
-                .await
+            let client = ClusterClient::new(nodes)
                 .map_err(from_redis_err)
+                .err_tip(|| "Failed to create Redis cluster client")?;
+            client.get_async_connection().await.map_err(from_redis_err)
         }
         .boxed()
         .shared();
