@@ -3,9 +3,11 @@
 This deployment sets up a 4-container deployment with separate CAS, scheduler
 and worker. Don't use this example deployment in production. It's insecure.
 
-> [!WARN]
-> The client build request is best done from a Ubuntu image, `./03_build_chrome_tests.sh`
-> will check if the image is Ubuntu and fail otherwise.
+> [!WARNING]
+> - The client build request is best done from a Ubuntu image, `./03_build_chrome_tests.sh`
+> - will check if the image is Ubuntu and fail otherwise
+> - This tutorial has been tested in a Nix environment of version `2.21.0`
+> - To get your Nix environment set up see the [official Nix installation documentation](https://nix.dev/install-nix).
 
 All commands should be run from nix to ensure all dependencies exist in the environment.
 
