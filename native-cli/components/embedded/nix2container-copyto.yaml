@@ -1,0 +1,93 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: nix2container-copyto
+  labels:
+    app.kubernetes.io/versions: "0.1"
+spec:
+  description: >
+    Invoke the `copyTo` attribute on a nix2container flake output.
+  workspaces:
+    - name: optional-src
+      optional: true
+      description: |
+        The source repository to invoke from.
+      mountPath: /mnt
+      readOnly: true
+    - name: nix-store
+      description: |
+        An workspace containing a nix store. Appended via a `--store` argument.
+      readOnly: true
+      mountPath: /workspace/nix-store/nix
+  params:
+    - name: flakeOutput
+      type: string
+      description: |
+        The output of a Nix Flake. This output must refer to an image built with
+        nix2container.
+
+        See:
+          - https://nixos.wiki/wiki/Flakes for more in formation on the Flake
+            URL schema.
+          - https://github.com/nlewo/nix2container for more information on the
+            required builder for the flake outputs.
+
+        Examples:
+          - "/mnt/src_root#someoutput" for a flake output in the `output-src`
+            directory.
+          - "github:TraceMachina/nativelink#image" for the latest nativelink
+            image.
+          - "github:<user>/<repo>?ref=pull/<PR_NUMBER>/head#<PACKAGE>" to use
+            an image from a pull request of a repository on GitHub.
+    - name: destImageURL
+      description: >
+        The URL of the image where the image from source should be copied to.
+    - name: destTLSverify
+      type: string
+      description: |
+        Whether to verify the TLS on the destination registry endpoint.
+      default: "true"
+    - name: enableNixSandbox
+      type: string
+      description: |
+        Boolean to configure the nix sandbox.
+
+        In the default configuration this Task doesn't use the nix sandbox.
+      default: "false"
+  steps:
+    - name: copy-to
+      image: nixpkgs/nix-flakes:latest
+      env:
+        - name: FLAKE_OUTPUT
+          value: "$(params.flakeOutput)"
+        - name: DEST_IMAGE_URL
+          value: "$(params.destImageURL)"
+        - name: ENABLE_NIX_SANDBOX
+          value: "$(params.enableNixSandbox)"
+        - name: DEST_TLS_VERIFY
+          value: "$(params.destTLSverify)"
+      securityContext:
+        capabilities:
+          # TODO(aaronmondal): This is necessary to allow nix builds which make
+          # use of containers. This is a security concern and should not be used
+          # in production grade deployments. Find a better solution.
+          add: ["SYS_ADMIN"]
+      script: |
+        #!/usr/bin/env sh
+
+        if [ "$(workspaces.optional-src.bound)" = "true" ]; then
+          cd "$(workspaces.optional-src.path)"
+        fi
+
+        NIX_SOCKET="unix:///workspace/nix-store/nix/var/nix/daemon-socket/socket"
+        NIX_ROOT="/workspace/nix-store"
+
+        nix run \
+          --store "${NIX_SOCKET}?root=${NIX_ROOT}" \
+          --option sandbox "${ENABLE_NIX_SANDBOX}" \
+          --print-build-logs \
+          "${FLAKE_OUTPUT}".copyTo \
+            docker://"${DEST_IMAGE_URL}" \
+              -- \
+                --dest-tls-verify="${DEST_TLS_VERIFY}"

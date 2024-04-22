@@ -1,0 +1,77 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: skopeo-check-hashlocked-url
+  labels:
+    app.kubernetes.io/versions: "0.1"
+spec:
+  description: >
+    Maybe get the `registry/image@sha256:xxx` URL of an image.
+
+    This is necessary because image tags don't guarantee reproducibility.
+
+    Use the output of this task when you verify and pull images. This way you're
+    guaranteed to get the binary-identical image that you verified and protect
+    against injections between image verification time and the time you invoke
+    the actual pull of the image.
+
+    This task doesn't fail if it can't find a remote image. Instead, it
+    populates the `exists` result with "false" so that downstream Tasks
+    can conditionalize on it.
+  params:
+    - name: imageName
+      type: string
+      description: >
+        The image name.
+    - name: imageTag
+      type: string
+      description: >
+        The image tag.
+    - name: registry
+      type: string
+      description: >
+        The registry to pull from.
+  results:
+    - name: fullImageURL
+      description: A URL to the image like `image@sha256xxxx`.
+    - name: exists
+      description: Whether a prebuilt image was found.
+  steps:
+    - name: get-hashlocked-image-url
+      image: quay.io/skopeo/stable:v1
+      env:
+        - name: IMAGE_NAME
+          value: "$(params.imageName)"
+        - name: IMAGE_TAG
+          value: "$(params.imageTag)"
+        - name: REGISTRY
+          value: "$(params.registry)"
+      script: |
+        #!/usr/bin/env sh
+
+        IMAGE="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+        echo "Searching for prebuilt IMAGE: ${IMAGE}"
+
+        # Note: The `jq` command isn't available in this environment. This
+        # command gets the "Digest" value from skopeos inspect representation.
+        DIGEST=$(skopeo inspect docker://"${IMAGE}" \
+          | grep '"Digest"' \
+          | head -1 \
+          | awk -F': ' '{print $2}' \
+          | tr -d '",')
+
+        # If the skopeo manifest inspection failed (because there was no image
+        # upstream), fail so that downstream tasks can handle the failure.
+        if [ $? -ne 0 ] || [ -z "$DIGEST" ]; then
+          echo "Failed to obtain digest for the image: ${IMAGE}" >&2
+          echo -n "false" > "$(results.exists.path)"
+          exit 0
+        fi
+
+        FULL_IMAGE_URL="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+        echo "Hashlocked image URL: IMAGE: ${FULL_IMAGE_URL}"
+
+        echo -n "${FULL_IMAGE_URL}" | tee $(results.fullImageURL.path)
+        echo -n "true" > "$(results.exists.path)"

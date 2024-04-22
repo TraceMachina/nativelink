@@ -15,7 +15,8 @@ spec:
     spec:
       containers:
         - name: nativelink-worker-chromium
-          image: "localhost:5001/nativelink-worker-siso-chromium:local"
+          # This image will be edited by kustomize.
+          image: nativelink-worker-chromium
           env:
             - name: RUST_LOG
               value: info
@@ -24,12 +25,12 @@ spec:
             - name: SCHEDULER_ENDPOINT
               value: nativelink-scheduler
           volumeMounts:
-            - name: worker-chromium-config
-              mountPath: /worker-chromium.json
-              subPath: worker-chromium.json
+            - name: worker-config
+              mountPath: /worker.json
+              subPath: worker.json
           command: ["/bin/nativelink"]
-          args: ["/worker-chromium.json"]
+          args: ["/worker.json"]
       volumes:
-        - name: worker-chromium-config
+        - name: worker-config
           configMap:
-            name: worker-chromium
+            name: worker
