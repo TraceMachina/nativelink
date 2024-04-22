@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::borrow::Cow;
+use std::cmp::min;
 use std::collections::vec_deque::VecDeque;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -75,7 +76,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::spawn_blocking;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{error, info};
+use tracing::{enabled, error_span, event, Instrument, Level};
 use uuid::Uuid;
 
 pub type ActionId = [u8; 32];
@@ -524,8 +525,42 @@ async fn process_side_channel_file(
     }))
 }
 
+async fn do_cleanup(
+    running_actions_manager: &RunningActionsManagerImpl,
+    action_id: &ActionId,
+    action_directory: &str,
+) -> Result<(), Error> {
+    event!(Level::INFO, "Worker cleaning up");
+    // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
+    let remove_dir_result = fs::remove_dir_all(action_directory)
+        .await
+        .err_tip(|| format!("Could not remove working directory {action_directory}"));
+    if let Err(err) = running_actions_manager.cleanup_action(action_id) {
+        event!(
+            Level::ERROR,
+            action_id = hex::encode(action_id),
+            ?err,
+            "Error cleaning up action"
+        );
+        return Result::<(), Error>::Err(err).merge(remove_dir_result);
+    }
+    if let Err(err) = remove_dir_result {
+        event!(
+            Level::ERROR,
+            action_id = hex::encode(action_id),
+            ?err,
+            "Error removing working directory"
+        );
+        return Err(err);
+    }
+    Ok(())
+}
+
 #[async_trait]
 pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
+    /// Returns the action id of the action.
+    fn get_action_id(&self) -> &ActionId;
+
     /// Anything that needs to execute before the actions is actually executed should happen here.
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error>;
 
@@ -695,7 +730,7 @@ impl RunningActionImpl {
                 ))
                 .await?;
         }
-        info!("\x1b[0;31mWorker Received Command\x1b[0m: {:?}", command);
+        event!(Level::INFO, ?command, "Worker received command",);
         {
             let mut state = self.state.lock();
             state.command_proto = Some(command);
@@ -737,7 +772,7 @@ impl RunningActionImpl {
         } else {
             command_proto.arguments.iter().map(AsRef::as_ref).collect()
         };
-        info!("\x1b[0;31mWorker Executing\x1b[0m: {:?}", &args);
+        event!(Level::INFO, ?args, "Executing command",);
         let mut command_builder = process::Command::new(args[0]);
         command_builder
             .args(&args[1..])
@@ -831,7 +866,8 @@ impl RunningActionImpl {
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
-            error!(
+            event!(
+                Level::ERROR,
                 "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
             );
             tokio::spawn(async move { child_process.kill().await });
@@ -872,8 +908,12 @@ impl RunningActionImpl {
                 _ = &mut sleep_fut => {
                     self.running_actions_manager.metrics.task_timeouts.inc();
                     killed_action = true;
-                    if let Err(e) = child_process_guard.start_kill() {
-                        error!("Could not kill process in RunningActionsManager for timeout : {:?}", e);
+                    if let Err(err) = child_process_guard.start_kill() {
+                        event!(
+                            Level::ERROR,
+                            ?err,
+                            "Could not kill process in RunningActionsManager for action timeout",
+                        );
                     }
                     {
                         let mut state = self.state.lock();
@@ -939,15 +979,18 @@ impl RunningActionImpl {
                 },
                 _ = &mut kill_channel_rx => {
                     killed_action = true;
-                    if let Err(e) = child_process_guard.start_kill() {
-                        error!(
-                            "Could not kill process in RunningActionsManager for action {} : {:?}",
-                            hex::encode(self.action_id),
-                            e);
+                    if let Err(err) = child_process_guard.start_kill() {
+                        event!(
+                            Level::ERROR,
+                            action_id = hex::encode(self.action_id),
+                            ?err,
+                            "Could not kill process",
+                        );
                     } else {
-                        error!(
-                            "Could not get child process id, maybe already dead? for action {}",
-                            hex::encode(self.action_id)
+                        event!(
+                            Level::ERROR,
+                            action_id = hex::encode(self.action_id),
+                            "Could not get child process id, maybe already dead?",
                         );
                     }
                     {
@@ -967,7 +1010,7 @@ impl RunningActionImpl {
     }
 
     async fn inner_upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        info!("\x1b[0;31mWorker Uploading Results\x1b[0m");
+        event!(Level::INFO, "Worker uploading results",);
         let (mut command_proto, execution_result, mut execution_metadata) = {
             let mut state = self.state.lock();
             state.execution_metadata.output_upload_start_timestamp =
@@ -1105,12 +1148,18 @@ impl RunningActionImpl {
         let mut output_file_symlinks = vec![];
 
         if execution_result.exit_code != 0 {
-            error!(
-                "Command returned exit code {} : {} {}",
-                execution_result.exit_code,
-                std::str::from_utf8(&execution_result.stdout).unwrap_or(""),
-                std::str::from_utf8(&execution_result.stderr).unwrap_or("")
-            );
+            // Don't convert our stdout/stderr to strings unless we are need too.
+            if enabled!(Level::ERROR) {
+                let stdout = std::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
+                let stderr = std::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
+                event!(
+                    Level::ERROR,
+                    exit_code = ?execution_result.exit_code,
+                    stdout = ?stdout[..min(stdout.len(), 1000)],
+                    stderr = ?stderr[..min(stderr.len(), 1000)],
+                    "Command returned non-zero exit code",
+                );
+            }
         }
 
         let stdout_digest_fut = self.metrics().upload_stdout.wrap(async {
@@ -1181,32 +1230,6 @@ impl RunningActionImpl {
         Ok(self)
     }
 
-    async fn inner_cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        info!("\x1b[0;31mWorker Cleanup\x1b[0m");
-        // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
-        let remove_dir_result = fs::remove_dir_all(&self.action_directory)
-            .await
-            .err_tip(|| {
-                format!(
-                    "Could not remove working directory {}",
-                    self.action_directory
-                )
-            });
-        self.did_cleanup.store(true, Ordering::Relaxed);
-        if let Err(e) = self.running_actions_manager.cleanup_action(&self.action_id) {
-            error!("Error cleaning up action: {e:?}");
-            return Result::<Arc<Self>, Error>::Err(e).merge(remove_dir_result.map(|_| self));
-        }
-        if let Err(e) = remove_dir_result {
-            error!(
-                "Error removing working for action {} directory: {e:?}",
-                hex::encode(self.action_id)
-            );
-            return Err(e);
-        }
-        Ok(self)
-    }
-
     async fn inner_get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error> {
         let mut state = self.state.lock();
         state
@@ -1218,15 +1241,43 @@ impl RunningActionImpl {
 
 impl Drop for RunningActionImpl {
     fn drop(&mut self) {
-        assert!(
-            self.did_cleanup.load(Ordering::Relaxed),
-            "RunningActionImpl did not cleanup. This is a violation of how RunningActionImpl's requirements"
+        if self.did_cleanup.load(Ordering::Acquire) {
+            return;
+        }
+        event!(
+            Level::ERROR,
+            action_id = hex::encode(self.action_id),
+            "RunningActionImpl did not cleanup. This is a violation of the requirements, will attempt to do it in the background."
+        );
+        let running_actions_manager = self.running_actions_manager.clone();
+        let action_id = self.action_id;
+        let action_directory = self.action_directory.clone();
+        tokio::spawn(
+            async move {
+                let Err(err) =
+                    do_cleanup(&running_actions_manager, &action_id, &action_directory).await
+                else {
+                    return;
+                };
+                event!(
+                    Level::ERROR,
+                    action_id = hex::encode(action_id),
+                    ?action_directory,
+                    ?err,
+                    "Error cleaning up action"
+                );
+            }
+            .instrument(error_span!("RunningActionImpl::drop")),
         );
     }
 }
 
 #[async_trait]
 impl RunningAction for RunningActionImpl {
+    fn get_action_id(&self) -> &ActionId {
+        &self.action_id
+    }
+
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         self.metrics()
             .clone()
@@ -1255,7 +1306,16 @@ impl RunningAction for RunningActionImpl {
         self.metrics()
             .clone()
             .cleanup
-            .wrap(Self::inner_cleanup(self))
+            .wrap(async move {
+                let result = do_cleanup(
+                    &self.running_actions_manager,
+                    &self.action_id,
+                    &self.action_directory,
+                )
+                .await;
+                self.did_cleanup.store(true, Ordering::Release);
+                result.map(move |()| self)
+            })
             .await
     }
 
@@ -1697,15 +1757,21 @@ impl RunningActionsManagerImpl {
     // Note: We do not capture metrics on this call, only `.kill_all()`.
     // Important: When the future returns the process may still be running.
     async fn kill_action(action: Arc<RunningActionImpl>) {
+        event!(
+            Level::WARN,
+            action_id = ?hex::encode(action.action_id),
+            "Sending kill to running action",
+        );
         let kill_channel_tx = {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()
         };
         if let Some(kill_channel_tx) = kill_channel_tx {
             if kill_channel_tx.send(()).is_err() {
-                error!(
-                    "Error sending kill to running action {}",
-                    hex::encode(action.action_id)
+                event!(
+                    Level::ERROR,
+                    action_id = ?hex::encode(action.action_id),
+                    "Error sending kill to running action",
                 );
             }
         }
@@ -1730,7 +1796,11 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     .and_then(|time| time.try_into().ok())
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
-                info!("\x1b[0;31mWorker Received Action\x1b[0m: {:?}", action_info);
+                event!(
+                    Level::INFO,
+                    ?action_info,
+                    "Worker received action",
+                );
                 let action_id = action_info.unique_qualifier.get_hash();
                 let action_directory = self.make_action_directory(&action_id).await?;
                 let execution_metadata = ExecutionMetadata {

@@ -41,7 +41,6 @@ rust_library(
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hex",
-        "@crates//:log",
         "@crates//:lru",
         "@crates//:parking_lot",
         "@crates//:pin-project-lite",

@@ -347,6 +347,10 @@ impl MockRunningAction {
 
 #[async_trait]
 impl RunningAction for MockRunningAction {
+    fn get_action_id(&self) -> &ActionId {
+        unreachable!("not implemented for tests");
+    }
+
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         self.tx_call
             .send(RunningActionCalls::PrepareAction)

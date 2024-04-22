@@ -22,7 +22,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
-use tracing::error;
+use tracing::{event, Level};
 
 use crate::store_manager::StoreManager;
 
@@ -139,8 +139,13 @@ impl Store for RefStore {
     fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn Store {
         match self.get_store() {
             Ok(store) => store.inner_store(digest),
-            Err(e) => {
-                error!("Failed to get store for digest: {e:?}");
+            Err(err) => {
+                event!(
+                    Level::ERROR,
+                    ?digest,
+                    ?err,
+                    "Failed to get store for digest",
+                );
                 self
             }
         }
@@ -149,8 +154,13 @@ impl Store for RefStore {
     fn inner_store_arc(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
         match self.get_store() {
             Ok(store) => store.clone().inner_store_arc(digest),
-            Err(e) => {
-                error!("Failed to get store for digest: {e:?}");
+            Err(err) => {
+                event!(
+                    Level::ERROR,
+                    ?digest,
+                    ?err,
+                    "Failed to get store for digest",
+                );
                 self
             }
         }

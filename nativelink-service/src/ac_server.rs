@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
 
 use bytes::BytesMut;
 use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
@@ -33,7 +33,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use prost::Message;
 use tonic::{Request, Response, Status};
-use tracing::{error, info};
+use tracing::{event, instrument, Level};
 
 #[derive(Clone)]
 pub struct AcStoreInfo {
@@ -43,6 +43,12 @@ pub struct AcStoreInfo {
 
 pub struct AcServer {
     stores: HashMap<String, AcStoreInfo>,
+}
+
+impl Debug for AcServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcServer").finish()
+    }
 }
 
 impl AcServer {
@@ -157,60 +163,38 @@ impl AcServer {
 
 #[tonic::async_trait]
 impl ActionCache for AcServer {
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn get_action_result(
         &self,
         grpc_request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        let now = Instant::now();
-        info!(
-            "\x1b[0;31mget_action_result Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let hash = grpc_request
-            .get_ref()
-            .action_digest
-            .as_ref()
-            .map(|v| v.hash.to_string());
         let resp = self.inner_get_action_result(grpc_request).await;
-        let d = now.elapsed().as_secs_f32();
         if resp.is_err() && resp.as_ref().err().unwrap().code != Code::NotFound {
-            error!(
-                "\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}",
-                d, hash, resp
-            );
-        } else {
-            info!(
-                "\x1b[0;31mget_action_result Resp\x1b[0m: {} {:?} {:?}",
-                d, hash, resp
-            );
+            event!(Level::ERROR, return = ?resp);
         }
         return resp.map_err(|e| e.into());
     }
 
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn update_action_result(
         &self,
         grpc_request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        let now = Instant::now();
-        info!(
-            "\x1b[0;31mupdate_action_result Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let resp = self.inner_update_action_result(grpc_request).await;
-        let d = now.elapsed().as_secs_f32();
-        if resp.is_err() {
-            log::error!(
-                "\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}",
-                d,
-                resp
-            );
-        } else {
-            log::info!(
-                "\x1b[0;31mupdate_action_result Resp\x1b[0m: {} {:?}",
-                d,
-                resp
-            );
-        }
-        return resp.map_err(|e| e.into());
+        self.inner_update_action_result(grpc_request)
+            .await
+            .map_err(|e| e.into())
     }
 }
