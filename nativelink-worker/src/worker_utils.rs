@@ -24,7 +24,7 @@ use nativelink_error::{make_err, make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::SupportedProperties;
 use tokio::process;
-use tracing::info;
+use tracing::{event, Level};
 
 pub async fn make_supported_properties<S: BuildHasher>(
     worker_properties: &HashMap<String, WorkerProperty, S>,
@@ -61,10 +61,7 @@ pub async fn make_supported_properties<S: BuildHasher>(
                     process.stdin(Stdio::null());
                     let err_fn =
                         || format!("Error executing property_name {property_name} command");
-                    info!(
-                        "Spawning process for cmd: '{}' for property: '{}'",
-                        cmd, property_name
-                    );
+                    event!(Level::INFO, cmd, property_name, "Spawning process",);
                     let process_output = process.output().await.err_tip(err_fn)?;
                     if !process_output.status.success() {
                         return Err(make_err!(

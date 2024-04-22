@@ -24,7 +24,7 @@ use futures::{future, join, StreamExt};
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{event, Level};
 
 use crate::common::DigestInfo;
 use crate::metrics_utils::{CollectorState, Counter, CounterWithTime, MetricsComponent};
@@ -275,7 +275,7 @@ where
                 .lru
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
-            info!("\x1b[0;31mEvicting Map\x1b[0m: Evicting {}", key.hash_str());
+            event!(Level::INFO, ?key, "Evicting",);
             state.remove(&eviction_item, false).await;
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
@@ -300,10 +300,7 @@ where
 
         let mut state = self.state.lock().await;
         let (key, eviction_item) = state.lru.pop_entry(digest)?;
-        info!(
-            "\x1b[0;31mEvicting Map\x1b[0m: Touch failed, evicting {}",
-            key.hash_str()
-        );
+        event!(Level::INFO, ?key, "Touch failed, evicting",);
         state.remove(&eviction_item, false).await;
         None
     }

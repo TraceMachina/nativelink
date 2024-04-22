@@ -15,7 +15,6 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
@@ -36,7 +35,7 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use tonic::{Request, Response, Status};
-use tracing::{error, info};
+use tracing::{event, instrument, Level};
 
 pub struct CasServer {
     stores: HashMap<String, Arc<dyn Store>>,
@@ -248,94 +247,80 @@ impl CasServer {
 
 #[tonic::async_trait]
 impl ContentAddressableStorage for CasServer {
+    type GetTreeStream = GetTreeStream;
+
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn find_missing_blobs(
         &self,
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        info!(
-            "\x1b[0;31mfind_missing_blobs Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let now = Instant::now();
-        let resp = self
-            .inner_find_missing_blobs(grpc_request)
+        self.inner_find_missing_blobs(grpc_request)
             .await
             .err_tip(|| "Failed on find_missing_blobs() command")
-            .map_err(|e| e.into());
-        let d = now.elapsed().as_secs_f32();
-        if resp.is_err() {
-            error!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
-        } else {
-            info!("\x1b[0;31mfind_missing_blobs Resp\x1b[0m: {} {:?}", d, resp);
-        }
-        resp
+            .map_err(|e| e.into())
     }
 
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn batch_update_blobs(
         &self,
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        info!(
-            "\x1b[0;31mbatch_update_blobs Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let now = Instant::now();
-        let resp = self
-            .inner_batch_update_blobs(grpc_request)
+        self.inner_batch_update_blobs(grpc_request)
             .await
             .err_tip(|| "Failed on batch_update_blobs() command")
-            .map_err(|e| e.into());
-        let d = now.elapsed().as_secs_f32();
-        if resp.is_err() {
-            error!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
-        } else {
-            info!("\x1b[0;31mbatch_update_blobs Resp\x1b[0m: {} {:?}", d, resp);
-        }
-        resp
+            .map_err(|e| e.into())
     }
 
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn batch_read_blobs(
         &self,
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        info!(
-            "\x1b[0;31mbatch_read_blobs Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let now = Instant::now();
-        let resp = self
-            .inner_batch_read_blobs(grpc_request)
+        self.inner_batch_read_blobs(grpc_request)
             .await
             .err_tip(|| "Failed on batch_read_blobs() command")
-            .map_err(|e| e.into());
-        let d = now.elapsed().as_secs_f32();
-        if resp.is_err() {
-            error!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
-        } else {
-            info!("\x1b[0;31mbatch_read_blobs Resp\x1b[0m: {} {:?}", d, resp);
-        }
-        resp
+            .map_err(|e| e.into())
     }
 
-    type GetTreeStream = GetTreeStream;
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn get_tree(
         &self,
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Self::GetTreeStream>, Status> {
-        info!(
-            "\x1b[0;31mget_tree Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let now = Instant::now();
-        let resp: Result<Response<Self::GetTreeStream>, Status> = self
+        let resp = self
             .inner_get_tree(grpc_request)
             .await
             .err_tip(|| "Failed on get_tree() command")
             .map_err(|e| e.into());
-        let d = now.elapsed().as_secs_f32();
-        match &resp {
-            Err(err) => error!("\x1b[0;31mget_tree Resp\x1b[0m: {} : {:?}", d, err),
-            Ok(_) => info!("\x1b[0;31mget_tree Resp\x1b[0m: {}", d),
+        if resp.is_ok() {
+            event!(Level::DEBUG, return = "Ok(<stream>)");
         }
         resp
     }

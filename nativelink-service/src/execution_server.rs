@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName};
@@ -41,7 +41,7 @@ use rand::{thread_rng, Rng};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
-use tracing::{error, info};
+use tracing::{event, instrument, Level};
 
 struct InstanceInfo {
     scheduler: Arc<dyn ActionScheduler>,
@@ -184,7 +184,7 @@ impl ExecutionServer {
 
     fn to_execute_stream(receiver: watch::Receiver<Arc<ActionState>>) -> Response<ExecuteStream> {
         let receiver_stream = Box::pin(WatchStream::new(receiver).map(|action_update| {
-            info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
+            event!(Level::INFO, ?action_update, "Execute Resp Stream",);
             Ok(Into::<Operation>::into(action_update.as_ref().clone()))
         }));
         tonic::Response::new(receiver_stream)
@@ -263,36 +263,45 @@ impl ExecutionServer {
 #[tonic::async_trait]
 impl Execution for ExecutionServer {
     type ExecuteStream = ExecuteStream;
+    type WaitExecutionStream = ExecuteStream;
 
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn execute(
         &self,
         grpc_request: Request<ExecuteRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
-        // TODO(blaise.bruer) This is a work in progress, remote execution likely won't work yet.
-        info!("\x1b[0;31mexecute Req\x1b[0m: {:?}", grpc_request.get_ref());
-        let now = Instant::now();
-        let resp = self
-            .inner_execute(grpc_request)
+        self.inner_execute(grpc_request)
             .await
             .err_tip(|| "Failed on execute() command")
-            .map_err(|e| e.into());
-        let d = now.elapsed().as_secs_f32();
-        if let Err(err) = &resp {
-            error!("\x1b[0;31mexecute Resp\x1b[0m: {} {:?}", d, err);
-        } else {
-            info!("\x1b[0;31mexecute Resp\x1b[0m: {}", d);
-        }
-        resp
+            .map_err(|e| e.into())
     }
 
-    type WaitExecutionStream = ExecuteStream;
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn wait_execution(
         &self,
-        request: Request<WaitExecutionRequest>,
+        grpc_request: Request<WaitExecutionRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
-        self.inner_wait_execution(request)
+        let resp = self
+            .inner_wait_execution(grpc_request)
             .await
             .err_tip(|| "Failed on wait_execution() command")
-            .map_err(|e| e.into())
+            .map_err(|e| e.into());
+
+        if resp.is_ok() {
+            event!(Level::DEBUG, return = "Ok(<stream>)");
+        }
+        resp
     }
 }

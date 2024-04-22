@@ -55,7 +55,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, SemaphorePermit};
 use tokio::time::sleep;
-use tracing::info;
+use tracing::{event, Level};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -434,20 +434,29 @@ impl Store for S3Store {
                     };
 
                     // If we failed to upload the file, check to see if we can retry.
-                    let retry_result = result.map_or_else(|mut e| {
+                    let retry_result = result.map_or_else(|mut err| {
                         // Ensure our code is Code::Aborted, so the client can retry if possible.
-                        e.code = Code::Aborted;
+                        err.code = Code::Aborted;
                         let bytes_received = reader.get_bytes_received();
                         if let Err(try_reset_err) = reader.try_reset_stream() {
-                            let e = e
+                            event!(
+                                Level::ERROR,
+                                ?bytes_received,
+                                err = ?try_reset_err,
+                                "Unable to reset stream after failed upload in S3Store::update"
+                            );
+                            return RetryResult::Err(err
                                 .merge(try_reset_err)
-                                .append(format!("Failed to retry upload with {bytes_received} bytes received in S3Store::update"));
-                            log::error!("{e:?}");
-                            return RetryResult::Err(e);
+                                .append(format!("Failed to retry upload with {bytes_received} bytes received in S3Store::update")));
                         }
-                        let e = e.append(format!("Retry on upload happened with {bytes_received} bytes received in S3Store::update"));
-                        log::info!("{e:?}");
-                        RetryResult::Retry(e)
+                        let err = err.append(format!("Retry on upload happened with {bytes_received} bytes received in S3Store::update"));
+                        event!(
+                            Level::INFO,
+                            ?err,
+                            ?bytes_received,
+                            "Retryable S3 error"
+                        );
+                        RetryResult::Retry(err)
                     }, |()| RetryResult::Ok(()));
                     Some((retry_result, reader))
                 }))
@@ -622,7 +631,7 @@ impl Store for S3Store {
                                     Code::Aborted,
                                     "Failed to abort multipart upload in S3 store : {e:?}"
                                 );
-                                info!("{err:?}");
+                                event!(Level::INFO, ?err, "Multipart upload error");
                                 Err(err)
                             },
                             |_| Ok(()),

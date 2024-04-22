@@ -43,7 +43,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{error, warn};
+use tracing::{error_span, event, instrument, Instrument, Level};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -218,10 +218,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                   e
                                 ))?;
 
-                            self.running_actions_manager
-                              .kill_action(action_id)
-                              .await
-                              .err_tip(|| format!("Failed to send kill request for action {}", hex::encode(action_id)))?
+                            if let Err(err) = self.running_actions_manager.kill_action(action_id).await {
+                                event!(
+                                    Level::ERROR,
+                                    action_id = hex::encode(action_id),
+                                    ?err,
+                                    "Failed to send kill request for action"
+                                );
+                            };
                         }
                         Update::StartAction(start_execute) => {
                             self.metrics.start_actions_received.inc();
@@ -248,7 +252,12 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                     actions_in_transit.fetch_sub(1, Ordering::Release);
                                     r
                                 })
-                                .and_then(|action|
+                                .and_then(|action| {
+                                    event!(
+                                        Level::INFO,
+                                        action_id = hex::encode(action.get_action_id()),
+                                        "Received request to run action"
+                                    );
                                     action
                                         .clone()
                                         .prepare_action()
@@ -262,7 +271,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             }
                                             result
                                         })
-                                ).await
+                                }).await
                             });
 
                             let running_actions_manager = self.running_actions_manager.clone();
@@ -274,7 +283,12 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                         // Save in the action cache before notifying the scheduler that we've completed.
                                         if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
                                             if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, try_hasher?).await {
-                                                error!("\x1b[0;31mError saving action in store\x1b[0m: {} - {:?}", err, action_digest);
+                                                event!(
+                                                    Level::ERROR,
+                                                    ?err,
+                                                    ?action_digest,
+                                                    "Error saving action in store",
+                                                );
                                             }
                                         }
                                         let action_stage = ActionStage::Completed(action_result);
@@ -305,10 +319,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
                             self.actions_in_transit.fetch_add(1, Ordering::Release);
                             futures.push(
-                                tokio::spawn(start_action_fut).map(move |res| {
+                                tokio::spawn(start_action_fut.instrument(error_span!("worker_start_action"))).map(move |res| {
                                     let res = res.err_tip(|| "Failed to launch spawn")?;
                                     if let Err(err) = &res {
-                                        error!("\x1b[0;31mError executing action\x1b[0m: {}", err);
+                                        event!(
+                                            Level::ERROR,
+                                            ?err,
+                                            "Error executing action",
+                                        );
                                     }
                                     add_future_channel
                                         .send(make_publish_future(res).boxed())
@@ -479,14 +497,15 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         Ok((worker_id, update_for_worker_stream))
     }
 
+    #[instrument(skip(self), level = Level::INFO)]
     pub async fn run(mut self) -> Result<(), Error> {
         let sleep_fn = self
             .sleep_fn
             .take()
             .err_tip(|| "Could not unwrap sleep_fn in LocalWorker::run")?;
         let sleep_fn_pin = Pin::new(&sleep_fn);
-        let error_handler = Box::pin(move |e: Error| async move {
-            error!("{:?}", e);
+        let error_handler = Box::pin(move |err| async move {
+            event!(Level::ERROR, ?err, "Error");
             (sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
         });
 
@@ -518,10 +537,14 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                         update_for_worker_stream,
                     ),
                 };
-            warn!("Worker {} connected to scheduler", inner.worker_id);
+            event!(
+                Level::WARN,
+                worker_id = %inner.worker_id,
+                "Worker registered with scheduler"
+            );
 
             // Now listen for connections and run all other services.
-            if let Err(e) = inner.run(update_for_worker_stream).await {
+            if let Err(err) = inner.run(update_for_worker_stream).await {
                 'no_more_actions: {
                     // Ensure there are no actions in transit before we try to kill
                     // all our actions.
@@ -533,18 +556,16 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
                         }
                         (sleep_fn_pin)(Duration::from_secs_f32(sleep_duration)).await;
                     }
-                    let e = make_err!(
-                        Code::Internal,
-                        "Actions in transit did not reach zero before we disconnected from the scheduler."
-                    );
-                    error!("{e:?}");
-                    return Err(e);
+                    const ERROR_MSG: &str = "Actions in transit did not reach zero before we disconnected from the scheduler";
+                    event!(Level::ERROR, ERROR_MSG);
+                    return Err(err.append(ERROR_MSG));
                 }
+                event!(Level::ERROR, ?err, "Worker disconnected from scheduler");
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;
 
-                (error_handler)(e).await;
+                (error_handler)(err).await;
                 continue; // Try to connect again.
             }
         }

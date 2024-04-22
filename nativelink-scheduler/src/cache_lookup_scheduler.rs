@@ -35,7 +35,7 @@ use tokio::select;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::Request;
-use tracing::warn;
+use tracing::{event, Level};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -180,7 +180,11 @@ impl ActionScheduler for CacheLookupScheduler {
                         return;
                     }
                     Err(err) => {
-                        warn!("Error while calling `has` on `ac_store` in `CacheLookupScheduler`'s `add_action` function: {}", err);
+                        event!(
+                            Level::WARN,
+                            ?err,
+                            "Error while calling `has` on `ac_store` in `CacheLookupScheduler`'s `add_action` function"
+                        );
                     }
                     _ => {}
                 }

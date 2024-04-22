@@ -29,7 +29,7 @@ use nativelink_util::health_utils::{default_health_status_indicator, HealthStatu
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
-use tracing::warn;
+use tracing::{event, Level};
 
 use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
 
@@ -288,12 +288,16 @@ async fn inner_has_with_results(
             maybe_result = futures.next() => {
                 match maybe_result {
                     Some(Ok(())) => {}
-                    Some(Err((e, i))) => {
+                    Some(Err((err, i))) => {
                         state_mux.lock().results[i] = None;
                         // Note: Don't return the errors. We just flag the result as
                         // missing but show a warning if it's not a NotFound.
-                        if e.code != Code::NotFound {
-                            warn!("{e:?}");
+                        if err.code != Code::NotFound {
+                            event!(
+                                Level::WARN,
+                                ?err,
+                                "Error checking existence of digest"
+                            );
                         }
                     }
                     None => {

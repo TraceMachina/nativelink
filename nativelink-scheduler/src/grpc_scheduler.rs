@@ -40,7 +40,7 @@ use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
-use tracing::{error, info, warn};
+use tracing::{error_span, event, Instrument, Level};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -123,7 +123,10 @@ impl GrpcScheduler {
                 loop {
                     select!(
                         _ = tx.closed() => {
-                            info!("Client disconnected in GrpcScheduler");
+                            event!(
+                                Level::INFO,
+                                "Client disconnected in GrpcScheduler"
+                            );
                             return;
                         }
                         response = result_stream.message() => {
@@ -135,16 +138,27 @@ impl GrpcScheduler {
                             match response.try_into() {
                                 Ok(response) => {
                                     if let Err(err) = tx.send(Arc::new(response)) {
-                                        info!("Client disconnected in GrpcScheduler: {}", err);
+                                        event!(
+                                            Level::INFO,
+                                            ?err,
+                                            "Client error in GrpcScheduler"
+                                        );
                                         return;
                                     }
                                 }
-                                Err(err) => error!("Error converting response to ActionState in GrpcScheduler: {}", err),
+                                Err(err) => {
+                                    event!(
+                                        Level::ERROR,
+                                        ?err,
+                                        "Error converting response to ActionState in GrpcScheduler"
+                                    );
+                                },
                             }
                         }
                     )
                 }
-            });
+            }
+            .instrument(error_span!("stream_state")));
             return Ok(rx);
         }
         Err(make_err!(
@@ -264,9 +278,10 @@ impl ActionScheduler for GrpcScheduler {
         match result_stream {
             Ok(result_stream) => Some(result_stream),
             Err(err) => {
-                warn!(
-                    "Error response looking up action with upstream scheduler: {}",
-                    err
+                event!(
+                    Level::WARN,
+                    ?err,
+                    "Error looking up action with upstream scheduler"
                 );
                 None
             }

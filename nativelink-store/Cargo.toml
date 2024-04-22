@@ -24,7 +24,6 @@ hex = "0.4.3"
 http-body = "1.0.0"
 hyper = { version = "0.14.28" }
 hyper-rustls = { version = "0.24.2", features = ["webpki-tokio"] }
-log = "0.4.21"
 lz4_flex = "0.11.3"
 parking_lot = "0.12.1"
 prost = "0.12.4"
