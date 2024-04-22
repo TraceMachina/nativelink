@@ -29,7 +29,6 @@ rust_library(
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hyper",
-        "@crates//:log",
         "@crates//:parking_lot",
         "@crates//:prost",
         "@crates//:rand",

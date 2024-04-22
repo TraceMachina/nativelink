@@ -29,7 +29,7 @@ use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
-use tracing::warn;
+use tracing::{event, Level};
 
 // NOTE: If these change update the comments in `stores.rs` to reflect
 // the new defaults.
@@ -110,11 +110,12 @@ impl DedupStore {
             };
 
             match self.bincode_options.deserialize::<DedupIndex>(&data) {
-                Err(e) => {
-                    warn!(
-                        "Failed to deserialize index in dedup store : {} - {:?}",
-                        digest.hash_str(),
-                        e
+                Err(err) => {
+                    event!(
+                        Level::WARN,
+                        ?digest,
+                        ?err,
+                        "Failed to deserialize index in dedup store",
                     );
                     // We return the equivalent of NotFound here so the client is happy.
                     return Ok(None);

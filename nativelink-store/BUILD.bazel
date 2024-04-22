@@ -52,7 +52,6 @@ rust_library(
         "@crates//:http-body",
         "@crates//:hyper",
         "@crates//:hyper-rustls",
-        "@crates//:log",
         "@crates//:lz4_flex",
         "@crates//:parking_lot",
         "@crates//:prost",

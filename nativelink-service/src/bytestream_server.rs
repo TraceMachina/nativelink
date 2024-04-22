@@ -18,7 +18,7 @@ use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::future::{pending, BoxFuture};
 use futures::stream::unfold;
@@ -45,7 +45,7 @@ use parking_lot::Mutex;
 use tokio::task::AbortHandle;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{enabled, error, info, Level};
+use tracing::{enabled, error_span, event, instrument, Instrument, Level};
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -100,9 +100,10 @@ impl<'a> Drop for ActiveStreamGuard<'a> {
         let mut active_uploads = self.bytestream_server.active_uploads.lock();
         let uuid = stream_state.uuid.clone();
         let Some(active_uploads_slot) = active_uploads.get_mut(&uuid) else {
-            error!(
-                "Failed to find active upload for UUID: {}. This should never happen.",
-                uuid
+            event!(
+                Level::ERROR,
+                err = "Failed to find active upload. This should never happen.",
+                uuid = ?uuid,
             );
             return;
         };
@@ -113,7 +114,7 @@ impl<'a> Drop for ActiveStreamGuard<'a> {
                 (*sleep_fn)().await;
                 if let Some(active_uploads) = weak_active_uploads.upgrade() {
                     let mut active_uploads = active_uploads.lock();
-                    info!("Removing idle stream {uuid}");
+                    event!(Level::INFO, msg = "Removing idle stream", uuid = ?uuid);
                     active_uploads.remove(&uuid);
                 }
             })
@@ -213,7 +214,7 @@ impl ByteStreamServer {
                     return Err(make_input_err!("Cannot upload same UUID simultaneously"));
                 };
                 let bytes_received = maybe_idle_stream.0.clone();
-                info!("Joining existing stream {}", entry.key());
+                event!(Level::INFO, msg = "Joining existing stream", entry = ?entry.key());
                 return Ok(idle_stream.into_active_stream(bytes_received, self));
             }
             Entry::Vacant(entry) => {
@@ -307,7 +308,10 @@ impl ByteStreamServer {
             }),
         });
 
-        Ok(Response::new(Box::pin(unfold(state, move |state| async {
+        let read_stream_span = error_span!("read_stream");
+
+        Ok(Response::new(Box::pin(unfold(state, move |state| {
+            async {
             let mut state = state?; // If None our stream is done.
             let mut response = ReadResponse::default();
             {
@@ -327,7 +331,11 @@ impl ByteStreamServer {
                                         return Some((Err(err.into()), None));
                                     }
                                     response.data = bytes;
-                                    info!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: {:?}", response);
+                                    if enabled!(Level::DEBUG) {
+                                        event!(Level::INFO, response = ?response);
+                                    } else {
+                                        event!(Level::INFO, response.data = format!("<redacted len({})>", response.data.len()));
+                                    }
                                     break;
                                 }
                                 Err(mut e) => {
@@ -351,7 +359,7 @@ impl ByteStreamServer {
                                         // message as it will be the most relevant.
                                         e.messages.truncate(1);
                                     }
-                                    info!("\x1b[0;31mBytestream Read Chunk Resp\x1b[0m: Error {:?}", e);
+                                    event!(Level::ERROR, response = ?e);
                                     return Some((Err(e.into()), None))
                                 }
                             }
@@ -374,9 +382,19 @@ impl ByteStreamServer {
                 }
             }
             Some((Ok(response), Some(state)))
+        }.instrument(read_stream_span.clone())
         }))))
     }
 
+    // We instrument tracing here as well as below because `stream` has a hash on it
+    // that is extracted from the first stream message. If we only implemented it below
+    // we would not have the hash available to us.
+    #[instrument(
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip(self),
+        fields(stream.first_msg = "<redacted>")
+    )]
     async fn inner_write(
         &self,
         mut stream: WriteRequestStreamWrapper<Streaming<WriteRequest>, Status>,
@@ -566,79 +584,66 @@ impl ByteStreamServer {
 #[tonic::async_trait]
 impl ByteStream for ByteStreamServer {
     type ReadStream = ReadStream;
+
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn read(
         &self,
         grpc_request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
-        info!("\x1b[0;31mRead Req\x1b[0m: {:?}", grpc_request.get_ref());
-        let now = Instant::now();
         let resp = self
             .inner_read(grpc_request)
             .await
             .err_tip(|| "Failed on read() command")
             .map_err(|e| e.into());
-        let d = now.elapsed().as_secs_f32();
-        if let Err(err) = resp.as_ref() {
-            error!("\x1b[0;31mRead Resp\x1b[0m: {} {:?}", d, err);
-        } else {
-            info!("\x1b[0;31mRead Resp\x1b[0m: {}", d);
+        if resp.is_ok() {
+            event!(Level::DEBUG, return = "Ok(<stream>)");
         }
         resp
     }
 
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn write(
         &self,
         grpc_request: Request<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
-        let now = Instant::now();
         let stream = WriteRequestStreamWrapper::from(grpc_request.into_inner())
             .await
             .err_tip(|| "Could not unwrap first stream message")
             .map_err(Into::<Status>::into)?;
-        let hash = if enabled!(Level::DEBUG) {
-            Some(stream.hash.clone())
-        } else {
-            None
-        };
 
-        info!("\x1b[0;31mWrite Req\x1b[0m: {:?}", hash);
-
-        let resp = self
-            .inner_write(stream)
+        self.inner_write(stream)
             .await
             .err_tip(|| "In ByteStreamServer::write()")
-            .map_err(|e| e.into());
-
-        let d = now.elapsed().as_secs_f32();
-        if let Err(err) = resp.as_ref() {
-            error!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?} {:?}", d, hash, err);
-        } else {
-            info!("\x1b[0;31mWrite Resp\x1b[0m: {} {:?}", d, hash);
-        }
-        resp
+            .map_err(|e| e.into())
     }
 
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn query_write_status(
         &self,
         grpc_request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Status> {
-        let now = Instant::now();
-        let query_request = grpc_request.into_inner();
-
-        let resp = self
-            .inner_query_write_status(&query_request)
+        self.inner_query_write_status(&grpc_request.into_inner())
             .await
             .err_tip(|| "Failed on query_write_status() command")
-            .map_err(|e| e.into());
-
-        let d = now.elapsed().as_secs_f32();
-        if resp.is_err() {
-            error!("\x1b[0;31mQuery Req\x1b[0m: {:?}", query_request);
-            error!("\x1b[0;31mQuery Resp\x1b[0m: {} {:?}", d, resp);
-        } else {
-            info!("\x1b[0;31mQuery Req\x1b[0m: {:?}", query_request);
-            info!("\x1b[0;31mQuery Resp\x1b[0m: {} {:?}", d, resp);
-        }
-        resp
+            .map_err(|e| e.into())
     }
 }

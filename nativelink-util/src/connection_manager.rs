@@ -24,7 +24,7 @@ use nativelink_config::stores::Retry;
 use nativelink_error::{make_err, Code, Error};
 use tokio::sync::{mpsc, oneshot};
 use tonic::transport::{channel, Channel, Endpoint};
-use tracing::{debug, error, info, warn};
+use tracing::{event, Level};
 
 use crate::retry::{self, Retrier, RetryResult};
 
@@ -244,7 +244,11 @@ impl ConnectionManagerWorker {
         let Some((current_connection_index, endpoint)) = self.endpoints.get_mut(endpoint_index)
         else {
             // Unknown endpoint, this should never happen.
-            error!("Connection to unknown endpoint {endpoint_index} requested.");
+            event!(
+                Level::ERROR,
+                ?endpoint_index,
+                "Connection to unknown endpoint requested"
+            );
             return;
         };
         let is_backoff = connection_index.is_some();
@@ -253,14 +257,18 @@ impl ConnectionManagerWorker {
             *current_connection_index
         });
         if is_backoff {
-            warn!(
-                "Connection {connection_index} failed to {:?}, reconnecting.",
-                endpoint.uri()
+            event!(
+                Level::WARN,
+                ?connection_index,
+                endpoint = ?endpoint.uri(),
+                "Connection failed, reconnecting"
             );
         } else {
-            info!(
-                "Creating new connection {connection_index} to {:?}.",
-                endpoint.uri()
+            event!(
+                Level::INFO,
+                ?connection_index,
+                endpoint = ?endpoint.uri(),
+                "Creating new connection"
             );
         }
         let identifier = ChannelIdentifier {
@@ -439,7 +447,11 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::BoxBody>
                     }
                 }
                 Err(err) => {
-                    debug!("Error while creating connection on channel: {err:?}");
+                    event!(
+                        Level::DEBUG,
+                        ?err,
+                        "Error while creating connection on channel"
+                    );
                     let _ = self.connection_tx.send(ConnectionRequest::Error((
                         self.channel.identifier,
                         self.pending_channel.take().is_some(),

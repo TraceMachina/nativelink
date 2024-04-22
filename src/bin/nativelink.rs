@@ -66,7 +66,7 @@ use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
-use tracing::{error, warn};
+use tracing::{error_span, event, Instrument, Level};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 #[global_allocator]
@@ -640,54 +640,91 @@ async fn inner_main(
             http.http2_max_header_list_size(value);
         }
 
-        warn!("Ready, listening on {}", socket_addr);
+        event!(Level::WARN, "Ready, listening on {socket_addr}",);
         root_futures.push(Box::pin(async move {
             loop {
                 // Wait for client to connect.
                 let (tcp_stream, remote_addr) = match tcp_listener.accept().await {
                     Ok(result) => result,
-                    Err(e) => {
-                        error!(
-                            "{:?}",
-                            Result::<(), _>::Err(e).err_tip(|| "Failed to accept tcp connection")
-                        );
+                    Err(err) => {
+                        event!(Level::ERROR, ?err, "Failed to accept tcp connection");
                         continue;
                     }
                 };
+                event!(
+                    target: "nativelink::services",
+                    Level::INFO,
+                    ?remote_addr,
+                    ?socket_addr,
+                    "Client connected"
+                );
                 connected_clients_mux.inner.lock().insert(remote_addr);
                 connected_clients_mux.counter.inc();
 
                 // This is the safest way to guarantee that if our future
                 // is ever dropped we will cleanup our data.
                 let scope_guard = guard(
-                    connected_clients_mux.clone(),
-                    move |connected_clients_mux| {
-                        connected_clients_mux.inner.lock().remove(&remote_addr);
+                    Arc::downgrade(&connected_clients_mux),
+                    move |weak_connected_clients_mux| {
+                        event!(
+                            target: "nativelink::services",
+                            Level::INFO,
+                            ?remote_addr,
+                            ?socket_addr,
+                            "Client disconnected"
+                        );
+                        if let Some(connected_clients_mux) = weak_connected_clients_mux.upgrade() {
+                            connected_clients_mux.inner.lock().remove(&remote_addr);
+                        }
                     },
                 );
                 let (http, svc) = (http.clone(), svc.clone());
                 let fut = if let Some(tls_acceptor) = &maybe_tls_acceptor {
                     let tls_stream = match tls_acceptor.accept(tcp_stream).await {
                         Ok(result) => result,
-                        Err(e) => {
-                            error!(
-                                "{:?}",
-                                Result::<(), _>::Err(e).err_tip(|| "Failed to accept tls stream")
-                            );
+                        Err(err) => {
+                            event!(Level::ERROR, ?err, "Failed to accept tls stream");
                             continue;
                         }
                     };
                     http.serve_connection(tls_stream, svc).left_future()
                 } else {
                     http.serve_connection(tcp_stream, svc).right_future()
-                };
-                tokio::spawn(async move {
-                    // Move it into our spawn, so if our spawn dies the cleanup happens.
-                    let _guard = scope_guard;
-                    if let Err(e) = fut.await {
-                        error!("Failed running service : {:?}", e);
+                }
+                .map_ok_or_else(
+                    |err| {
+                        use std::error::Error;
+                        if let Some(inner_err) = err.source() {
+                            if let Some(io_err) = inner_err.downcast_ref::<std::io::Error>() {
+                                if io_err.kind() == std::io::ErrorKind::NotConnected {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        Err(err)
+                    },
+                    Ok,
+                );
+                tokio::spawn(
+                    async move {
+                        // Move it into our spawn, so if our spawn dies the cleanup happens.
+                        let _guard = scope_guard;
+                        if let Err(err) = fut.await {
+                            event!(
+                                target: "nativelink::services",
+                                Level::ERROR,
+                                ?err,
+                                "Failed running service"
+                            );
+                        }
                     }
-                });
+                    .instrument(error_span!(
+                        target: "nativelink::services",
+                        "http_connection",
+                        ?remote_addr,
+                        ?socket_addr
+                    )),
+                );
             }
         }));
     }
@@ -756,8 +793,8 @@ async fn inner_main(
                     }
                     let worker_metrics = root_worker_metrics.sub_registry_with_prefix(&name);
                     local_worker.register_metrics(worker_metrics);
-                    worker_names.insert(name);
-                    tokio::spawn(local_worker.run())
+                    worker_names.insert(name.clone());
+                    tokio::spawn(local_worker.run().instrument(error_span!("worker", ?name)))
                 }
             };
             root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
@@ -792,16 +829,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with(
                 tracing_subscriber::fmt::layer()
                     .pretty()
-                    .with_thread_ids(true)
-                    .with_thread_names(true)
+                    // .with_span_events(FmtSpan::CLOSE)
+                    .with_timer(tracing_subscriber::fmt::time::time())
                     .with_filter(env_filter),
             )
             .init();
     } else {
         tracing_subscriber::fmt()
             .pretty()
-            .with_thread_ids(true)
-            .with_thread_names(true)
+            // .with_span_events(FmtSpan::CLOSE)
+            .with_timer(tracing_subscriber::fmt::time::time())
             .with_env_filter(env_filter)
             .init();
     }

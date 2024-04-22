@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::stream::unfold;
 use futures::Stream;
@@ -35,7 +35,7 @@ use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tonic::{Request, Response, Status};
-use tracing::{error, info, warn};
+use tracing::{error_span, event, instrument, Instrument, Level};
 use uuid::Uuid;
 
 pub type ConnectWorkerStream =
@@ -67,17 +67,21 @@ impl WorkerApiServer {
                         .expect("Error: system time is now behind unix epoch");
                     match weak_scheduler.upgrade() {
                         Some(scheduler) => {
-                            if let Err(e) =
+                            if let Err(err) =
                                 scheduler.remove_timedout_workers(timestamp.as_secs()).await
                             {
-                                error!("Error while running remove_timedout_workers : {:?}", e);
+                                event!(
+                                    Level::ERROR,
+                                    ?err,
+                                    "Failed to remove_timedout_workers",
+                                );
                             }
                         }
                         // If we fail to upgrade, our service is probably destroyed, so return.
                         None => return,
                     }
                 }
-            });
+            }.instrument(error_span!("worker_api_server")));
         }
 
         Self::new_with_now_fn(
@@ -159,9 +163,10 @@ impl WorkerApiServer {
                 if let Some(update_for_worker) = rx.recv().await {
                     return Some((Ok(update_for_worker), (rx, worker_id)));
                 }
-                warn!(
-                    "UpdateForWorker channel was closed, thus closing connection to worker node : {}",
-                    worker_id
+                event!(
+                    Level::WARN,
+                    ?worker_id,
+                    "UpdateForWorker channel was closed, thus closing connection to worker node",
                 );
 
                 None
@@ -231,83 +236,76 @@ impl WorkerApiServer {
 #[tonic::async_trait]
 impl WorkerApi for WorkerApiServer {
     type ConnectWorkerStream = ConnectWorkerStream;
+
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn connect_worker(
         &self,
         grpc_request: Request<SupportedProperties>,
     ) -> Result<Response<Self::ConnectWorkerStream>, Status> {
-        let now = Instant::now();
-        info!(
-            "\x1b[0;31mconnect_worker Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let supported_properties = grpc_request.into_inner();
-        let resp = self.inner_connect_worker(supported_properties).await;
-        let d = now.elapsed().as_secs_f32();
-        if let Err(err) = resp.as_ref() {
-            error!("\x1b[0;31mconnect_worker Resp\x1b[0m: {} {:?}", d, err);
-        } else {
-            info!("\x1b[0;31mconnect_worker Resp\x1b[0m: {}", d);
+        let resp = self
+            .inner_connect_worker(grpc_request.into_inner())
+            .await
+            .map_err(|e| e.into());
+        if resp.is_ok() {
+            event!(Level::DEBUG, return = "Ok(<stream>)");
         }
-        return resp.map_err(|e| e.into());
+        resp
     }
 
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn keep_alive(
         &self,
         grpc_request: Request<KeepAliveRequest>,
     ) -> Result<Response<()>, Status> {
-        let now = Instant::now();
-        info!(
-            "\x1b[0;31mkeep_alive Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let keep_alive_request = grpc_request.into_inner();
-        let resp = self.inner_keep_alive(keep_alive_request).await;
-        let d = now.elapsed().as_secs_f32();
-        if let Err(err) = resp.as_ref() {
-            error!("\x1b[0;31mkeep_alive Resp\x1b[0m: {} {:?}", d, err);
-        } else {
-            info!("\x1b[0;31mkeep_alive Resp\x1b[0m: {}", d);
-        }
-        return resp.map_err(|e| e.into());
+        self.inner_keep_alive(grpc_request.into_inner())
+            .await
+            .map_err(|e| e.into())
     }
 
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn going_away(
         &self,
         grpc_request: Request<GoingAwayRequest>,
     ) -> Result<Response<()>, Status> {
-        let now = Instant::now();
-        info!(
-            "\x1b[0;31mgoing_away Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let going_away_request = grpc_request.into_inner();
-        let resp = self.inner_going_away(going_away_request).await;
-        let d = now.elapsed().as_secs_f32();
-        if let Err(err) = resp.as_ref() {
-            error!("\x1b[0;31mgoing_away Resp\x1b[0m: {} {:?}", d, err);
-        } else {
-            info!("\x1b[0;31mgoing_away Resp\x1b[0m: {}", d);
-        }
-        return resp.map_err(|e| e.into());
+        self.inner_going_away(grpc_request.into_inner())
+            .await
+            .map_err(|e| e.into())
     }
 
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn execution_response(
         &self,
         grpc_request: Request<ExecuteResult>,
     ) -> Result<Response<()>, Status> {
-        let now = Instant::now();
-        info!(
-            "\x1b[0;31mexecution_response Req\x1b[0m: {:?}",
-            grpc_request.get_ref()
-        );
-        let execute_result = grpc_request.into_inner();
-        let resp = self.inner_execution_response(execute_result).await;
-        let d = now.elapsed().as_secs_f32();
-        if let Err(err) = resp.as_ref() {
-            error!("\x1b[0;31mexecution_response Resp\x1b[0m: {} {:?}", d, err);
-        } else {
-            info!("\x1b[0;31mexecution_response Resp\x1b[0m: {}", d);
-        }
-        return resp.map_err(|e| e.into());
+        self.inner_execution_response(grpc_request.into_inner())
+            .await
+            .map_err(|e| e.into())
     }
 }

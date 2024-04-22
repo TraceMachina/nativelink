@@ -33,7 +33,7 @@ use tokio::io::{
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::time::timeout;
-use tracing::error;
+use tracing::{event, Level};
 
 /// Default read buffer size when reading to/from disk.
 pub const DEFAULT_READ_BUFF_SIZE: usize = 16384;
@@ -310,9 +310,11 @@ where
 pub fn set_open_file_limit(limit: usize) {
     let current_total = TOTAL_FILE_SEMAPHORES.load(Ordering::Acquire);
     if limit < current_total {
-        error!(
+        event!(
+            Level::ERROR,
             "set_open_file_limit({}) must be greater than {}",
-            limit, current_total
+            limit,
+            current_total
         );
         return;
     }

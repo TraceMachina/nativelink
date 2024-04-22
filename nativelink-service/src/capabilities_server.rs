@@ -31,6 +31,7 @@ use nativelink_proto::build::bazel::semver::SemVer;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_util::digest_hasher::default_digest_hasher_func;
 use tonic::{Request, Response, Status};
+use tracing::{instrument, Level};
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
@@ -82,11 +83,19 @@ impl CapabilitiesServer {
 
 #[tonic::async_trait]
 impl Capabilities for CapabilitiesServer {
+    #[allow(clippy::blocks_in_conditions)]
+    #[instrument(
+        err,
+        ret(level = Level::INFO),
+        level = Level::ERROR,
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
     async fn get_capabilities(
         &self,
-        request: Request<GetCapabilitiesRequest>,
+        grpc_request: Request<GetCapabilitiesRequest>,
     ) -> Result<Response<ServerCapabilities>, Status> {
-        let instance_name = request.into_inner().instance_name;
+        let instance_name = grpc_request.into_inner().instance_name;
         let maybe_supported_node_properties = self
             .supported_node_properties_for_instance
             .get(&instance_name);
