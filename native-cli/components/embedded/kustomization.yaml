@@ -1,0 +1,10 @@
+---
+resources:
+  - nix2container-copyto.yaml
+  - rebuild-nativelink.yaml
+  - skopeo-copy.yaml
+  - cosign-verify.yaml
+  - skopeo-check-hashlocked-url.yaml
+  - nix2container-image-info.yaml
+  - trigger.yaml
+  # - nativelink-gateways.yaml  # Handled separately.

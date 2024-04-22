@@ -23,27 +23,6 @@ spec:
             image.
           - "github:<user>/<repo>?ref=pull/<PR_NUMBER>/head#<PACKAGE>" to use
             an image from a pull request of a repository on GitHub.
-    - name: imageNameOverride
-      description: |
-        An optional override for the image name when pushing to the registry.
-
-        By default the tag is derived from the flake output via
-        `$(nix eval /mnt/src_root#<imageoutput>.imageName --raw)` making
-        invocations reproducible. This reproducibility may be broken by
-        overriding the name with some arbitrary value.
-      default: ""
-    - name: imageTagOverride
-      description: |
-        An optional override for the image tag when pushing to the registry.
-
-        By default the tag is derived from the flake output via
-        `$(nix eval /mnt/src_root#<imageoutput>.imageTag --raw)` making
-        invocations reproducible. This reproducibility may be broken by
-        overriding this tag with some arbitrary value.
-
-        Production deployments shouldn't make use of this value to ensure
-        reproducibility and "roll-back-ability" of the corresponding pipelinerun.
-      default: ""
   resourcetemplates:
     - apiVersion: tekton.dev/v1beta1
       kind: PipelineRun
@@ -59,17 +38,15 @@ spec:
           - name: nix-store
             persistentVolumeClaim:
               claimName: nix-store-pvc
+          - name: images-url
+            emptyDir: {}
         params:
           - name: flakeOutput
             value: "$(tt.params.flakeOutput)"
-          - name: imageNameOverride
-            value: "$(tt.params.imageNameOverride)"
-          - name: imageTagOverride
-            value: "$(tt.params.imageTagOverride)"
           - name: registry
             value: "kind-registry:5000"
-          - name: insecureDisableTlsVerify
-            value: "true"
+          - name: destTLSverify
+            value: "false"
           - name: enableNixSandbox
             value: "false"
 ---
@@ -81,10 +58,6 @@ spec:
   params:
     - name: flakeOutput
       value: "$(body.flakeOutput)"
-    - name: imageNameOverride
-      value: "$(body.imageNameOverride)"
-    - name: imageTagOverride
-      value: "$(body.imageTagOverride)"
 ---
 apiVersion: v1
 kind: ServiceAccount

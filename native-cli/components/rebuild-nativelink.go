@@ -1,10 +1,13 @@
 package components
 
 import (
-	_ "embed"
+	"embed"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 
-	"github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/yaml"
+	"github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/kustomize"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
@@ -16,11 +19,8 @@ type RebuildNativeLink struct {
 // potentially adjust/reuse them in more generic contexts. We embed them in the
 // executable to keep the cli portable.
 //
-//go:embed embedded/rebuild-nativelink.yaml
-var rebuildNativeLinkYaml string
-
-//go:embed embedded/trigger.yaml
-var triggerYaml string
+//go:embed embedded/*
+var kustomization embed.FS
 
 // Install installs a Tekton Task, Pipeline and EventListener and some
 // supporting resources which ultimately allow querying the cluster at a Gateway
@@ -58,11 +58,44 @@ func (component *RebuildNativeLink) Install(
 	ctx *pulumi.Context,
 	name string,
 ) ([]pulumi.Resource, error) {
-	rebuildNativeLink, err := yaml.NewConfigGroup(
-		ctx,
-		name,
-		&yaml.ConfigGroupArgs{
-			YAML: []string{rebuildNativeLinkYaml},
+	tmpDir, err := os.MkdirTemp("", "kustomization")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errPulumi, err)
+	}
+
+	err = fs.WalkDir(
+		kustomization,
+		"embedded",
+		func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return fmt.Errorf("failed to walk: %w", err)
+			}
+
+			if !d.IsDir() {
+				outPath := filepath.Join(tmpDir, filepath.Base(path))
+
+				data, err := kustomization.ReadFile(path)
+				if err != nil {
+					return fmt.Errorf("failed to read file: %w", err)
+				}
+
+				// Write file with owner-read-only permissions.
+				//nolint:gomnd
+				if err := os.WriteFile(outPath, data, os.FileMode(0o600)); err != nil {
+					return fmt.Errorf("failed to write file: %w", err)
+				}
+			}
+
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errPulumi, err)
+	}
+
+	rebuildNativeLink, err := kustomize.NewDirectory(ctx, name,
+		kustomize.DirectoryArgs{
+			Directory: pulumi.String(tmpDir),
 		},
 		pulumi.DependsOn(component.Dependencies),
 	)
@@ -70,17 +103,5 @@ func (component *RebuildNativeLink) Install(
 		return nil, fmt.Errorf("%w: %w", errPulumi, err)
 	}
 
-	ciTrigger, err := yaml.NewConfigGroup(
-		ctx,
-		name+"-triggers",
-		&yaml.ConfigGroupArgs{
-			YAML: []string{triggerYaml},
-		},
-		pulumi.DependsOn(component.Dependencies),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errPulumi, err)
-	}
-
-	return []pulumi.Resource{rebuildNativeLink, ciTrigger}, nil
+	return []pulumi.Resource{rebuildNativeLink}, nil
 }
