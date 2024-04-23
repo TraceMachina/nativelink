@@ -7,24 +7,19 @@ set -xeuo pipefail
 
 SRC_ROOT=$(git rev-parse --show-toplevel)
 
-EVENTLISTENER=$(kubectl get gtw eventlistener -o=jsonpath='{.status.addresses[0].value}')
+EVENTLISTENER=$(kubectl get \
+    gtw eventlistener -o=jsonpath='{.status.addresses[0].value}')
 
 # The image for the scheduler and CAS.
 curl -v \
     -H 'content-Type: application/json' \
-    -d '{
-        "flakeOutput": "./src_root#image",
-        "imageTagOverride": "local"
-    }' \
+    -d '{"flakeOutput": "./src_root#image"}' \
     http://${EVENTLISTENER}:8080
 
 # Wrap it nativelink to turn it into a worker.
 curl -v \
     -H 'content-Type: application/json' \
-    -d '{
-        "flakeOutput": "./src_root#nativelink-worker-siso-chromium",
-        "imageTagOverride": "local"
-    }' \
+    -d '{"flakeOutput": "./src_root#nativelink-worker-siso-chromium"}' \
     http://${EVENTLISTENER}:8080
 
 # Wait for the pipelines to finish.

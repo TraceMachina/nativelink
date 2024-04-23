@@ -1,9 +1,9 @@
 ---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
 resources:
   - cas.yaml
   - scheduler.yaml
-  - worker-lre-cc.yaml
-  - worker-lre-java.yaml
   - routes.yaml
 
 configMapGenerator:
@@ -16,6 +16,9 @@ configMapGenerator:
   - name: worker
     files:
       - worker.json
+
+images:
+  - name: nativelink
 
 secretGenerator:
   - name: tls-secret
