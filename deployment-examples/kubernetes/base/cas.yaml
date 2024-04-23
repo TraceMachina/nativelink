@@ -15,7 +15,8 @@ spec:
     spec:
       containers:
         - name: nativelink-cas
-          image: "localhost:5001/nativelink:local"
+          # This image will be edited by kustomize.
+          image: nativelink
           env:
             - name: RUST_LOG
               value: info

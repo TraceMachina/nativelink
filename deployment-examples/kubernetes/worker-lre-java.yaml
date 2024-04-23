@@ -40,7 +40,8 @@ spec:
             mountPath: /mnt
       containers:
         - name: nativelink-worker-lre-java
-          image: "localhost:5001/nativelink-worker-lre-java:local"
+          # This image will be edited by kustomize
+          image: nativelink-worker-lre-java
           env:
             - name: RUST_LOG
               value: warn

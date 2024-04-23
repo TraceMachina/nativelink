@@ -228,6 +228,7 @@
               pkgs.tektoncd-cli
               (pkgs.pulumi.withPackages (ps: [ps.pulumi-language-go]))
               pkgs.go
+              pkgs.kustomize
 
               # Additional tools from within our development environment.
               local-image-test

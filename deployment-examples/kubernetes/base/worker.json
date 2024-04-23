@@ -52,7 +52,16 @@
       "work_directory": "~/.cache/nativelink/work",
       "platform_properties": {
         "cpu_count": {
-          "query_cmd": "nproc"
+          "query_cmd": "nproc",
+        },
+        "memory_kb": {
+          "values": ["500000"],
+        },
+        "network_kbps": {
+          "values": ["100000"],
+        },
+        "cpu_arch": {
+          "values": ["x86_64"],
         },
         "OSFamily": {
           "values": ["Linux"]
@@ -63,11 +72,14 @@
             // that is matched by the scheduler against the value specified in
             // the `exec_properties` of the corresponding platform at
             // `local-remote-execution/generated-cc/config/BUILD`.
-            "${NATIVELINK_WORKER_PLATFORM:-error_undefined_platform}"
+            "${NATIVELINK_WORKER_PLATFORM:-undefined_platform}"
           ]
         }
       }
     }
   }],
-  "servers": []
+  "servers": [],
+  "global": {
+    "max_open_files": 524288
+  }
 }

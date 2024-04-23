@@ -1,161 +1,4 @@
 ---
-# This Task allows running something similar to this natively in K8s:
-#
-# docker run \
-#   --cap-add SYS_ADMIN \
-#   --net=host \
-#   -v /nix:/mnt/nix:ro \
-#   nixpkgs/nix-flakes:latest \
-#     nix run \
-#       --store 'unix:///mnt/nix/var/nix/daemon-socket/socket?root=/mnt' \
-#       --option sandbox false \
-#       -L .#image.copyTo \
-#         docker://localhost:5001/nativelink:$(nix eval \
-#             .#image.imageTag --raw)local \
-#           -- \
-#             --dest-tls-verify=false
-apiVersion: tekton.dev/v1beta1
-kind: Task
-metadata:
-  name: nix2container-copyto
-  labels:
-    app.kubernetes.io/versions: "0.1"
-spec:
-  description: >
-    This task invokes a nix command.
-  workspaces:
-    - name: optional-src
-      optional: true
-      description: |
-        The source repository to invoke from.
-      mountPath: /mnt
-      readOnly: true
-    - name: nix-store
-      description: |
-        An workspace containing a nix store. Appended via a `--store` argument.
-      readOnly: true
-      mountPath: /workspace/nix-store/nix
-  params:
-    - name: flakeOutput
-      type: string
-      description: |
-        The output of a Nix Flake. This output must refer to an image built with
-        nix2container.
-
-        See:
-          - https://nixos.wiki/wiki/Flakes for more in formation on the Flake
-            URL schema.
-          - https://github.com/nlewo/nix2container for more information on the
-            required builder for the flake outputs.
-
-        Examples:
-          - "/mnt/src_root#someoutput" for a flake output in the `output-src`
-            directory.
-          - "github:TraceMachina/nativelink#image" for the latest nativelink
-            image.
-          - "github:<user>/<repo>?ref=pull/<PR_NUMBER>/head#<PACKAGE>" to use
-            an image from a pull request of a repository on GitHub.
-    - name: imageNameOverride
-      type: string
-      description: |
-        An optional override for the image name when pushing to the registry.
-
-        By default the tag is derived from the flake output via
-        `$(nix eval /mnt/src_root#<imageoutput>.imageName --raw)` making
-        invocations reproducible. This reproducibility may be broken by
-        overriding the name with some arbitrary value.
-      default: ""
-    - name: imageTagOverride
-      type: string
-      description: |
-        An optional override for the image tag when pushing to the registry.
-
-        By default the tag is derived from the flake output via
-        `$(nix eval /mnt/src_root#<imageoutput>.imageTag --raw)` making
-        invocations reproducible. This reproducibility may be broken by
-        overriding this tag with some arbitrary value.
-
-        Production deployments shouldn't make use of this value to ensure
-        reproducibility and "roll-back-ability" of the corresponding pipelinerun.
-      default: ""
-    - name: registry
-      type: string
-      description: |
-        The target registry.
-
-        By default, attempts to push to "kind-registry:5000".
-      default: "kind-registry:5000"
-    - name: insecureDisableTlsVerify
-      type: string
-      description: |
-        Whether to add `--dest-tls-verify=false` to the copy command.
-
-        This should only be set when working with local registries.
-      default: "false"
-    - name: enableNixSandbox
-      type: string
-      description: |
-        Boolean to configure the nix sandbox.
-
-        In the default configuration this Task doesn't use the nix sandbox.
-      default: "false"
-  steps:
-    - name: invoke
-      image: nixpkgs/nix-flakes:latest
-      env:
-        - name: FLAKE_OUTPUT
-          value: "$(params.flakeOutput)"
-        - name: IMAGE_NAME_OVERRIDE
-          value: "$(params.imageNameOverride)"
-        - name: IMAGE_TAG_OVERRIDE
-          value: "$(params.imageTagOverride)"
-        - name: REGISTRY
-          value: "$(params.registry)"
-        - name: ENABLE_NIX_SANDBOX
-          value: "$(params.enableNixSandbox)"
-        - name: INSECURE_DISABLE_TLS_VERIFY
-          value: "$(params.insecureDisableTlsVerify)"
-      securityContext:
-        capabilities:
-          # TODO(aaronmondal): This is necessary to allow nix builds which make
-          # use of containers. This is a security concern and should not be used
-          # in production grade deployments. Find a better solution.
-          add: ["SYS_ADMIN"]
-      script: |
-        #!/usr/bin/env sh
-
-        if [ "$(workspaces.optional-src.bound)" = "true" ]; then
-          cd "$(workspaces.optional-src.path)"
-        fi
-
-        IMAGE_NAME=${IMAGE_NAME_OVERRIDE:-$(nix eval \
-          "${FLAKE_OUTPUT}".imageName --raw)}
-
-        IMAGE_TAG=${IMAGE_TAG_OVERRIDE:-$(nix eval \
-          "${FLAKE_OUTPUT}".imageTag --raw)}
-
-        # Configuration for Nix.
-        NIX_SOCKET="unix:///workspace/nix-store/nix/var/nix/daemon-socket/socket"
-        NIX_ROOT="/workspace/nix-store"
-
-        if [ "${INSECURE_DISABLE_TLS_VERIFY}" = "true" ]; then
-          nix run \
-            --store "${NIX_SOCKET}?root=${NIX_ROOT}" \
-            --option sandbox "${ENABLE_NIX_SANDBOX}" \
-            --print-build-logs \
-            "${FLAKE_OUTPUT}".copyTo \
-              docker://"${REGISTRY}"/"${IMAGE_NAME}":"${IMAGE_TAG}" \
-                -- \
-                  --dest-tls-verify=false
-        else
-          nix run \
-            --store "${NIX_SOCKET}?root=${NIX_ROOT}" \
-            --option sandbox "${ENABLE_NIX_SANDBOX}" \
-            --print-build-logs \
-            "${FLAKE_OUTPUT}".copyTo \
-              docker://"${REGISTRY}"/"${IMAGE_NAME}":"${IMAGE_TAG}"
-        fi
----
 apiVersion: tekton.dev/v1beta1
 kind: Pipeline
 metadata:
@@ -183,29 +26,6 @@ spec:
             image.
           - "github:<user>/<repo>?ref=pull/<PR_NUMBER>/head#<PACKAGE>" to use
             an image from a pull request of a repository on GitHub.
-    - name: imageNameOverride
-      type: string
-      description: |
-        An optional override for the image name when pushing to the registry.
-
-        By default the tag is derived from the flake output via
-        `$(nix eval /mnt/src_root#<imageoutput>.imageName --raw)` making
-        invocations reproducible. This reproducibility may be broken by
-        overriding the name with some arbitrary value.
-      default: ""
-    - name: imageTagOverride
-      type: string
-      description: |
-        An optional override for the image tag when pushing to the registry.
-
-        By default the tag is derived from the flake output via
-        `$(nix eval /mnt/src_root#<imageoutput>.imageTag --raw)` making
-        invocations reproducible. This reproducibility may be broken by
-        overriding this tag with some arbitrary value.
-
-        Production deployments shouldn't make use of this value to ensure
-        reproducibility and "roll-back-ability" of the corresponding pipelinerun.
-      default: ""
     - name: registry
       type: string
       description: |
@@ -213,13 +33,13 @@ spec:
 
         By default, attempts to push to "kind-registry:5000".
       default: "kind-registry:5000"
-    - name: insecureDisableTlsVerify
+    - name: destTLSverify
       type: string
       description: |
         Whether to add `--dest-tls-verify=false` to the copy command.
 
         This should only be set when working with local registries.
-      default: "false"
+      default: "true"
     - name: enableNixSandbox
       type: string
       description: |
@@ -235,8 +55,94 @@ spec:
     - name: nix-store
       description: |
         An workspace containing a nix store. Appended via a `--store` argument.
+    - name: images-url
+      description: >
+        Currently unused workspace to make the skopeo Task happy.
   tasks:
-    - name: invoke-nix-command
+    - name: get-image-info
+      taskRef:
+        name: nix2container-image-info
+      workspaces:
+        - name: optional-src
+          workspace: optional-src
+        - name: nix-store
+          workspace: nix-store
+      params:
+        - name: flakeOutput
+          value: "$(params.flakeOutput)"
+
+    - name: get-dest-image-url
+      taskSpec:
+        params:
+          - name: registry
+            type: string
+          - name: imageName
+            type: string
+          - name: imageTag
+            type: string
+        results:
+          - name: destImageURL
+        steps:
+          - name: get-url
+            image: busybox
+            script: |
+              echo -n "$(params.registry)/$(params.imageName):$(params.imageTag)" \
+                | tee "$(results.destImageURL.path)"
+      params:
+        - name: registry
+          value: "$(params.registry)"
+        - name: imageName
+          value: "$(tasks.get-image-info.results.imageName)"
+        - name: imageTag
+          value: "$(tasks.get-image-info.results.imageTag)"
+
+    - name: check-hashlocked-url
+      taskRef:
+        name: skopeo-check-hashlocked-url
+      params:
+        - name: imageName
+          value: "$(tasks.get-image-info.results.imageName)"
+        - name: imageTag
+          value: "$(tasks.get-image-info.results.imageTag)"
+        - name: registry
+          value: "ghcr.io/tracemachina"
+
+    - name: check-verified-prebuilt-availability
+      taskRef:
+        name: cosign-verify
+      params:
+        - name: fullImageURL
+          value: "$(tasks.check-hashlocked-url.results.fullImageURL)"
+        - name: certificateIdentity
+          value: "https://github.com/TraceMachina/nativelink/.github/workflows/image.yaml@refs/heads/main"
+        - name: certificateOIDCIssuer
+          value: "https://token.actions.githubusercontent.com"
+      when:
+        - input: "$(tasks.check-hashlocked-url.results.exists)"
+          operator: in
+          values: ["true"]
+
+    - name: copy-verified-prebuilt-image
+      taskRef:
+        name: skopeo-copy
+      workspaces:
+        - name: images-url
+          workspace: images-url
+      params:
+        - name: srcImageURL
+          value: "docker://$(tasks.check-hashlocked-url.results.fullImageURL)"
+        - name: destImageURL
+          value: "docker://$(tasks.get-dest-image-url.results.destImageURL)"
+        - name: destTLSverify
+          value: "$(params.destTLSverify)"
+      when:
+        - input: "$(tasks.check-hashlocked-url.results.exists)"
+          operator: in
+          values: ["true"]
+      runAfter:
+        - check-verified-prebuilt-availability
+
+    - name: copy-nix-built-image
       taskRef:
         name: nix2container-copyto
       workspaces:
@@ -247,13 +153,13 @@ spec:
       params:
         - name: flakeOutput
           value: "$(params.flakeOutput)"
-        - name: imageNameOverride
-          value: "$(params.imageNameOverride)"
-        - name: imageTagOverride
-          value: "$(params.imageTagOverride)"
-        - name: registry
-          value: "$(params.registry)"
-        - name: insecureDisableTlsVerify
-          value: "$(params.insecureDisableTlsVerify)"
+        - name: destImageURL
+          value: "$(tasks.get-dest-image-url.results.destImageURL)"
+        - name: destTLSverify
+          value: "$(params.destTLSverify)"
         - name: enableNixSandbox
           value: "$(params.enableNixSandbox)"
+      when:
+        - input: "$(tasks.check-hashlocked-url.results.exists)"
+          operator: notin
+          values: ["true"]
