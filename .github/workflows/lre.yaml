@@ -42,6 +42,15 @@ jobs:
            --verbose_failures \
            @local-remote-execution//examples:hello_lre"
 
+      - name: Build NativeLink with LRE.
+        run: >
+          nix develop --impure --command
+          bash -c "bazel test \
+           --config=lre \
+           --verbose_failures \
+           ..."
+
+
   remote:
     strategy:
       fail-fast: false
@@ -109,3 +118,14 @@ jobs:
             --remote_executor=grpc://$scheduler_ip:50052 \
             --verbose_failures \
             @local-remote-execution//examples:hello_lre"
+
+      - name: Build NativeLink with LRE.
+        run: >
+          nix develop --impure --command
+          bash -c "bazel test \
+            --config=lre \
+            --remote_instance_name=main \
+            --remote_cache=grpc://$cache_ip:50051 \
+            --remote_executor=grpc://$scheduler_ip:50052 \
+            --verbose_failures \
+            ..."

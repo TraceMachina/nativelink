@@ -73,8 +73,6 @@
 
         customStdenv = import ./tools/llvmStdenv.nix {inherit pkgs;};
 
-        # TODO(aaronmondal): This doesn't work with rules_rust yet.
-        # Tracked in https://github.com/TraceMachina/nativelink/issues/477.
         customClang = pkgs.callPackage ./tools/customClang.nix {
           inherit pkgs;
           stdenv = customStdenv;
@@ -154,10 +152,17 @@
           };
         };
       in rec {
-        _module.args.pkgs = import self.inputs.nixpkgs {
-          inherit system;
-          overlays = [(import rust-overlay)];
-        };
+        _module.args.pkgs = let
+          nixpkgs-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
+            name = "nixpkgs-patched";
+            src = self.inputs.nixpkgs;
+            patches = [./tools/nixpkgs_link_libunwind_and_libcxx.diff];
+          };
+        in
+          import nixpkgs-patched {
+            inherit system;
+            overlays = [(import rust-overlay)];
+          };
         apps = {
           default = {
             type = "app";
@@ -206,50 +211,49 @@
           # });
         };
         pre-commit.settings = {inherit hooks;};
-        devShells.default = pkgs.mkShell {
-          nativeBuildInputs =
-            [
-              # Development tooling goes here.
-              stable-rust-native.default
-              pkgs.pre-commit
-              pkgs.bazel_7
-              pkgs.awscli2
-              pkgs.skopeo
-              pkgs.dive
-              pkgs.cosign
-              pkgs.kubectl
-              pkgs.kubernetes-helm
-              pkgs.cilium-cli
-              pkgs.yarn
-              pkgs.vale
-              pkgs.trivy
-              pkgs.docker-client
-              pkgs.kind
-              pkgs.tektoncd-cli
-              (pkgs.pulumi.withPackages (ps: [ps.pulumi-language-go]))
-              pkgs.go
-              pkgs.kustomize
+        devShells.default =
+          pkgs.mkShell.override {
+            stdenv = customStdenv;
+          } {
+            nativeBuildInputs =
+              [
+                # Development tooling goes here.
+                stable-rust-native.default
+                pkgs.pre-commit
+                pkgs.bazel_7
+                pkgs.awscli2
+                pkgs.skopeo
+                pkgs.dive
+                pkgs.cosign
+                pkgs.kubectl
+                pkgs.kubernetes-helm
+                pkgs.cilium-cli
+                pkgs.yarn
+                pkgs.vale
+                pkgs.trivy
+                pkgs.docker-client
+                pkgs.kind
+                pkgs.tektoncd-cli
+                (pkgs.pulumi.withPackages (ps: [ps.pulumi-language-go]))
+                pkgs.go
+                pkgs.kustomize
 
-              # Additional tools from within our development environment.
-              local-image-test
-              generate-toolchains
-              customClang
-              native-cli
-            ]
-            ++ maybeDarwinDeps;
-          shellHook = ''
-            # Generate the .pre-commit-config.yaml symlink when entering the
-            # development shell.
-            ${config.pre-commit.installationScript}
+                # Additional tools from within our development environment.
+                local-image-test
+                generate-toolchains
+                customClang
+                native-cli
+              ]
+              ++ maybeDarwinDeps;
+            shellHook = ''
+              # Generate the .pre-commit-config.yaml symlink when entering the
+              # development shell.
+              ${config.pre-commit.installationScript}
 
-            # The Bazel and Cargo builds in nix require a Clang toolchain.
-            # TODO(aaronmondal): The Bazel build currently uses the
-            #                    irreproducible host C++ toolchain. Provide
-            #                    this toolchain via nix for bitwise identical
-            #                    binaries across machines.
-            export CC=clang
-          '';
-        };
+              # The Bazel and Cargo builds in nix require a Clang toolchain.
+              export CC=customClang
+            '';
+          };
       };
     };
 }

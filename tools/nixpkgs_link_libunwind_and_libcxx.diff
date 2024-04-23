@@ -1,0 +1,34 @@
+diff --git a/pkgs/development/compilers/llvm/18/default.nix b/pkgs/development/compilers/llvm/18/default.nix
+index 4d2b160a23ff..f0d4a52f09d9 100644
+--- a/pkgs/development/compilers/llvm/18/default.nix
++++ b/pkgs/development/compilers/llvm/18/default.nix
+@@ -211,19 +211,25 @@ in let
+         targetLlvmLibraries.compiler-rt
+       ] ++ lib.optionals (!stdenv.targetPlatform.isWasm) [
+         targetLlvmLibraries.libunwind
++        targetLlvmLibraries.libcxx
+       ];
+       extraBuildCommands = mkExtraBuildCommands cc;
+       nixSupport.cc-cflags =
+         [ "-rtlib=compiler-rt"
+           "-Wno-unused-command-line-argument"
+           "-B${targetLlvmLibraries.compiler-rt}/lib"
++          "-stdlib=libc++"
+         ]
+-        ++ lib.optional (!stdenv.targetPlatform.isWasm) "--unwindlib=libunwind"
+-        ++ lib.optional
+-          (!stdenv.targetPlatform.isWasm && stdenv.targetPlatform.useLLVM or false)
++        ++ lib.optionals (!stdenv.targetPlatform.isWasm) [
++          "--unwindlib=libunwind"
+           "-lunwind"
++          "-lc++"
++        ]
+         ++ lib.optional stdenv.targetPlatform.isWasm "-fno-exceptions";
+-      nixSupport.cc-ldflags = lib.optionals (!stdenv.targetPlatform.isWasm) [ "-L${targetLlvmLibraries.libunwind}/lib" ];
++      nixSupport.cc-ldflags = lib.optionals (!stdenv.targetPlatform.isWasm) [
++        "-L${targetLlvmLibraries.libunwind}/lib"
++        "-L${targetLlvmLibraries.libcxx}/lib"
++      ];
+     };
+
+     clangNoLibcxx = wrapCCWith rec {

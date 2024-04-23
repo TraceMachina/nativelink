@@ -87,5 +87,19 @@ build:lre --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 #                    is resolved.
 build:lre --define=EXECUTOR=remote
 
+# rules_rust doesn't properly work with remote execution.
+#
+# Note(aaronmondal): It's technically possible to run this build in some remote
+# execution images, such as ubuntu-based images. Those images only pretend to be
+# reproducible (think /usr/bin/clang which could be any version of clang). This
+# disables anything that doesn't "properly" execute remotely.
+common:lre --strategy=Rustc=local
+common:lre --strategy=CargoBuildScriptRun=local
+common:lre --strategy=Rustfmt=local
+common:lre --strategy=Clippy=local
+common:lre --strategy=TestRunner=local
+common:lre --strategy=Rustdoc=local
+common:lre --strategy=Genrule=local # Genrules break remotely as well.
+
 # Allow user-side customization.
 try-import %workspace%/.bazelrc.user
