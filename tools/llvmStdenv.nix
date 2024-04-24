@@ -1,24 +1,16 @@
 {pkgs}: let
+  llvmToolchain =
+    pkgs.overrideCC (
+      pkgs.llvmPackages_18.libcxxStdenv.override {
+        targetPlatform.useLLVM = true;
+      }
+    )
+    pkgs.llvmPackages_18.clangUseLLVM;
+
   toolchain =
     if pkgs.stdenv.isDarwin
-    then
-      (
-        pkgs.overrideCC (
-          pkgs.llvmPackages_16.libcxxStdenv.override {
-            targetPlatform.useLLVM = true;
-          }
-        )
-        pkgs.llvmPackages.clangUseLLVM
-      )
-    else
-      (pkgs.useMoldLinker (
-        pkgs.overrideCC (
-          pkgs.llvmPackages_17.libcxxStdenv.override {
-            targetPlatform.useLLVM = true;
-          }
-        )
-        pkgs.llvmPackages_17.clangUseLLVM
-      ));
+    then llvmToolchain # Mold doesn't support darwin.
+    else pkgs.useMoldLinker llvmToolchain;
 in
   # This toolchain uses Clang as compiler, Mold as linker, libc++ as C++
   # standard library and compiler-rt as compiler runtime. Resulting rust
