@@ -1,0 +1,5 @@
+disallowed-methods = [
+    # fully qualified function/method name:
+    { path = "tokio::spawn", reason = "use `nativelink-util::task::spawn` or `nativelink-util::task::background_spawn` instead" },
+    { path = "tokio::task::spawn_blocking", reason = "use `nativelink-util::task::spawn_blocking` instead" },
+]

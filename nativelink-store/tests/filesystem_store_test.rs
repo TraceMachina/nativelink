@@ -37,9 +37,11 @@ use nativelink_store::filesystem_store::{
     digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::{fs, DigestInfo, JoinHandleDropGuard};
+use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::tokio_task::instrument_future;
+use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
 use rand::{thread_rng, Rng};
 use sha2::{Digest, Sha256};
@@ -164,18 +166,23 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
         // command that will wait for all tasks and sub spawns to complete.
         // Sadly we need to rely on `active_drop_spawns` to hit zero to ensure that
         // all tasks have completed.
-        let thread_handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap();
-            rt.block_on(async move {
+        let fut = instrument_future(
+            async move {
                 // Drop the FileEntryImpl in a controlled setting then wait for the
                 // `active_drop_spawns` to hit zero.
                 drop(inner);
-                while shared_context.active_drop_spawns.load(Ordering::Relaxed) > 0 {
+                while shared_context.active_drop_spawns.load(Ordering::Acquire) > 0 {
                     tokio::task::yield_now().await;
                 }
-            });
+            },
+            tracing::error_span!("test_file_entry_drop"),
+        );
+        let thread_handle = std::thread::spawn(move || {
+            println!("HERE");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            rt.block_on(fut)
         });
         thread_handle.join().unwrap();
         // At this point we can guarantee our file drop spawn has completed.
@@ -222,6 +229,7 @@ async fn write_file(file_name: &OsStr, data: &[u8]) -> Result<(), Error> {
 
 #[cfg(test)]
 mod filesystem_store_tests {
+    use nativelink_util::origin_context::OriginContext;
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -233,6 +241,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn valid_results_after_shutdown_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
@@ -283,6 +292,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
@@ -373,6 +383,7 @@ mod filesystem_store_tests {
     // temporary file (of the object that was deleted) is cleaned up.
     #[tokio::test]
     async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
@@ -411,11 +422,14 @@ mod filesystem_store_tests {
         let (writer, mut reader) = make_buf_channel_pair();
         let store_clone = store.clone();
         let digest1_clone = digest1;
-        tokio::spawn(async move {
-            Pin::new(store_clone.as_ref())
-                .get(digest1_clone, writer)
-                .await
-        });
+        background_spawn!(
+            async move {
+                Pin::new(store_clone.as_ref())
+                    .get(digest1_clone, writer)
+                    .await
+            },
+            "file_continues_to_stream_on_content_replace_test_store_get"
+        );
 
         {
             // Check to ensure our first byte has been received. The future should be stalled here.
@@ -502,6 +516,7 @@ mod filesystem_store_tests {
     // get deleted.
     #[tokio::test]
     async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
         let content_path = make_temp_path("content_path");
@@ -541,7 +556,10 @@ mod filesystem_store_tests {
         let mut reader = {
             let (writer, reader) = make_buf_channel_pair();
             let store_clone = store.clone();
-            tokio::spawn(async move { Pin::new(store_clone.as_ref()).get(digest1, writer).await });
+            background_spawn!(
+                async move { Pin::new(store_clone.as_ref()).get(digest1, writer).await },
+                "file_gets_cleans_up_on_cache_eviction_store_get"
+            );
             reader
         };
         // Ensure we have received 1 byte in our buffer. This will ensure we have a reference to
@@ -613,6 +631,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn atime_updates_on_get_part_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let store = Box::pin(
@@ -662,6 +681,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(), Error> {
+        OriginContext::init_for_test();
         // Note these are swapped to ensure they aren't in numerical order.
         let digest1 = DigestInfo::try_new(HASH2, VALUE2.len())?;
         let digest2 = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -716,6 +736,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn eviction_drops_file_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let store = Box::pin(
@@ -768,6 +789,7 @@ mod filesystem_store_tests {
     // `FileEntry` file contents should be immutable for the lifetime of the object.
     #[tokio::test]
     async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let store = Box::pin(
@@ -814,6 +836,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const SMALL_VALUE: &str = "01";
         const BIG_VALUE: &str = "0123";
         let small_digest = DigestInfo::try_new(HASH1, SMALL_VALUE.len())?;
@@ -877,6 +900,7 @@ mod filesystem_store_tests {
     #[tokio::test]
     async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens(
     ) -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         let content_path = make_temp_path("content_path");
@@ -887,7 +911,7 @@ mod filesystem_store_tests {
         struct LocalHooks {}
         impl FileEntryHooks for LocalHooks {
             fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
-                tokio::spawn(FILE_DELETED_BARRIER.wait());
+                background_spawn!(FILE_DELETED_BARRIER.wait(), "rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop");
             }
         }
 
@@ -975,9 +999,12 @@ mod filesystem_store_tests {
         fs::remove_dir_all(&content_path).await?;
 
         // Because send_eof() waits for shutdown of the rx side, we cannot just await in this thread.
-        tokio::spawn(async move {
-            tx.send_eof().unwrap();
-        });
+        background_spawn!(
+            async move {
+                tx.send_eof().unwrap();
+            },
+            "rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_send_eof"
+        );
 
         // Now finish waiting on update(). This should reuslt in an error because we deleted our dest
         // folder.
@@ -1007,12 +1034,12 @@ mod filesystem_store_tests {
             None,
             "Entry should not be in store"
         );
-
         Ok(())
     }
 
     #[tokio::test]
     async fn get_part_timeout_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let large_value = "x".repeat(1024);
         let digest = DigestInfo::try_new(HASH1, large_value.len())?;
         let content_path = make_temp_path("content_path");
@@ -1043,11 +1070,14 @@ mod filesystem_store_tests {
         let store_clone = store.clone();
         let digest_clone = digest;
 
-        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
-            Pin::new(store_clone.as_ref())
-                .get(digest_clone, writer)
-                .await
-        }));
+        let _drop_guard = spawn!(
+            async move {
+                Pin::new(store_clone.as_ref())
+                    .get(digest_clone, writer)
+                    .await
+            },
+            "get_part_timeout_test_get"
+        );
 
         let file_data = reader
             .consume(Some(1024))
@@ -1065,6 +1095,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn get_part_is_zero_digest() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),
             size_bytes: 0,
@@ -1089,12 +1120,15 @@ mod filesystem_store_tests {
         let store_clone = store.clone();
         let (mut writer, mut reader) = make_buf_channel_pair();
 
-        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
-            let _ = Pin::new(store_clone.as_ref())
-                .get_part_ref(digest, &mut writer, 0, None)
-                .await
-                .err_tip(|| "Failed to get_part_ref");
-        }));
+        let _drop_guard = spawn!(
+            async move {
+                let _ = Pin::new(store_clone.as_ref())
+                    .get_part_ref(digest, &mut writer, 0, None)
+                    .await
+                    .err_tip(|| "Failed to get_part_ref");
+            },
+            "get_part_is_zero_digest_get_part_ref"
+        );
 
         let file_data = reader
             .consume(Some(1024))
@@ -1109,6 +1143,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn has_with_results_on_zero_digests() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),
             size_bytes: 0,
@@ -1180,6 +1215,7 @@ mod filesystem_store_tests {
     /// Regression test for: https://github.com/TraceMachina/nativelink/issues/495.
     #[tokio::test(flavor = "multi_thread")]
     async fn update_file_future_drops_before_rename() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         // Mutex can be used to signal to the rename function to pause execution.
@@ -1270,6 +1306,7 @@ mod filesystem_store_tests {
 
     #[tokio::test]
     async fn deleted_file_removed_from_store() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
@@ -1315,6 +1352,7 @@ mod filesystem_store_tests {
     // 5K data size = 8K size on disk
     #[tokio::test]
     async fn get_file_size_uses_block_size() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
 
@@ -1365,6 +1403,7 @@ mod filesystem_store_tests {
     #[tokio::test]
     async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         use std::os::unix::fs::MetadataExt;
+        OriginContext::init_for_test();
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
 

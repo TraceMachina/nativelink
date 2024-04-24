@@ -19,6 +19,7 @@ use std::str::from_utf8;
 
 use nativelink_error::Error;
 use nativelink_util::common::fs;
+use nativelink_util::origin_context::OriginContext;
 use rand::{thread_rng, Rng};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
@@ -45,6 +46,7 @@ mod fs_tests {
 
     #[tokio::test]
     async fn resumeable_file_slot_write_close_write_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
         let filename = make_temp_path("test_file.txt").await;
         {
@@ -71,6 +73,7 @@ mod fs_tests {
 
     #[tokio::test]
     async fn resumeable_file_slot_read_close_read_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
         const DUMMYDATA: &str = "DummyDataTest";
         let filename = make_temp_path("test_file.txt").await;
@@ -105,6 +108,7 @@ mod fs_tests {
 
     #[tokio::test]
     async fn resumeable_file_slot_read_close_read_with_take_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
         const DUMMYDATA: &str = "DummyDataTest";
         let filename = make_temp_path("test_file.txt").await;
@@ -143,6 +147,7 @@ mod fs_tests {
 
     #[tokio::test]
     async fn resumeable_file_slot_read_close_read_with_take_and_seek_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let _permit = TEST_EXCLUSIVE_SEMAPHORE.acquire().await; // One test at a time.
         const DUMMYDATA: &str = "DummyDataTest";
         let filename = make_temp_path("test_file.txt").await;

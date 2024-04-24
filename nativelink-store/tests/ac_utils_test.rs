@@ -20,6 +20,7 @@ use std::sync::Arc;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::{fs, DigestInfo};
+use nativelink_util::origin_context::OriginContext;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncWriteExt;
@@ -50,6 +51,7 @@ mod ac_utils_tests {
     // loop resulting in the file always being created with <= 4096 bytes.
     #[tokio::test]
     async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let filepath = make_temp_path("test.txt").await;
         let expected_data = vec![0x88; 1024 * 1024]; // 1MB.
         let store = Arc::new(MemoryStore::new(

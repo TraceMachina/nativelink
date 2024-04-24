@@ -35,6 +35,7 @@ use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerAp
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::origin_context::OriginContext;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio_stream::StreamExt;
 use tonic::Request;
@@ -54,6 +55,7 @@ fn static_now_fn() -> Result<Duration, Error> {
 }
 
 async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestContext, Error> {
+    OriginContext::init_for_test();
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
     let scheduler = Arc::new(SimpleScheduler::new(

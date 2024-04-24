@@ -40,9 +40,10 @@ use nativelink_util::buf_channel::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
+use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::tokio_task::JoinHandleDropGuard;
 use parking_lot::Mutex;
-use tokio::task::AbortHandle;
 use tokio::time::sleep;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{enabled, error_span, event, instrument, Instrument, Level};
@@ -110,15 +111,17 @@ impl<'a> Drop for ActiveStreamGuard<'a> {
         let sleep_fn = self.bytestream_server.sleep_fn.clone();
         active_uploads_slot.1 = Some(IdleStream {
             stream_state,
-            abort_timeout_handle: tokio::spawn(async move {
-                (*sleep_fn)().await;
-                if let Some(active_uploads) = weak_active_uploads.upgrade() {
-                    let mut active_uploads = active_uploads.lock();
-                    event!(Level::INFO, msg = "Removing idle stream", uuid = ?uuid);
-                    active_uploads.remove(&uuid);
-                }
-            })
-            .abort_handle(),
+            _timeout_streaam_drop_guard: spawn!(
+                async move {
+                    (*sleep_fn)().await;
+                    if let Some(active_uploads) = weak_active_uploads.upgrade() {
+                        let mut active_uploads = active_uploads.lock();
+                        event!(Level::INFO, msg = "Removing idle stream", uuid = ?uuid);
+                        active_uploads.remove(&uuid);
+                    }
+                },
+                "bytestream_idle_stream_timeout"
+            ),
         });
     }
 }
@@ -129,7 +132,7 @@ impl<'a> Drop for ActiveStreamGuard<'a> {
 #[derive(Debug)]
 struct IdleStream {
     stream_state: StreamState,
-    abort_timeout_handle: AbortHandle,
+    _timeout_streaam_drop_guard: JoinHandleDropGuard<()>,
 }
 
 impl IdleStream {
@@ -138,7 +141,6 @@ impl IdleStream {
         bytes_received: Arc<AtomicU64>,
         bytestream_server: &ByteStreamServer,
     ) -> ActiveStreamGuard<'_> {
-        self.abort_timeout_handle.abort();
         ActiveStreamGuard {
             stream_state: Some(self.stream_state),
             bytes_received,

@@ -48,9 +48,12 @@ use nativelink_util::metrics_utils::{
     set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent,
     Registry,
 };
+use nativelink_util::origin_context::OriginContext;
+use nativelink_util::spawn_blocking;
 use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
 };
+use nativelink_util::tokio_task::{background_spawn_instrumented_future, instrument_new_future};
 use nativelink_worker::local_worker::new_local_worker;
 use parking_lot::Mutex;
 use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
@@ -58,7 +61,6 @@ use scopeguard::guard;
 use tokio::net::TcpListener;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::task::spawn_blocking;
 use tokio_rustls::rustls::pki_types::{CertificateDer, CertificateRevocationListDer};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
@@ -66,7 +68,7 @@ use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
-use tracing::{error_span, event, Instrument, Level};
+use tracing::{error_span, event, trace_span, Level};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 #[global_allocator]
@@ -424,39 +426,45 @@ async fn inner_main(
             };
             svc = svc.route_service(
                 path,
-                axum::routing::get(move |_request: hyper::Request<hyper::Body>| async move {
-                    // We spawn on a thread that can block to give more freedom to our metrics
-                    // collection. This allows it to call functions like `tokio::block_in_place`
-                    // if it needs to wait on a future.
-                    spawn_blocking(move || {
-                        let mut buf = String::new();
-                        let root_metrics_registry_guard =
-                            futures::executor::block_on(root_metrics_registry.lock());
-                        prometheus_client::encoding::text::encode(
-                            &mut buf,
-                            &root_metrics_registry_guard,
-                        )
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                        .map(|_| {
-                            // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
-                            buf = buf.replace("nativelink_nativelink_stores_", "");
-                            buf = buf.replace("nativelink_nativelink_workers_", "");
-                            let mut response = Response::new(buf);
-                            // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
-                            // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
-                            // However, this makes debugging more difficult, so we use the old text/plain instead.
-                            response.headers_mut().insert(
-                                hyper::header::CONTENT_TYPE,
-                                hyper::header::HeaderValue::from_static(
-                                    "text/plain; version=0.0.4; charset=utf-8",
-                                ),
-                            );
-                            response
-                        })
-                        .unwrap_or_else(error_to_response)
-                    })
-                    .await
-                    .unwrap_or_else(error_to_response)
+                axum::routing::get(move |_request: hyper::Request<hyper::Body>| {
+                    instrument_new_future(
+                        async move {
+                            // We spawn on a thread that can block to give more freedom to our metrics
+                            // collection. This allows it to call functions like `tokio::block_in_place`
+                            // if it needs to wait on a future.
+                            spawn_blocking!(move || {
+                                let mut buf = String::new();
+                                let root_metrics_registry_guard =
+                                    futures::executor::block_on(root_metrics_registry.lock());
+                                prometheus_client::encoding::text::encode(
+                                    &mut buf,
+                                    &root_metrics_registry_guard,
+                                )
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                .map(|_| {
+                                    // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
+                                    buf = buf.replace("nativelink_nativelink_stores_", "");
+                                    buf = buf.replace("nativelink_nativelink_workers_", "");
+                                    let mut response = Response::new(buf);
+                                    // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
+                                    // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
+                                    // However, this makes debugging more difficult, so we use the old text/plain instead.
+                                    response.headers_mut().insert(
+                                        hyper::header::CONTENT_TYPE,
+                                        hyper::header::HeaderValue::from_static(
+                                            "text/plain; version=0.0.4; charset=utf-8",
+                                        ),
+                                    );
+                                    response
+                                })
+                                .unwrap_or_else(error_to_response)
+                            }, target: "nativelink::services", "prometheus_blocking")
+                            .await
+                            .unwrap_or_else(error_to_response)
+                        },
+                        trace_span!(target: "nativelink:services", "prometheus"),
+                        Arc::new(OriginContext::default()),
+                    )
                 }),
             )
         }
@@ -473,43 +481,49 @@ async fn inner_main(
                 Router::new().route(
                     "/scheduler/:instance_name/set_drain_worker/:worker_id/:is_draining",
                     axum::routing::post(
-                        move |params: axum::extract::Path<(String, String, String)>| async move {
-                            let (instance_name, worker_id, is_draining) = params.0;
-                            (async move {
-                                let is_draining = match is_draining.as_str() {
-                                    "0" => false,
-                                    "1" => true,
-                                    _ => {
-                                        return Err(make_err!(
-                                            Code::Internal,
-                                            "{} is neither 0 nor 1",
-                                            is_draining
+                        move |params: axum::extract::Path<(String, String, String)>| {
+                            instrument_new_future(
+                                async move {
+                                    let (instance_name, worker_id, is_draining) = params.0;
+                                    (async move {
+                                        let is_draining = match is_draining.as_str() {
+                                            "0" => false,
+                                            "1" => true,
+                                            _ => {
+                                                return Err(make_err!(
+                                                    Code::Internal,
+                                                    "{} is neither 0 nor 1",
+                                                    is_draining
+                                                ))
+                                            }
+                                        };
+                                        worker_schedulers
+                                            .get(&instance_name)
+                                            .err_tip(|| {
+                                                format!(
+                                                    "Can not get an instance with the name of '{}'",
+                                                    &instance_name
+                                                )
+                                            })?
+                                            .clone()
+                                            .set_drain_worker(
+                                                WorkerId::try_from(worker_id.clone())?,
+                                                is_draining,
+                                            )
+                                            .await?;
+                                        Ok::<_, Error>(format!("Draining worker {worker_id}"))
+                                    })
+                                    .await
+                                    .map_err(|e| {
+                                        Err::<String, _>((
+                                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                            format!("Error: {e:?}"),
                                         ))
-                                    }
-                                };
-                                worker_schedulers
-                                    .get(&instance_name)
-                                    .err_tip(|| {
-                                        format!(
-                                            "Can not get an instance with the name of '{}'",
-                                            &instance_name
-                                        )
-                                    })?
-                                    .clone()
-                                    .set_drain_worker(
-                                        WorkerId::try_from(worker_id.clone())?,
-                                        is_draining,
-                                    )
-                                    .await?;
-                                Ok::<_, Error>(format!("Draining worker {worker_id}"))
-                            })
-                            .await
-                            .map_err(|e| {
-                                Err::<String, _>((
-                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("Error: {e:?}"),
-                                ))
-                            })
+                                    })
+                                },
+                                error_span!("set_drain_worker"),
+                                Arc::new(OriginContext::default()),
+                            )
                         },
                     ),
                 ),
@@ -705,7 +719,7 @@ async fn inner_main(
                     },
                     Ok,
                 );
-                tokio::spawn(
+                background_spawn_instrumented_future(instrument_new_future(
                     async move {
                         // Move it into our spawn, so if our spawn dies the cleanup happens.
                         let _guard = scope_guard;
@@ -717,14 +731,15 @@ async fn inner_main(
                                 "Failed running service"
                             );
                         }
-                    }
-                    .instrument(error_span!(
+                    },
+                    error_span!(
                         target: "nativelink::services",
                         "http_connection",
                         ?remote_addr,
                         ?socket_addr
-                    )),
-                );
+                    ),
+                    Arc::new(OriginContext::default()),
+                ));
             }
         }));
     }
@@ -794,7 +809,11 @@ async fn inner_main(
                     let worker_metrics = root_worker_metrics.sub_registry_with_prefix(&name);
                     local_worker.register_metrics(worker_metrics);
                     worker_names.insert(name.clone());
-                    tokio::spawn(local_worker.run().instrument(error_span!("worker", ?name)))
+                    background_spawn_instrumented_future(instrument_new_future(
+                        local_worker.run(),
+                        error_span!("worker", ?name),
+                        Arc::new(OriginContext::default()),
+                    ))
                 }
             };
             root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));

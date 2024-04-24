@@ -1925,12 +1925,14 @@ dependencies = [
 name = "nativelink-util"
 version = "0.3.0"
 dependencies = [
+ "arc-cell",
  "async-lock",
  "async-trait",
  "blake3",
  "bytes",
  "futures",
  "hex",
+ "lazy_static",
  "lru",
  "mock_instant",
  "nativelink-config",

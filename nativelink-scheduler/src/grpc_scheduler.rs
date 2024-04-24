@@ -32,7 +32,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::tls_utils;
+use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
 use rand::rngs::OsRng;
 use rand::Rng;
@@ -40,7 +40,7 @@ use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
-use tracing::{error_span, event, Instrument, Level};
+use tracing::{event, Level};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -119,46 +119,48 @@ impl GrpcScheduler {
             .err_tip(|| "Recieving response from upstream scheduler")?
         {
             let (tx, rx) = watch::channel(Arc::new(initial_response.try_into()?));
-            tokio::spawn(async move {
-                loop {
-                    select!(
-                        _ = tx.closed() => {
-                            event!(
-                                Level::INFO,
-                                "Client disconnected in GrpcScheduler"
-                            );
-                            return;
-                        }
-                        response = result_stream.message() => {
-                            // When the upstream closes the channel, close the
-                            // downstream too.
-                            let Ok(Some(response)) = response else {
+            background_spawn!(
+                async move {
+                    loop {
+                        select!(
+                            _ = tx.closed() => {
+                                event!(
+                                    Level::INFO,
+                                    "Client disconnected in GrpcScheduler"
+                                );
                                 return;
-                            };
-                            match response.try_into() {
-                                Ok(response) => {
-                                    if let Err(err) = tx.send(Arc::new(response)) {
-                                        event!(
-                                            Level::INFO,
-                                            ?err,
-                                            "Client error in GrpcScheduler"
-                                        );
-                                        return;
-                                    }
-                                }
-                                Err(err) => {
-                                    event!(
-                                        Level::ERROR,
-                                        ?err,
-                                        "Error converting response to ActionState in GrpcScheduler"
-                                    );
-                                },
                             }
-                        }
-                    )
-                }
-            }
-            .instrument(error_span!("stream_state")));
+                            response = result_stream.message() => {
+                                // When the upstream closes the channel, close the
+                                // downstream too.
+                                let Ok(Some(response)) = response else {
+                                    return;
+                                };
+                                match response.try_into() {
+                                    Ok(response) => {
+                                        if let Err(err) = tx.send(Arc::new(response)) {
+                                            event!(
+                                                Level::INFO,
+                                                ?err,
+                                                "Client error in GrpcScheduler"
+                                            );
+                                            return;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        event!(
+                                            Level::ERROR,
+                                            ?err,
+                                            "Error converting response to ActionState in GrpcScheduler"
+                                        );
+                                    },
+                                }
+                            }
+                        )
+                    }
+                },
+                "grpc_scheduler_stream_state"
+            );
             return Ok(rx);
         }
         Err(make_err!(

@@ -23,7 +23,8 @@ use nativelink_error::Error;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
-use nativelink_util::common::JoinHandleDropGuard;
+use nativelink_util::spawn;
+use nativelink_util::tokio_task::JoinHandleDropGuard;
 use nativelink_worker::local_worker::LocalWorker;
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
 use tokio::sync::mpsc;
@@ -192,7 +193,7 @@ pub async fn setup_local_worker_with_config(local_worker_config: LocalWorkerConf
         }),
         Box::new(move |_| Box::pin(async move { /* No sleep */ })),
     );
-    let drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move { worker.run().await }));
+    let drop_guard = spawn!(async move { worker.run().await }, "local_worker_spawn");
 
     let (tx_stream, streaming_response) = setup_grpc_stream();
     TestContext {

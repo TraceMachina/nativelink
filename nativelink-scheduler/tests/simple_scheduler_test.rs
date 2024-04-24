@@ -95,6 +95,7 @@ async fn setup_action(
 
 #[cfg(test)]
 mod scheduler_tests {
+    use nativelink_util::origin_context::OriginContext;
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -103,6 +104,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -156,6 +158,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn find_executing_action() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -217,6 +220,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
         const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);
         let scheduler = SimpleScheduler::new_with_callback(
@@ -363,6 +367,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -437,6 +442,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID1: WorkerId = WorkerId(0x0010_0001);
         const WORKER_ID2: WorkerId = WorkerId(0x0010_0002);
 
@@ -520,6 +526,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x0010_0009);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -622,6 +629,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x0010_0010);
         let scheduler = SimpleScheduler::new_with_callback(
             &nativelink_config::schedulers::SimpleScheduler::default(),
@@ -659,6 +667,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
         const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);
         let scheduler = SimpleScheduler::new_with_callback(
@@ -761,6 +770,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn update_action_sends_completed_result_to_client_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -864,6 +874,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn update_action_sends_completed_result_after_disconnect() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -966,6 +977,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const GOOD_WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
         const ROGUE_WORKER_ID: WorkerId = WorkerId(0x0009_8765_4321);
 
@@ -1062,6 +1074,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x0010_000f);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -1191,6 +1204,7 @@ mod scheduler_tests {
     #[tokio::test]
     async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> Result<(), Error>
     {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -1335,6 +1349,7 @@ mod scheduler_tests {
     /// This tests that actions are performed in the order they were queued.
     #[tokio::test]
     async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -1387,6 +1402,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
         let scheduler = SimpleScheduler::new_with_callback(
@@ -1504,6 +1520,7 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
+        OriginContext::init_for_test();
         struct DropChecker {
             dropped: Arc<AtomicBool>,
         }
@@ -1543,6 +1560,7 @@ mod scheduler_tests {
     /// Regression test for: https://github.com/TraceMachina/nativelink/issues/257.
     #[tokio::test]
     async fn ensure_task_or_worker_change_notification_received_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
         const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);
 

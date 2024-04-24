@@ -35,6 +35,8 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::time::timeout;
 use tracing::{event, Level};
 
+use crate::spawn_blocking;
+
 /// Default read buffer size when reading to/from disk.
 pub const DEFAULT_READ_BUFF_SIZE: usize = 16384;
 
@@ -302,7 +304,7 @@ where
     T: Send + 'static,
 {
     let permit = get_permit().await?;
-    tokio::task::spawn_blocking(move || f(permit))
+    spawn_blocking!(move || f(permit), "fs_call_with_permit")
         .await
         .unwrap_or_else(|e| Err(make_err!(Code::Internal, "background task failed: {e:?}")))
 }

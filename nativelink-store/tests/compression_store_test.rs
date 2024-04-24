@@ -27,7 +27,9 @@ use nativelink_store::compression_store::{
 };
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
+use nativelink_util::common::DigestInfo;
+use nativelink_util::origin_context::OriginContext;
+use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -73,6 +75,7 @@ mod compression_store_tests {
 
     #[tokio::test]
     async fn simple_smoke_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
@@ -110,6 +113,7 @@ mod compression_store_tests {
 
     #[tokio::test]
     async fn partial_reads_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
@@ -169,6 +173,7 @@ mod compression_store_tests {
 
     #[tokio::test]
     async fn rand_5mb_smoke_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
@@ -205,6 +210,7 @@ mod compression_store_tests {
 
     #[tokio::test]
     async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
@@ -260,6 +266,7 @@ mod compression_store_tests {
 
     #[tokio::test]
     async fn check_header_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const BLOCK_SIZE: u32 = 150;
         const MAX_SIZE_INPUT: usize = 1024 * 1024; // 1MB.
         let inner_store = Arc::new(MemoryStore::new(
@@ -350,6 +357,7 @@ mod compression_store_tests {
 
     #[tokio::test]
     async fn check_footer_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const BLOCK_SIZE: u32 = 32 * 1024;
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -497,6 +505,7 @@ mod compression_store_tests {
 
     #[tokio::test]
     async fn get_part_is_zero_digest() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),
             size_bytes: 0,
@@ -525,13 +534,16 @@ mod compression_store_tests {
 
         let (mut writer, mut reader) = make_buf_channel_pair();
 
-        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
-            let _ = store
-                .as_ref()
-                .get_part_ref(digest, &mut writer, 0, None)
-                .await
-                .err_tip(|| "Failed to get_part_ref");
-        }));
+        let _drop_guard = spawn!(
+            async move {
+                let _ = store
+                    .as_ref()
+                    .get_part_ref(digest, &mut writer, 0, None)
+                    .await
+                    .err_tip(|| "Failed to get_part_ref");
+            },
+            "get_part_is_zero_digest"
+        );
 
         let file_data = reader
             .consume(Some(1024))

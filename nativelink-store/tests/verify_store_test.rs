@@ -16,15 +16,17 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::try_join;
+use nativelink_error::{Error, ResultExt};
+use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::verify_store::VerifyStore;
+use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::common::DigestInfo;
+use nativelink_util::origin_context::OriginContext;
+use nativelink_util::spawn;
+use nativelink_util::store_trait::{Store, UploadSizeInfo};
 
 #[cfg(test)]
 mod verify_store_tests {
-    use nativelink_error::{Error, ResultExt};
-    use nativelink_store::memory_store::MemoryStore;
-    use nativelink_store::verify_store::VerifyStore;
-    use nativelink_util::buf_channel::make_buf_channel_pair;
-    use nativelink_util::common::DigestInfo;
-    use nativelink_util::store_trait::{Store, UploadSizeInfo};
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use super::*;
@@ -33,6 +35,7 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_size_false_passes_on_update() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
@@ -67,6 +70,7 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_size_true_fails_on_update() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
@@ -110,6 +114,7 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
@@ -139,6 +144,7 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
@@ -157,11 +163,14 @@ mod verify_store_tests {
 
         let digest = DigestInfo::try_new(VALID_HASH1, 6).unwrap();
         let digest_clone = digest;
-        let future = tokio::spawn(async move {
-            Pin::new(&store_owned)
-                .update(digest_clone, rx, UploadSizeInfo::ExactSize(6))
-                .await
-        });
+        let future = spawn!(
+            async move {
+                Pin::new(&store_owned)
+                    .update(digest_clone, rx, UploadSizeInfo::ExactSize(6))
+                    .await
+            },
+            "verify_size_true_suceeds_on_multi_chunk_stream_update"
+        );
         tx.send("foo".into()).await?;
         tx.send("bar".into()).await?;
         tx.send_eof()?;
@@ -177,6 +186,7 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
@@ -210,6 +220,7 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
@@ -251,6 +262,7 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
@@ -284,6 +296,7 @@ mod verify_store_tests {
 
     #[tokio::test]
     async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));

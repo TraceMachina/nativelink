@@ -20,7 +20,9 @@ use memory_stats::memory_stats;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
+use nativelink_util::common::DigestInfo;
+use nativelink_util::origin_context::OriginContext;
+use nativelink_util::spawn;
 use nativelink_util::store_trait::Store;
 use sha2::{Digest, Sha256};
 
@@ -34,13 +36,13 @@ const INVALID_HASH: &str = "g111111111111111111111111111111111111111111111111111
 
 #[cfg(test)]
 mod memory_store_tests {
-
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
 
     #[tokio::test]
     async fn insert_one_item_then_update() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const VALUE1: &str = "13";
         const VALUE2: &str = "23";
         let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
@@ -89,6 +91,7 @@ mod memory_store_tests {
     // Regression test for: https://github.com/TraceMachina/nativelink/issues/289.
     #[tokio::test]
     async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         // Arbitrary value, this may be increased if we find out that this is
         // too low for some kernels/operating systems.
         const MAXIMUM_MEMORY_USAGE_INCREASE_PERC: f64 = 1.3; // 30% increase.
@@ -134,6 +137,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn read_partial() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const VALUE1: &str = "1234";
         let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
         let store = Pin::new(&store_owned);
@@ -157,6 +161,7 @@ mod memory_store_tests {
     // due to internal EOF handling. This is an edge case test.
     #[tokio::test]
     async fn read_zero_size_item_test() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const VALUE: &str = "";
         let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
         let store = Pin::new(&store_owned);
@@ -177,6 +182,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn errors_with_invalid_inputs() -> Result<(), Error> {
+        OriginContext::init_for_test();
         const VALUE1: &str = "123";
         let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
         let store = Pin::new(&store_owned);
@@ -244,6 +250,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn get_part_is_zero_digest() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),
             size_bytes: 0,
@@ -255,12 +262,15 @@ mod memory_store_tests {
         let store_clone = store.clone();
         let (mut writer, mut reader) = make_buf_channel_pair();
 
-        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
-            let _ = Pin::new(store_clone.as_ref())
-                .get_part_ref(digest, &mut writer, 0, None)
-                .await
-                .err_tip(|| "Failed to get_part_ref");
-        }));
+        let _drop_guard = spawn!(
+            async move {
+                let _ = Pin::new(store_clone.as_ref())
+                    .get_part_ref(digest, &mut writer, 0, None)
+                    .await
+                    .err_tip(|| "Failed to get_part_ref");
+            },
+            "get_part_is_zero_digest"
+        );
 
         let file_data = reader
             .consume(Some(1024))
@@ -275,6 +285,7 @@ mod memory_store_tests {
 
     #[tokio::test]
     async fn has_with_results_on_zero_digests() -> Result<(), Error> {
+        OriginContext::init_for_test();
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),
             size_bytes: 0,

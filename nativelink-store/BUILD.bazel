@@ -122,6 +122,7 @@ rust_test_suite(
         "@crates//:sha2",
         "@crates//:tokio",
         "@crates//:tokio-stream",
+        "@crates//:tracing",
         "@crates//:uuid",
     ],
 )
