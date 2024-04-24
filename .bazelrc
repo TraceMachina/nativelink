@@ -75,24 +75,6 @@ build:windows --enable_runfiles
 # toolchains are resolved before the rust toolchains.
 build --extra_toolchains=@rust_toolchains//:all
 
-# Option to test the zig toolchain on Linux. Prefer the default `linux`
-# toolchain which builds cc targets roughly twice as fast.
-#
-# WARNING:
-#
-# We're using an incredibly old target glibc here. Builds created with this
-# toolchain have maximum compatibility (theoretically down to Ubuntu 18), but
-# miss out on half a decade of optimizations. Don't use this for production
-# builds if you're running a non-ancient OS and care about performance.
-#
-# TODO(aaronmondal): Migrate to a statically linked musl as soon as rules_rust
-#                    supports it. This way we get to keep (or even improve)
-#                    backwards compatibility without sacrificing performance.
-build:linux_zig --host_platform=@zig_sdk//platform:linux_amd64
-build:linux_zig --extra_toolchains=@zig_sdk//libc_aware/toolchain:linux_amd64_gnu.2.28
-build:linux_zig --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
-
-
 # Local Remote Execution.
 build:lre --extra_execution_platforms=@local-remote-execution//generated-cc/config:platform
 build:lre --extra_toolchains=@local-remote-execution//generated-cc/config:cc-toolchain"

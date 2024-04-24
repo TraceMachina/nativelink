@@ -18,14 +18,6 @@ python.toolchain(
 )
 use_repo(python, python = "python_versions")
 
-bazel_dep(name = "hermetic_cc_toolchain", version = "3.0.1")
-
-zig_toolchains = use_extension(
-    "@hermetic_cc_toolchain//toolchain:ext.bzl",
-    "toolchains",
-)
-use_repo(zig_toolchains, "zig_sdk")
-
 bazel_dep(name = "rules_rust", version = "0.42.1")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
