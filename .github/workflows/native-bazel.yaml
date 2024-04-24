@@ -69,37 +69,3 @@ jobs:
             exit 1
           fi
         shell: bash
-
-  zig-cc-unit-tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-20.04, ubuntu-22.04]
-    name: zig-cc ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    steps:
-
-      - name: Checkout
-        uses: >- # v4.1.1
-          actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
-
-      - name: Setup Bazelisk
-        uses: >- # v0.8.1
-          bazel-contrib/setup-bazel@b388b84bb637e50cdae241d0f255670d4bd79f29
-        with:
-          bazelisk-cache: true
-
-      - name: Mount bazel cache
-        uses: >- # v4.0.1
-          actions/cache@ab5e6d0c87105b4c9c2047343972218f562e4319
-        with:
-          path: |
-            ~/.cache/bazel
-          key: |
-            ${{ matrix.os }}-bazel-legacy-${{ hashFiles('.bazelversion', '.bazelrc', 'WORKSPACE.bazel', 'MODULE.bazel') }}
-          restore-keys: |
-            ${{ matrix.os }}-bazel-legacy-
-
-      - name: Run Bazel tests
-        run: |
-          bazel test --config=linux_zig //... --verbose_failures
