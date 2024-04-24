@@ -19,9 +19,9 @@ parking_lot = "0.12.1"
 pin-project-lite = "0.2.14"
 prometheus-client = "0.21.2"
 prost = "0.12.4"
-prost-types = "0.12.3"
+prost-types = "0.12.4"
 rand = "0.8.5"
-serde = { version = "1.0.197", features = ["derive"] }
+serde = { version = "1.0.198", features = ["derive"] }
 sha2 = "0.10.8"
 tokio = { version = "1.37.0", features = [ "sync", "fs", "rt", "time", "io-util", "macros" ] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }

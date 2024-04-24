@@ -24,15 +24,15 @@ rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
     sha256s = {
-        "2024-04-03/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "0b2164f91906a2fde9b3a518c4d5652c5265ef0b5ba7b1b3573884f16ee02508",
-        "2024-04-03/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "905e3714f811d0efb1f0836c12c1db424de3d194259fa01b853dad30a37f1abe",
-        "2024-04-03/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "aff8ab9422a234d48c7dd65b752c1443678387f61c22f273f4a723895ab4ab69",
-        "2024-04-03/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "4e183c1baabd75198c870d59357cc1992cbd2184fae08edb36a541774eaa15dc",
-        "2024-04-03/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "aaa22601f3106224ecf35ec67ad0e6481838b6ec4cae506f11c5bbf79e94cb65",
+        "2024-04-24/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "1a17b0a4405856c4429e8e2bad781da781f1ccc989a51228a8c9f227c4756c5a",
+        "2024-04-24/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "945f07dbf503d6761e578f135b53544220bdd56688e5b99c8c0701541af840eb",
+        "2024-04-24/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "eaa40532a3a17f8f472b033d74a0c80a6bf955189303ca0ea3f878f8ac207506",
+        "2024-04-24/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "4a95e405021f93b7a99104e6633a4ea61d8d68c302e02298269a6fa2bdb55955",
+        "2024-04-24/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "a2a00829a6511cfcdb18db6cb533c4b95b1a2b663716116faa32b34e5c90dc1f",
     },
     versions = [
         "1.77.2",
-        "nightly/2024-04-03",
+        "nightly/2024-04-24",
     ],
 )
 
@@ -64,7 +64,7 @@ crate.from_cargo(
 )
 use_repo(crate, "crates")
 
-bazel_dep(name = "protobuf", version = "23.1")
+bazel_dep(name = "protobuf", version = "26.0")
 
 # Local remote execution.
 bazel_dep(name = "local-remote-execution", version = "0.0.0")

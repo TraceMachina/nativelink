@@ -498,10 +498,8 @@ impl Store for S3Store {
 
         // S3 requires us to upload in parts if the size is greater than 5GB. The part size must be at least
         // 5mb (except last part) and can have up to 10,000 parts.
-        let bytes_per_upload_part = cmp::min(
-            cmp::max(MIN_MULTIPART_SIZE, max_size / (MIN_MULTIPART_SIZE - 1)),
-            MAX_MULTIPART_SIZE,
-        );
+        let bytes_per_upload_part =
+            (max_size / (MIN_MULTIPART_SIZE - 1)).clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE);
 
         let upload_parts = move || async move {
             // This will ensure we only have `multipart_max_concurrent_uploads` * `bytes_per_upload_part`
