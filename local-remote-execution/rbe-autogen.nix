@@ -1,9 +1,10 @@
 {
   pkgs,
   buildImage,
+  llvmPackages,
   ...
 }: let
-  customStdenv = import ../tools/llvmStdenv.nix {inherit pkgs;};
+  customStdenv = import ../tools/llvmStdenv.nix {inherit pkgs llvmPackages;};
 
   # These dependencies are needed to generate the toolchain configurations but
   # aren't required during remote execution.
@@ -23,8 +24,6 @@
     pkgs.gnutar
 
     customStdenv.cc.bintools
-
-    pkgs.llvmPackages_17.libunwind
   ];
 
   # A temporary directory. Note that this doesn't set any permissions. Those
