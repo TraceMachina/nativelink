@@ -71,7 +71,9 @@
           pkgs.libiconv
         ];
 
-        customStdenv = import ./tools/llvmStdenv.nix {inherit pkgs;};
+        llvmPackages = pkgs.llvmPackages_18;
+
+        customStdenv = import ./tools/llvmStdenv.nix {inherit pkgs llvmPackages;};
 
         # TODO(aaronmondal): This doesn't work with rules_rust yet.
         # Tracked in https://github.com/TraceMachina/nativelink/issues/477.
@@ -140,7 +142,7 @@
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
-        rbe-autogen = import ./local-remote-execution/rbe-autogen.nix {inherit pkgs nativelink buildImage;};
+        rbe-autogen = import ./local-remote-execution/rbe-autogen.nix {inherit pkgs nativelink buildImage llvmPackages;};
         createWorker = import ./tools/create-worker.nix {inherit pkgs nativelink buildImage self;};
         siso-chromium = buildImage {
           name = "siso-chromium";
@@ -154,10 +156,17 @@
           };
         };
       in rec {
-        _module.args.pkgs = import self.inputs.nixpkgs {
-          inherit system;
-          overlays = [(import rust-overlay)];
-        };
+        _module.args.pkgs = let
+          nixpkgs-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
+            name = "nixpkgs-patched";
+            src = self.inputs.nixpkgs;
+            patches = [./tools/nixpkgs_link_libunwind_and_libcxx.diff];
+          };
+        in
+          import nixpkgs-patched {
+            inherit system;
+            overlays = [(import rust-overlay)];
+          };
         apps = {
           default = {
             type = "app";
@@ -172,7 +181,7 @@
           inherit publish-ghcr local-image-test nativelink nativelink-debug native-cli;
           default = nativelink;
 
-          lre-cc = import ./local-remote-execution/lre-cc.nix {inherit pkgs buildImage;};
+          lre-cc = import ./local-remote-execution/lre-cc.nix {inherit pkgs buildImage llvmPackages;};
           rbe-autogen-lre-cc = rbe-autogen lre-cc;
           nativelink-worker-lre-cc = createWorker lre-cc;
           lre-java = import ./local-remote-execution/lre-java.nix {inherit pkgs buildImage;};
