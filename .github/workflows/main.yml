@@ -7,6 +7,8 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions: read-all
+
 jobs:
   docker-compose-compiles-nativelink:
     # The type of runner that the job will run on.
