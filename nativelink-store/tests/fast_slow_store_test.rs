@@ -16,6 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::noop_store::NoopStore;
@@ -90,7 +91,7 @@ mod fast_slow_store_tests {
 
     const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_large_amount_to_both_stores_test() -> Result<(), Error> {
         let (store, fast_store, slow_store) = make_stores();
         let store = Pin::new(store.as_ref());
@@ -120,7 +121,7 @@ mod fast_slow_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn fetch_slow_store_puts_in_fast_store_test() -> Result<(), Error> {
         let (fast_slow_store, fast_store, slow_store) = make_stores();
         let fast_slow_store = Pin::new(fast_slow_store.as_ref());
@@ -150,7 +151,7 @@ mod fast_slow_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn partial_reads_copy_full_to_fast_store_test() -> Result<(), Error> {
         let (fast_slow_store, fast_store, slow_store) = make_stores();
         let fast_slow_store = Pin::new(fast_slow_store.as_ref());
@@ -255,7 +256,7 @@ mod fast_slow_store_tests {
         }
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
         struct DropCheckStore {
             drop_flag: Arc<AtomicBool>,
@@ -407,7 +408,7 @@ mod fast_slow_store_tests {
         get_res.merge(read_res)
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn ignore_value_in_fast_store() -> Result<(), Error> {
         let fast_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -442,7 +443,7 @@ mod fast_slow_store_tests {
     }
 
     // Regression test for https://github.com/TraceMachina/nativelink/issues/665
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
         let fast_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),

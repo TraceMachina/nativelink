@@ -17,6 +17,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::StreamExt;
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::WriteRequest;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::proto_stream_utils::{
@@ -34,7 +35,7 @@ mod proto_stream_utils_tests {
     const INSTANCE_NAME: &str = "test-instance";
 
     // Regression test for TraceMachina/nativelink#745.
-    #[tokio::test]
+    #[nativelink_test]
     async fn ensure_no_errors_if_only_first_message_has_resource_name_set() -> Result<(), Error> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<WriteRequest, Error>>();
 

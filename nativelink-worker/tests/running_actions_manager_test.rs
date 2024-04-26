@@ -29,6 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use nativelink_config::cas_server::EnvironmentSource;
 use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_macro::nativelink_test;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use nativelink_proto::build::bazel::remote::execution::v2::{
     digest_function::Value as ProtoDigestFunction, platform::Property, Action,
@@ -146,7 +147,7 @@ mod running_actions_manager_tests {
 
     use super::*; // Must be declared in every module.
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn download_to_directory_file_download_test() -> Result<(), Box<dyn std::error::Error>> {
         const FILE1_NAME: &str = "file1.txt";
         const FILE1_CONTENT: &str = "HELLOFILE1";
@@ -244,7 +245,7 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn download_to_directory_folder_download_test() -> Result<(), Box<dyn std::error::Error>>
     {
         const DIRECTORY1_NAME: &str = "folder1";
@@ -343,7 +344,7 @@ mod running_actions_manager_tests {
 
     // Windows does not support symlinks.
     #[cfg(not(target_family = "windows"))]
-    #[tokio::test]
+    #[nativelink_test]
     async fn download_to_directory_symlink_download_test() -> Result<(), Box<dyn std::error::Error>>
     {
         const FILE_NAME: &str = "file.txt";
@@ -415,7 +416,7 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn ensure_output_files_full_directories_are_created_no_working_directory_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
@@ -529,7 +530,7 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn ensure_output_files_full_directories_are_created_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
@@ -646,7 +647,7 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
@@ -818,7 +819,7 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
@@ -991,7 +992,7 @@ mod running_actions_manager_tests {
 
     // Windows does not support symlinks.
     #[cfg(not(target_family = "windows"))]
-    #[tokio::test]
+    #[nativelink_test]
     async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
@@ -1190,7 +1191,7 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
@@ -1321,7 +1322,7 @@ mod running_actions_manager_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
         const SALT: u64 = 55;
@@ -1428,7 +1429,7 @@ mod running_actions_manager_tests {
     // The wrapper script will print a constant string to stderr, and the test itself will
     // print to stdout. We then check the results of both to make sure the shell script was
     // invoked and the actual command was invoked under the shell script.
-    #[tokio::test]
+    #[nativelink_test]
     async fn entrypoint_does_invoke_if_set() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_family = "unix")]
         const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
@@ -1571,7 +1572,7 @@ exit 0
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn entrypoint_injects_properties() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_family = "unix")]
         const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
@@ -1747,7 +1748,7 @@ exit 0
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_family = "unix")]
         const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
@@ -1870,7 +1871,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
@@ -1942,7 +1943,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn failed_action_does_not_cache_in_action_cache() -> Result<(), Box<dyn std::error::Error>>
     {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -2015,7 +2016,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn success_does_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
@@ -2115,7 +2116,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn failure_does_not_cache_in_historical_results() -> Result<(), Box<dyn std::error::Error>>
     {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -2156,7 +2157,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn infra_failure_does_cache_in_historical_results(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -2222,7 +2223,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn action_result_has_used_in_message() -> Result<(), Box<dyn std::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
 
@@ -2274,7 +2275,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn std::error::Error>>
     {
         const WORKER_ID: &str = "foo_worker_id";
@@ -2550,7 +2551,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
@@ -2678,7 +2679,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
@@ -2836,7 +2837,7 @@ exit 1
 
     /// Regression Test for Issue #675
     #[cfg(target_family = "unix")]
-    #[tokio::test]
+    #[nativelink_test]
     async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
         const FILE_1_NAME: &str = "file1";
@@ -2931,7 +2932,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
@@ -3024,7 +3025,7 @@ exit 1
     // Be default this test is ignored because it *must* be run single threaded... to run this
     // test execute:
     // cargo test -p nativelink-worker --test running_actions_manager_test -- --test-threads=1 --ignored
-    #[tokio::test]
+    #[nativelink_test]
     #[ignore]
     async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
@@ -3209,7 +3210,7 @@ exit 1
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn running_actions_manager_respects_action_timeout(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";

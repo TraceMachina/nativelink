@@ -20,6 +20,7 @@ use futures::try_join;
 #[cfg(test)]
 mod verify_store_tests {
     use nativelink_error::{Error, ResultExt};
+    use nativelink_macro::nativelink_test;
     use nativelink_store::memory_store::MemoryStore;
     use nativelink_store::verify_store::VerifyStore;
     use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -31,7 +32,7 @@ mod verify_store_tests {
 
     const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_size_false_passes_on_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -65,7 +66,7 @@ mod verify_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_size_true_fails_on_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -108,7 +109,7 @@ mod verify_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -137,7 +138,7 @@ mod verify_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -175,7 +176,7 @@ mod verify_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -208,7 +209,7 @@ mod verify_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -249,7 +250,7 @@ mod verify_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -282,7 +283,7 @@ mod verify_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),

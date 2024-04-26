@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use nativelink_macro::nativelink_test;
 use nativelink_util::resource_info::ResourceInfo;
 
 #[cfg(test)]
@@ -20,7 +21,7 @@ mod resource_info_tests {
 
     use super::*; // Must be declared in every module.
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str =
@@ -37,7 +38,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_compressed_blobs_compressor_digest_function_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/compressed-blobs/zstd/blake3/hash/12345";
@@ -53,7 +54,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_blobs_digest_function_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/blobs/blake3/hash/12345/optional_metadata";
@@ -69,7 +70,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_blobs_digest_function_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/blobs/blake3/hash/12345";
@@ -85,7 +86,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "compressed-blobs/zstd/blake3/hash/12345/optional_metadata";
@@ -101,7 +102,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_compressed_blobs_compressor_digest_function_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "compressed-blobs/zstd/blake3/hash/12345";
@@ -116,7 +117,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_blobs_digest_function_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "blobs/blake3/hash/12345/optional_metadata";
@@ -132,7 +133,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_blobs_digest_function_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "blobs/blake3/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
@@ -147,7 +148,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_compressed_blobs_compressor_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str =
@@ -164,7 +165,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_compressed_blobs_compressor_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/compressed-blobs/zstd/hash/12345";
@@ -180,7 +181,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_blobs_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/blobs/hash/12345/optional_metadata";
@@ -196,7 +197,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
@@ -211,7 +212,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_compressed_blobs_compressor_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "compressed-blobs/zstd/hash/12345/optional_metadata";
@@ -227,7 +228,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_compressed_blobs_compressor_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "compressed-blobs/zstd/hash/12345";
@@ -243,7 +244,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_blobs_hash_size_optional_metadata_test() -> Result<(), Box<dyn std::error::Error>>
     {
         const RESOURCE_NAME: &str = "blobs/hash/12345/optional_metadata";
@@ -259,7 +260,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
@@ -274,7 +275,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_can_have_slashes_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "my/instance/name/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
@@ -289,7 +290,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_instance_name_can_be_blobs_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "blobs/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
@@ -304,21 +305,21 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_blobs_missing() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "hash/12345";
         assert!(ResourceInfo::new(RESOURCE_NAME, false).is_err());
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_blobs_invalid() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "BLOBS/hash/12345";
         assert!(ResourceInfo::new(RESOURCE_NAME, false).is_err());
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_too_short_test() -> Result<(), Box<dyn std::error::Error>> {
         assert!(ResourceInfo::new("", false).is_err());
         assert!(ResourceInfo::new("/", false).is_err());
@@ -332,7 +333,7 @@ mod resource_info_tests {
 
     // Begin write tests.
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str =
@@ -349,7 +350,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str =
@@ -366,7 +367,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_uploads_uuid_blobs_digest_function_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str =
@@ -383,7 +384,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_uploads_uuid_blobs_digest_function_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/uploads/uuid/blobs/blake3/hash/12345";
@@ -399,7 +400,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str =
@@ -416,7 +417,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_uuid_compressed_blobs_compressor_digest_function_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/zstd/blake3/hash/12345";
@@ -432,7 +433,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_uuid_blobs_digest_function_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uploads/uuid/blobs/blake3/hash/12345/optional_metadata";
@@ -448,7 +449,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_uuid_blobs_digest_function_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uploads/uuid/blobs/blake3/hash/12345";
@@ -464,7 +465,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str =
@@ -481,7 +482,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_uploads_uuid_compressed_blobs_compressor_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/uploads/uuid/compressed-blobs/zstd/hash/12345";
@@ -497,7 +498,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_uploads_uuid_blobs_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/uploads/uuid/blobs/hash/12345/optional_metadata";
@@ -513,7 +514,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_uploads_uuid_blobs_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "instance_name/uploads/uuid/blobs/hash/12345";
@@ -529,7 +530,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str =
@@ -546,7 +547,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_uuid_compressed_blobs_compressor_hash_size_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/zstd/hash/12345";
@@ -562,7 +563,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn compressed_blob_invalid_compression_format() -> Result<(), Box<dyn std::error::Error>>
     {
         const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/INVALID/hash/12345";
@@ -570,7 +571,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_uuid_blobs_hash_size_optional_metadata_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/12345/optional_metadata";
@@ -586,7 +587,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_uuid_blobs_hash_size_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
@@ -601,7 +602,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_can_have_slashes_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "my/instance/name/uploads/uuid/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
@@ -616,7 +617,7 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_instance_name_can_be_blobs_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "blobs/uploads/uuid/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
@@ -631,35 +632,35 @@ mod resource_info_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_missing() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uuid/compressed-blobs/hash/12345";
         assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_invalid() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "UPLOADS/uuid/compressed-blobs/hash/12345";
         assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_blobs_missing() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uploads/uuid/hash/12345";
         assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_uploads_blobs_invalid() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uploads/uuid/BLOBS/hash/12345";
         assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn write_invalid_size_test() -> Result<(), Box<dyn std::error::Error>> {
         const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/INVALID";
         assert!(ResourceInfo::new(RESOURCE_NAME, true).is_err());

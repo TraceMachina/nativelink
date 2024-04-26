@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::ExecuteResponse;
 use nativelink_proto::google::longrunning::{operation, Operation};
 use nativelink_proto::google::rpc::Status;
@@ -41,7 +42,7 @@ mod action_messages_tests {
 
     use super::*; // Must be declared in every module.
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn action_state_any_url_test() -> Result<(), Error> {
         let action_state = ActionState {
             unique_qualifier: ActionInfoHashKey {
@@ -68,7 +69,7 @@ mod action_messages_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn execute_response_status_message_is_some_on_success_test() -> Result<(), Error> {
         let execute_response: ExecuteResponse = ActionStage::Completed(ActionResult {
             output_files: vec![],
@@ -102,7 +103,7 @@ mod action_messages_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn highest_priority_action_first() -> Result<(), Error> {
         const INSTANCE_NAME: &str = "foobar_instance_name";
 
@@ -158,7 +159,7 @@ mod action_messages_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn equal_priority_earliest_first() -> Result<(), Error> {
         const INSTANCE_NAME: &str = "foobar_instance_name";
 

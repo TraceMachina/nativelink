@@ -18,6 +18,7 @@ use std::sync::Arc;
 #[cfg(test)]
 mod ref_store_tests {
     use nativelink_error::Error;
+    use nativelink_macro::nativelink_test;
     use nativelink_store::memory_store::MemoryStore;
     use nativelink_store::ref_store::RefStore;
     use nativelink_store::store_manager::StoreManager;
@@ -47,7 +48,7 @@ mod ref_store_tests {
         (store_manager, memory_store_owned, ref_store_owned)
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_test() -> Result<(), Error> {
         let (_store_manager, memory_store_owned, ref_store_owned) = setup_stores();
 
@@ -76,7 +77,7 @@ mod ref_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_test() -> Result<(), Error> {
         let (_store_manager, memory_store_owned, ref_store_owned) = setup_stores();
 
@@ -106,7 +107,7 @@ mod ref_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn update_test() -> Result<(), Error> {
         let (_store_manager, memory_store_owned, ref_store_owned) = setup_stores();
 
@@ -136,7 +137,7 @@ mod ref_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn inner_store_test() -> Result<(), Error> {
         let store_manager = Arc::new(StoreManager::new());
 

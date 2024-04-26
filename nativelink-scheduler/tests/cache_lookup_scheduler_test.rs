@@ -24,6 +24,7 @@ mod utils {
 
 use futures::join;
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
@@ -63,7 +64,7 @@ mod cache_lookup_scheduler_tests {
 
     use super::*; // Must be declared in every module.
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn platform_property_manager_call_passed() -> Result<(), Error> {
         let context = make_cache_scheduler()?;
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
@@ -84,7 +85,7 @@ mod cache_lookup_scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn add_action_handles_skip_cache() -> Result<(), Error> {
         let context = make_cache_scheduler()?;
         let action_info = make_base_action_info(UNIX_EPOCH);
@@ -109,7 +110,7 @@ mod cache_lookup_scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn find_existing_action_call_passed() -> Result<(), Error> {
         let context = make_cache_scheduler()?;
         let action_name = ActionInfoHashKey {

@@ -18,6 +18,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use maplit::hashmap;
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     digest_function, ActionResult, Digest,
@@ -117,7 +118,7 @@ mod get_action_result {
             .await
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
@@ -133,7 +134,7 @@ mod get_action_result {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
@@ -156,7 +157,7 @@ mod get_action_result {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
@@ -210,7 +211,7 @@ mod update_action_result {
             .await
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;

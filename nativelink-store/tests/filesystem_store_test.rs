@@ -33,6 +33,7 @@ use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{poll, Future, FutureExt};
 use nativelink_error::{Code, Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
     digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
 };
@@ -231,7 +232,7 @@ mod filesystem_store_tests {
     const VALUE1: &str = "0123456789";
     const VALUE2: &str = "9876543210";
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn valid_results_after_shutdown_test() -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
@@ -281,7 +282,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
@@ -371,7 +372,7 @@ mod filesystem_store_tests {
     // This test ensures that if a file is overridden and an open stream to the file already
     // exists, the open stream will continue to work properly and when the stream is done the
     // temporary file (of the object that was deleted) is cleaned up.
-    #[tokio::test]
+    #[nativelink_test]
     async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
@@ -500,7 +501,7 @@ mod filesystem_store_tests {
     // Eviction has a different code path than a file replacement, so we check that if a
     // file is evicted and has an open stream on it, it will stay alive and eventually
     // get deleted.
-    #[tokio::test]
+    #[nativelink_test]
     async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
@@ -611,7 +612,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn atime_updates_on_get_part_test() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
@@ -660,7 +661,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(), Error> {
         // Note these are swapped to ensure they aren't in numerical order.
         let digest1 = DigestInfo::try_new(HASH2, VALUE2.len())?;
@@ -714,7 +715,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn eviction_drops_file_test() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
@@ -766,7 +767,7 @@ mod filesystem_store_tests {
     // Test to ensure that if we are holding a reference to `FileEntry` and the contents are
     // replaced, the `FileEntry` continues to use the old data.
     // `FileEntry` file contents should be immutable for the lifetime of the object.
-    #[tokio::test]
+    #[nativelink_test]
     async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
@@ -812,7 +813,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
         const SMALL_VALUE: &str = "01";
         const BIG_VALUE: &str = "0123";
@@ -873,8 +874,8 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[nativelink_test]
     #[allow(clippy::await_holding_refcell_ref)]
-    #[tokio::test]
     async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens(
     ) -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -1011,7 +1012,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_part_timeout_test() -> Result<(), Error> {
         let large_value = "x".repeat(1024);
         let digest = DigestInfo::try_new(HASH1, large_value.len())?;
@@ -1063,7 +1064,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_part_is_zero_digest() -> Result<(), Error> {
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),
@@ -1107,7 +1108,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),
@@ -1178,7 +1179,7 @@ mod filesystem_store_tests {
     }
 
     /// Regression test for: https://github.com/TraceMachina/nativelink/issues/495.
-    #[tokio::test(flavor = "multi_thread")]
+    #[nativelink_test(flavor = "multi_thread")]
     async fn update_file_future_drops_before_rename() -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
@@ -1268,7 +1269,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn deleted_file_removed_from_store() -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
         let content_path = make_temp_path("content_path");
@@ -1313,7 +1314,7 @@ mod filesystem_store_tests {
     // assume block size 4K
     // 1B data size = 4K size on disk
     // 5K data size = 8K size on disk
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_file_size_uses_block_size() -> Result<(), Error> {
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
@@ -1362,7 +1363,7 @@ mod filesystem_store_tests {
 
     // Ensure that update_with_whole_file() moves the file without making a copy.
     #[cfg(target_family = "unix")]
-    #[tokio::test]
+    #[nativelink_test]
     async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         use std::os::unix::fs::MetadataExt;
         let content_path = make_temp_path("content_path");

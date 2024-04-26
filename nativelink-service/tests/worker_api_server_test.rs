@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nativelink_config::cas_server::WorkerApiConfig;
 use nativelink_error::{Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile,
     OutputDirectory, OutputFile, OutputSymlink,
@@ -116,7 +117,7 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
 pub mod connect_worker_tests {
     use super::*;
 
-    #[tokio::test]
+    #[nativelink_test]
     pub async fn connect_worker_adds_worker_to_scheduler_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
@@ -136,7 +137,7 @@ pub mod keep_alive_tests {
 
     use super::*;
 
-    #[tokio::test]
+    #[nativelink_test]
     pub async fn server_times_out_workers_test() -> Result<(), Box<dyn std::error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
@@ -169,7 +170,7 @@ pub mod keep_alive_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     pub async fn server_does_not_timeout_if_keep_alive_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let now_timestamp = Arc::new(Mutex::new(BASE_NOW_S));
@@ -223,7 +224,7 @@ pub mod keep_alive_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     pub async fn worker_receives_keep_alive_request_test() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut test_context =
@@ -262,7 +263,7 @@ pub mod keep_alive_tests {
 pub mod going_away_tests {
     use super::*;
 
-    #[tokio::test]
+    #[nativelink_test]
     pub async fn going_away_removes_worker_test() -> Result<(), Box<dyn std::error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
@@ -298,7 +299,7 @@ pub mod execution_response_tests {
         UNIX_EPOCH.checked_add(Duration::from_secs(time)).unwrap()
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error::Error>> {
         let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 

@@ -21,6 +21,7 @@ use std::sync::Arc;
 use bincode::{DefaultOptions, Options};
 use bytes::Bytes;
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_store::compression_store::{
     CompressionStore, Footer, Lz4Config, SliceIndex, CURRENT_STREAM_FORMAT_VERSION,
     DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE,
@@ -71,7 +72,7 @@ mod compression_store_tests {
     const DUMMY_DATA_SIZE: usize = 100; // Some dummy size to populate DigestInfo with.
     const MEGABYTE_SZ: usize = 1024 * 1024;
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_smoke_test() -> Result<(), Error> {
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
@@ -108,7 +109,7 @@ mod compression_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn partial_reads_test() -> Result<(), Error> {
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
@@ -167,7 +168,7 @@ mod compression_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn rand_5mb_smoke_test() -> Result<(), Error> {
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
@@ -203,7 +204,7 @@ mod compression_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn sanity_check_zero_bytes_test() -> Result<(), Error> {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -258,7 +259,7 @@ mod compression_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn check_header_test() -> Result<(), Error> {
         const BLOCK_SIZE: u32 = 150;
         const MAX_SIZE_INPUT: usize = 1024 * 1024; // 1MB.
@@ -348,7 +349,7 @@ mod compression_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn check_footer_test() -> Result<(), Error> {
         const BLOCK_SIZE: u32 = 32 * 1024;
         let inner_store = Arc::new(MemoryStore::new(
@@ -495,7 +496,7 @@ mod compression_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_part_is_zero_digest() -> Result<(), Error> {
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),

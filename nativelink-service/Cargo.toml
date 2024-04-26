@@ -26,6 +26,8 @@ tracing = "0.1.40"
 uuid = { version = "1.8.0", features = ["v4"] }
 
 [dev-dependencies]
+nativelink-macro = { path = "../nativelink-macro" }
+
 hyper = "0.14.28"
 maplit = "1.0.2"
 pretty_assertions = "1.4.0"

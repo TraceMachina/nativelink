@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use nativelink_config::stores::{ExistenceCacheStore as ExistenceCacheStoreConfig, StoreConfig};
 use nativelink_error::{Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
@@ -28,7 +29,7 @@ mod verify_store_tests {
 
     const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_exist_cache_test() -> Result<(), Error> {
         const VALUE: &str = "123";
         let config = ExistenceCacheStoreConfig {
@@ -69,7 +70,7 @@ mod verify_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn update_flags_existance_cache_test() -> Result<(), Error> {
         const VALUE: &str = "123";
         let config = ExistenceCacheStoreConfig {
@@ -94,7 +95,7 @@ mod verify_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_part_caches_if_exact_size_set() -> Result<(), Error> {
         const VALUE: &str = "123";
         let config = ExistenceCacheStoreConfig {
