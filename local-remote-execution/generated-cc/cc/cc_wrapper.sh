@@ -22,4 +22,4 @@ set -eu
 
 
 # Call the C++ compiler
-/nix/store/p8ck07vfxiszzqpcz0p2l0afb6nmlxmx-customClang/bin/customClang "$@"
+/nix/store/29xdc6ax5g41njf20h09gmf52qm1zws6-customClang/bin/customClang "$@"

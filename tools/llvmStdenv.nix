@@ -1,11 +1,15 @@
-{pkgs}: let
+{
+  pkgs,
+  llvmPackages,
+  ...
+}: let
   llvmToolchain =
     pkgs.overrideCC (
-      pkgs.llvmPackages_18.libcxxStdenv.override {
+      llvmPackages.libcxxStdenv.override {
         targetPlatform.useLLVM = true;
       }
     )
-    pkgs.llvmPackages_18.clangUseLLVM;
+    llvmPackages.clangUseLLVM;
 
   toolchain =
     if pkgs.stdenv.isDarwin

@@ -1,9 +1,9 @@
 {
   pkgs,
   buildImage,
-  ...
+  llvmPackages,
 }: let
-  customStdenv = import ../tools/llvmStdenv.nix {inherit pkgs;};
+  customStdenv = import ../tools/llvmStdenv.nix {inherit pkgs llvmPackages;};
   customClang = pkgs.callPackage ../tools/customClang.nix {
     inherit pkgs;
     stdenv = customStdenv;
@@ -36,13 +36,13 @@
     #                    would be nicer to handle this as part of the nix
     #                    stdenv instead.
     "BAZEL_LINKOPTS=${pkgs.lib.concatStringsSep ":" [
-      "-L${pkgs.llvmPackages_17.libcxx}/lib"
-      "-L${pkgs.llvmPackages_17.libunwind}/lib"
+      "-L${llvmPackages.libcxx}/lib"
+      "-L${llvmPackages.libunwind}/lib"
       "-lc++"
       (
         "-Wl,"
-        + "-rpath,${pkgs.llvmPackages_17.libcxx}/lib,"
-        + "-rpath,${pkgs.llvmPackages_17.libunwind}/lib,"
+        + "-rpath,${llvmPackages.libcxx}/lib,"
+        + "-rpath,${llvmPackages.libunwind}/lib,"
         + "-rpath,${pkgs.glibc}/lib"
       )
     ]}"
