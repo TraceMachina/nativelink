@@ -25,6 +25,7 @@ mod verify_store_tests {
     use nativelink_store::verify_store::VerifyStore;
     use nativelink_util::buf_channel::make_buf_channel_pair;
     use nativelink_util::common::DigestInfo;
+    use nativelink_util::spawn;
     use nativelink_util::store_trait::{Store, UploadSizeInfo};
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
@@ -158,11 +159,14 @@ mod verify_store_tests {
 
         let digest = DigestInfo::try_new(VALID_HASH1, 6).unwrap();
         let digest_clone = digest;
-        let future = tokio::spawn(async move {
-            Pin::new(&store_owned)
-                .update(digest_clone, rx, UploadSizeInfo::ExactSize(6))
-                .await
-        });
+        let future = spawn!(
+            "verify_size_true_suceeds_on_multi_chunk_stream_update",
+            async move {
+                Pin::new(&store_owned)
+                    .update(digest_clone, rx, UploadSizeInfo::ExactSize(6))
+                    .await
+            },
+        );
         tx.send("foo".into()).await?;
         tx.send("bar".into()).await?;
         tx.send_eof()?;
