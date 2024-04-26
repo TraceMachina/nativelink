@@ -27,6 +27,7 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState,
 };
+use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use parking_lot::{Mutex, MutexGuard};
@@ -158,64 +159,70 @@ impl ActionScheduler for CacheLookupScheduler {
         let ac_store = self.ac_store.clone();
         let action_scheduler = self.action_scheduler.clone();
         // We need this spawn because we are returning a stream and this spawn will populate the stream's data.
-        tokio::spawn(async move {
-            // If our spawn ever dies, we will remove the action from the cache_check_actions map.
-            let _scope_guard = scope_guard;
+        background_spawn!(
+            async move {
+                // If our spawn ever dies, we will remove the action from the cache_check_actions map.
+                let _scope_guard = scope_guard;
 
-            // Perform cache check.
-            let action_digest = current_state.action_digest();
-            let instance_name = action_info.instance_name().clone();
-            if let Some(action_result) =
-                get_action_from_store(Pin::new(ac_store.as_ref()), *action_digest, instance_name)
-                    .await
-            {
-                match Pin::new(ac_store.clone().as_ref())
-                    .has(*action_digest)
-                    .await
+                // Perform cache check.
+                let action_digest = current_state.action_digest();
+                let instance_name = action_info.instance_name().clone();
+                if let Some(action_result) = get_action_from_store(
+                    Pin::new(ac_store.as_ref()),
+                    *action_digest,
+                    instance_name,
+                )
+                .await
                 {
-                    Ok(Some(_)) => {
-                        Arc::make_mut(&mut current_state).stage =
-                            ActionStage::CompletedFromCache(action_result);
-                        let _ = tx.send(current_state);
-                        return;
-                    }
-                    Err(err) => {
-                        event!(
+                    match Pin::new(ac_store.clone().as_ref())
+                        .has(*action_digest)
+                        .await
+                    {
+                        Ok(Some(_)) => {
+                            Arc::make_mut(&mut current_state).stage =
+                                ActionStage::CompletedFromCache(action_result);
+                            let _ = tx.send(current_state);
+                            return;
+                        }
+                        Err(err) => {
+                            event!(
                             Level::WARN,
                             ?err,
                             "Error while calling `has` on `ac_store` in `CacheLookupScheduler`'s `add_action` function"
                         );
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
-            // Not in cache, forward to upstream and proxy state.
-            match action_scheduler.add_action(action_info).await {
-                Ok(rx) => {
-                    let mut watch_stream = WatchStream::new(rx);
-                    loop {
-                        select!(
-                            Some(action_state) = watch_stream.next() => {
-                                if tx.send(action_state).is_err() {
+                // Not in cache, forward to upstream and proxy state.
+                match action_scheduler.add_action(action_info).await {
+                    Ok(rx) => {
+                        let mut watch_stream = WatchStream::new(rx);
+                        loop {
+                            select!(
+                                Some(action_state) = watch_stream.next() => {
+                                    if tx.send(action_state).is_err() {
+                                        break;
+                                    }
+                                }
+                                _ = tx.closed() => {
                                     break;
                                 }
-                            }
-                            _ = tx.closed() => {
-                                break;
-                            }
-                        )
+                            )
+                        }
+                    }
+                    Err(err) => {
+                        Arc::make_mut(&mut current_state).stage =
+                            ActionStage::Completed(ActionResult {
+                                error: Some(err),
+                                ..Default::default()
+                            });
+                        let _ = tx.send(current_state);
                     }
                 }
-                Err(err) => {
-                    Arc::make_mut(&mut current_state).stage =
-                        ActionStage::Completed(ActionResult {
-                            error: Some(err),
-                            ..Default::default()
-                        });
-                    let _ = tx.send(current_state);
-                }
-            }
-        });
+            },
+            "cache_lookup_scheduler_add_action"
+        );
         Ok(rx)
     }
 

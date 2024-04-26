@@ -8,12 +8,14 @@ nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }
 nativelink-proto = { path = "../nativelink-proto" }
 
+arc-cell = "0.3.3"
 async-lock = "3.3.0"
 async-trait = "0.1.80"
 blake3 = { version = "1.5.1", features = ["mmap"] }
 bytes = "1.6.0"
 futures = "0.3.30"
 hex = "0.4.3"
+lazy_static = "1.4.0"
 lru = "0.12.3"
 parking_lot = "0.12.2"
 pin-project-lite = "0.2.14"

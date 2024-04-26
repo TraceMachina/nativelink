@@ -59,12 +59,13 @@ use nativelink_util::action_messages::{
     to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo,
     NameOrPath, SymlinkInfo,
 };
-use nativelink_util::common::{fs, DigestInfo, JoinHandleDropGuard};
+use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent,
 };
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
@@ -73,10 +74,9 @@ use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::{oneshot, watch};
-use tokio::task::spawn_blocking;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{enabled, error_span, event, Instrument, Level};
+use tracing::{enabled, event, Level};
 use uuid::Uuid;
 
 pub type ActionId = [u8; 32];
@@ -172,15 +172,20 @@ pub fn download_to_directory<'a>(
                                 })?;
                         }
                         if let Some(mtime) = mtime {
-                            spawn_blocking(move || {
-                                set_file_mtime(
-                                    &dest,
-                                    FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
-                                )
-                                .err_tip(|| {
-                                    format!("Failed to set mtime in download_to_directory {dest}")
-                                })
-                            })
+                            spawn_blocking!(
+                                move || {
+                                    set_file_mtime(
+                                        &dest,
+                                        FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
+                                    )
+                                    .err_tip(|| {
+                                        format!(
+                                            "Failed to set mtime in download_to_directory {dest}"
+                                        )
+                                    })
+                                },
+                                "download_to_directory_set_mtime"
+                            )
                             .await
                             .err_tip(|| {
                                 "Failed to launch spawn_blocking in download_to_directory"
@@ -870,35 +875,44 @@ impl RunningActionImpl {
                 Level::ERROR,
                 "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
             );
-            tokio::spawn(async move { child_process.kill().await });
+            background_spawn!(
+                async move { child_process.kill().await },
+                "running_actions_manager_kill_child_process"
+            );
         });
 
-        let all_stdout_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
-            let mut all_stdout = BytesMut::new();
-            loop {
-                let sz = stdout_reader
-                    .read_buf(&mut all_stdout)
-                    .await
-                    .err_tip(|| "Error reading stdout stream")?;
-                if sz == 0 {
-                    break; // EOF.
+        let all_stdout_fut = spawn!(
+            async move {
+                let mut all_stdout = BytesMut::new();
+                loop {
+                    let sz = stdout_reader
+                        .read_buf(&mut all_stdout)
+                        .await
+                        .err_tip(|| "Error reading stdout stream")?;
+                    if sz == 0 {
+                        break; // EOF.
+                    }
                 }
-            }
-            Result::<Bytes, Error>::Ok(all_stdout.freeze())
-        }));
-        let all_stderr_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
-            let mut all_stderr = BytesMut::new();
-            loop {
-                let sz = stderr_reader
-                    .read_buf(&mut all_stderr)
-                    .await
-                    .err_tip(|| "Error reading stderr stream")?;
-                if sz == 0 {
-                    break; // EOF.
+                Result::<Bytes, Error>::Ok(all_stdout.freeze())
+            },
+            "stdout_reader"
+        );
+        let all_stderr_fut = spawn!(
+            async move {
+                let mut all_stderr = BytesMut::new();
+                loop {
+                    let sz = stderr_reader
+                        .read_buf(&mut all_stderr)
+                        .await
+                        .err_tip(|| "Error reading stderr stream")?;
+                    if sz == 0 {
+                        break; // EOF.
+                    }
                 }
-            }
-            Result::<Bytes, Error>::Ok(all_stderr.freeze())
-        }));
+                Result::<Bytes, Error>::Ok(all_stderr.freeze())
+            },
+            "stderr_reader"
+        );
         let mut killed_action = false;
 
         let timer = self.metrics().child_process.begin_timer();
@@ -1252,7 +1266,7 @@ impl Drop for RunningActionImpl {
         let running_actions_manager = self.running_actions_manager.clone();
         let action_id = self.action_id;
         let action_directory = self.action_directory.clone();
-        tokio::spawn(
+        background_spawn!(
             async move {
                 let Err(err) =
                     do_cleanup(&running_actions_manager, &action_id, &action_directory).await
@@ -1266,8 +1280,8 @@ impl Drop for RunningActionImpl {
                     ?err,
                     "Error cleaning up action"
                 );
-            }
-            .instrument(error_span!("RunningActionImpl::drop")),
+            },
+            "running_action_impl_drop",
         );
     }
 }

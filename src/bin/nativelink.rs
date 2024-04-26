@@ -51,6 +51,7 @@ use nativelink_util::metrics_utils::{
 use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
 };
+use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use nativelink_worker::local_worker::new_local_worker;
 use parking_lot::Mutex;
 use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
@@ -58,7 +59,6 @@ use scopeguard::guard;
 use tokio::net::TcpListener;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::task::spawn_blocking;
 use tokio_rustls::rustls::pki_types::{CertificateDer, CertificateRevocationListDer};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
@@ -66,7 +66,7 @@ use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
-use tracing::{error_span, event, Instrument, Level};
+use tracing::{event, Level};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 #[global_allocator]
@@ -428,33 +428,36 @@ async fn inner_main(
                     // We spawn on a thread that can block to give more freedom to our metrics
                     // collection. This allows it to call functions like `tokio::block_in_place`
                     // if it needs to wait on a future.
-                    spawn_blocking(move || {
-                        let mut buf = String::new();
-                        let root_metrics_registry_guard =
-                            futures::executor::block_on(root_metrics_registry.lock());
-                        prometheus_client::encoding::text::encode(
-                            &mut buf,
-                            &root_metrics_registry_guard,
-                        )
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                        .map(|_| {
-                            // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
-                            buf = buf.replace("nativelink_nativelink_stores_", "");
-                            buf = buf.replace("nativelink_nativelink_workers_", "");
-                            let mut response = Response::new(buf);
-                            // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
-                            // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
-                            // However, this makes debugging more difficult, so we use the old text/plain instead.
-                            response.headers_mut().insert(
-                                hyper::header::CONTENT_TYPE,
-                                hyper::header::HeaderValue::from_static(
-                                    "text/plain; version=0.0.4; charset=utf-8",
-                                ),
-                            );
-                            response
-                        })
-                        .unwrap_or_else(error_to_response)
-                    })
+                    spawn_blocking!(
+                        move || {
+                            let mut buf = String::new();
+                            let root_metrics_registry_guard =
+                                futures::executor::block_on(root_metrics_registry.lock());
+                            prometheus_client::encoding::text::encode(
+                                &mut buf,
+                                &root_metrics_registry_guard,
+                            )
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            .map(|_| {
+                                // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
+                                buf = buf.replace("nativelink_nativelink_stores_", "");
+                                buf = buf.replace("nativelink_nativelink_workers_", "");
+                                let mut response = Response::new(buf);
+                                // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
+                                // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
+                                // However, this makes debugging more difficult, so we use the old text/plain instead.
+                                response.headers_mut().insert(
+                                    hyper::header::CONTENT_TYPE,
+                                    hyper::header::HeaderValue::from_static(
+                                        "text/plain; version=0.0.4; charset=utf-8",
+                                    ),
+                                );
+                                response
+                            })
+                            .unwrap_or_else(error_to_response)
+                        },
+                        "prometheus_metrics"
+                    )
                     .await
                     .unwrap_or_else(error_to_response)
                 }),
@@ -705,7 +708,7 @@ async fn inner_main(
                     },
                     Ok,
                 );
-                tokio::spawn(
+                background_spawn!(
                     async move {
                         // Move it into our spawn, so if our spawn dies the cleanup happens.
                         let _guard = scope_guard;
@@ -717,13 +720,11 @@ async fn inner_main(
                                 "Failed running service"
                             );
                         }
-                    }
-                    .instrument(error_span!(
-                        target: "nativelink::services",
-                        "http_connection",
-                        ?remote_addr,
-                        ?socket_addr
-                    )),
+                    },
+                    target: "nativelink::services",
+                    "http_connection",
+                    ?remote_addr,
+                    ?socket_addr,
                 );
             }
         }));
@@ -794,7 +795,7 @@ async fn inner_main(
                     let worker_metrics = root_worker_metrics.sub_registry_with_prefix(&name);
                     local_worker.register_metrics(worker_metrics);
                     worker_names.insert(name.clone());
-                    tokio::spawn(local_worker.run().instrument(error_span!("worker", ?name)))
+                    spawn!(local_worker.run(), "worker", ?name)
                 }
             };
             root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
@@ -900,29 +901,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .max_blocking_threads(max_blocking_threads)
-        .enable_all()
-        .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
-        .build()?;
+    #[allow(clippy::disallowed_methods)]
+    {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .max_blocking_threads(max_blocking_threads)
+            .enable_all()
+            .on_thread_start(move || set_metrics_enabled_for_this_thread(metrics_enabled))
+            .build()?;
+        runtime.spawn(async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to listen to SIGINT");
+            eprintln!("User terminated process via SIGINT");
+            std::process::exit(130);
+        });
 
-    runtime.spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen to SIGINT");
-        eprintln!("User terminated process via SIGINT");
-        std::process::exit(130);
-    });
+        #[cfg(target_family = "unix")]
+        runtime.spawn(async move {
+            signal(SignalKind::terminate())
+                .expect("Failed to listen to SIGTERM")
+                .recv()
+                .await;
+            eprintln!("Process terminated via SIGTERM");
+            std::process::exit(143);
+        });
 
-    #[cfg(target_family = "unix")]
-    runtime.spawn(async move {
-        signal(SignalKind::terminate())
-            .expect("Failed to listen to SIGTERM")
-            .recv()
-            .await;
-        eprintln!("Process terminated via SIGTERM");
-        std::process::exit(143);
-    });
-
-    runtime.block_on(inner_main(cfg, server_start_time))
+        runtime.block_on(inner_main(cfg, server_start_time))
+    }
 }

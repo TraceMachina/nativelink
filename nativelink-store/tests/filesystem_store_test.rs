@@ -38,9 +38,11 @@ use nativelink_store::filesystem_store::{
     digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::{fs, DigestInfo, JoinHandleDropGuard};
+use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::task::instrument_future;
+use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
 use rand::{thread_rng, Rng};
 use sha2::{Digest, Sha256};
@@ -165,19 +167,26 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
         // command that will wait for all tasks and sub spawns to complete.
         // Sadly we need to rely on `active_drop_spawns` to hit zero to ensure that
         // all tasks have completed.
-        let thread_handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap();
-            rt.block_on(async move {
+        let fut = instrument_future(
+            async move {
                 // Drop the FileEntryImpl in a controlled setting then wait for the
                 // `active_drop_spawns` to hit zero.
                 drop(inner);
-                while shared_context.active_drop_spawns.load(Ordering::Relaxed) > 0 {
+                while shared_context.active_drop_spawns.load(Ordering::Acquire) > 0 {
                     tokio::task::yield_now().await;
                 }
-            });
-        });
+            },
+            tracing::error_span!("test_file_entry_drop"),
+        );
+        #[allow(clippy::disallowed_methods)]
+        let thread_handle = {
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap();
+                rt.block_on(fut)
+            })
+        };
         thread_handle.join().unwrap();
         // At this point we can guarantee our file drop spawn has completed.
         Hooks::on_drop(self);
@@ -412,11 +421,14 @@ mod filesystem_store_tests {
         let (writer, mut reader) = make_buf_channel_pair();
         let store_clone = store.clone();
         let digest1_clone = digest1;
-        tokio::spawn(async move {
-            Pin::new(store_clone.as_ref())
-                .get(digest1_clone, writer)
-                .await
-        });
+        background_spawn!(
+            async move {
+                Pin::new(store_clone.as_ref())
+                    .get(digest1_clone, writer)
+                    .await
+            },
+            "file_continues_to_stream_on_content_replace_test_store_get"
+        );
 
         {
             // Check to ensure our first byte has been received. The future should be stalled here.
@@ -542,7 +554,10 @@ mod filesystem_store_tests {
         let mut reader = {
             let (writer, reader) = make_buf_channel_pair();
             let store_clone = store.clone();
-            tokio::spawn(async move { Pin::new(store_clone.as_ref()).get(digest1, writer).await });
+            background_spawn!(
+                async move { Pin::new(store_clone.as_ref()).get(digest1, writer).await },
+                "file_gets_cleans_up_on_cache_eviction_store_get"
+            );
             reader
         };
         // Ensure we have received 1 byte in our buffer. This will ensure we have a reference to
@@ -888,7 +903,7 @@ mod filesystem_store_tests {
         struct LocalHooks {}
         impl FileEntryHooks for LocalHooks {
             fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
-                tokio::spawn(FILE_DELETED_BARRIER.wait());
+                background_spawn!(FILE_DELETED_BARRIER.wait(), "rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_local_hooks_on_drop");
             }
         }
 
@@ -976,9 +991,12 @@ mod filesystem_store_tests {
         fs::remove_dir_all(&content_path).await?;
 
         // Because send_eof() waits for shutdown of the rx side, we cannot just await in this thread.
-        tokio::spawn(async move {
-            tx.send_eof().unwrap();
-        });
+        background_spawn!(
+            async move {
+                tx.send_eof().unwrap();
+            },
+            "rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens_send_eof"
+        );
 
         // Now finish waiting on update(). This should reuslt in an error because we deleted our dest
         // folder.
@@ -1008,7 +1026,6 @@ mod filesystem_store_tests {
             None,
             "Entry should not be in store"
         );
-
         Ok(())
     }
 
@@ -1044,11 +1061,14 @@ mod filesystem_store_tests {
         let store_clone = store.clone();
         let digest_clone = digest;
 
-        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
-            Pin::new(store_clone.as_ref())
-                .get(digest_clone, writer)
-                .await
-        }));
+        let _drop_guard = spawn!(
+            async move {
+                Pin::new(store_clone.as_ref())
+                    .get(digest_clone, writer)
+                    .await
+            },
+            "get_part_timeout_test_get"
+        );
 
         let file_data = reader
             .consume(Some(1024))
@@ -1090,12 +1110,15 @@ mod filesystem_store_tests {
         let store_clone = store.clone();
         let (mut writer, mut reader) = make_buf_channel_pair();
 
-        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
-            let _ = Pin::new(store_clone.as_ref())
-                .get_part_ref(digest, &mut writer, 0, None)
-                .await
-                .err_tip(|| "Failed to get_part_ref");
-        }));
+        let _drop_guard = spawn!(
+            async move {
+                let _ = Pin::new(store_clone.as_ref())
+                    .get_part_ref(digest, &mut writer, 0, None)
+                    .await
+                    .err_tip(|| "Failed to get_part_ref");
+            },
+            "get_part_is_zero_digest_get_part_ref"
+        );
 
         let file_data = reader
             .consume(Some(1024))

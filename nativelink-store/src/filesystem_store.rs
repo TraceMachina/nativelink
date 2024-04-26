@@ -35,11 +35,11 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::task::spawn_blocking;
 use tokio::time::{sleep, timeout, Sleep};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{event, trace_span, Instrument, Level};
+use tracing::{event, Level};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -112,7 +112,7 @@ impl Drop for EncodedFilePath {
         shared_context
             .active_drop_spawns
             .fetch_add(1, Ordering::Relaxed);
-        tokio::spawn(
+        background_spawn!(
             async move {
                 event!(Level::INFO, ?file_path, "File deleted",);
                 let result = fs::remove_file(&file_path)
@@ -124,8 +124,8 @@ impl Drop for EncodedFilePath {
                 shared_context
                     .active_drop_spawns
                     .fetch_sub(1, Ordering::Relaxed);
-            }
-            .instrument(trace_span!("delete_file")),
+            },
+            "filesystem_delete_file"
         );
     }
 }
@@ -326,11 +326,16 @@ impl LenEntry for FileEntryImpl {
         let result = self
             .get_file_path_locked(move |full_content_path| async move {
                 let full_content_path = full_content_path.to_os_string();
-                spawn_blocking(move || {
-                    set_file_atime(&full_content_path, FileTime::now()).err_tip(|| {
-                        format!("Failed to touch file in filesystem store {full_content_path:?}")
-                    })
-                })
+                spawn_blocking!(
+                    move || {
+                        set_file_atime(&full_content_path, FileTime::now()).err_tip(|| {
+                            format!(
+                                "Failed to touch file in filesystem store {full_content_path:?}"
+                            )
+                        })
+                    },
+                    "filesystem_touch_set_mtime"
+                )
                 .await
                 .map_err(|e| {
                     make_err!(
@@ -668,7 +673,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
-        tokio::spawn(
+        background_spawn!(
             async move {
                 let mut encoded_file_path = entry.get_encoded_file_path().write().await;
                 let final_path = get_file_path_raw(
@@ -711,8 +716,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 encoded_file_path.path_type = PathType::Content;
                 encoded_file_path.digest = digest;
                 Ok(())
-            }
-            .instrument(trace_span!("emplace_file")),
+            },
+            "filesystem_store_emplace_file"
         )
         .await
         .err_tip(|| "Failed to create spawn in filesystem store update_file")?

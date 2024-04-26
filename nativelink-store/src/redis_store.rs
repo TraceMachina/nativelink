@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt, Shared};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -29,7 +30,6 @@ use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use redis::aio::{ConnectionLike, ConnectionManager};
 use redis::AsyncCommands;
-use tracing::{error_span, Instrument};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -74,13 +74,13 @@ impl RedisStore {
 
         let conn_fut_clone = conn_fut.clone();
         // Start connecting to redis, but don't block our construction on it.
-        tokio::spawn(
+        background_spawn!(
             async move {
                 if let Err(e) = conn_fut_clone.await {
                     make_err!(Code::Unavailable, "Failed to connect to Redis: {:?}", e);
                 }
-            }
-            .instrument(error_span!("redis_initial_connection")),
+            },
+            "redis_initial_connection"
         );
 
         let lazy_conn = LazyConnection::Future(conn_fut);
