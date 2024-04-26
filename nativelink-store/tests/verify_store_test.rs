@@ -38,9 +38,12 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "verify".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 verify_size: false,
                 hash_verification_function: None,
             },
@@ -72,9 +75,12 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "verify".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 verify_size: true,
                 hash_verification_function: None,
             },
@@ -115,9 +121,12 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "verify".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 verify_size: true,
                 hash_verification_function: None,
             },
@@ -144,9 +153,12 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "verify".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 verify_size: true,
                 hash_verification_function: None,
             },
@@ -182,9 +194,12 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "verify".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 verify_size: false,
                 hash_verification_function: Some(
                     nativelink_config::stores::ConfigDigestHashFunction::sha256,
@@ -215,9 +230,12 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "verify".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 verify_size: false,
                 hash_verification_function: Some(
                     nativelink_config::stores::ConfigDigestHashFunction::sha256,
@@ -256,9 +274,12 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "verify".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 verify_size: false,
                 hash_verification_function: Some(
                     nativelink_config::stores::ConfigDigestHashFunction::blake3,
@@ -289,9 +310,12 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "verify".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 verify_size: false,
                 hash_verification_function: Some(
                     nativelink_config::stores::ConfigDigestHashFunction::blake3,

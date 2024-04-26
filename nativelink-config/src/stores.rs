@@ -37,7 +37,7 @@ pub enum ConfigDigestHashFunction {
 
 #[allow(non_camel_case_types)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum StoreConfig {
+pub enum StoreConfigOptions {
     /// Memory store will store all data in a hashmap in memory.
     memory(MemoryStore),
 
@@ -175,6 +175,17 @@ pub enum StoreConfig {
     /// where you may need to partition your data and part of your data needs
     /// to be discarded.
     noop,
+}
+
+/// Configuration for an individual store.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct StoreConfig {
+    // Name of the store for reference
+    pub name: StoreRefName,
+
+    // Store config options
+    pub config: StoreConfigOptions,
 }
 
 /// Configuration for an individual shard of the store.

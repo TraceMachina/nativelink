@@ -703,8 +703,8 @@ pub struct GlobalConfig {
 #[serde(deny_unknown_fields)]
 pub struct CasConfig {
     /// List of stores available to use in this config.
-    /// The keys can be used in other configs when needing to reference a store.
-    pub stores: HashMap<StoreRefName, StoreConfig>,
+    /// The names can be used in other configs when needing to reference a store.
+    pub stores: Vec<StoreConfig>,
 
     /// Worker configurations used to execute jobs.
     pub workers: Option<Vec<WorkerConfig>>,

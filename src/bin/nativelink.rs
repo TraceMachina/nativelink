@@ -112,7 +112,8 @@ async fn inner_main(
         let mut health_registry_lock = health_registry_builder.lock().await;
         let root_store_metrics = root_metrics_registry.sub_registry_with_prefix("stores");
 
-        for (name, store_cfg) in cfg.stores {
+        for (_, store_cfg) in cfg.stores.into_iter().enumerate() {
+            let name = store_cfg.name.clone();
             let health_component_name = format!("stores/{name}");
             let mut health_register_store =
                 health_registry_lock.sub_builder(health_component_name.into());

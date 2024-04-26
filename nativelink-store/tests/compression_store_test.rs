@@ -75,9 +75,12 @@ mod compression_store_tests {
     async fn simple_smoke_test() -> Result<(), Error> {
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "compression".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
                     nativelink_config::stores::Lz4Config {
                         ..Default::default()
@@ -112,9 +115,12 @@ mod compression_store_tests {
     async fn partial_reads_test() -> Result<(), Error> {
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "compression".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
                     nativelink_config::stores::Lz4Config {
                         block_size: 10,
@@ -171,9 +177,12 @@ mod compression_store_tests {
     async fn rand_5mb_smoke_test() -> Result<(), Error> {
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "compression".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
                     nativelink_config::stores::Lz4Config {
                         ..Default::default()
@@ -210,9 +219,12 @@ mod compression_store_tests {
         ));
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "compression".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
                     nativelink_config::stores::Lz4Config {
                         ..Default::default()
@@ -267,9 +279,12 @@ mod compression_store_tests {
         ));
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "compression".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
                     nativelink_config::stores::Lz4Config {
                         block_size: BLOCK_SIZE,
@@ -356,9 +371,12 @@ mod compression_store_tests {
         ));
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "compression".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
                     nativelink_config::stores::Lz4Config {
                         block_size: BLOCK_SIZE,
@@ -508,9 +526,12 @@ mod compression_store_tests {
         ));
         let store_owned = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                backend: nativelink_config::stores::StoreConfig {
+                    name: "compression".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 compression_algorithm: nativelink_config::stores::CompressionAlgorithm::lz4(
                     nativelink_config::stores::Lz4Config {
                         block_size: BLOCK_SIZE,

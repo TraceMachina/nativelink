@@ -420,12 +420,18 @@ mod local_worker_tests {
         let cas_store = Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
-                fast: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
-                slow: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                fast: nativelink_config::stores::StoreConfig {
+                    name: "fast".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
+                slow: nativelink_config::stores::StoreConfig {
+                    name: "slow".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
             },
             Arc::new(
                 <FilesystemStore>::new(&nativelink_config::stores::FilesystemStore {
@@ -468,12 +474,18 @@ mod local_worker_tests {
         let cas_store = Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
-                fast: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
-                slow: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                fast: nativelink_config::stores::StoreConfig {
+                    name: "fast".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
+                slow: nativelink_config::stores::StoreConfig {
+                    name: "slow".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
             },
             Arc::new(
                 <FilesystemStore>::new(&nativelink_config::stores::FilesystemStore {

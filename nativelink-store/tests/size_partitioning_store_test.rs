@@ -45,12 +45,18 @@ mod ref_store_tests {
         let size_part_store = SizePartitioningStore::new(
             &nativelink_config::stores::SizePartitioningStore {
                 size,
-                lower_store: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
-                upper_store: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                lower_store: nativelink_config::stores::StoreConfig {
+                    name: "lower".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
+                upper_store: nativelink_config::stores::StoreConfig {
+                    name: "upper".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
             },
             lower_memory_store.clone(),
             upper_memory_store.clone(),

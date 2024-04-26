@@ -25,12 +25,18 @@ use rand::{Rng, SeedableRng};
 
 fn make_default_config() -> nativelink_config::stores::DedupStore {
     nativelink_config::stores::DedupStore {
-        index_store: nativelink_config::stores::StoreConfig::memory(
-            nativelink_config::stores::MemoryStore::default(),
-        ),
-        content_store: nativelink_config::stores::StoreConfig::memory(
-            nativelink_config::stores::MemoryStore::default(),
-        ),
+        index_store: nativelink_config::stores::StoreConfig {
+            name: "index".to_owned(),
+            config: nativelink_config::stores::StoreConfigOptions::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
+        },
+        content_store: nativelink_config::stores::StoreConfig {
+            name: "content".to_owned(),
+            config: nativelink_config::stores::StoreConfigOptions::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
+        },
         min_size: 8 * 1024,
         normal_size: 32 * 1024,
         max_size: 128 * 1024,
@@ -177,12 +183,18 @@ mod dedup_store_tests {
     ) -> Result<(), Error> {
         let store_owned = DedupStore::new(
             &nativelink_config::stores::DedupStore {
-                index_store: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
-                content_store: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                index_store: nativelink_config::stores::StoreConfig {
+                    name: "index".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
+                content_store: nativelink_config::stores::StoreConfig {
+                    name: "content".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 min_size: 5,
                 normal_size: 6,
                 max_size: 7,
@@ -230,12 +242,18 @@ mod dedup_store_tests {
     async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
         let store_owned = DedupStore::new(
             &nativelink_config::stores::DedupStore {
-                index_store: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
-                content_store: nativelink_config::stores::StoreConfig::memory(
-                    nativelink_config::stores::MemoryStore::default(),
-                ),
+                index_store: nativelink_config::stores::StoreConfig {
+                    name: "index".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
+                content_store: nativelink_config::stores::StoreConfig {
+                    name: "content".to_owned(),
+                    config: nativelink_config::stores::StoreConfigOptions::memory(
+                        nativelink_config::stores::MemoryStore::default(),
+                    ),
+                },
                 min_size: 5,
                 normal_size: 6,
                 max_size: 7,
