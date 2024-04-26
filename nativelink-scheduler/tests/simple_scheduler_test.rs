@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_util::action_messages::{
     ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata,
@@ -101,7 +102,7 @@ mod scheduler_tests {
 
     const WORKER_TIMEOUT_S: u64 = 100;
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
@@ -154,7 +155,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn find_executing_action() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
@@ -215,7 +216,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
         const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);
@@ -361,7 +362,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
@@ -435,7 +436,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x0010_0001);
         const WORKER_ID2: WorkerId = WorkerId(0x0010_0002);
@@ -518,7 +519,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x0010_0009);
 
@@ -620,7 +621,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x0010_0010);
         let scheduler = SimpleScheduler::new_with_callback(
@@ -657,7 +658,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
         const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);
@@ -759,7 +760,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn update_action_sends_completed_result_to_client_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
@@ -862,7 +863,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn update_action_sends_completed_result_after_disconnect() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
@@ -964,7 +965,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         const GOOD_WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
         const ROGUE_WORKER_ID: WorkerId = WorkerId(0x0009_8765_4321);
@@ -1060,7 +1061,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x0010_000f);
 
@@ -1188,7 +1189,7 @@ mod scheduler_tests {
 
     /// This tests to ensure that platform property restrictions allow jobs to continue to run after
     /// a job finished on a specific worker (eg: restore platform properties).
-    #[tokio::test]
+    #[nativelink_test]
     async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> Result<(), Error>
     {
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
@@ -1333,7 +1334,7 @@ mod scheduler_tests {
     }
 
     /// This tests that actions are performed in the order they were queued.
-    #[tokio::test]
+    #[nativelink_test]
     async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
@@ -1385,7 +1386,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> {
         const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
 
@@ -1502,7 +1503,7 @@ mod scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
         struct DropChecker {
             dropped: Arc<AtomicBool>,
@@ -1541,7 +1542,7 @@ mod scheduler_tests {
     }
 
     /// Regression test for: https://github.com/TraceMachina/nativelink/issues/257.
-    #[tokio::test]
+    #[nativelink_test]
     async fn ensure_task_or_worker_change_notification_received_test() -> Result<(), Error> {
         const WORKER_ID1: WorkerId = WorkerId(0x0011_1111);
         const WORKER_ID2: WorkerId = WorkerId(0x0022_2222);

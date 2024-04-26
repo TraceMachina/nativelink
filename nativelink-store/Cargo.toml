@@ -42,6 +42,8 @@ tracing = "0.1.40"
 uuid = { version = "1.8.0", features = ["v4"] }
 
 [dev-dependencies]
+nativelink-macro = { path = "../nativelink-macro" }
+
 redis-test = { version = "0.4.0", features = ["aio"] }
 pretty_assertions = "1.4.0"
 memory-stats = "1.1.0"

@@ -92,6 +92,7 @@ rust_test_suite(
         "tests/verify_store_test.rs",
     ],
     proc_macro_deps = [
+        "//nativelink-macro",
         "@crates//:async-trait",
     ],
     deps = [
@@ -122,6 +123,7 @@ rust_test_suite(
         "@crates//:sha2",
         "@crates//:tokio",
         "@crates//:tokio-stream",
+        "@crates//:tracing",
         "@crates//:uuid",
     ],
 )

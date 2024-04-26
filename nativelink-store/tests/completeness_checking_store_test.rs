@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use nativelink_config::stores::MemoryStore as MemoryStoreConfig;
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, Directory, DirectoryNode, FileNode, OutputDirectory,
     OutputFile, Tree,
@@ -116,7 +117,7 @@ mod completeness_checking_store_tests {
         Ok((ac_owned, cas_store, action_result_digest))
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_has_function_call_checks_cas() -> Result<(), Error> {
         {
             // Completeness check should succeed when all digests exist in CAS.
@@ -229,7 +230,7 @@ mod completeness_checking_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_completeness_get() -> Result<(), Error> {
         {
             // Completeness check in get call should succeed when all digests exist in CAS.

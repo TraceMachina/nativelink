@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatus, HealthStatusDescription, HealthStatusIndicator,
     HealthStatusReporter,
@@ -29,7 +30,7 @@ mod health_utils_tests {
 
     use super::*;
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn create_empty_indicator() -> Result<(), Error> {
         let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
         let health_registry = health_registry_builder.build();
@@ -39,7 +40,7 @@ mod health_utils_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn create_register_indicator() -> Result<(), Error> {
         generate_health_status_indicator!(MockComponentImpl, Ok, "ok");
 
@@ -66,7 +67,7 @@ mod health_utils_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn create_sub_registry() -> Result<(), Error> {
         generate_health_status_indicator!(MockComponentImpl, Ok, "ok");
 
@@ -105,7 +106,7 @@ mod health_utils_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn create_multiple_indicators_same_registry() -> Result<(), Error> {
         generate_health_status_indicator!(MockComponentImpl1, Ok, "ok");
         generate_health_status_indicator!(MockComponentImpl2, Ok, "ok");
@@ -151,7 +152,7 @@ mod health_utils_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn create_multiple_indicators_with_sub_registry() -> Result<(), Error> {
         generate_health_status_indicator!(MockComponentImpl1, Ok, "ok");
         generate_health_status_indicator!(MockComponentImpl2, Ok, "ok");

@@ -18,6 +18,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_error::{Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
@@ -48,7 +49,7 @@ mod ac_utils_tests {
     // Regression test for bug created when implementing ResumeableFileSlot
     // where the timeout() success condition was breaking out of the outer
     // loop resulting in the file always being created with <= 4096 bytes.
-    #[tokio::test]
+    #[nativelink_test]
     async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
         let filepath = make_temp_path("test.txt").await;
         let expected_data = vec![0x88; 1024 * 1024]; // 1MB.

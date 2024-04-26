@@ -30,6 +30,8 @@ tonic = { version = "0.11.0", features = ["tls"] }
 tracing = "0.1.40"
 
 [dev-dependencies]
+nativelink-macro = { path = "../nativelink-macro" }
+
 pretty_assertions = "1.4.0"
 rand = "0.8.5"
 mock_instant = "0.3.2"

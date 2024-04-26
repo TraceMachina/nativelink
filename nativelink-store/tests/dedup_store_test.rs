@@ -16,6 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_error::{Code, Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_store::dedup_store::DedupStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
@@ -55,7 +56,7 @@ mod dedup_store_tests {
     const VALID_HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
     const MEGABYTE_SZ: usize = 1024 * 1024;
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_round_trip_test() -> Result<(), Error> {
         let store_owned = DedupStore::new(
             &make_default_config(),
@@ -85,7 +86,7 @@ mod dedup_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn check_missing_last_chunk_test() -> Result<(), Error> {
         let content_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -131,7 +132,7 @@ mod dedup_store_tests {
     /// Test to ensure if we upload a bit of data then request just a slice of it, we get the
     /// proper data out. Internal to DedupStore we only download the slices that contain the
     /// requested data; this test covers that use case.
-    #[tokio::test]
+    #[nativelink_test]
     async fn fetch_part_test() -> Result<(), Error> {
         let store_owned = DedupStore::new(
             &make_default_config(),
@@ -172,7 +173,7 @@ mod dedup_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test(
     ) -> Result<(), Error> {
         let store_owned = DedupStore::new(
@@ -226,7 +227,7 @@ mod dedup_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
         let store_owned = DedupStore::new(
             &nativelink_config::stores::DedupStore {
@@ -305,7 +306,7 @@ mod dedup_store_tests {
 
     /// Ensure that when we run a `.has()` on a dedup store it will check to ensure all indexed
     /// content items exist instead of just checking the entry in the index store.
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_checks_content_store() -> Result<(), Error> {
         let index_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
@@ -378,7 +379,7 @@ mod dedup_store_tests {
 
     /// Ensure that when we run a `.has()` on a dedup store and the index does not exist it will
     /// properly return None.
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_with_no_existing_index_returns_none_test() -> Result<(), Error> {
         let index_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),

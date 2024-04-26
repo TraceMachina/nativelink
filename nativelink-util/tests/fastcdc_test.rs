@@ -17,6 +17,7 @@ use std::io::Cursor;
 
 use bytes::Bytes;
 use futures::stream::StreamExt;
+use nativelink_macro::nativelink_test;
 use nativelink_util::fastcdc::FastCDC;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -43,7 +44,7 @@ mod fastcdc_tests {
 
     use super::*; // Must be declared in every module.
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn test_all_zeros() -> Result<(), std::io::Error> {
         // For all zeros, always returns chunks of maximum size.
         const ZERO_DATA: [u8; 10240] = [0u8; 10240];
@@ -60,7 +61,7 @@ mod fastcdc_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn test_sekien_16k_chunks() -> Result<(), Box<dyn std::error::Error>> {
         let contents = include_bytes!("data/SekienAkashita.jpg");
         let mut cursor = Cursor::new(&contents);
@@ -84,7 +85,7 @@ mod fastcdc_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn test_random_20mb_16k_chunks() -> Result<(), std::io::Error> {
         let data = {
             let mut data = vec![0u8; 20 * MEGABYTE_SZ];
@@ -103,7 +104,7 @@ mod fastcdc_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn insert_garbage_check_boundarys_recover_test() -> Result<(), std::io::Error> {
         let mut rand_data = {
             let mut data = vec![0u8; 100_000];

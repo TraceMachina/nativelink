@@ -30,4 +30,6 @@ tonic = { version = "0.11.0", features = ["gzip", "tls"] }
 tracing = "0.1.40"
 
 [dev-dependencies]
+nativelink-macro = { path = "../nativelink-macro" }
+
 pretty_assertions = "1.4.0"
