@@ -43,7 +43,7 @@ console-subscriber = { version = "0.2.0" }
 futures = "0.3.30"
 hyper = { version = "0.14.28" }
 mimalloc = "0.1.41"
-parking_lot = "0.12.1"
+parking_lot = "0.12.2"
 prometheus-client = "0.21.2"
 rustls-pemfile = "2.1.2"
 scopeguard = "1.2.0"
