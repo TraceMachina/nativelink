@@ -27,9 +27,10 @@ use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
-use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
+use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::Registry;
+use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 
@@ -262,7 +263,7 @@ impl Store for CompressionStore {
         let (mut tx, rx) = make_buf_channel_pair();
 
         let inner_store = self.inner_store.clone();
-        let update_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
+        let update_fut = spawn!("compression_store_update_spawn", async move {
             Pin::new(inner_store.as_ref())
                 .update(
                     digest,
@@ -271,15 +272,15 @@ impl Store for CompressionStore {
                 )
                 .await
                 .err_tip(|| "Inner store update in compression store failed")
-        }))
-        .map(|result| {
-            match result.err_tip(|| "Failed to run compression update spawn") {
+        })
+        .map(
+            |result| match result.err_tip(|| "Failed to run compression update spawn") {
                 Ok(inner_result) => {
                     inner_result.err_tip(|| "Compression underlying store update failed")
                 }
                 Err(e) => Err(e),
-            }
-        });
+            },
+        );
 
         let write_fut = async move {
             {
@@ -405,12 +406,12 @@ impl Store for CompressionStore {
         let (tx, mut rx) = make_buf_channel_pair();
 
         let inner_store = self.inner_store.clone();
-        let get_part_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
+        let get_part_fut = spawn!("compression_store_get_part_spawn", async move {
             Pin::new(inner_store.as_ref())
                 .get_part(digest, tx, 0, None)
                 .await
                 .err_tip(|| "Inner store get in compression store failed")
-        }))
+        })
         .map(
             |result| match result.err_tip(|| "Failed to run compression get spawn") {
                 Ok(inner_result) => {
