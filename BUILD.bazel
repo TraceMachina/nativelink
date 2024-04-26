@@ -3,6 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 exports_files(
     [
         ".rustfmt.toml",
+        "clippy.toml",
     ],
     visibility = ["//visibility:public"],
 )
