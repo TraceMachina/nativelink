@@ -61,6 +61,7 @@ rust_test_suite(
         "tests/utils/scheduler_utils.rs",
     ],
     proc_macro_deps = [
+        "//nativelink-macro",
         "@crates//:async-trait",
     ],
     deps = [

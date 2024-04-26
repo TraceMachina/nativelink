@@ -17,6 +17,7 @@ use std::task::Poll;
 use bytes::{Bytes, BytesMut};
 use futures::poll;
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use tokio::try_join;
 
@@ -30,7 +31,7 @@ mod buf_channel_tests {
     const DATA2: &str = "bar";
     const DATA3: &str = "foobar1234";
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn smoke_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         tx.send(DATA1.into()).await?;
@@ -40,7 +41,7 @@ mod buf_channel_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn bytes_written_test() -> Result<(), Error> {
         let (mut tx, _rx) = make_buf_channel_pair();
         tx.send(DATA1.into()).await?;
@@ -50,7 +51,7 @@ mod buf_channel_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn sending_eof_sets_pipe_broken_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let tx_fut = async move {
@@ -69,7 +70,7 @@ mod buf_channel_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn consume_all_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let tx_fut = async move {
@@ -93,7 +94,7 @@ mod buf_channel_tests {
 
     /// Test to ensure data is optimized so that the exact same pointer is received
     /// when calling `collect_all_with_size_hint` when a copy is not needed.
-    #[tokio::test]
+    #[nativelink_test]
     async fn consume_all_is_optimized_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let sent_data = Bytes::from(DATA1);
@@ -114,7 +115,7 @@ mod buf_channel_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn consume_some_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let tx_fut = async move {
@@ -141,7 +142,7 @@ mod buf_channel_tests {
     /// This test ensures that when we are taking just one message in the stream,
     /// we don't need to concat the data together and instead return a view to
     /// the original data instead of making a copy.
-    #[tokio::test]
+    #[nativelink_test]
     async fn consume_some_optimized_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let first_chunk = Bytes::from(DATA1);
@@ -162,7 +163,7 @@ mod buf_channel_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn consume_some_reads_eof() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         tx.send(DATA1.into()).await?;
@@ -179,7 +180,7 @@ mod buf_channel_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_stream_test() -> Result<(), Error> {
         use futures::StreamExt;
         let (mut tx, mut rx) = make_buf_channel_pair();
@@ -215,7 +216,7 @@ mod buf_channel_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn send_and_take_fuzz_test() -> Result<(), Error> {
         const DATA3_END_POS: usize = DATA3.len() + 1;
         for data_size in 1..DATA3_END_POS {
@@ -252,7 +253,7 @@ mod buf_channel_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn rx_gets_error_if_tx_drops_test() -> Result<(), Error> {
         let (mut tx, mut rx) = make_buf_channel_pair();
         let tx_fut = async move {

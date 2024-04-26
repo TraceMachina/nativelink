@@ -16,6 +16,7 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{LazyConnection, RedisStore};
 use nativelink_util::common::DigestInfo;
@@ -84,7 +85,7 @@ mod redis_store_tests {
         }
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn upload_and_get_data() -> Result<(), Error> {
         let data = Bytes::from_static(b"14");
 
@@ -132,7 +133,7 @@ mod redis_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn upload_empty_data() -> Result<(), Error> {
         let data = Bytes::from_static(b"");
 
@@ -157,7 +158,7 @@ mod redis_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn test_uploading_large_data() -> Result<(), Error> {
         // Requires multiple chunks as data is larger than 64K
         let data: Bytes = Bytes::from(vec![0u8; 65 * 1024]);
@@ -227,7 +228,7 @@ mod redis_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
         let data = Bytes::from(vec![0u8; 10 * 1024]);
         let data_p1 = Bytes::from(vec![0u8; 6 * 1024]);

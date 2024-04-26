@@ -18,6 +18,7 @@ use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
 use memory_stats::memory_stats;
 use nativelink_error::{Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
@@ -34,12 +35,11 @@ const INVALID_HASH: &str = "g111111111111111111111111111111111111111111111111111
 
 #[cfg(test)]
 mod memory_store_tests {
-
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn insert_one_item_then_update() -> Result<(), Error> {
         const VALUE1: &str = "13";
         const VALUE2: &str = "23";
@@ -87,7 +87,7 @@ mod memory_store_tests {
     }
 
     // Regression test for: https://github.com/TraceMachina/nativelink/issues/289.
-    #[tokio::test]
+    #[nativelink_test]
     async fn ensure_full_copy_of_bytes_is_made_test() -> Result<(), Error> {
         // Arbitrary value, this may be increased if we find out that this is
         // too low for some kernels/operating systems.
@@ -132,7 +132,7 @@ mod memory_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_partial() -> Result<(), Error> {
         const VALUE1: &str = "1234";
         let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
@@ -155,7 +155,7 @@ mod memory_store_tests {
 
     // A bug was found where reading an empty value from memory store would result in an error
     // due to internal EOF handling. This is an edge case test.
-    #[tokio::test]
+    #[nativelink_test]
     async fn read_zero_size_item_test() -> Result<(), Error> {
         const VALUE: &str = "";
         let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
@@ -175,7 +175,7 @@ mod memory_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn errors_with_invalid_inputs() -> Result<(), Error> {
         const VALUE1: &str = "123";
         let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
@@ -242,7 +242,7 @@ mod memory_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_part_is_zero_digest() -> Result<(), Error> {
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),
@@ -273,7 +273,7 @@ mod memory_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),

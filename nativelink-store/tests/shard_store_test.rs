@@ -16,6 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::shard_store::ShardStore;
 use nativelink_util::common::DigestInfo;
@@ -115,7 +116,7 @@ mod shard_store_tests {
     const STORE0_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
     const STORE1_HASH: &str = "00000000EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE";
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_with_one_digest() -> Result<(), Error> {
         let (shard_store, stores) = make_stores(&[1, 1]);
         let shard_store = Pin::new(shard_store.as_ref());
@@ -134,7 +135,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_with_many_digests_both_missing() -> Result<(), Error> {
         let (shard_store, _stores) = make_stores(&[1, 1]);
         let shard_store = Pin::new(shard_store.as_ref());
@@ -151,7 +152,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_with_many_digests_one_missing() -> Result<(), Error> {
         let (shard_store, stores) = make_stores(&[1, 1]);
         let shard_store = Pin::new(shard_store.as_ref());
@@ -174,7 +175,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_with_many_digests_both_exist() -> Result<(), Error> {
         let (shard_store, stores) = make_stores(&[1, 1]);
         let shard_store = Pin::new(shard_store.as_ref());
@@ -201,7 +202,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_part_reads_store0() -> Result<(), Error> {
         let (shard_store, stores) = make_stores(&[1, 1]);
         let shard_store = Pin::new(shard_store.as_ref());
@@ -223,7 +224,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_part_reads_store1() -> Result<(), Error> {
         let (shard_store, stores) = make_stores(&[1, 1]);
         let shard_store = Pin::new(shard_store.as_ref());
@@ -245,7 +246,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn upload_store0() -> Result<(), Error> {
         let (shard_store, stores) = make_stores(&[1, 1]);
         let shard_store = Pin::new(shard_store.as_ref());
@@ -267,7 +268,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn upload_store1() -> Result<(), Error> {
         let (shard_store, stores) = make_stores(&[1, 1]);
         let shard_store = Pin::new(shard_store.as_ref());
@@ -289,7 +290,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn upload_download_has_check() -> Result<(), Error> {
         let (shard_store, _stores) = make_stores(&[1, 1]);
         let shard_store = Pin::new(shard_store.as_ref());
@@ -309,7 +310,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn weights_send_to_proper_store() -> Result<(), Error> {
         // Very low chance anything will ever go to second store due to weights being so much diff.
         let (shard_store, stores) = make_stores(&[100000, 1]);
@@ -330,7 +331,7 @@ mod shard_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_weights_even_weights() -> Result<(), Error> {
         verify_weights(
             &[1, 1, 1, 1, 1, 1],
@@ -341,22 +342,22 @@ mod shard_store_tests {
         .await
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_weights_mid_right_bias() -> Result<(), Error> {
         verify_weights(&[1, 1, 1, 100, 1, 1], &[5, 13, 12, 956, 4, 10], 1000, false).await
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_weights_mid_left_bias() -> Result<(), Error> {
         verify_weights(&[1, 1, 100, 1, 1, 1], &[5, 13, 962, 6, 4, 10], 1000, false).await
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_weights_left_bias() -> Result<(), Error> {
         verify_weights(&[100, 1, 1, 1, 1, 1], &[961, 11, 8, 6, 4, 10], 1000, false).await
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn verify_weights_right_bias() -> Result<(), Error> {
         verify_weights(&[1, 1, 1, 1, 1, 100], &[5, 13, 12, 5, 11, 954], 1000, false).await
     }

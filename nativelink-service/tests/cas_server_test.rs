@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use maplit::hashmap;
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::ContentAddressableStorage;
 use nativelink_proto::build::bazel::remote::execution::v2::{compressor, digest_function, Digest};
 use nativelink_proto::google::rpc::Status as GrpcStatus;
@@ -68,7 +69,7 @@ mod find_missing_blobs {
 
     use super::*;
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn empty_store() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
@@ -89,7 +90,7 @@ mod find_missing_blobs {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
@@ -117,7 +118,7 @@ mod find_missing_blobs {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
@@ -168,7 +169,7 @@ mod batch_update_blobs {
 
     use super::*;
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
@@ -236,7 +237,7 @@ mod batch_read_blobs {
 
     use super::*;
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn batch_read_blobs_read_two_blobs_success_one_fail(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
@@ -333,7 +334,7 @@ mod end_to_end {
 
     use super::*;
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn batch_update_blobs_two_items_existence_with_third_missing(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;

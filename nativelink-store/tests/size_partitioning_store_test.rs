@@ -18,6 +18,7 @@ use std::sync::Arc;
 #[cfg(test)]
 mod ref_store_tests {
     use nativelink_error::Error;
+    use nativelink_macro::nativelink_test;
     use nativelink_store::memory_store::MemoryStore;
     use nativelink_store::size_partitioning_store::SizePartitioningStore;
     use nativelink_util::common::DigestInfo;
@@ -58,7 +59,7 @@ mod ref_store_tests {
         (size_part_store, lower_memory_store, upper_memory_store)
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_test() -> Result<(), Error> {
         let (size_part_store, lower_memory_store, upper_memory_store) =
             setup_stores(BASE_SIZE_PART);
@@ -107,7 +108,7 @@ mod ref_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_test() -> Result<(), Error> {
         let (size_part_store, lower_memory_store, upper_memory_store) =
             setup_stores(BASE_SIZE_PART);
@@ -158,7 +159,7 @@ mod ref_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn update_test() -> Result<(), Error> {
         let (size_part_store, lower_memory_store, upper_memory_store) =
             setup_stores(BASE_SIZE_PART);

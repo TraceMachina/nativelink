@@ -21,6 +21,7 @@ use bytes::Bytes;
 use mock_instant::{Instant as MockInstant, MockClock};
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, InstantWrapper, LenEntry};
 
@@ -72,7 +73,7 @@ mod evicting_map_tests {
     const HASH3: &str = "23456789abcdef000000000000000000000000000000000123456789abcdef12";
     const HASH4: &str = "3456789abcdef000000000000000000000000000000000123456789abcdef012";
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn insert_purges_at_max_count() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
@@ -128,7 +129,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn insert_purges_at_max_bytes() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
@@ -185,7 +186,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
@@ -242,7 +243,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn insert_purges_at_max_seconds() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
@@ -303,7 +304,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_refreshes_time() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
@@ -355,7 +356,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn unref_called_on_replace() -> Result<(), Error> {
         #[derive(Debug)]
         struct MockEntry {
@@ -428,7 +429,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn contains_key_refreshes_time() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
@@ -482,7 +483,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
@@ -535,7 +536,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn build_lru_index_and_reload() -> Result<(), Error> {
         let mut evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
@@ -620,7 +621,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_evicts_on_time() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
@@ -652,7 +653,7 @@ mod evicting_map_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn remove_evicts_on_time() -> Result<(), Error> {
         let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {

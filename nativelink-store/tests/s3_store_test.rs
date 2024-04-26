@@ -27,6 +27,7 @@ use http::header;
 use http::status::StatusCode;
 use hyper::Body;
 use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_macro::nativelink_test;
 use nativelink_store::s3_store::S3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
@@ -45,7 +46,7 @@ mod s3_store_tests {
     const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
     const REGION: &str = "testregion";
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_has_object_found() -> Result<(), Error> {
         let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
             http::Request::builder().body(SdkBody::empty()).unwrap(),
@@ -80,7 +81,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_has_object_not_found() -> Result<(), Error> {
         let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
             http::Request::builder().body(SdkBody::empty()).unwrap(),
@@ -114,7 +115,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_has_retries() -> Result<(), Error> {
         let mock_client = StaticReplayClient::new(vec![
             ReplayEvent::new(
@@ -181,7 +182,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_update_ac() -> Result<(), Error> {
         const AC_ENTRY_SIZE: u64 = 199;
         const CONTENT_LENGTH: usize = 50;
@@ -275,7 +276,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_get_ac() -> Result<(), Error> {
         const VALUE: &str = "23";
         const AC_ENTRY_SIZE: u64 = 1000; // Any size that is not VALUE.len().
@@ -314,7 +315,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn smoke_test_get_part() -> Result<(), Error> {
         const AC_ENTRY_SIZE: u64 = 1000; // Any size that is not raw_send_data.len().
         const OFFSET: usize = 105;
@@ -360,7 +361,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_part_simple_retries() -> Result<(), Error> {
         let mock_client = StaticReplayClient::new(vec![
             ReplayEvent::new(
@@ -420,7 +421,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn multipart_update_large_cas() -> Result<(), Error> {
         // Same as in s3_store.
         const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
@@ -541,7 +542,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
         const CAS_ENTRY_SIZE: usize = 10; // Length of "helloworld".
         let (mut tx, channel_body) = Body::channel();
@@ -596,7 +597,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn get_part_is_zero_digest() -> Result<(), Error> {
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),
@@ -638,7 +639,7 @@ mod s3_store_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         let digest = DigestInfo {
             packed_hash: Sha256::new().finalize().into(),

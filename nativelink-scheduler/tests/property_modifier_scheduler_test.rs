@@ -24,6 +24,7 @@ mod utils {
 use futures::join;
 use nativelink_config::schedulers::{PlatformPropertyAddition, PropertyModification, PropertyType};
 use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
@@ -60,7 +61,7 @@ mod property_modifier_scheduler_tests {
 
     use super::*; // Must be declared in every module.
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn add_action_adds_property() -> Result<(), Error> {
         let name = "name".to_string();
         let value = "value".to_string();
@@ -95,7 +96,7 @@ mod property_modifier_scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn add_action_overwrites_property() -> Result<(), Error> {
         let name = "name".to_string();
         let original_value = "value".to_string();
@@ -135,7 +136,7 @@ mod property_modifier_scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn add_action_property_added_after_remove() -> Result<(), Error> {
         let name = "name".to_string();
         let value = "value".to_string();
@@ -172,7 +173,7 @@ mod property_modifier_scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn add_action_property_remove_after_add() -> Result<(), Error> {
         let name = "name".to_string();
         let value = "value".to_string();
@@ -209,7 +210,7 @@ mod property_modifier_scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn add_action_property_remove() -> Result<(), Error> {
         let name = "name".to_string();
         let value = "value".to_string();
@@ -241,7 +242,7 @@ mod property_modifier_scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn find_existing_action_call_passed() -> Result<(), Error> {
         let context = make_modifier_scheduler(vec![]);
         let action_name = ActionInfoHashKey {
@@ -260,7 +261,7 @@ mod property_modifier_scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
         let name = "name".to_string();
         let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
@@ -281,7 +282,7 @@ mod property_modifier_scheduler_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn remove_retains_type_in_underlying_manager() -> Result<(), Error> {
         let name = "name".to_string();
         let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);

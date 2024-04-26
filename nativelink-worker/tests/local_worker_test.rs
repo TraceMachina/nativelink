@@ -31,6 +31,7 @@ mod utils {
 
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
 use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
@@ -76,7 +77,7 @@ mod local_worker_tests {
 
     use super::*; // Must be declared in every module.
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn platform_properties_smoke_test() -> Result<(), Error> {
         let mut platform_properties = HashMap::new();
         platform_properties.insert(
@@ -130,7 +131,7 @@ mod local_worker_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn reconnect_on_server_disconnect_test() -> Result<(), Box<dyn std::error::Error>> {
         let mut test_context = setup_local_worker(HashMap::new()).await;
         let streaming_response = test_context.maybe_streaming_response.take().unwrap();
@@ -160,7 +161,7 @@ mod local_worker_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error>> {
         let mut test_context = setup_local_worker(HashMap::new()).await;
         let streaming_response = test_context.maybe_streaming_response.take().unwrap();
@@ -196,7 +197,7 @@ mod local_worker_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::error::Error>> {
         const SALT: u64 = 1000;
 
@@ -282,7 +283,7 @@ mod local_worker_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Error>> {
         const SALT: u64 = 1000;
 
@@ -414,7 +415,7 @@ mod local_worker_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn std::error::Error>>
     {
         let cas_store = Arc::new(FastSlowStore::new(
@@ -462,7 +463,7 @@ mod local_worker_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn new_local_worker_removes_work_directory_before_start_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let cas_store = Arc::new(FastSlowStore::new(
@@ -518,7 +519,7 @@ mod local_worker_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::error::Error>> {
         let temp_path = make_temp_path("scripts");
         fs::create_dir_all(temp_path.clone()).await?;
@@ -640,7 +641,7 @@ mod local_worker_tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Error>> {
         const SALT: u64 = 1000;
 
