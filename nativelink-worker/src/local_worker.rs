@@ -37,13 +37,13 @@ use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
 };
 use nativelink_util::store_trait::Store;
-use nativelink_util::tls_utils;
+use nativelink_util::{spawn, tls_utils};
 use tokio::process;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{error_span, event, instrument, Instrument, Level};
+use tracing::{event, instrument, Level};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -319,7 +319,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
 
                             self.actions_in_transit.fetch_add(1, Ordering::Release);
                             futures.push(
-                                tokio::spawn(start_action_fut.instrument(error_span!("worker_start_action"))).map(move |res| {
+                                spawn!("worker_start_action", start_action_fut).map(move |res| {
                                     let res = res.err_tip(|| "Failed to launch spawn")?;
                                     if let Err(err) = &res {
                                         event!(

@@ -59,12 +59,13 @@ use nativelink_util::action_messages::{
     to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo,
     NameOrPath, SymlinkInfo,
 };
-use nativelink_util::common::{fs, DigestInfo, JoinHandleDropGuard};
+use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent,
 };
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
 use relative_path::RelativePath;
@@ -73,10 +74,9 @@ use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process;
 use tokio::sync::{oneshot, watch};
-use tokio::task::spawn_blocking;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
-use tracing::{enabled, error_span, event, Instrument, Level};
+use tracing::{enabled, event, Level};
 use uuid::Uuid;
 
 pub type ActionId = [u8; 32];
@@ -172,7 +172,7 @@ pub fn download_to_directory<'a>(
                                 })?;
                         }
                         if let Some(mtime) = mtime {
-                            spawn_blocking(move || {
+                            spawn_blocking!("download_to_directory_set_mtime", move || {
                                 set_file_mtime(
                                     &dest,
                                     FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
@@ -870,10 +870,12 @@ impl RunningActionImpl {
                 Level::ERROR,
                 "Child process was not cleaned up before dropping the call to execute(), killing in background spawn."
             );
-            tokio::spawn(async move { child_process.kill().await });
+            background_spawn!("running_actions_manager_kill_child_process", async move {
+                child_process.kill().await
+            });
         });
 
-        let all_stdout_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
+        let all_stdout_fut = spawn!("stdout_reader", async move {
             let mut all_stdout = BytesMut::new();
             loop {
                 let sz = stdout_reader
@@ -885,8 +887,8 @@ impl RunningActionImpl {
                 }
             }
             Result::<Bytes, Error>::Ok(all_stdout.freeze())
-        }));
-        let all_stderr_fut = JoinHandleDropGuard::new(tokio::spawn(async move {
+        });
+        let all_stderr_fut = spawn!("stderr_reader", async move {
             let mut all_stderr = BytesMut::new();
             loop {
                 let sz = stderr_reader
@@ -898,7 +900,7 @@ impl RunningActionImpl {
                 }
             }
             Result::<Bytes, Error>::Ok(all_stderr.freeze())
-        }));
+        });
         let mut killed_action = false;
 
         let timer = self.metrics().child_process.begin_timer();
@@ -1252,23 +1254,20 @@ impl Drop for RunningActionImpl {
         let running_actions_manager = self.running_actions_manager.clone();
         let action_id = self.action_id;
         let action_directory = self.action_directory.clone();
-        tokio::spawn(
-            async move {
-                let Err(err) =
-                    do_cleanup(&running_actions_manager, &action_id, &action_directory).await
-                else {
-                    return;
-                };
-                event!(
-                    Level::ERROR,
-                    action_id = hex::encode(action_id),
-                    ?action_directory,
-                    ?err,
-                    "Error cleaning up action"
-                );
-            }
-            .instrument(error_span!("RunningActionImpl::drop")),
-        );
+        background_spawn!("running_action_impl_drop", async move {
+            let Err(err) =
+                do_cleanup(&running_actions_manager, &action_id, &action_directory).await
+            else {
+                return;
+            };
+            event!(
+                Level::ERROR,
+                action_id = hex::encode(action_id),
+                ?action_directory,
+                ?err,
+                "Error cleaning up action"
+            );
+        });
     }
 }
 

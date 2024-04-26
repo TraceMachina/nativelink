@@ -21,7 +21,8 @@ use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::common::{DigestInfo, JoinHandleDropGuard};
+use nativelink_util::common::DigestInfo;
+use nativelink_util::spawn;
 use nativelink_util::store_trait::Store;
 use sha2::{Digest, Sha256};
 
@@ -255,12 +256,12 @@ mod memory_store_tests {
         let store_clone = store.clone();
         let (mut writer, mut reader) = make_buf_channel_pair();
 
-        let _drop_guard = JoinHandleDropGuard::new(tokio::spawn(async move {
+        let _drop_guard = spawn!("get_part_is_zero_digest", async move {
             let _ = Pin::new(store_clone.as_ref())
                 .get_part_ref(digest, &mut writer, 0, None)
                 .await
                 .err_tip(|| "Failed to get_part_ref");
-        }));
+        });
 
         let file_data = reader
             .consume(Some(1024))

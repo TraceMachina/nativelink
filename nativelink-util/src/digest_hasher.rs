@@ -23,8 +23,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Valu
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::common::{DigestInfo, JoinHandleDropGuard};
-use crate::fs;
+use crate::common::DigestInfo;
+use crate::{fs, spawn_blocking};
 
 static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
 
@@ -224,7 +224,7 @@ impl DigestHasher for DigestHasherImpl {
         match self.hash_func_impl {
             DigestHasherFuncImpl::Sha256(_) => self.hash_file(file).await,
             DigestHasherFuncImpl::Blake3(mut hasher) => {
-                JoinHandleDropGuard::new(tokio::task::spawn_blocking(move || {
+                spawn_blocking!("digest_for_file", move || {
                     hasher.update_mmap(file.get_path()).map_err(|e| {
                         make_err!(Code::Internal, "Error in blake3's update_mmap: {e:?}")
                     })?;
@@ -232,7 +232,7 @@ impl DigestHasher for DigestHasherImpl {
                         DigestInfo::new(hasher.finalize().into(), hasher.count() as i64),
                         file,
                     ))
-                }))
+                })
                 .await
                 .err_tip(|| "Could not spawn blocking task in digest_for_file")?
             }

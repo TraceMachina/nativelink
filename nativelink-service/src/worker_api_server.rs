@@ -29,13 +29,14 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 };
 use nativelink_scheduler::worker::{Worker, WorkerId};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_util::background_spawn;
 use nativelink_util::action_messages::ActionInfoHashKey;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tonic::{Request, Response, Status};
-use tracing::{error_span, event, instrument, Instrument, Level};
+use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
 pub type ConnectWorkerStream =
@@ -58,7 +59,7 @@ impl WorkerApiServer {
             // event our ExecutionServer dies. Our scheduler is a weak ref, so the spawn will
             // eventually see the Arc went away and return.
             let weak_scheduler = Arc::downgrade(scheduler);
-            tokio::spawn(async move {
+            background_spawn!("worker_api_server", async move {
                 let mut ticker = interval(Duration::from_secs(1));
                 loop {
                     ticker.tick().await;
@@ -70,18 +71,14 @@ impl WorkerApiServer {
                             if let Err(err) =
                                 scheduler.remove_timedout_workers(timestamp.as_secs()).await
                             {
-                                event!(
-                                    Level::ERROR,
-                                    ?err,
-                                    "Failed to remove_timedout_workers",
-                                );
+                                event!(Level::ERROR, ?err, "Failed to remove_timedout_workers",);
                             }
                         }
                         // If we fail to upgrade, our service is probably destroyed, so return.
                         None => return,
                     }
                 }
-            }.instrument(error_span!("worker_api_server")));
+            });
         }
 
         Self::new_with_now_fn(
