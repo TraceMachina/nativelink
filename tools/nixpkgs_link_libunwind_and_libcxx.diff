@@ -1,0 +1,50 @@
+diff --git a/pkgs/development/compilers/llvm/18/default.nix b/pkgs/development/compilers/llvm/18/default.nix
+index 4d2b160a23ff..d2b48b2de568 100644
+--- a/pkgs/development/compilers/llvm/18/default.nix
++++ b/pkgs/development/compilers/llvm/18/default.nix
+@@ -203,6 +203,12 @@ in let
+       bintools = tools.bintools-unwrapped;
+     };
+
++    # TODO(aaronmondal): The nix toolchains are not exactly built for pure LLVM.
++    # This hack makes it work by bruteforce-overriding this specific toolchain
++    # to properly link libc++ when running under Bazel.
++    #
++    # See https://github.com/NixOS/nixpkgs/issues/277564 for general progress on
++    # the issue.
+     clangUseLLVM = wrapCCWith rec {
+       cc = tools.clang-unwrapped;
+       libcxx = targetLlvmLibraries.libcxx;
+@@ -211,19 +217,28 @@ in let
+         targetLlvmLibraries.compiler-rt
+       ] ++ lib.optionals (!stdenv.targetPlatform.isWasm) [
+         targetLlvmLibraries.libunwind
++        targetLlvmLibraries.libcxx
+       ];
+       extraBuildCommands = mkExtraBuildCommands cc;
+       nixSupport.cc-cflags =
+         [ "-rtlib=compiler-rt"
+           "-Wno-unused-command-line-argument"
+           "-B${targetLlvmLibraries.compiler-rt}/lib"
++          "-stdlib=libc++"
+         ]
+-        ++ lib.optional (!stdenv.targetPlatform.isWasm) "--unwindlib=libunwind"
+-        ++ lib.optional
+-          (!stdenv.targetPlatform.isWasm && stdenv.targetPlatform.useLLVM or false)
++        ++ lib.optionals (!stdenv.targetPlatform.isWasm) [
++          "--unwindlib=libunwind"
+           "-lunwind"
++          "-lc++"
++        ]
++        ++ lib.optional (!stdenv.targetPlatform.isDarwin) "-fuse-ld=mold"
+         ++ lib.optional stdenv.targetPlatform.isWasm "-fno-exceptions";
+-      nixSupport.cc-ldflags = lib.optionals (!stdenv.targetPlatform.isWasm) [ "-L${targetLlvmLibraries.libunwind}/lib" ];
++      nixSupport.cc-ldflags = lib.optionals (!stdenv.targetPlatform.isWasm) [
++        "-L${targetLlvmLibraries.libunwind}/lib"
++        "-rpath=${targetLlvmLibraries.libunwind}/lib"
++        "-L${targetLlvmLibraries.libcxx}/lib"
++        "-rpath=${targetLlvmLibraries.libcxx}/lib"
++      ];
+     };
+
+     clangNoLibcxx = wrapCCWith rec {
