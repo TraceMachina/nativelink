@@ -27,5 +27,6 @@ pub mod proto_stream_utils;
 pub mod resource_info;
 pub mod retry;
 pub mod store_trait;
+pub mod task;
 pub mod tls_utils;
 pub mod write_counter;

@@ -35,11 +35,11 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::task::spawn_blocking;
 use tokio::time::{sleep, timeout, Sleep};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{event, trace_span, Instrument, Level};
+use tracing::{event, Level};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -112,21 +112,18 @@ impl Drop for EncodedFilePath {
         shared_context
             .active_drop_spawns
             .fetch_add(1, Ordering::Relaxed);
-        tokio::spawn(
-            async move {
-                event!(Level::INFO, ?file_path, "File deleted",);
-                let result = fs::remove_file(&file_path)
-                    .await
-                    .err_tip(|| format!("Failed to remove file {file_path:?}"));
-                if let Err(err) = result {
-                    event!(Level::ERROR, ?file_path, ?err, "Failed to delete file",);
-                }
-                shared_context
-                    .active_drop_spawns
-                    .fetch_sub(1, Ordering::Relaxed);
+        background_spawn!("filesystem_delete_file", async move {
+            event!(Level::INFO, ?file_path, "File deleted",);
+            let result = fs::remove_file(&file_path)
+                .await
+                .err_tip(|| format!("Failed to remove file {file_path:?}"));
+            if let Err(err) = result {
+                event!(Level::ERROR, ?file_path, ?err, "Failed to delete file",);
             }
-            .instrument(trace_span!("delete_file")),
-        );
+            shared_context
+                .active_drop_spawns
+                .fetch_sub(1, Ordering::Relaxed);
+        },);
     }
 }
 
@@ -326,11 +323,11 @@ impl LenEntry for FileEntryImpl {
         let result = self
             .get_file_path_locked(move |full_content_path| async move {
                 let full_content_path = full_content_path.to_os_string();
-                spawn_blocking(move || {
+                spawn_blocking!("filesystem_touch_set_mtime", move || {
                     set_file_atime(&full_content_path, FileTime::now()).err_tip(|| {
                         format!("Failed to touch file in filesystem store {full_content_path:?}")
                     })
-                })
+                },)
                 .await
                 .map_err(|e| {
                     make_err!(
@@ -668,52 +665,49 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
-        tokio::spawn(
-            async move {
-                let mut encoded_file_path = entry.get_encoded_file_path().write().await;
-                let final_path = get_file_path_raw(
-                    &PathType::Content,
-                    encoded_file_path.shared_context.as_ref(),
-                    &digest,
+        background_spawn!("filesystem_store_emplace_file", async move {
+            let mut encoded_file_path = entry.get_encoded_file_path().write().await;
+            let final_path = get_file_path_raw(
+                &PathType::Content,
+                encoded_file_path.shared_context.as_ref(),
+                &digest,
+            );
+
+            evicting_map.insert(digest, entry.clone()).await;
+
+            let from_path = encoded_file_path.get_file_path();
+            // Internally tokio spawns fs commands onto a blocking thread anyways.
+            // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
+            // an open-file permit (ensure we don't open too many files at once).
+            let result = (rename_fn)(&from_path, &final_path)
+                .err_tip(|| format!("Failed to rename temp file to final path {final_path:?}"));
+
+            // In the event our move from temp file to final file fails we need to ensure we remove
+            // the entry from our map.
+            // Remember: At this point it is possible for another thread to have a reference to
+            // `entry`, so we can't delete the file, only drop() should ever delete files.
+            if let Err(err) = result {
+                event!(
+                    Level::ERROR,
+                    ?err,
+                    ?from_path,
+                    ?final_path,
+                    "Failed to rename file",
                 );
-
-                evicting_map.insert(digest, entry.clone()).await;
-
-                let from_path = encoded_file_path.get_file_path();
-                // Internally tokio spawns fs commands onto a blocking thread anyways.
-                // Since we are already on a blocking thread, we just need the `fs` wrapper to manage
-                // an open-file permit (ensure we don't open too many files at once).
-                let result = (rename_fn)(&from_path, &final_path)
-                    .err_tip(|| format!("Failed to rename temp file to final path {final_path:?}"));
-
-                // In the event our move from temp file to final file fails we need to ensure we remove
-                // the entry from our map.
-                // Remember: At this point it is possible for another thread to have a reference to
-                // `entry`, so we can't delete the file, only drop() should ever delete files.
-                if let Err(err) = result {
-                    event!(
-                        Level::ERROR,
-                        ?err,
-                        ?from_path,
-                        ?final_path,
-                        "Failed to rename file",
-                    );
-                    // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
-                    // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
-                    drop(encoded_file_path);
-                    // It is possible that the item in our map is no longer the item we inserted,
-                    // So, we need to conditionally remove it only if the pointers are the same.
-                    evicting_map
-                        .remove_if(&digest, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
-                        .await;
-                    return Err(err);
-                }
-                encoded_file_path.path_type = PathType::Content;
-                encoded_file_path.digest = digest;
-                Ok(())
+                // Warning: To prevent deadlock we need to release our lock or during `remove_if()`
+                // it will call `unref()`, which triggers a write-lock on `encoded_file_path`.
+                drop(encoded_file_path);
+                // It is possible that the item in our map is no longer the item we inserted,
+                // So, we need to conditionally remove it only if the pointers are the same.
+                evicting_map
+                    .remove_if(&digest, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
+                    .await;
+                return Err(err);
             }
-            .instrument(trace_span!("emplace_file")),
-        )
+            encoded_file_path.path_type = PathType::Content;
+            encoded_file_path.digest = digest;
+            Ok(())
+        },)
         .await
         .err_tip(|| "Failed to create spawn in filesystem store update_file")?
     }

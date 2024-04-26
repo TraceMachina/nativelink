@@ -31,9 +31,13 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #(#fn_attr)*
+        #[allow(clippy::disallowed_methods)]
         #[tokio::test(#attr)]
         async fn #fn_name(#fn_inputs) #fn_output {
-            #fn_block
+            #[warn(clippy::disallowed_methods)]
+            {
+                #fn_block
+            }
         }
     };
 

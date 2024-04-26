@@ -32,7 +32,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::tls_utils;
+use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
 use rand::rngs::OsRng;
 use rand::Rng;
@@ -40,7 +40,7 @@ use tokio::select;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
-use tracing::{error_span, event, Instrument, Level};
+use tracing::{event, Level};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -119,7 +119,7 @@ impl GrpcScheduler {
             .err_tip(|| "Recieving response from upstream scheduler")?
         {
             let (tx, rx) = watch::channel(Arc::new(initial_response.try_into()?));
-            tokio::spawn(async move {
+            background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
                     select!(
                         _ = tx.closed() => {
@@ -157,8 +157,7 @@ impl GrpcScheduler {
                         }
                     )
                 }
-            }
-            .instrument(error_span!("stream_state")));
+            },);
             return Ok(rx);
         }
         Err(make_err!(

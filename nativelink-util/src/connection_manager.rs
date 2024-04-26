@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 use tonic::transport::{channel, Channel, Endpoint};
 use tracing::{event, Level};
 
+use crate::background_spawn;
 use crate::retry::{self, Retrier, RetryResult};
 
 /// A helper utility that enables management of a suite of connections to an
@@ -148,7 +149,7 @@ impl ConnectionManager {
                 retry,
             ),
         };
-        tokio::spawn(async move {
+        background_spawn!("connection_manager_worker_spawn", async move {
             worker
                 .service_requests(connections_per_endpoint, worker_rx, connection_rx)
                 .await;

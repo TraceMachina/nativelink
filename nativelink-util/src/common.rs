@@ -15,10 +15,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
-use std::future::Future;
 use std::hash::Hash;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use hex::FromHex;
@@ -26,7 +23,6 @@ use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use tokio::task::{JoinError, JoinHandle};
 
 pub use crate::fs;
 
@@ -140,32 +136,6 @@ impl From<&DigestInfo> for Digest {
             hash: val.hash_str(),
             size_bytes: val.size_bytes,
         }
-    }
-}
-
-/// Simple wrapper that will abort a future that is running in another spawn in the
-/// event that this handle gets dropped.
-pub struct JoinHandleDropGuard<T> {
-    inner: JoinHandle<T>,
-}
-
-impl<T> JoinHandleDropGuard<T> {
-    pub fn new(inner: JoinHandle<T>) -> Self {
-        Self { inner }
-    }
-}
-
-impl<T> Future for JoinHandleDropGuard<T> {
-    type Output = Result<T, JoinError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.inner).poll(cx)
-    }
-}
-
-impl<T> Drop for JoinHandleDropGuard<T> {
-    fn drop(&mut self) {
-        self.inner.abort();
     }
 }
 

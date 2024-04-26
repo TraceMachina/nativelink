@@ -19,6 +19,7 @@ use std::time::Duration;
 use nativelink_config::schedulers::SchedulerConfig;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::background_spawn;
 use nativelink_util::metrics_utils::Registry;
 use tokio::time::interval;
 
@@ -117,7 +118,7 @@ fn inner_scheduler_factory(
 
 fn start_cleanup_timer(action_scheduler: &Arc<dyn ActionScheduler>) {
     let weak_scheduler = Arc::downgrade(action_scheduler);
-    tokio::spawn(async move {
+    background_spawn!("default_scheduler_factory_cleanup_timer", async move {
         let mut ticker = interval(Duration::from_secs(1));
         loop {
             ticker.tick().await;
@@ -127,5 +128,5 @@ fn start_cleanup_timer(action_scheduler: &Arc<dyn ActionScheduler>) {
                 None => return,
             }
         }
-    });
+    },);
 }

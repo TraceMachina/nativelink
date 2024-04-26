@@ -26,8 +26,10 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::{encode_stream_proto, DigestInfo};
+use nativelink_util::spawn;
+use nativelink_util::task::JoinHandleDropGuard;
 use prometheus_client::registry::Registry;
-use tokio::task::{yield_now, JoinHandle};
+use tokio::task::yield_now;
 use tonic::{Request, Response};
 
 const INSTANCE_NAME: &str = "foo_instance_name";
@@ -100,10 +102,13 @@ pub mod write_tests {
                 None,
             );
 
-            let join_handle = tokio::spawn(async move {
-                let response_future = bs_server.write(Request::new(stream));
-                response_future.await
-            });
+            let join_handle = spawn!(
+                async move {
+                    let response_future = bs_server.write(Request::new(stream));
+                    response_future.await
+                },
+                "chunked_stream_receives_all_data_write_stream"
+            );
             (tx, join_handle)
         };
         // Send data.
@@ -185,7 +190,7 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(
+                JoinHandleDropGuard<(
                     Result<Response<WriteResponse>, tonic::Status>,
                     ByteStreamServer,
                 )>,
@@ -202,10 +207,13 @@ pub mod write_tests {
                 None,
             );
 
-            let join_handle = tokio::spawn(async move {
-                let response_future = bs_server.write(Request::new(stream));
-                (response_future.await, bs_server)
-            });
+            let join_handle = spawn!(
+                async move {
+                    let response_future = bs_server.write(Request::new(stream));
+                    (response_future.await, bs_server)
+                },
+                "resume_write_success_write_stream"
+            );
             Ok((tx, join_handle))
         }
         let (mut tx, join_handle) = setup_stream(bs_server).await?;
@@ -281,7 +289,7 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(
+                JoinHandleDropGuard<(
                     Result<Response<WriteResponse>, tonic::Status>,
                     ByteStreamServer,
                 )>,
@@ -298,10 +306,13 @@ pub mod write_tests {
                 None,
             );
 
-            let join_handle = tokio::spawn(async move {
-                let response_future = bs_server.write(Request::new(stream));
-                (response_future.await, bs_server)
-            });
+            let join_handle = spawn!(
+                async move {
+                    let response_future = bs_server.write(Request::new(stream));
+                    (response_future.await, bs_server)
+                },
+                "restart_write_success_write_stream"
+            );
             Ok((tx, join_handle))
         }
         let (mut tx, join_handle) = setup_stream(bs_server).await?;
@@ -383,7 +394,7 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(
+                JoinHandleDropGuard<(
                     Result<Response<WriteResponse>, tonic::Status>,
                     ByteStreamServer,
                 )>,
@@ -400,10 +411,13 @@ pub mod write_tests {
                 None,
             );
 
-            let join_handle = tokio::spawn(async move {
-                let response_future = bs_server.write(Request::new(stream));
-                (response_future.await, bs_server)
-            });
+            let join_handle = spawn!(
+                async move {
+                    let response_future = bs_server.write(Request::new(stream));
+                    (response_future.await, bs_server)
+                },
+                "restart_mid_stream_write_success_write_stream"
+            );
             Ok((tx, join_handle))
         }
         let (mut tx, join_handle) = setup_stream(bs_server).await?;
@@ -573,7 +587,7 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(
+                JoinHandleDropGuard<(
                     Result<Response<WriteResponse>, tonic::Status>,
                     ByteStreamServer,
                 )>,
@@ -590,10 +604,13 @@ pub mod write_tests {
                 None,
             );
 
-            let join_handle = tokio::spawn(async move {
-                let response_future = bs_server.write(Request::new(stream));
-                (response_future.await, bs_server)
-            });
+            let join_handle = spawn!(
+                async move {
+                    let response_future = bs_server.write(Request::new(stream));
+                    (response_future.await, bs_server)
+                },
+                "out_of_order_data_fails_write_stream"
+            );
             Ok((tx, join_handle))
         }
         let (mut tx, join_handle) = setup_stream(bs_server).await?;
@@ -658,7 +675,7 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(
+                JoinHandleDropGuard<(
                     Result<Response<WriteResponse>, tonic::Status>,
                     ByteStreamServer,
                 )>,
@@ -675,10 +692,13 @@ pub mod write_tests {
                 None,
             );
 
-            let join_handle = tokio::spawn(async move {
-                let response_future = bs_server.write(Request::new(stream));
-                (response_future.await, bs_server)
-            });
+            let join_handle = spawn!(
+                async move {
+                    let response_future = bs_server.write(Request::new(stream));
+                    (response_future.await, bs_server)
+                },
+                "upload_zero_byte_chunk_write_stream"
+            );
             Ok((tx, join_handle))
         }
         let (mut tx, join_handle) = setup_stream(bs_server).await?;
@@ -723,7 +743,7 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(
+                JoinHandleDropGuard<(
                     Result<Response<WriteResponse>, tonic::Status>,
                     ByteStreamServer,
                 )>,
@@ -740,10 +760,13 @@ pub mod write_tests {
                 None,
             );
 
-            let join_handle = tokio::spawn(async move {
-                let response_future = bs_server.write(Request::new(stream));
-                (response_future.await, bs_server)
-            });
+            let join_handle = spawn!(
+                async move {
+                    let response_future = bs_server.write(Request::new(stream));
+                    (response_future.await, bs_server)
+                },
+                "disallow_negative_write_offset_write_stream"
+            );
             Ok((tx, join_handle))
         }
         let (mut tx, join_handle) = setup_stream(bs_server).await?;
@@ -781,7 +804,7 @@ pub mod write_tests {
         ) -> Result<
             (
                 Sender,
-                JoinHandle<(
+                JoinHandleDropGuard<(
                     Result<Response<WriteResponse>, tonic::Status>,
                     ByteStreamServer,
                 )>,
@@ -798,10 +821,13 @@ pub mod write_tests {
                 None,
             );
 
-            let join_handle = tokio::spawn(async move {
-                let response_future = bs_server.write(Request::new(stream));
-                (response_future.await, bs_server)
-            });
+            let join_handle = spawn!(
+                async move {
+                    let response_future = bs_server.write(Request::new(stream));
+                    (response_future.await, bs_server)
+                },
+                "out_of_sequence_write_write_stream"
+            );
             Ok((tx, join_handle))
         }
         let (mut tx, join_handle) = setup_stream(bs_server).await?;
@@ -1030,10 +1056,13 @@ pub mod query_tests {
             );
 
             let bs_server_clone = bs_server.clone();
-            let join_handle = tokio::spawn(async move {
-                let response_future = bs_server_clone.write(Request::new(stream));
-                response_future.await
-            });
+            let join_handle = spawn!(
+                async move {
+                    let response_future = bs_server_clone.write(Request::new(stream));
+                    response_future.await
+                },
+                "query_write_status_smoke_test_write_stream"
+            );
             (tx, join_handle)
         };
 

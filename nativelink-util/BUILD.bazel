@@ -25,6 +25,7 @@ rust_library(
         "src/resource_info.rs",
         "src/retry.rs",
         "src/store_trait.rs",
+        "src/task.rs",
         "src/tls_utils.rs",
         "src/write_counter.rs",
     ],

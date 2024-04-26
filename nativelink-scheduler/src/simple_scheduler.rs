@@ -34,9 +34,10 @@ use nativelink_util::metrics_utils::{
     MetricsComponent, Registry,
 };
 use nativelink_util::platform_properties::PlatformPropertyValue;
+use nativelink_util::spawn;
+use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::{Mutex, MutexGuard};
 use tokio::sync::{watch, Notify};
-use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tracing::{event, Level};
 
@@ -689,8 +690,9 @@ impl SimpleSchedulerImpl {
 pub struct SimpleScheduler {
     inner: Arc<Mutex<SimpleSchedulerImpl>>,
     platform_property_manager: Arc<PlatformPropertyManager>,
-    task_worker_matching_future: JoinHandle<()>,
     metrics: Arc<Metrics>,
+    // Triggers `drop()`` call if scheduler is dropped.
+    _task_worker_matching_future: JoinHandleDropGuard<()>,
 }
 
 impl SimpleScheduler {
@@ -758,29 +760,32 @@ impl SimpleScheduler {
         Self {
             inner,
             platform_property_manager,
-            task_worker_matching_future: tokio::spawn(async move {
-                // Break out of the loop only when the inner is dropped.
-                loop {
-                    tasks_or_workers_change_notify.notified().await;
-                    match weak_inner.upgrade() {
-                        // Note: According to `parking_lot` documentation, the default
-                        // `Mutex` implementation is eventual fairness, so we don't
-                        // really need to worry about this thread taking the lock
-                        // starving other threads too much.
-                        Some(inner_mux) => {
-                            let mut inner = inner_mux.lock();
-                            let timer = metrics_for_do_try_match.do_try_match.begin_timer();
-                            inner.do_try_match();
-                            timer.measure();
-                        }
-                        // If the inner went away it means the scheduler is shutting
-                        // down, so we need to resolve our future.
-                        None => return,
-                    };
-                    on_matching_engine_run().await;
-                }
-                // Unreachable.
-            }),
+            _task_worker_matching_future: spawn!(
+                async move {
+                    // Break out of the loop only when the inner is dropped.
+                    loop {
+                        tasks_or_workers_change_notify.notified().await;
+                        match weak_inner.upgrade() {
+                            // Note: According to `parking_lot` documentation, the default
+                            // `Mutex` implementation is eventual fairness, so we don't
+                            // really need to worry about this thread taking the lock
+                            // starving other threads too much.
+                            Some(inner_mux) => {
+                                let mut inner = inner_mux.lock();
+                                let timer = metrics_for_do_try_match.do_try_match.begin_timer();
+                                inner.do_try_match();
+                                timer.measure();
+                            }
+                            // If the inner went away it means the scheduler is shutting
+                            // down, so we need to resolve our future.
+                            None => return,
+                        };
+                        on_matching_engine_run().await;
+                    }
+                    // Unreachable.
+                },
+                "simple_scheduler_task_worker_matching"
+            ),
             metrics,
         }
     }
@@ -979,12 +984,6 @@ impl WorkerScheduler for SimpleScheduler {
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
         // We do not register anything here because we only want to register metrics
         // once and we rely on the `ActionScheduler::register_metrics()` to do that.
-    }
-}
-
-impl Drop for SimpleScheduler {
-    fn drop(&mut self) {
-        self.task_worker_matching_future.abort();
     }
 }
 

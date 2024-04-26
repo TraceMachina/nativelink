@@ -27,6 +27,7 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState,
 };
+use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use parking_lot::{Mutex, MutexGuard};
@@ -158,7 +159,7 @@ impl ActionScheduler for CacheLookupScheduler {
         let ac_store = self.ac_store.clone();
         let action_scheduler = self.action_scheduler.clone();
         // We need this spawn because we are returning a stream and this spawn will populate the stream's data.
-        tokio::spawn(async move {
+        background_spawn!("cache_lookup_scheduler_add_action", async move {
             // If our spawn ever dies, we will remove the action from the cache_check_actions map.
             let _scope_guard = scope_guard;
 
@@ -215,7 +216,7 @@ impl ActionScheduler for CacheLookupScheduler {
                     let _ = tx.send(current_state);
                 }
             }
-        });
+        },);
         Ok(rx)
     }
 
