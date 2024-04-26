@@ -21,7 +21,7 @@ use std::time::Duration;
 use futures::stream::{unfold, FuturesUnordered, StreamExt};
 use futures::Future;
 use nativelink_config::stores::Retry;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use tokio::sync::{mpsc, oneshot};
 use tonic::transport::{channel, Channel, Endpoint};
 use tracing::{event, Level};
@@ -32,7 +32,10 @@ use crate::retry::{self, Retrier, RetryResult};
 /// upstream gRPC endpoint using Tonic.
 pub struct ConnectionManager {
     // The channel to request connections from the worker.
-    worker_tx: mpsc::Sender<oneshot::Sender<Connection>>,
+    worker_tx: Option<mpsc::Sender<oneshot::Sender<Connection>>>,
+
+    // The handle to the worker that manage's spawn the connections.
+    service_spawn: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The index into ConnectionManagerWorker::endpoints.
@@ -148,12 +151,14 @@ impl ConnectionManager {
                 retry,
             ),
         };
-        tokio::spawn(async move {
-            worker
-                .service_requests(connections_per_endpoint, worker_rx, connection_rx)
-                .await;
-        });
-        Self { worker_tx }
+        Self {
+            worker_tx: Some(worker_tx),
+            service_spawn: Some(tokio::spawn(async move {
+                worker
+                    .service_requests(connections_per_endpoint, worker_rx, connection_rx)
+                    .await;
+            })),
+        }
     }
 
     /// Get a Connection that can be used as a tonic::Channel, except it
@@ -162,11 +167,32 @@ impl ConnectionManager {
     pub async fn connection(&self) -> Result<Connection, Error> {
         let (tx, rx) = oneshot::channel();
         self.worker_tx
+            .as_ref()
+            .err_tip(|| "ConnectionManager is already dropped")?
             .send(tx)
             .await
             .map_err(|err| make_err!(Code::Unavailable, "Requesting a new connection: {err:?}"))?;
         rx.await
             .map_err(|err| make_err!(Code::Unavailable, "Waiting for a new connection: {err:?}"))
+    }
+}
+
+impl Drop for ConnectionManager {
+    fn drop(&mut self) {
+        // Drop our worker_tx to signal to the worker that it should shut down.
+        drop(self.worker_tx.take());
+
+        let service_spawn = self
+            .service_spawn
+            .take()
+            .expect("Expected ConnectionManager::service_spawn to exist");
+        tokio::pin!(service_spawn);
+        service_spawn.abort();
+        // Wait for the worker to shut down.
+        let result = tokio::runtime::Handle::current().block_on(service_spawn);
+        if let Err(err) = result {
+            error!("Error while dropping ConnectionManager: {err:?}");
+        }
     }
 }
 
