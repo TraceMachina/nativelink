@@ -64,7 +64,7 @@ crate.from_cargo(
 )
 use_repo(crate, "crates")
 
-bazel_dep(name = "protobuf", version = "26.0")
+bazel_dep(name = "protobuf", version = "26.0.bcr.1")
 
 # Local remote execution.
 bazel_dep(name = "local-remote-execution", version = "0.0.0")
