@@ -40,8 +40,8 @@ use nativelink_store::filesystem_store::{
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
+use nativelink_util::origin_context::ContextAwareFuture;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
-use nativelink_util::task::instrument_future;
 use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
 use rand::{thread_rng, Rng};
@@ -51,6 +51,7 @@ use tokio::sync::Barrier;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::StreamExt;
+use tracing::Instrument;
 
 trait FileEntryHooks {
     fn on_unref<Fe: FileEntry>(_entry: &Fe) {}
@@ -167,7 +168,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
         // command that will wait for all tasks and sub spawns to complete.
         // Sadly we need to rely on `active_drop_spawns` to hit zero to ensure that
         // all tasks have completed.
-        let fut = instrument_future(
+        let fut = ContextAwareFuture::new_from_current(
             async move {
                 // Drop the FileEntryImpl in a controlled setting then wait for the
                 // `active_drop_spawns` to hit zero.
@@ -175,8 +176,8 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
                 while shared_context.active_drop_spawns.load(Ordering::Acquire) > 0 {
                     tokio::task::yield_now().await;
                 }
-            },
-            tracing::error_span!("test_file_entry_drop"),
+            }
+            .instrument(tracing::error_span!("test_file_entry_drop")),
         );
         #[allow(clippy::disallowed_methods)]
         let thread_handle = {
@@ -184,7 +185,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .build()
                     .unwrap();
-                rt.block_on(fut)
+                rt.block_on(fut);
             })
         };
         thread_handle.join().unwrap();

@@ -20,13 +20,7 @@ use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 pub use tracing::error_span as __error_span;
 use tracing::{Instrument, Span};
 
-#[inline(always)]
-pub fn instrument_future<F, T>(f: F, span: Span) -> impl Future<Output = T>
-where
-    F: Future<Output = T> + Send + 'static,
-{
-    f.instrument(span)
-}
+use crate::origin_context::ContextAwareFuture;
 
 #[inline(always)]
 pub fn __spawn_with_span<F, T>(f: F, span: Span) -> JoinHandle<T>
@@ -35,7 +29,7 @@ where
     F: Future<Output = T> + Send + 'static,
 {
     #[allow(clippy::disallowed_methods)]
-    tokio::spawn(instrument_future(f, span))
+    tokio::spawn(ContextAwareFuture::new_from_current(f.instrument(span)))
 }
 
 #[inline(always)]

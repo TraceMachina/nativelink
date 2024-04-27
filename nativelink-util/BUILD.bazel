@@ -20,6 +20,7 @@ rust_library(
         "src/health_utils.rs",
         "src/lib.rs",
         "src/metrics_utils.rs",
+        "src/origin_context.rs",
         "src/platform_properties.rs",
         "src/proto_stream_utils.rs",
         "src/resource_info.rs",

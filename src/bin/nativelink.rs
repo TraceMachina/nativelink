@@ -48,6 +48,7 @@ use nativelink_util::metrics_utils::{
     set_metrics_enabled_for_this_thread, Collector, CollectorState, Counter, MetricsComponent,
     Registry,
 };
+use nativelink_util::origin_context::OriginContext;
 use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
 };
@@ -66,7 +67,7 @@ use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
-use tracing::{event, Level};
+use tracing::{event, trace_span, Level};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 #[global_allocator]
@@ -424,39 +425,41 @@ async fn inner_main(
             };
             svc = svc.route_service(
                 path,
-                axum::routing::get(move |_request: hyper::Request<hyper::Body>| async move {
-                    // We spawn on a thread that can block to give more freedom to our metrics
-                    // collection. This allows it to call functions like `tokio::block_in_place`
-                    // if it needs to wait on a future.
-                    spawn_blocking!("prometheus_metrics", move || {
-                        let mut buf = String::new();
-                        let root_metrics_registry_guard =
-                            futures::executor::block_on(root_metrics_registry.lock());
-                        prometheus_client::encoding::text::encode(
-                            &mut buf,
-                            &root_metrics_registry_guard,
-                        )
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                        .map(|_| {
-                            // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
-                            buf = buf.replace("nativelink_nativelink_stores_", "");
-                            buf = buf.replace("nativelink_nativelink_workers_", "");
-                            let mut response = Response::new(buf);
-                            // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
-                            // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
-                            // However, this makes debugging more difficult, so we use the old text/plain instead.
-                            response.headers_mut().insert(
-                                hyper::header::CONTENT_TYPE,
-                                hyper::header::HeaderValue::from_static(
-                                    "text/plain; version=0.0.4; charset=utf-8",
-                                ),
-                            );
-                            response
+                axum::routing::get(move |_request: hyper::Request<hyper::Body>| {
+                    OriginContext::builder().wrap_async(trace_span!("prometheus_ctx"), async move {
+                        // We spawn on a thread that can block to give more freedom to our metrics
+                        // collection. This allows it to call functions like `tokio::block_in_place`
+                        // if it needs to wait on a future.
+                        spawn_blocking!("prometheus_metrics", move || {
+                            let mut buf = String::new();
+                            let root_metrics_registry_guard =
+                                futures::executor::block_on(root_metrics_registry.lock());
+                            prometheus_client::encoding::text::encode(
+                                &mut buf,
+                                &root_metrics_registry_guard,
+                            )
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            .map(|_| {
+                                // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
+                                buf = buf.replace("nativelink_nativelink_stores_", "");
+                                buf = buf.replace("nativelink_nativelink_workers_", "");
+                                let mut response = Response::new(buf);
+                                // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
+                                // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
+                                // However, this makes debugging more difficult, so we use the old text/plain instead.
+                                response.headers_mut().insert(
+                                    hyper::header::CONTENT_TYPE,
+                                    hyper::header::HeaderValue::from_static(
+                                        "text/plain; version=0.0.4; charset=utf-8",
+                                    ),
+                                );
+                                response
+                            })
+                            .unwrap_or_else(error_to_response)
                         })
+                        .await
                         .unwrap_or_else(error_to_response)
                     })
-                    .await
-                    .unwrap_or_else(error_to_response)
                 }),
             )
         }
@@ -707,7 +710,7 @@ async fn inner_main(
                 );
                 background_spawn!(
                     name: "http_connection",
-                    fut: async move {
+                    fut: OriginContext::builder().wrap_async(trace_span!("http_connection_ctx"), async move {
                         // Move it into our spawn, so if our spawn dies the cleanup happens.
                         let _guard = scope_guard;
                         if let Err(err) = fut.await {
@@ -718,7 +721,7 @@ async fn inner_main(
                                 "Failed running service"
                             );
                         }
-                    },
+                    }),
                     target: "nativelink::services",
                     ?remote_addr,
                     ?socket_addr,
@@ -792,7 +795,9 @@ async fn inner_main(
                     let worker_metrics = root_worker_metrics.sub_registry_with_prefix(&name);
                     local_worker.register_metrics(worker_metrics);
                     worker_names.insert(name.clone());
-                    spawn!("worker", local_worker.run(), ?name)
+                    let fut = OriginContext::builder()
+                        .wrap_async(trace_span!("worker_ctx"), local_worker.run());
+                    spawn!("worker", fut, ?name)
                 }
             };
             root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
