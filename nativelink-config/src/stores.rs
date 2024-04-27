@@ -15,6 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
+    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
     convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
 };
@@ -203,7 +204,7 @@ pub struct ShardStore {
 #[serde(deny_unknown_fields)]
 pub struct SizePartitioningStore {
     /// Size to partition the data on.
-    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(deserialize_with = "convert_data_size_with_shellexpand")]
     pub size: u64,
 
     /// Store to send data when object is < (less than) size.
@@ -243,7 +244,7 @@ pub struct FilesystemStore {
     /// Buffer size to use when reading files. Generally this should be left
     /// to the default value except for testing.
     /// Default: 32k.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub read_buffer_size: u32,
 
     /// Policy used to evict items out of the store. Failure to set this
@@ -255,7 +256,7 @@ pub struct FilesystemStore {
     /// value is used to determine an entry's actual size on disk consumed
     /// For a 4KB block size filesystem, a 1B file actually consumes 4KB
     /// Default: 4096
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub block_size: u64,
 }
 
@@ -297,7 +298,7 @@ pub struct DedupStore {
     /// deciding where to partition the data.
     ///
     /// Default: 65536 (64k)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub min_size: u32,
 
     /// A best-effort attempt will be made to keep the average size
@@ -311,13 +312,13 @@ pub struct DedupStore {
     /// details.
     ///
     /// Default: 262144 (256k)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub normal_size: u32,
 
     /// Maximum size a chunk is allowed to be.
     ///
     /// Default: 524288 (512k)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_size: u32,
 
     /// Due to implementation detail, we want to prefer to download
@@ -396,7 +397,7 @@ pub struct Lz4Config {
     /// compression ratios.
     ///
     /// Default: 65536 (64k).
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub block_size: u32,
 
     /// Maximum size allowed to attempt to deserialize data into.
@@ -407,7 +408,7 @@ pub struct Lz4Config {
     /// allow you to specify the maximum that we'll attempt deserialize.
     ///
     /// Default: value in `block_size`.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_decode_block_size: u32,
 }
 
@@ -447,19 +448,19 @@ pub struct CompressionStore {
 pub struct EvictionPolicy {
     /// Maximum number of bytes before eviction takes place.
     /// Default: 0. Zero means never evict based on size.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_bytes: usize,
 
     /// When eviction starts based on hitting max_bytes, continue until
     /// max_bytes - evict_bytes is met to create a low watermark.  This stops
     /// operations from thrashing when the store is close to the limit.
     /// Default: 0
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub evict_bytes: usize,
 
     /// Maximum number of seconds for an entry to live before an eviction.
     /// Default: 0. Zero means never evict based on time.
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_seconds: u32,
 
     /// Maximum size of the store before an eviction takes place.
