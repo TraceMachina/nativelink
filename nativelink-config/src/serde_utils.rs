@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use byte_unit::Byte;
+use humantime::parse_duration;
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -137,4 +139,82 @@ pub fn convert_optional_string_with_shellexpand<'de, D: Deserializer<'de>>(
     } else {
         Ok(None)
     }
+}
+
+pub fn convert_data_size_with_shellexpand<'de, D, T, E>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    E: fmt::Display,
+    T: TryFrom<i64> + FromStr<Err = E>,
+    <T as TryFrom<i64>>::Error: fmt::Display,
+{
+    // define a visitor that deserializes
+    // `ActualData` encoded as json within a string
+    struct USizeVisitor<T: TryFrom<i64>>(PhantomData<T>);
+
+    impl<'de, T, FromStrErr> de::Visitor<'de> for USizeVisitor<T>
+    where
+        FromStrErr: fmt::Display,
+        T: TryFrom<i64> + FromStr<Err = FromStrErr>,
+        <T as TryFrom<i64>>::Error: fmt::Display,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string containing json data")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            v.try_into().map_err(de::Error::custom)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let byte_size = Byte::parse_str(v, true).map_err(de::Error::custom);
+            let byte_size_str = byte_size?.as_u64().to_string();
+            (*shellexpand::env(&byte_size_str).map_err(de::Error::custom)?)
+                .parse::<T>()
+                .map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(USizeVisitor::<T>(PhantomData::<T> {}))
+}
+
+pub fn convert_duration_with_shellexpand<'de, D, T, E>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    E: fmt::Display,
+    T: TryFrom<i64> + FromStr<Err = E>,
+    <T as TryFrom<i64>>::Error: fmt::Display,
+{
+    // define a visitor that deserializes
+    // `ActualData` encoded as json within a string
+    struct USizeVisitor<T: TryFrom<i64>>(PhantomData<T>);
+
+    impl<'de, T, FromStrErr> de::Visitor<'de> for USizeVisitor<T>
+    where
+        FromStrErr: fmt::Display,
+        T: TryFrom<i64> + FromStr<Err = FromStrErr>,
+        <T as TryFrom<i64>>::Error: fmt::Display,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string containing json data")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            v.try_into().map_err(de::Error::custom)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let duration = parse_duration(v).map_err(de::Error::custom);
+            let duration_str = duration?.as_secs().to_string();
+            (*shellexpand::env(&duration_str).map_err(de::Error::custom)?)
+                .parse::<T>()
+                .map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(USizeVisitor::<T>(PhantomData::<T> {}))
 }
