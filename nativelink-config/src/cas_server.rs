@@ -18,6 +18,7 @@ use serde::Deserialize;
 
 use crate::schedulers::SchedulerConfig;
 use crate::serde_utils::{
+    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_numeric_with_shellexpand, convert_optional_numeric_with_shellexpand,
     convert_optional_string_with_shellexpand, convert_string_with_shellexpand,
     convert_vec_string_with_shellexpand,
@@ -139,7 +140,7 @@ pub struct ByteStreamConfig {
     /// 16KiB - 64KiB is optimal.
     ///
     /// Defaults: 64KiB
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_bytes_per_stream: usize,
 
     /// In the event a client disconnects while uploading a blob, we will hold
@@ -148,7 +149,7 @@ pub struct ByteStreamConfig {
     /// the same blob.
     ///
     /// Defaults: 10 (seconds)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub persist_stream_on_disconnect_timeout: usize,
 }
 
@@ -557,7 +558,7 @@ pub struct LocalWorkerConfig {
     /// longer than this time limit, the task will be rejected. Value in seconds.
     ///
     /// Default: 1200 (seconds / 20 mins)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_timeout: usize,
 
     /// If timeout is handled in `entrypoint` or another wrapper script.
@@ -667,7 +668,7 @@ pub struct GlobalConfig {
     /// a new file descriptor because the limit has been reached.
     ///
     /// Default: 1000 (1 second)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub idle_file_descriptor_timeout_millis: u64,
 
     /// This flag can be used to prevent metrics from being collected at runtime.
@@ -695,7 +696,7 @@ pub struct GlobalConfig {
     /// digest.
     ///
     /// Default: 1024*1024 (1MiB)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub default_digest_size_health_check: usize,
 }
 
