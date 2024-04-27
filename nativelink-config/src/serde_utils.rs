@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use byte_unit::Byte;
+use humantime::parse_duration;
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -47,7 +49,24 @@ where
             v.try_into().map_err(de::Error::custom)
         }
 
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        fn visit_str<E: de::Error>(self, mut v: &str) -> Result<Self::Value, E> {
+            println!("We're supposed to be here {}", v);
+            match v.chars().last().unwrap() {
+                'B' => {
+                    let byte = Byte::parse_str(v, true).unwrap();
+                    let byte64 = byte.as_u64().to_string();
+                    return byte64.parse::<T>().map_err(de::Error::custom);
+                }
+                's' => {
+                    let time = parse_duration(v).unwrap();
+                    let time64 = time.as_secs().to_string();
+                    return time64.parse::<T>().map_err(de::Error::custom);
+                }
+                _ => {
+                    println!("skipping");
+                }
+            }
+
             (*shellexpand::env(v).map_err(de::Error::custom)?)
                 .parse::<T>()
                 .map_err(de::Error::custom)
