@@ -40,7 +40,7 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
+                backend: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
@@ -74,7 +74,7 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
+                backend: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: true,
@@ -117,7 +117,7 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
+                backend: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: true,
@@ -146,7 +146,7 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
+                backend: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: true,
@@ -187,7 +187,7 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
+                backend: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
@@ -220,7 +220,7 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
+                backend: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
@@ -261,7 +261,7 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
+                backend: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
@@ -294,7 +294,7 @@ mod verify_store_tests {
         ));
         let store_owned = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
-                backend: nativelink_config::stores::StoreConfig::memory(
+                backend: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,

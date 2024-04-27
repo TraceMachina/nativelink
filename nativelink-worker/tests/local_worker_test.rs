@@ -421,10 +421,10 @@ mod local_worker_tests {
         let cas_store = Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
-                fast: nativelink_config::stores::StoreConfig::memory(
+                fast: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
-                slow: nativelink_config::stores::StoreConfig::memory(
+                slow: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
             },
@@ -469,10 +469,10 @@ mod local_worker_tests {
         let cas_store = Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
-                fast: nativelink_config::stores::StoreConfig::memory(
+                fast: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
-                slow: nativelink_config::stores::StoreConfig::memory(
+                slow: nativelink_config::stores::StoreConfigOptions::memory(
                     nativelink_config::stores::MemoryStore::default(),
                 ),
             },
