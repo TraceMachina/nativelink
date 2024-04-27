@@ -1922,6 +1922,7 @@ dependencies = [
  "bytes",
  "futures",
  "hex",
+ "hyper",
  "lru",
  "mock_instant",
  "nativelink-config",
