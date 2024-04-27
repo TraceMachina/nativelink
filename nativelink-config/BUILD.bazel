@@ -3,6 +3,7 @@ load(
     "rust_doc",
     "rust_doc_test",
     "rust_library",
+    "rust_test_suite",
 )
 
 rust_library(
@@ -16,7 +17,26 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "@crates//:byte-unit",
+        "@crates//:humantime",
         "@crates//:serde",
+        "@crates//:shellexpand",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/deserialization_test.rs",
+    ],
+    deps = [
+        "//nativelink-config",
+        "//nativelink-error",
+        "@crates//:byte-unit",
+        "@crates//:humantime",
+        "@crates//:serde",
+        "@crates//:serde_json5",
         "@crates//:shellexpand",
     ],
 )

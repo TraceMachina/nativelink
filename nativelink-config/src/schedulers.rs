@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::serde_utils::convert_numeric_with_shellexpand;
+use crate::serde_utils::{convert_duration_with_shellexpand, convert_numeric_with_shellexpand};
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
 #[allow(non_camel_case_types)]
@@ -97,13 +97,13 @@ pub struct SimpleScheduler {
     /// The amount of time to retain completed actions in memory for in case
     /// a WaitExecution is called after the action has completed.
     /// Default: 60 (seconds)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub retain_completed_for_s: u64,
 
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds.
     /// Default: 5 (seconds)
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub worker_timeout_s: u64,
 
     /// If a job returns an internal error or times out this many times when
