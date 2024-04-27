@@ -14,6 +14,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::StreamExt;
@@ -22,7 +23,7 @@ use hyper::{Body, Request, Response, StatusCode};
 use nativelink_util::health_utils::{
     HealthRegistry, HealthStatus, HealthStatusDescription, HealthStatusReporter,
 };
-use nativelink_util::task::instrument_future;
+use nativelink_util::origin_context::OriginContext;
 use tower::Service;
 use tracing::error_span;
 
@@ -51,7 +52,8 @@ impl Service<Request<hyper::Body>> for HealthServer {
 
     fn call(&mut self, _req: Request<Body>) -> Self::Future {
         let health_registry = self.health_registry.clone();
-        Box::pin(instrument_future(
+        Box::pin(Arc::new(OriginContext::new()).wrap_async(
+            error_span!("health_server_call"),
             async move {
                 let health_status_descriptions: Vec<HealthStatusDescription> =
                     health_registry.health_status_report().collect().await;
@@ -81,7 +83,6 @@ impl Service<Request<hyper::Body>> for HealthServer {
                         .unwrap()),
                 }
             },
-            error_span!("health_server_call"),
         ))
     }
 }

@@ -35,9 +35,12 @@ pub fn nativelink_test(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[tokio::test(#attr)]
         async fn #fn_name(#fn_inputs) #fn_output {
             #[warn(clippy::disallowed_methods)]
-            {
-                #fn_block
-            }
+            ::std::sync::Arc::new(::nativelink_util::origin_context::OriginContext::new()).wrap_async(
+                ::nativelink_util::__tracing::trace_span!("test"), async move {
+                    #fn_block
+                }
+            )
+            .await
         }
     };
 

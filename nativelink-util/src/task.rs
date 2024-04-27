@@ -13,19 +13,31 @@
 // limitations under the License.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::Future;
+use hyper::rt::Executor;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 pub use tracing::error_span as __error_span;
-use tracing::{Instrument, Span};
+use tracing::instrument::Instrumented;
+use tracing::{event, info_span, Instrument, Level, Span};
+
+use crate::origin_context::{ActiveOriginContext, ContextAwareFuture, OriginContext};
 
 #[inline(always)]
-pub fn instrument_future<F, T>(f: F, span: Span) -> impl Future<Output = T>
+pub fn __spawn_with_span_and_context<F, T>(
+    f: F,
+    span: Span,
+    ctx: Option<Arc<OriginContext>>,
+) -> JoinHandle<T>
 where
+    T: Send + 'static,
     F: Future<Output = T> + Send + 'static,
 {
-    f.instrument(span)
+    #[allow(clippy::disallowed_methods)]
+    tokio::spawn(ContextAwareFuture::new(ctx, f.instrument(span)))
 }
 
 #[inline(always)]
@@ -34,8 +46,7 @@ where
     T: Send + 'static,
     F: Future<Output = T> + Send + 'static,
 {
-    #[allow(clippy::disallowed_methods)]
-    tokio::spawn(instrument_future(f, span))
+    __spawn_with_span_and_context(f, span, ActiveOriginContext::get())
 }
 
 #[inline(always)]
@@ -58,6 +69,9 @@ macro_rules! background_spawn {
     }};
     (name: $name:expr, fut: $fut:expr, target: $target:expr, $($fields:tt)*) => {{
         $crate::task::__spawn_with_span($fut, $crate::task::__error_span!(target: $target, $name, $($fields)*))
+    }};
+    (span: $span:expr, ctx: $ctx:expr, fut: $fut:expr) => {{
+        $crate::task::__spawn_with_span_and_context($fut, $span, $ctx)
     }};
 }
 
@@ -115,5 +129,38 @@ impl<T> Future for JoinHandleDropGuard<T> {
 impl<T> Drop for JoinHandleDropGuard<T> {
     fn drop(&mut self) {
         self.inner.abort();
+    }
+}
+
+pub struct TaskExecutor<F>(UnboundedSender<Instrumented<F>>);
+
+impl<T> Clone for TaskExecutor<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<F> TaskExecutor<F> {
+    pub fn new(tx: UnboundedSender<Instrumented<F>>) -> Self {
+        Self(tx)
+    }
+}
+
+impl<F> Executor<F> for TaskExecutor<F>
+where
+    Self: Send + Sync,
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    fn execute(&self, fut: F) {
+        let _ = self
+            .0
+            .send(fut.instrument(info_span!("http_executor")))
+            .inspect_err(|_| {
+                event!(
+                    Level::ERROR,
+                    "Could not dispatch future from TaskExecutor(hyper) to parent spawn."
+                );
+            });
     }
 }
