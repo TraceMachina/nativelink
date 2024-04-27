@@ -16,6 +16,8 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "@crates//:byte-unit",
+        "@crates//:humantime",
         "@crates//:serde",
         "@crates//:shellexpand",
     ],
