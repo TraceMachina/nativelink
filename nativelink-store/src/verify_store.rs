@@ -188,6 +188,8 @@ impl Store for VerifyStore {
     }
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        let backend_store = registry.sub_registry_with_prefix("backend");
+        self.inner_store.clone().register_metrics(backend_store);
         registry.register_collector(Box::new(Collector::new(&self)));
     }
 }
