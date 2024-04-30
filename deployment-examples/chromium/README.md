@@ -4,9 +4,11 @@ This deployment sets up a 4-container deployment with separate CAS, scheduler
 and worker. Don't use this example deployment in production. It's insecure.
 
 > [!WARNING]
-> - The client build request is best done from a Ubuntu image, `./03_build_chrome_tests.sh`
-> - will check if the image is Ubuntu and fail otherwise
-> - This tutorial has been tested in a Nix environment of version `2.21.0`
+> - The client build request is best done from a Ubuntu image, `./03_build_chrome_tests.sh`. It will check if the image is Ubuntu and
+> fail otherwise.
+> - This tutorial has been tested in a Nix environment of version `2.
+> 21.0`.
+> - You need to install the [Docker](https://docs.docker.com/engine/install/ubuntu/) Engine in Ubuntu.
 > - To get your Nix environment set up see the [official Nix installation documentation](https://nix.dev/install-nix).
 
 All commands should be run from nix to ensure all dependencies exist in the environment.
@@ -85,3 +87,5 @@ When you're done testing, delete the cluster:
 ```bash
 kind delete cluster
 ```
+## NativeLink Community
+If you have any questions, please reach out to the [NativeLink Community](https://join.slack.com/t/nativelink/shared_invite/zt-2i2mipfr5-lZAEeWYEy4Eru94b3IOcdg).
