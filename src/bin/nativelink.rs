@@ -112,7 +112,8 @@ async fn inner_main(
         let mut health_registry_lock = health_registry_builder.lock().await;
         let root_store_metrics = root_metrics_registry.sub_registry_with_prefix("stores");
 
-        for (name, store_cfg) in cfg.stores {
+        for (_, store_cfg) in cfg.stores.into_iter().enumerate() {
+            let name = store_cfg.name.clone();
             let health_component_name = format!("stores/{name}");
             let mut health_register_store =
                 health_registry_lock.sub_builder(health_component_name.into());
@@ -120,7 +121,7 @@ async fn inner_main(
             store_manager.add_store(
                 &name,
                 store_factory(
-                    &store_cfg,
+                    &store_cfg.options,
                     &store_manager,
                     Some(store_metrics),
                     Some(&mut health_register_store),
@@ -135,10 +136,11 @@ async fn inner_main(
     let mut worker_schedulers = HashMap::new();
     if let Some(schedulers_cfg) = cfg.schedulers {
         let root_scheduler_metrics = root_metrics_registry.sub_registry_with_prefix("schedulers");
-        for (name, scheduler_cfg) in schedulers_cfg {
+        for (_, scheduler_cfg) in schedulers_cfg.into_iter().enumerate() {
+            let name = scheduler_cfg.name.clone();
             let scheduler_metrics = root_scheduler_metrics.sub_registry_with_prefix(&name);
             let (maybe_action_scheduler, maybe_worker_scheduler) =
-                scheduler_factory(&scheduler_cfg, &store_manager, scheduler_metrics)
+                scheduler_factory(&scheduler_cfg.options, &store_manager, scheduler_metrics)
                     .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
             if let Some(action_scheduler) = maybe_action_scheduler {
                 action_schedulers.insert(name.clone(), action_scheduler);
