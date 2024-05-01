@@ -45,7 +45,7 @@ else
         cd ${HOME}
         git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
         echo 'export PATH="${HOME}/depot_tools:$PATH"' >> ${HOME}/.bashrc
-        source ${HOME}/.bashrc
+        export PATH="${HOME}/depot_tools:$PATH"
     fi
 
     # Checkout chromium into home directory without history
