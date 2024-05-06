@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
+
 use nativelink_macro::nativelink_test;
 use nativelink_util::resource_info::ResourceInfo;
 
@@ -29,11 +31,14 @@ mod resource_info_tests {
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "instance_name");
         assert_eq!(resource_info.uuid, None);
-        assert_eq!(resource_info.compressor, Some("zstd"));
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
@@ -45,8 +50,8 @@ mod resource_info_tests {
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "instance_name");
         assert_eq!(resource_info.uuid, None);
-        assert_eq!(resource_info.compressor, Some("zstd"));
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
@@ -62,10 +67,13 @@ mod resource_info_tests {
         assert_eq!(resource_info.instance_name, "instance_name");
         assert_eq!(resource_info.uuid, None);
         assert_eq!(resource_info.compressor, None);
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
@@ -78,7 +86,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.instance_name, "instance_name");
         assert_eq!(resource_info.uuid, None);
         assert_eq!(resource_info.compressor, None);
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
@@ -93,11 +101,14 @@ mod resource_info_tests {
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, None);
-        assert_eq!(resource_info.compressor, Some("zstd"));
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
@@ -109,8 +120,8 @@ mod resource_info_tests {
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, None);
-        assert_eq!(resource_info.compressor, Some("zstd"));
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
@@ -125,10 +136,13 @@ mod resource_info_tests {
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, None);
         assert_eq!(resource_info.compressor, None);
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
@@ -140,7 +154,7 @@ mod resource_info_tests {
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, None);
         assert_eq!(resource_info.compressor, None);
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
@@ -156,11 +170,14 @@ mod resource_info_tests {
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "instance_name");
         assert_eq!(resource_info.uuid, None);
-        assert_eq!(resource_info.compressor, Some("zstd"));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
@@ -172,7 +189,7 @@ mod resource_info_tests {
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "instance_name");
         assert_eq!(resource_info.uuid, None);
-        assert_eq!(resource_info.compressor, Some("zstd"));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
@@ -192,7 +209,10 @@ mod resource_info_tests {
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
@@ -219,11 +239,14 @@ mod resource_info_tests {
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, None);
-        assert_eq!(resource_info.compressor, Some("zstd"));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
@@ -235,7 +258,7 @@ mod resource_info_tests {
         let resource_info = ResourceInfo::new(RESOURCE_NAME, false)?;
         assert_eq!(resource_info.instance_name, "");
         assert_eq!(resource_info.uuid, None);
-        assert_eq!(resource_info.compressor, Some("zstd"));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
@@ -255,7 +278,10 @@ mod resource_info_tests {
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(false));
         Ok(())
     }
@@ -340,12 +366,15 @@ mod resource_info_tests {
             "instance_name/uploads/uuid/compressed-blobs/zstd/blake3/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "instance_name");
-        assert_eq!(resource_info.uuid, Some("uuid"));
-        assert_eq!(resource_info.compressor, Some("zstd"));
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
@@ -357,9 +386,9 @@ mod resource_info_tests {
             "instance_name/uploads/uuid/compressed-blobs/zstd/blake3/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "instance_name");
-        assert_eq!(resource_info.uuid, Some("uuid"));
-        assert_eq!(resource_info.compressor, Some("zstd"));
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
@@ -374,12 +403,15 @@ mod resource_info_tests {
             "instance_name/uploads/uuid/blobs/blake3/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "instance_name");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
@@ -390,9 +422,9 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "instance_name/uploads/uuid/blobs/blake3/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "instance_name");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
@@ -407,12 +439,15 @@ mod resource_info_tests {
             "uploads/uuid/compressed-blobs/zstd/blake3/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
-        assert_eq!(resource_info.uuid, Some("uuid"));
-        assert_eq!(resource_info.compressor, Some("zstd"));
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
@@ -423,9 +458,9 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/zstd/blake3/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
-        assert_eq!(resource_info.uuid, Some("uuid"));
-        assert_eq!(resource_info.compressor, Some("zstd"));
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
@@ -439,12 +474,15 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "uploads/uuid/blobs/blake3/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
@@ -455,9 +493,9 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "uploads/uuid/blobs/blake3/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
-        assert_eq!(resource_info.digest_function, Some("blake3"));
+        assert_eq!(resource_info.digest_function, Some(Cow::Borrowed("blake3")));
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
         assert_eq!(resource_info.optional_metadata, None);
@@ -472,12 +510,15 @@ mod resource_info_tests {
             "instance_name/uploads/uuid/compressed-blobs/zstd/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "instance_name");
-        assert_eq!(resource_info.uuid, Some("uuid"));
-        assert_eq!(resource_info.compressor, Some("zstd"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
@@ -488,8 +529,8 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "instance_name/uploads/uuid/compressed-blobs/zstd/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "instance_name");
-        assert_eq!(resource_info.uuid, Some("uuid"));
-        assert_eq!(resource_info.compressor, Some("zstd"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
@@ -504,12 +545,15 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "instance_name/uploads/uuid/blobs/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "instance_name");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
@@ -520,7 +564,7 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "instance_name/uploads/uuid/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "instance_name");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
@@ -537,12 +581,15 @@ mod resource_info_tests {
             "uploads/uuid/compressed-blobs/zstd/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
-        assert_eq!(resource_info.uuid, Some("uuid"));
-        assert_eq!(resource_info.compressor, Some("zstd"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
@@ -553,8 +600,8 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "uploads/uuid/compressed-blobs/zstd/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
-        assert_eq!(resource_info.uuid, Some("uuid"));
-        assert_eq!(resource_info.compressor, Some("zstd"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
+        assert_eq!(resource_info.compressor, Some(Cow::Borrowed("zstd")));
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
@@ -577,12 +624,15 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/12345/optional_metadata";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
         assert_eq!(resource_info.expected_size, 12345);
-        assert_eq!(resource_info.optional_metadata, Some("optional_metadata"));
+        assert_eq!(
+            resource_info.optional_metadata,
+            Some(Cow::Borrowed("optional_metadata"))
+        );
         assert_eq!(RESOURCE_NAME, resource_info.to_string(true));
         Ok(())
     }
@@ -592,7 +642,7 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "uploads/uuid/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
@@ -607,7 +657,7 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "my/instance/name/uploads/uuid/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "my/instance/name");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");
@@ -622,7 +672,7 @@ mod resource_info_tests {
         const RESOURCE_NAME: &str = "blobs/uploads/uuid/blobs/hash/12345";
         let resource_info = ResourceInfo::new(RESOURCE_NAME, true)?;
         assert_eq!(resource_info.instance_name, "blobs");
-        assert_eq!(resource_info.uuid, Some("uuid"));
+        assert_eq!(resource_info.uuid, Some(Cow::Borrowed("uuid")));
         assert_eq!(resource_info.compressor, None);
         assert_eq!(resource_info.digest_function, None);
         assert_eq!(resource_info.hash, "hash");

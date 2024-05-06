@@ -25,9 +25,11 @@ mod verify_store_tests {
     use nativelink_store::verify_store::VerifyStore;
     use nativelink_util::buf_channel::make_buf_channel_pair;
     use nativelink_util::common::DigestInfo;
+    use nativelink_util::digest_hasher::{ctx_for_digest_function, DigestHasherFunc};
     use nativelink_util::spawn;
     use nativelink_util::store_trait::{Store, UploadSizeInfo};
     use pretty_assertions::assert_eq; // Must be declared in every module.
+    use tracing::info_span;
 
     use super::*;
 
@@ -44,7 +46,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
-                hash_verification_function: None,
+                verify_hash: false,
             },
             inner_store.clone(),
         );
@@ -78,7 +80,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: true,
-                hash_verification_function: None,
+                verify_hash: false,
             },
             inner_store.clone(),
         );
@@ -121,7 +123,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: true,
-                hash_verification_function: None,
+                verify_hash: false,
             },
             inner_store.clone(),
         );
@@ -150,7 +152,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: true,
-                hash_verification_function: None,
+                verify_hash: false,
             },
             inner_store.clone(),
         );
@@ -191,9 +193,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
-                hash_verification_function: Some(
-                    nativelink_config::stores::ConfigDigestHashFunction::sha256,
-                ),
+                verify_hash: true,
             },
             inner_store.clone(),
         );
@@ -224,9 +224,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
-                hash_verification_function: Some(
-                    nativelink_config::stores::ConfigDigestHashFunction::sha256,
-                ),
+                verify_hash: true,
             },
             inner_store.clone(),
         );
@@ -265,9 +263,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
-                hash_verification_function: Some(
-                    nativelink_config::stores::ConfigDigestHashFunction::blake3,
-                ),
+                verify_hash: true,
             },
             inner_store.clone(),
         );
@@ -277,7 +273,13 @@ mod verify_store_tests {
         const HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
         const VALUE: &str = "123";
         let digest = DigestInfo::try_new(HASH, 3).unwrap();
-        let result = store.update_oneshot(digest, VALUE.into()).await;
+        let result = ctx_for_digest_function(DigestHasherFunc::Blake3)?
+            .wrap_async(
+                info_span!("update_oneshot"),
+                store.update_oneshot(digest, VALUE.into()),
+            )
+            .await;
+
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
             Pin::new(inner_store.as_ref()).has(digest).await,
@@ -298,9 +300,7 @@ mod verify_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
                 verify_size: false,
-                hash_verification_function: Some(
-                    nativelink_config::stores::ConfigDigestHashFunction::blake3,
-                ),
+                verify_hash: true,
             },
             inner_store.clone(),
         );
@@ -310,7 +310,15 @@ mod verify_store_tests {
         const HASH: &str = "b944a0a3b20cf5927e594ff306d256d16cd5b0ba3e27b3285f40d7ef5e19695b";
         const VALUE: &str = "123";
         let digest = DigestInfo::try_new(HASH, 3).unwrap();
-        let result = store.update_oneshot(digest, VALUE.into()).await;
+
+        let result = ctx_for_digest_function(DigestHasherFunc::Blake3)?
+            .wrap_async(
+                info_span!("update_oneshot"),
+                store.update_oneshot(digest, VALUE.into()),
+            )
+            .await;
+
+        // let result = store.update_oneshot(digest, VALUE.into()).await;
         let err = result.unwrap_err().to_string();
         const ACTUAL_HASH: &str =
             "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";

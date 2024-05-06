@@ -16,23 +16,25 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+use nativelink_util::digest_hasher::{
+    default_digest_hasher_func, DigestHasher, ACTIVE_HASHER_FUNC,
+};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{
     Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
 };
+use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 
 pub struct VerifyStore {
     inner_store: Arc<dyn Store>,
     verify_size: bool,
-    hash_verification_function: Option<ConfigDigestHashFunction>,
+    verify_hash: bool,
 
     // Metrics.
     size_verification_failures: CounterWithTime,
@@ -47,7 +49,7 @@ impl VerifyStore {
         VerifyStore {
             inner_store,
             verify_size: config.verify_size,
-            hash_verification_function: config.hash_verification_function,
+            verify_hash: config.verify_hash,
             size_verification_failures: CounterWithTime::default(),
             hash_verification_failures: CounterWithTime::default(),
         }
@@ -144,9 +146,16 @@ impl Store for VerifyStore {
             }
         }
 
-        let mut hasher = self
-            .hash_verification_function
-            .map(|v| DigestHasherFunc::from(v).hasher());
+        let mut hasher = if self.verify_hash {
+            Some(
+                ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+                    .err_tip(|| "In verify_store::update, no hasher was set")?
+                    .map_or_else(default_digest_hasher_func, |v| *v)
+                    .hasher(),
+            )
+        } else {
+            None
+        };
 
         let (tx, rx) = make_buf_channel_pair();
 
@@ -202,9 +211,9 @@ impl MetricsComponent for VerifyStore {
             "If the verification store is verifying the size of the data",
         );
         c.publish(
-            "hash_verification_function",
-            &format!("{:?}", self.hash_verification_function),
-            "Hash verification function to verify the contents of the data",
+            "verify_hash_enabled",
+            &self.verify_hash,
+            "If the verification store is verifying the hash of the data",
         );
         c.publish(
             "size_verification_failures_total",

@@ -34,14 +34,14 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::digest_hasher::{ctx_for_digest_function, DigestHasherFunc};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::store_trait::Store;
 use rand::{thread_rng, Rng};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
-use tracing::{event, instrument, Level};
+use tracing::{error_span, event, instrument, Level};
 
 struct InstanceInfo {
     scheduler: Arc<dyn ActionScheduler>,
@@ -192,10 +192,9 @@ impl ExecutionServer {
 
     async fn inner_execute(
         &self,
-        request: Request<ExecuteRequest>,
+        request: ExecuteRequest,
     ) -> Result<Response<ExecuteStream>, Error> {
-        let execute_req = request.into_inner();
-        let instance_name = execute_req.instance_name;
+        let instance_name = request.instance_name;
 
         let instance_info = self
             .instance_infos
@@ -203,13 +202,13 @@ impl ExecutionServer {
             .err_tip(|| "Instance name '{}' not configured")?;
 
         let digest = DigestInfo::try_from(
-            execute_req
+            request
                 .action_digest
                 .err_tip(|| "Expected action_digest to exist")?,
         )
         .err_tip(|| "Failed to unwrap action cache")?;
 
-        let priority = execute_req
+        let priority = request
             .execution_policy
             .map_or(DEFAULT_EXECUTION_PRIORITY, |p| p.priority);
 
@@ -220,8 +219,8 @@ impl ExecutionServer {
                 digest,
                 &action,
                 priority,
-                execute_req.skip_cache_lookup,
-                execute_req
+                request.skip_cache_lookup,
+                request
                     .digest_function
                     .try_into()
                     .err_tip(|| "Could not convert digest function in inner_execute()")?,
@@ -276,7 +275,13 @@ impl Execution for ExecutionServer {
         &self,
         grpc_request: Request<ExecuteRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
-        self.inner_execute(grpc_request)
+        let request = grpc_request.into_inner();
+        ctx_for_digest_function(request.digest_function)
+            .err_tip(|| "In ExecutionServer::execute")?
+            .wrap_async(
+                error_span!("execution_server_execute"),
+                self.inner_execute(request),
+            )
             .await
             .err_tip(|| "Failed on execute() command")
             .map_err(|e| e.into())
