@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use futures::stream::StreamExt;
 use nativelink_error::Error;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ActionResult as ProtoActionResult, GetActionResultRequest,
+    ActionResult as ProtoActionResult, GetActionResultRequest,
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
@@ -29,6 +29,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::Store;
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
@@ -61,6 +62,7 @@ async fn get_action_from_store(
     ac_store: Pin<&dyn Store>,
     action_digest: DigestInfo,
     instance_name: String,
+    digest_function: DigestHasherFunc,
 ) -> Option<ProtoActionResult> {
     // If we are a GrpcStore we shortcut here, as this is a special store.
     let any_store = ac_store.inner_store(Some(action_digest)).as_any();
@@ -71,7 +73,7 @@ async fn get_action_from_store(
             inline_stdout: false,
             inline_stderr: false,
             inline_output_files: Vec::new(),
-            digest_function: digest_function::Value::Sha256.into(),
+            digest_function: digest_function.proto_digest_func().into(),
         };
         grpc_store
             .get_action_result(Request::new(action_result_request))
@@ -166,9 +168,13 @@ impl ActionScheduler for CacheLookupScheduler {
             // Perform cache check.
             let action_digest = current_state.action_digest();
             let instance_name = action_info.instance_name().clone();
-            if let Some(action_result) =
-                get_action_from_store(Pin::new(ac_store.as_ref()), *action_digest, instance_name)
-                    .await
+            if let Some(action_result) = get_action_from_store(
+                Pin::new(ac_store.as_ref()),
+                *action_digest,
+                instance_name,
+                current_state.unique_qualifier.digest_function,
+            )
+            .await
             {
                 match Pin::new(ac_store.clone().as_ref())
                     .has(*action_digest)

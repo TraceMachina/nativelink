@@ -103,7 +103,7 @@ def check(proto_packages):
         failed = True
 
     if failed:
-        print("To update, run: 'bazel run proto:update_protos'")
+        print("To update, run: 'bazel run nativelink-proto:update_protos'")
         raise SystemExit(1)
 
 

@@ -24,7 +24,7 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ExecuteRequest, ExecutionPolicy, GetCapabilitiesRequest, WaitExecutionRequest,
+    ExecuteRequest, ExecutionPolicy, GetCapabilitiesRequest, WaitExecutionRequest,
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
@@ -234,7 +234,11 @@ impl ActionScheduler for GrpcScheduler {
             execution_policy,
             // TODO: Get me from the original request, not very important as we ignore it.
             results_cache_policy: None,
-            digest_function: digest_function::Value::Sha256.into(),
+            digest_function: action_info
+                .unique_qualifier
+                .digest_function
+                .proto_digest_func()
+                .into(),
         };
         let result_stream = self
             .perform_request(request, |request| async move {
