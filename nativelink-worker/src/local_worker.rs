@@ -32,10 +32,11 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage};
 use nativelink_util::common::fs;
-use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::digest_hasher::{DigestHasherFunc, ACTIVE_HASHER_FUNC};
 use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
 };
+use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
 use tokio::process;
@@ -43,7 +44,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::Streaming;
-use tracing::{event, instrument, Level};
+use tracing::{event, info_span, instrument, Level};
 
 use crate::running_actions_manager::{
     ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
@@ -228,6 +229,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             };
                         }
                         Update::StartAction(start_execute) => {
+                            let mut ctx = ActiveOriginContext::fork().err_tip(|| "Expected ActiveOriginContext to be set in local_worker::run")?;
                             self.metrics.start_actions_received.inc();
                             let add_future_channel = add_future_channel.clone();
                             let mut grpc_client = self.grpc_client.clone();
@@ -235,106 +237,115 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             let salt = start_execute.salt;
                             let worker_id = self.worker_id.clone();
                             let action_digest = start_execute.execute_request.as_ref().and_then(|v| v.action_digest.clone());
-                            let try_hasher = start_execute.execute_request.as_ref()
+                            let digest_hasher = start_execute.execute_request.as_ref()
                                 .ok_or(make_input_err!("Expected execute_request to be set"))
                                 .and_then(|v| DigestHasherFunc::try_from(v.digest_function))
-                                .err_tip(|| "In LocalWorkerImpl::new()");
+                                .err_tip(|| "In LocalWorkerImpl::new()")?;
+                            ctx.set_value(&ACTIVE_HASHER_FUNC, Arc::new(digest_hasher));
                             let running_actions_manager = self.running_actions_manager.clone();
                             let worker_id_clone = worker_id.clone();
                             let precondition_script_cfg = self.config.experimental_precondition_script.clone();
                             let actions_in_transit = self.actions_in_transit.clone();
-                            let start_action_fut = self.metrics.clone().wrap(move |metrics| async move {
-                                metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
-                                .and_then(|_| running_actions_manager.create_and_add_action(worker_id_clone, start_execute))
-                                .map(|r| {
-                                    // Now that we either failed or registered our action, we can
-                                    // consider the action to no longer be in transit.
-                                    actions_in_transit.fetch_sub(1, Ordering::Release);
-                                    r
-                                })
-                                .and_then(|action| {
-                                    event!(
-                                        Level::INFO,
-                                        action_id = hex::encode(action.get_action_id()),
-                                        "Received request to run action"
-                                    );
-                                    action
-                                        .clone()
-                                        .prepare_action()
-                                        .and_then(RunningAction::execute)
-                                        .and_then(RunningAction::upload_results)
-                                        .and_then(RunningAction::get_finished_result)
-                                        // Note: We need ensure we run cleanup even if one of the other steps fail.
-                                        .then(|result| async move {
-                                            if let Err(e) = action.cleanup().await {
-                                                return Result::<ActionResult, Error>::Err(e).merge(result);
-                                            }
-                                            result
-                                        })
-                                }).await
-                            });
+                            let metrics = self.metrics.clone();
+                            let futures_ref = &futures;
+                            ctx.run(info_span!("worker_start_action_ctx"), move || {
+                                let actions_in_transit_clone = actions_in_transit.clone();
+                                let running_actions_manager_clone = running_actions_manager.clone();
+                                let start_action_fut = metrics.clone().wrap(move |metrics| async move {
+                                    metrics.preconditions.wrap(preconditions_met(precondition_script_cfg))
+                                    .and_then(|_| running_actions_manager_clone.create_and_add_action(worker_id_clone, start_execute))
+                                    .map(|r| {
+                                        // Now that we either failed or registered our action, we can
+                                        // consider the action to no longer be in transit.
+                                        actions_in_transit_clone.fetch_sub(1, Ordering::Release);
+                                        r
+                                    })
+                                    .and_then(|action| {
+                                        event!(
+                                            Level::INFO,
+                                            action_id = hex::encode(action.get_action_id()),
+                                            "Received request to run action"
+                                        );
+                                        action
+                                            .clone()
+                                            .prepare_action()
+                                            .and_then(RunningAction::execute)
+                                            .and_then(RunningAction::upload_results)
+                                            .and_then(RunningAction::get_finished_result)
+                                            // Note: We need ensure we run cleanup even if one of the other steps fail.
+                                            .then(|result| async move {
+                                                if let Err(e) = action.cleanup().await {
+                                                    return Result::<ActionResult, Error>::Err(e).merge(result);
+                                                }
+                                                result
+                                            })
+                                    }).await
+                                });
 
-                            let running_actions_manager = self.running_actions_manager.clone();
-                            let make_publish_future = move |res: Result<ActionResult, Error>| async move {
-                                let instance_name = maybe_instance_name
-                                    .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
-                                match res {
-                                    Ok(mut action_result) => {
-                                        // Save in the action cache before notifying the scheduler that we've completed.
-                                        if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
-                                            if let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, try_hasher?).await {
-                                                event!(
-                                                    Level::ERROR,
-                                                    ?err,
-                                                    ?action_digest,
-                                                    "Error saving action in store",
-                                                );
+                                let running_actions_manager_clone = running_actions_manager.clone();
+                                let make_publish_future = move |res: Result<ActionResult, Error>| async move {
+                                    let instance_name = maybe_instance_name
+                                        .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
+                                    match res {
+                                        Ok(mut action_result) => {
+                                            // Save in the action cache before notifying the scheduler that we've completed.
+                                            if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) {
+                                                if let Err(err) = running_actions_manager_clone.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
+                                                    event!(
+                                                        Level::ERROR,
+                                                        ?err,
+                                                        ?action_digest,
+                                                        "Error saving action in store",
+                                                    );
+                                                }
                                             }
-                                        }
-                                        let action_stage = ActionStage::Completed(action_result);
-                                        grpc_client.execution_response(
-                                            ExecuteResult{
+                                            let action_stage = ActionStage::Completed(action_result);
+                                            grpc_client.execution_response(
+                                                ExecuteResult{
+                                                    worker_id,
+                                                    instance_name,
+                                                    action_digest,
+                                                    salt,
+                                                    digest_function: digest_hasher.proto_digest_func().into(),
+                                                    result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
+                                                }
+                                            )
+                                            .await
+                                            .err_tip(|| "Error while calling execution_response")?;
+                                        },
+                                        Err(e) => {
+                                            grpc_client.execution_response(ExecuteResult{
                                                 worker_id,
                                                 instance_name,
                                                 action_digest,
                                                 salt,
-                                                result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
-                                            }
-                                        )
-                                        .await
-                                        .err_tip(|| "Error while calling execution_response")?;
-                                    },
-                                    Err(e) => {
-                                        grpc_client.execution_response(ExecuteResult{
-                                            worker_id,
-                                            instance_name,
-                                            action_digest,
-                                            salt,
-                                            result: Some(execute_result::Result::InternalError(e.into())),
-                                        }).await.err_tip(|| "Error calling execution_response with error")?;
-                                    },
-                                }
-                                Ok(())
-                            };
-
-                            self.actions_in_transit.fetch_add(1, Ordering::Release);
-                            futures.push(
-                                spawn!("worker_start_action", start_action_fut).map(move |res| {
-                                    let res = res.err_tip(|| "Failed to launch spawn")?;
-                                    if let Err(err) = &res {
-                                        event!(
-                                            Level::ERROR,
-                                            ?err,
-                                            "Error executing action",
-                                        );
+                                                digest_function: digest_hasher.proto_digest_func().into(),
+                                                result: Some(execute_result::Result::InternalError(e.into())),
+                                            }).await.err_tip(|| "Error calling execution_response with error")?;
+                                        },
                                     }
-                                    add_future_channel
-                                        .send(make_publish_future(res).boxed())
-                                        .map_err(|_| make_err!(Code::Internal, "LocalWorker could not send future"))?;
                                     Ok(())
-                                })
-                                .boxed()
-                            );
+                                };
+
+                                actions_in_transit.fetch_add(1, Ordering::Release);
+                                futures_ref.push(
+                                    spawn!("worker_start_action", start_action_fut).map(move |res| {
+                                        let res = res.err_tip(|| "Failed to launch spawn")?;
+                                        if let Err(err) = &res {
+                                            event!(
+                                                Level::ERROR,
+                                                ?err,
+                                                "Error executing action",
+                                            );
+                                        }
+                                        add_future_channel
+                                            .send(make_publish_future(res).boxed())
+                                            .map_err(|_| make_err!(Code::Internal, "LocalWorker could not send future"))?;
+                                        Ok(())
+                                    })
+                                    .boxed()
+                                );
+                            });
                         }
                     };
                 },

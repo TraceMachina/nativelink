@@ -731,7 +731,7 @@ async fn inner_main(
                                     });
                                 },
                                 result = &mut http_svc_fut => {
-                                    if let Err(err) = result.map_err(|err| {
+                                    if let Err(err) = result.or_else(|err| {
                                         use std::error::Error;
                                         if let Some(inner_err) = err.source() {
                                             if let Some(io_err) = inner_err.downcast_ref::<std::io::Error>() {

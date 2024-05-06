@@ -1030,7 +1030,7 @@ impl RunningActionImpl {
             )
         };
         let cas_store = Pin::new(self.running_actions_manager.cas_store.as_ref());
-        let hasher = self.action_info.digest_function;
+        let hasher = self.action_info.unique_qualifier.digest_function;
         enum OutputType {
             None,
             File(FileInfo),

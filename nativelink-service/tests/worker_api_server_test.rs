@@ -319,11 +319,11 @@ pub mod execution_response_tests {
             insert_timestamp: make_system_time(0),
             unique_qualifier: ActionInfoHashKey {
                 instance_name: instance_name.clone(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: action_digest,
                 salt: SALT,
             },
             skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Sha256,
         };
         let mut client_action_state_receiver =
             test_context.scheduler.add_action(action_info).await?;
@@ -341,6 +341,7 @@ pub mod execution_response_tests {
             worker_id: test_context.worker_id.to_string(),
             action_digest: Some(action_digest.into()),
             salt: SALT,
+            digest_function: DigestHasherFunc::Sha256.proto_digest_func().into(),
             result: Some(execute_result::Result::ExecuteResponse(ExecuteResponse {
                 result: Some(ProtoActionResult {
                     output_files: vec![OutputFile {
