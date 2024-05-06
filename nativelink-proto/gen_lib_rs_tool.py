@@ -35,7 +35,7 @@ _HEADER = """\
 
 // *** DO NOT MODIFY ***
 // This file is auto-generated. To update it, run:
-// `bazel run proto:update_protos`
+// `bazel run nativelink-proto:update_protos`
 """
 
 

@@ -32,6 +32,7 @@ use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{ActionInfoHashKey, ActionResult, ActionStage, ActionState};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::Store;
 use prost::Message;
 use tokio::sync::watch;
@@ -115,6 +116,7 @@ mod cache_lookup_scheduler_tests {
         let context = make_cache_scheduler()?;
         let action_name = ActionInfoHashKey {
             instance_name: "instance".to_string(),
+            digest_function: DigestHasherFunc::Sha256.proto_digest_func().try_into()?,
             digest: DigestInfo::new([8; 32], 1),
             salt: 1000,
         };

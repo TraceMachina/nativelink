@@ -72,6 +72,19 @@ pub struct ExecuteResult {
     /// / are running or cached.
     #[prost(uint64, tag = "3")]
     pub salt: u64,
+    /// The digest function that was used to compute the action digest
+    /// and all related blobs.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
+    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
+    /// that case the server SHOULD infer the digest function using the
+    /// length of the action digest hash and the digest functions announced
+    /// in the server's capabilities.
+    #[prost(
+        enumeration = "super::super::super::super::super::build::bazel::remote::execution::v2::digest_function::Value",
+        tag = "7"
+    )]
+    pub digest_function: i32,
     /// / The actual response data.
     #[prost(oneof = "execute_result::Result", tags = "4, 5")]
     pub result: ::core::option::Option<execute_result::Result>,

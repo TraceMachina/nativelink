@@ -368,13 +368,13 @@ pub struct VerifyStore {
     #[serde(default)]
     pub verify_size: bool,
 
-    /// The digest hash function to hash the contents and to verify if the digest hash is
-    /// matching before writing the entry to underlying store.
-    ///
-    /// If None, the hash verification will be disabled.
+    /// If the data should be hashed and verify that the key matches the
+    /// computed hash. The hash function is automatically determined based
+    /// request and if not set will use the global default.
     ///
     /// This should be set to None for AC, but hashing function like `sha256` for CAS stores.
-    pub hash_verification_function: Option<ConfigDigestHashFunction>,
+    #[serde(default)]
+    pub verify_hash: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
