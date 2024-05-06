@@ -47,6 +47,7 @@ mod action_messages_tests {
         let action_state = ActionState {
             unique_qualifier: ActionInfoHashKey {
                 instance_name: "foo_instance".to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::new([1u8; 32], 5),
                 salt: 0,
             },
@@ -119,11 +120,11 @@ mod action_messages_tests {
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::new([0u8; 32], 0),
                 salt: 0,
             },
             skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Sha256,
         });
         let lowest_priority_action = Arc::new(ActionInfo {
             command_digest: DigestInfo::new([0u8; 32], 0),
@@ -137,11 +138,11 @@ mod action_messages_tests {
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::new([1u8; 32], 0),
                 salt: 0,
             },
             skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Sha256,
         });
         let mut action_set = BTreeSet::<Arc<ActionInfo>>::new();
         action_set.insert(lowest_priority_action.clone());
@@ -175,11 +176,11 @@ mod action_messages_tests {
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::new([0u8; 32], 0),
                 salt: 0,
             },
             skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Sha256,
         });
         let current_action = Arc::new(ActionInfo {
             command_digest: DigestInfo::new([0u8; 32], 0),
@@ -193,11 +194,11 @@ mod action_messages_tests {
             insert_timestamp: make_system_time(0),
             unique_qualifier: ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::new([1u8; 32], 0),
                 salt: 0,
             },
             skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Sha256,
         });
         let mut action_set = BTreeSet::<Arc<ActionInfo>>::new();
         action_set.insert(current_action.clone());

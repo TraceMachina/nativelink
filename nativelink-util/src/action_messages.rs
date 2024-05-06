@@ -35,8 +35,9 @@ use prost::Message;
 use prost_types::Any;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
-use crate::digest_hasher::DigestHasherFunc;
+use crate::digest_hasher::{default_digest_hasher_func, DigestHasherFunc, ACTIVE_HASHER_FUNC};
 use crate::metrics_utils::{CollectorState, MetricsComponent};
+use crate::origin_context::ActiveOriginContext;
 use crate::platform_properties::PlatformProperties;
 
 /// Default priority remote execution jobs will get when not provided.
@@ -51,6 +52,8 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 pub struct ActionInfoHashKey {
     /// Name of instance group this action belongs to.
     pub instance_name: String,
+    /// The digest function this action expects.
+    pub digest_function: DigestHasherFunc,
     /// Digest of the underlying `Action`.
     pub digest: DigestInfo,
     /// Salt that can be filled with a random number to ensure no `ActionInfo` will be a match
@@ -64,6 +67,7 @@ impl ActionInfoHashKey {
     pub fn get_hash(&self) -> [u8; 32] {
         Blake3Hasher::new()
             .update(self.instance_name.as_bytes())
+            .update(&i32::from(self.digest_function.proto_digest_func()).to_le_bytes())
             .update(&self.digest.packed_hash[..])
             .update(&self.digest.size_bytes.to_le_bytes())
             .update(&self.salt.to_le_bytes())
@@ -75,8 +79,9 @@ impl ActionInfoHashKey {
     #[inline]
     pub fn action_name(&self) -> String {
         format!(
-            "{}/{}-{}/{:X}",
+            "{}/{}/{}-{}/{:X}",
             self.instance_name,
+            self.digest_function,
             self.digest.hash_str(),
             self.digest.size_bytes,
             self.salt
@@ -89,6 +94,9 @@ impl TryFrom<&str> for ActionInfoHashKey {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let (instance_name, other) = value
+            .split_once('/')
+            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
+        let (digest_function, other) = other
             .split_once('/')
             .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
         let (digest_hash, other) = other
@@ -106,6 +114,7 @@ impl TryFrom<&str> for ActionInfoHashKey {
         let salt = u64::from_str_radix(salt, 16).err_tip(|| "Expected salt to be a hex string")?;
         Ok(Self {
             instance_name: instance_name.to_string(),
+            digest_function: digest_function.try_into()?,
             digest,
             salt,
         })
@@ -147,9 +156,6 @@ pub struct ActionInfo {
 
     /// Whether to try looking up this action in the cache.
     pub skip_cache_lookup: bool,
-
-    /// The digest function this action expects.
-    pub digest_function: DigestHasherFunc,
 }
 
 impl ActionInfo {
@@ -197,6 +203,8 @@ impl ActionInfo {
             insert_timestamp: queued_timestamp,
             unique_qualifier: ActionInfoHashKey {
                 instance_name: execute_request.instance_name,
+                digest_function: DigestHasherFunc::try_from(execute_request.digest_function)
+                    .err_tip(|| format!("Could not find digest_function in try_from_action_and_execute_request_with_salt {:?}", execute_request.digest_function))?,
                 digest: execute_request
                     .action_digest
                     .err_tip(|| "Expected action_digest to exist on ExecuteRequest")?
@@ -204,8 +212,6 @@ impl ActionInfo {
                 salt,
             },
             skip_cache_lookup: execute_request.skip_cache_lookup,
-            digest_function: DigestHasherFunc::try_from(execute_request.digest_function)
-                .err_tip(|| "Could not find digest_function in try_from_action_and_execute_request_with_salt")?,
         })
     }
 }
@@ -219,7 +225,11 @@ impl From<ActionInfo> for ExecuteRequest {
             skip_cache_lookup: true, // The worker should never cache lookup.
             execution_policy: None,  // Not used in the worker.
             results_cache_policy: None, // Not used in the worker.
-            digest_function: val.digest_function.proto_digest_func().into(),
+            digest_function: val
+                .unique_qualifier
+                .digest_function
+                .proto_digest_func()
+                .into(),
         }
     }
 }
@@ -255,6 +265,11 @@ impl Ord for ActionInfo {
             .then_with(|| self.salt().cmp(other.salt()))
             .then_with(|| self.digest().size_bytes.cmp(&other.digest().size_bytes))
             .then_with(|| self.digest().packed_hash.cmp(&other.digest().packed_hash))
+            .then_with(|| {
+                self.unique_qualifier
+                    .digest_function
+                    .cmp(&other.unique_qualifier.digest_function)
+            })
     }
 }
 
@@ -274,6 +289,7 @@ impl Borrow<ActionInfoHashKey> for Arc<ActionInfo> {
 impl Hash for ActionInfoHashKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Digest is unique, so hashing it is all we need.
+        self.digest_function.hash(state);
         self.digest.hash(state);
         self.salt.hash(state);
     }
@@ -281,7 +297,9 @@ impl Hash for ActionInfoHashKey {
 
 impl PartialEq for ActionInfoHashKey {
     fn eq(&self, other: &Self) -> bool {
-        self.digest == other.digest && self.salt == other.salt
+        self.digest == other.digest
+            && self.salt == other.salt
+            && self.digest_function == other.digest_function
     }
 }
 
@@ -1003,6 +1021,9 @@ impl TryFrom<Operation> for ActionState {
             operation.name.hash(&mut hasher);
             ActionInfoHashKey {
                 instance_name: "UNKNOWN_INSTANCE_NAME_INOPERATION_CONVERSION".to_string(),
+                digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+                    .err_tip(|| "In TryFrom<Operation> for ActionState")?
+                    .map_or_else(default_digest_hasher_func, |v| *v),
                 digest: action_digest,
                 salt: hasher.finish(),
             }

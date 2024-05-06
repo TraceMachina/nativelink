@@ -57,6 +57,7 @@ fn make_modifier_scheduler(modifications: Vec<PropertyModification>) -> TestCont
 
 #[cfg(test)]
 mod property_modifier_scheduler_tests {
+    use nativelink_util::digest_hasher::DigestHasherFunc;
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -247,6 +248,7 @@ mod property_modifier_scheduler_tests {
         let context = make_modifier_scheduler(vec![]);
         let action_name = ActionInfoHashKey {
             instance_name: "instance".to_string(),
+            digest_function: DigestHasherFunc::Sha256,
             digest: DigestInfo::new([8; 32], 1),
             salt: 1000,
         };

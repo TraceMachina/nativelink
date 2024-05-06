@@ -35,10 +35,10 @@ pub fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
         insert_timestamp,
         unique_qualifier: ActionInfoHashKey {
             instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
             digest: DigestInfo::new([0u8; 32], 0),
             salt: 0,
         },
         skip_cache_lookup: false,
-        digest_function: DigestHasherFunc::Sha256,
     }
 }
