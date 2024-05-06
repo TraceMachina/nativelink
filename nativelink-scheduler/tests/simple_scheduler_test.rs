@@ -96,6 +96,7 @@ async fn setup_action(
 
 #[cfg(test)]
 mod scheduler_tests {
+    use nativelink_util::digest_hasher::DigestHasherFunc;
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -251,6 +252,7 @@ mod scheduler_tests {
 
         let unique_qualifier = ActionInfoHashKey {
             instance_name: "".to_string(),
+            digest_function: DigestHasherFunc::Sha256,
             digest: DigestInfo::zero_digest(),
             salt: 0,
         };
@@ -532,6 +534,7 @@ mod scheduler_tests {
         let mut expected_action_state = ActionState {
             unique_qualifier: ActionInfoHashKey {
                 instance_name: "".to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::zero_digest(),
                 salt: 0,
             }, // Will be filled later.
@@ -691,6 +694,7 @@ mod scheduler_tests {
             // Name is a random string, so we ignore it and just make it the same.
             unique_qualifier: ActionInfoHashKey {
                 instance_name: "".to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::zero_digest(),
                 salt: 0,
             },
@@ -793,6 +797,7 @@ mod scheduler_tests {
 
         let action_info_hash_key = ActionInfoHashKey {
             instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
             salt: 0,
         };
@@ -898,6 +903,7 @@ mod scheduler_tests {
 
         let action_info_hash_key = ActionInfoHashKey {
             instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
             salt: 0,
         };
@@ -999,6 +1005,7 @@ mod scheduler_tests {
 
         let action_info_hash_key = ActionInfoHashKey {
             instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
             salt: 0,
         };
@@ -1074,6 +1081,7 @@ mod scheduler_tests {
         let mut expected_action_state = ActionState {
             unique_qualifier: ActionInfoHashKey {
                 instance_name: "".to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::zero_digest(),
                 salt: 0,
             }, // Will be filled later.
@@ -1148,6 +1156,7 @@ mod scheduler_tests {
                 &WORKER_ID,
                 &ActionInfoHashKey {
                     instance_name: INSTANCE_NAME.to_string(),
+                    digest_function: DigestHasherFunc::Sha256,
                     digest: action_digest,
                     salt: 0,
                 },
@@ -1265,6 +1274,7 @@ mod scheduler_tests {
                 &WORKER_ID,
                 &ActionInfoHashKey {
                     instance_name: INSTANCE_NAME.to_string(),
+                    digest_function: DigestHasherFunc::Sha256,
                     digest: action_digest1,
                     salt: 0,
                 },
@@ -1310,6 +1320,7 @@ mod scheduler_tests {
                 &WORKER_ID,
                 &ActionInfoHashKey {
                     instance_name: INSTANCE_NAME.to_string(),
+                    digest_function: DigestHasherFunc::Sha256,
                     digest: action_digest2,
                     salt: 0,
                 },
@@ -1422,6 +1433,7 @@ mod scheduler_tests {
 
         let action_info_hash_key = ActionInfoHashKey {
             instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
             salt: 0,
         };
@@ -1581,6 +1593,7 @@ mod scheduler_tests {
                 &WORKER_ID1,
                 &ActionInfoHashKey {
                     instance_name: INSTANCE_NAME.to_string(),
+                    digest_function: DigestHasherFunc::Sha256,
                     digest: action_digest,
                     salt: 0,
                 },

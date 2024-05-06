@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use blake3::Hasher as Blake3Hasher;
 use bytes::BytesMut;
@@ -24,9 +24,29 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::common::DigestInfo;
-use crate::{fs, spawn_blocking};
+use crate::origin_context::{ActiveOriginContext, OriginContext};
+use crate::{fs, make_symbol, spawn_blocking};
+
+// The symbol can be use to retrieve the active hasher function.
+// from an `OriginContext`.
+make_symbol!(ACTIVE_HASHER_FUNC, DigestHasherFunc);
 
 static DEFAULT_DIGEST_HASHER_FUNC: OnceLock<DigestHasherFunc> = OnceLock::new();
+
+/// Utility function to make a context with a specific hasher function set.
+pub fn make_ctx_for_hash_func<H>(hasher: H) -> Result<Arc<OriginContext>, Error>
+where
+    H: TryInto<DigestHasherFunc>,
+    H::Error: Into<Error>,
+{
+    let digest_hasher_func = hasher
+        .try_into()
+        .err_tip(|| "Could not convert into DigestHasherFunc")?;
+
+    let mut new_ctx = ActiveOriginContext::fork().err_tip(|| "In BytestreamServer::inner_write")?;
+    new_ctx.set_value(&ACTIVE_HASHER_FUNC, Arc::new(digest_hasher_func));
+    Ok(Arc::new(new_ctx))
+}
 
 /// Get the default hasher.
 pub fn default_digest_hasher_func() -> DigestHasherFunc {
@@ -41,7 +61,7 @@ pub fn set_default_digest_hasher_func(hasher: DigestHasherFunc) -> Result<(), Er
 }
 
 /// Supported digest hash functions.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum DigestHasherFunc {
     Sha256,
     Blake3,
@@ -80,6 +100,29 @@ impl TryFrom<ProtoDigestFunction> for DigestHasherFunc {
             v => Err(make_input_err!(
                 "Unknown or unsupported digest function {v:?}"
             )),
+        }
+    }
+}
+
+impl TryFrom<&str> for DigestHasherFunc {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.to_uppercase().as_str() {
+            "SHA256" => Ok(Self::Sha256),
+            "BLAKE3" => Ok(Self::Blake3),
+            v => Err(make_input_err!(
+                "Unknown or unsupported digest function: {v:?}"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for DigestHasherFunc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DigestHasherFunc::Sha256 => write!(f, "SHA256"),
+            DigestHasherFunc::Blake3 => write!(f, "BLAKE3"),
         }
     }
 }
