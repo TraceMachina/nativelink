@@ -502,6 +502,7 @@ mod running_actions_manager_tests {
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         salt: SALT,
@@ -618,6 +619,7 @@ mod running_actions_manager_tests {
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         salt: SALT,
@@ -921,6 +923,7 @@ mod running_actions_manager_tests {
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         salt: SALT,
@@ -1076,6 +1079,7 @@ mod running_actions_manager_tests {
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         salt: SALT,
@@ -1270,6 +1274,7 @@ mod running_actions_manager_tests {
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         salt: SALT,
@@ -1400,6 +1405,7 @@ mod running_actions_manager_tests {
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: SALT,
@@ -1546,6 +1552,7 @@ exit 0
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: SALT,
@@ -1713,6 +1720,7 @@ exit 0
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: SALT,
@@ -1854,6 +1862,7 @@ exit 1
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: SALT,
@@ -2372,6 +2381,7 @@ exit 1
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         salt: 0,
@@ -2449,6 +2459,7 @@ exit 1
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         salt: 0,
@@ -2526,6 +2537,7 @@ exit 1
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         salt: 0,
@@ -2648,6 +2660,7 @@ exit 1
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -2767,6 +2780,7 @@ exit 1
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: 0,
@@ -2915,6 +2929,7 @@ exit 1
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -3002,6 +3017,7 @@ exit 1
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: SALT,
@@ -3135,6 +3151,7 @@ exit 1
                     StartExecute {
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
                             ..Default::default()
                         }),
                         salt: SALT,
@@ -3308,6 +3325,7 @@ exit 1
                 StartExecute {
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
                     salt: SALT,

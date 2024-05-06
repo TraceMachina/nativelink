@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -30,10 +31,7 @@ where
     E: Into<Error>,
     T: Stream<Item = Result<WriteRequest, E>> + Unpin,
 {
-    pub instance_name: String,
-    pub uuid: Option<String>,
-    pub hash: String,
-    pub expected_size: usize,
+    pub resource_info: ResourceInfo<'static>,
     pub bytes_received: usize,
     stream: T,
     first_msg: Option<WriteRequest>,
@@ -52,22 +50,17 @@ where
             .err_tip(|| "Error receiving first message in stream")?
             .err_tip(|| "Expected WriteRequest struct in stream")?;
 
-        let resource_info = ResourceInfo::new(&first_msg.resource_name, true).err_tip(|| {
-            format!(
-                "Could not extract resource info from first message of stream: {}",
-                first_msg.resource_name
-            )
-        })?;
-        let instance_name = resource_info.instance_name.to_string();
-        let hash = resource_info.hash.to_string();
-        let expected_size = resource_info.expected_size;
-        let uuid = resource_info.uuid.map(|v| v.to_string());
+        let resource_info = ResourceInfo::new(&first_msg.resource_name, true)
+            .err_tip(|| {
+                format!(
+                    "Could not extract resource info from first message of stream: {}",
+                    first_msg.resource_name
+                )
+            })?
+            .to_owned();
 
         Ok(WriteRequestStreamWrapper {
-            instance_name,
-            uuid,
-            hash,
-            expected_size,
+            resource_info,
             bytes_received: 0,
             stream,
             first_msg: Some(first_msg),
@@ -96,9 +89,9 @@ where
         // return a stream EOF (i.e. None).
         if self.write_finished {
             error_if!(
-                self.bytes_received != self.expected_size,
+                self.bytes_received != self.resource_info.expected_size,
                 "Did not send enough data. Expected {}, but so far received {}",
-                self.expected_size,
+                self.resource_info.expected_size,
                 self.bytes_received
             );
             return Poll::Ready(None);
@@ -124,10 +117,10 @@ where
             self.bytes_received += message.data.len();
 
             // Check that we haven't read past the expected end.
-            if self.bytes_received > self.expected_size {
+            if self.bytes_received > self.resource_info.expected_size {
                 Err(make_input_err!(
                     "Sent too much data. Expected {}, but so far received {}",
-                    self.expected_size,
+                    self.resource_info.expected_size,
                     self.bytes_received
                 ))
             } else {
@@ -297,7 +290,8 @@ where
                     match ResourceInfo::new(&message.resource_name, IS_UPLOAD_TRUE) {
                         Ok(mut resource_name) => {
                             if resource_name.instance_name != local_state.instance_name {
-                                resource_name.instance_name = &local_state.instance_name;
+                                resource_name.instance_name =
+                                    Cow::Borrowed(&local_state.instance_name);
                                 message.resource_name = resource_name.to_string(IS_UPLOAD_TRUE);
                             }
                         }

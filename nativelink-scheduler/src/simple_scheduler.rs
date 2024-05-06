@@ -469,14 +469,14 @@ impl SimpleSchedulerImpl {
                     Level::WARN,
                     ?worker_id,
                     ?action_info,
+                    ?notify_worker_result,
                     "Worker command failed, removing worker",
                 );
                 self.immediate_evict_worker(
                     &worker_id,
                     make_err!(
                         Code::Internal,
-                        "Worker command failed, removing worker {}",
-                        worker_id
+                        "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
                     ),
                 );
                 return;

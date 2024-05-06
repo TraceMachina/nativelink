@@ -72,6 +72,7 @@ fn make_temp_path(data: &str) -> String {
 
 #[cfg(test)]
 mod local_worker_tests {
+    use nativelink_proto::build::bazel::remote::execution::v2::digest_function;
     use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::KillActionRequest;
     use pretty_assertions::assert_eq;
 
@@ -239,11 +240,11 @@ mod local_worker_tests {
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
+                digest_function: DigestHasherFunc::Blake3,
                 digest: action_digest,
                 salt: SALT,
             },
             skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Blake3,
         };
 
         {
@@ -325,11 +326,11 @@ mod local_worker_tests {
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: action_digest,
                 salt: SALT,
             },
             skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Sha256,
         };
 
         {
@@ -406,6 +407,7 @@ mod local_worker_tests {
                 instance_name: INSTANCE_NAME.to_string(),
                 action_digest: Some(action_digest.into()),
                 salt: SALT,
+                digest_function: digest_function::Value::Sha256.into(),
                 result: Some(execute_result::Result::ExecuteResponse(
                     ActionStage::Completed(action_result).into()
                 )),
@@ -592,11 +594,11 @@ mod local_worker_tests {
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
+                digest_function: DigestHasherFunc::Sha256,
                 digest: action_digest,
                 salt: SALT,
             },
             skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Sha256,
         };
 
         {
@@ -632,6 +634,7 @@ mod local_worker_tests {
                 instance_name: INSTANCE_NAME.to_string(),
                 action_digest: Some(action_digest.into()),
                 salt: SALT,
+                digest_function: digest_function::Value::Sha256.into(),
                 result: Some(execute_result::Result::InternalError(
                     make_err!(Code::ResourceExhausted, "{}", EXPECTED_MSG,).into()
                 )),
@@ -682,11 +685,11 @@ mod local_worker_tests {
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
+                digest_function: DigestHasherFunc::Blake3,
                 digest: action_digest,
                 salt: SALT,
             },
             skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Blake3,
         };
 
         {

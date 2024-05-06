@@ -196,6 +196,10 @@ impl WorkerApiServer {
         &self,
         execute_result: ExecuteResult,
     ) -> Result<Response<()>, Error> {
+        let digest_function = execute_result
+            .digest_function()
+            .try_into()
+            .err_tip(|| "In inner_execution_response")?;
         let worker_id: WorkerId = execute_result.worker_id.try_into()?;
         let action_digest: DigestInfo = execute_result
             .action_digest
@@ -203,6 +207,7 @@ impl WorkerApiServer {
             .try_into()?;
         let action_info_hash_key = ActionInfoHashKey {
             instance_name: execute_result.instance_name,
+            digest_function,
             digest: action_digest,
             salt: execute_result.salt,
         };

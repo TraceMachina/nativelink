@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,10 +25,9 @@ use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    digest_function, ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse,
-    BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, FindMissingBlobsRequest,
-    FindMissingBlobsResponse, GetActionResultRequest, GetTreeRequest, GetTreeResponse,
-    UpdateActionResultRequest,
+    ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
+    BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
+    GetActionResultRequest, GetTreeRequest, GetTreeResponse, UpdateActionResultRequest,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
@@ -37,7 +37,9 @@ use nativelink_proto::google::bytestream::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
+use nativelink_util::digest_hasher::{default_digest_hasher_func, ACTIVE_HASHER_FUNC};
 use nativelink_util::health_utils::HealthStatusIndicator;
+use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::proto_stream_utils::{
     FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
 };
@@ -239,7 +241,7 @@ impl GrpcStore {
         const IS_UPLOAD_FALSE: bool = false;
         let mut resource_info = ResourceInfo::new(&request.resource_name, IS_UPLOAD_FALSE)?;
         if resource_info.instance_name != self.instance_name {
-            resource_info.instance_name = &self.instance_name;
+            resource_info.instance_name = Cow::Borrowed(&self.instance_name);
             request.resource_name = resource_info.to_string(IS_UPLOAD_FALSE);
         }
         Ok(request)
@@ -362,7 +364,7 @@ impl GrpcStore {
         const IS_UPLOAD_TRUE: bool = true;
         let mut request_info = ResourceInfo::new(&request.resource_name, IS_UPLOAD_TRUE)?;
         if request_info.instance_name != self.instance_name {
-            request_info.instance_name = &self.instance_name;
+            request_info.instance_name = Cow::Borrowed(&self.instance_name);
             request.resource_name = request_info.to_string(IS_UPLOAD_TRUE);
         }
 
@@ -430,7 +432,11 @@ impl GrpcStore {
             inline_stdout: false,
             inline_stderr: false,
             inline_output_files: Vec::new(),
-            digest_function: digest_function::Value::Sha256.into(),
+            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+                .err_tip(|| "In get_action_from_store")?
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .into(),
         };
         self.get_action_result(Request::new(action_result_request))
             .await
@@ -482,7 +488,11 @@ impl GrpcStore {
             action_digest: Some(digest.into()),
             action_result: Some(action_result),
             results_cache_policy: None,
-            digest_function: digest_function::Value::Sha256.into(),
+            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+                .err_tip(|| "In get_action_from_store")?
+                .map_or_else(default_digest_hasher_func, |v| *v)
+                .proto_digest_func()
+                .into(),
         };
         self.update_action_result(Request::new(update_action_request))
             .await
@@ -522,7 +532,11 @@ impl Store for GrpcStore {
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
                 instance_name: self.instance_name.clone(),
                 blob_digests: digests.iter().map(|digest| digest.into()).collect(),
-                digest_function: digest_function::Value::Sha256.into(),
+                digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
+                    .err_tip(|| "In GrpcStore::has_with_results")?
+                    .map_or_else(default_digest_hasher_func, |v| *v)
+                    .proto_digest_func()
+                    .into(),
             }))
             .await?
             .into_inner();
