@@ -196,7 +196,7 @@ cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.j
 
 You can find a few example deployments in the [deployment-examples directory](./deployment-examples).
 
-See the [terraform deployments](./deployment-examples/terraform) for an example
+See the [terraform deployments](./deployment-examples/terraform) for example
 deployments that show off remote execution and cache capabilities.
 
 ## 🏺 History
@@ -219,6 +219,6 @@ garbage collection (like C++, but unlike `Java`, `Go`, or `Typescript`).
 
 ## 📜 License
 
-Copyright 2020–2023 Trace Machina, Inc.
+Copyright 2020–2024 Trace Machina, Inc.
 
 Licensed under the Apache 2.0 License, SPDX identifier `Apache-2.0`.
