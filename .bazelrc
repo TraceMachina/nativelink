@@ -16,9 +16,6 @@
 startup --digest_function=blake3
 common --enable_platform_specific_config
 
-# TODO(aaronmondal): Remove this once we get the build working without it.
-common --noincompatible_sandbox_hermetic_tmp
-
 # Don't leak PATH and LD_LIBRARY_PATH into the build.
 build --incompatible_strict_action_env
 

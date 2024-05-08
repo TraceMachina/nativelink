@@ -216,12 +216,17 @@
         };
         pre-commit.settings = {inherit hooks;};
         devShells.default = pkgs.mkShell {
-          nativeBuildInputs =
+          nativeBuildInputs = let
+            bazel = pkgs.writeShellScriptBin "bazel" ''
+              unset TMPDIR TMP
+              exec ${pkgs.bazel_7}/bin/bazel "$@"
+            '';
+          in
             [
               # Development tooling goes here.
+              bazel
               stable-rust-native.default
               pkgs.pre-commit
-              pkgs.bazel_7
               pkgs.awscli2
               pkgs.skopeo
               pkgs.dive
