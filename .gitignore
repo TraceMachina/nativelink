@@ -16,3 +16,4 @@ result
 MODULE.bazel.lock
 trivy-results.sarif
 Pulumi.dev.yaml
+.bazelrc.lre
