@@ -39,7 +39,10 @@
         "x86_64-darwin"
         "aarch64-darwin"
       ];
-      imports = [inputs.pre-commit-hooks.flakeModule];
+      imports = [
+        inputs.pre-commit-hooks.flakeModule
+        ./local-remote-execution/flake-module.nix
+      ];
       perSystem = {
         config,
         pkgs,
@@ -155,6 +158,7 @@
             os = "linux";
           };
         };
+        lre-cc = import ./local-remote-execution/lre-cc.nix {inherit pkgs buildImage llvmPackages;};
       in rec {
         _module.args.pkgs = let
           nixpkgs-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
@@ -178,10 +182,9 @@
           };
         };
         packages = rec {
-          inherit publish-ghcr local-image-test nativelink nativelink-debug native-cli;
+          inherit publish-ghcr local-image-test nativelink nativelink-debug native-cli lre-cc;
           default = nativelink;
 
-          lre-cc = import ./local-remote-execution/lre-cc.nix {inherit pkgs buildImage llvmPackages;};
           rbe-autogen-lre-cc = rbe-autogen lre-cc;
           nativelink-worker-lre-cc = createWorker lre-cc;
           lre-java = import ./local-remote-execution/lre-java.nix {inherit pkgs buildImage;};
@@ -215,6 +218,10 @@
           # });
         };
         pre-commit.settings = {inherit hooks;};
+        local-remote-execution.settings = {
+          inherit (lre-cc.meta) Env;
+          prefix = "lre";
+        };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = let
             bazel = pkgs.writeShellScriptBin "bazel" ''
@@ -256,6 +263,10 @@
             # development shell.
             ${config.pre-commit.installationScript}
 
+            # Generate .bazelrc.lre which configures LRE toolchains when running
+            # in the nix environment.
+            ${config.local-remote-execution.installationScript}
+
             # The Bazel and Cargo builds in nix require a Clang toolchain.
             # TODO(aaronmondal): The Bazel build currently uses the
             #                    irreproducible host C++ toolchain. Provide
@@ -265,5 +276,8 @@
           '';
         };
       };
+    }
+    // {
+      flakeModule = ./local-remote-execution/flake-module.nix;
     };
 }
