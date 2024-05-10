@@ -21,16 +21,19 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::{future, join, try_join, FutureExt};
+use futures::future::{select, Either};
+use futures::{join, try_join, FutureExt};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncSeekExt;
+use tokio::time::timeout;
 
 use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
 use crate::digest_hasher::{default_digest_hasher_func, DigestHasher};
-use crate::fs;
+use crate::fs::{self, idle_file_descriptor_timeout};
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use crate::metrics_utils::Registry;
 
@@ -77,12 +80,19 @@ pub async fn slow_update_store_with_file<S: Store + ?Sized>(
     file: &mut fs::ResumeableFileSlot,
     upload_size: UploadSizeInfo,
 ) -> Result<(), Error> {
+    file.as_writer()
+        .await
+        .err_tip(|| "Failed to get writer in upload_file_to_store")?
+        .rewind()
+        .await
+        .err_tip(|| "Failed to rewind in upload_file_to_store")?;
     let (tx, rx) = make_buf_channel_pair();
-    future::join(
-        store
-            .update(digest, rx, upload_size)
-            .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store")),
-        async move {
+
+    let mut update_fut = store
+        .update(digest, rx, upload_size)
+        .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
+    let read_result = {
+        let read_data_fut = async {
             let (_, mut tx) = file
                 .read_buf_cb(
                     (BytesMut::with_capacity(fs::DEFAULT_READ_BUFF_SIZE), tx),
@@ -98,11 +108,24 @@ pub async fn slow_update_store_with_file<S: Store + ?Sized>(
             tx.send_eof()
                 .err_tip(|| "Could not send EOF to store in upload_file_to_store")?;
             Ok(())
-        },
-    )
-    // Ensure we get errors reported from both sides.
-    .map(|(upload_result, read_result)| upload_result.merge(read_result))
-    .await
+        };
+        tokio::pin!(read_data_fut);
+        match select(&mut update_fut, read_data_fut).await {
+            Either::Left((update_result, read_data_fut)) => {
+                return update_result.merge(read_data_fut.await)
+            }
+            Either::Right((read_result, _)) => read_result,
+        }
+    };
+    match timeout(idle_file_descriptor_timeout(), &mut update_fut).await {
+        Ok(update_result) => update_result.merge(read_result),
+        Err(_) => {
+            file.close_file()
+                .await
+                .err_tip(|| "Failed to close file in upload_file_to_store")?;
+            update_fut.await.merge(read_result)
+        }
+    }
 }
 
 // TODO(allada) When 1.76.0 stabalizes more we can use `core::ptr::addr_eq` instead.

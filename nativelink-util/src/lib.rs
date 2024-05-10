@@ -34,3 +34,40 @@ pub mod write_counter;
 
 // Re-export tracing mostly for use in macros.
 pub use tracing as __tracing;
+
+/// Initialize tracing.
+pub fn init_tracing() -> Result<(), nativelink_error::Error> {
+    use tracing_subscriber::prelude::*;
+
+    static LOGGING_INITIALIZED: parking_lot::Mutex<bool> = parking_lot::Mutex::new(false);
+    let mut logging_initized_guard = LOGGING_INITIALIZED.lock();
+    if *logging_initized_guard {
+        return Err(nativelink_error::make_err!(
+            nativelink_error::Code::Internal,
+            "Logging already initialized"
+        ));
+    }
+    *logging_initized_guard = true;
+    let env_filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing::metadata::LevelFilter::WARN.into())
+        .from_env_lossy();
+
+    if cfg!(feature = "enable_tokio_console") {
+        tracing_subscriber::registry()
+            .with(console_subscriber::spawn())
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .pretty()
+                    .with_timer(tracing_subscriber::fmt::time::time())
+                    .with_filter(env_filter),
+            )
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .pretty()
+            .with_timer(tracing_subscriber::fmt::time::time())
+            .with_env_filter(env_filter)
+            .init();
+    }
+    Ok(())
+}

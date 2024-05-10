@@ -802,6 +802,9 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
                 digest,
             }),
         );
+        // We are done with the file, if we hold a reference to the file here, it could
+        // result in a deadlock if `emplace_file()` also needs file descriptors.
+        drop(file);
         self.emplace_file(digest, Arc::new(entry))
             .await
             .err_tip(|| "Could not move file into store in upload_file_to_store, maybe dest is on different volume?")?;
