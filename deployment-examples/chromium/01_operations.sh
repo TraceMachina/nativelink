@@ -23,7 +23,7 @@ curl -v \
     http://${EVENTLISTENER}:8080
 
 # Wait for the pipelines to finish.
-kubectl wait \
+sleep 1 && kubectl wait \
     --for=condition=Succeeded \
     --timeout=30m \
     pipelinerun \
