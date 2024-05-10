@@ -41,6 +41,7 @@ rust_library(
         "@crates//:async-lock",
         "@crates//:blake3",
         "@crates//:bytes",
+        "@crates//:console-subscriber",
         "@crates//:futures",
         "@crates//:hex",
         "@crates//:hyper",
@@ -57,6 +58,7 @@ rust_library(
         "@crates//:tokio-util",
         "@crates//:tonic",
         "@crates//:tracing",
+        "@crates//:tracing-subscriber",
     ],
 )
 

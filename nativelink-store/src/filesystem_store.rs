@@ -802,6 +802,7 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
                 digest,
             }),
         );
+        drop(file);
         self.emplace_file(digest, Arc::new(entry))
             .await
             .err_tip(|| "Could not move file into store in upload_file_to_store, maybe dest is on different volume?")?;
