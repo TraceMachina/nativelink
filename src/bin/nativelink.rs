@@ -54,7 +54,7 @@ use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
 };
 use nativelink_util::task::TaskExecutor;
-use nativelink_util::{background_spawn, spawn, spawn_blocking};
+use nativelink_util::{background_spawn, init_tracing, spawn, spawn_blocking};
 use nativelink_worker::local_worker::new_local_worker;
 use parking_lot::Mutex;
 use rustls_pemfile::{certs as extract_certs, crls as extract_crls};
@@ -70,7 +70,6 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
 use tracing::{error_span, event, trace_span, Level};
-use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -853,31 +852,7 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use tracing_subscriber::prelude::*;
-
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::WARN.into())
-        .from_env_lossy();
-
-    if cfg!(feature = "enable_tokio_console") {
-        tracing_subscriber::registry()
-            .with(console_subscriber::spawn())
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .pretty()
-                    // .with_span_events(FmtSpan::CLOSE)
-                    .with_timer(tracing_subscriber::fmt::time::time())
-                    .with_filter(env_filter),
-            )
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .pretty()
-            // .with_span_events(FmtSpan::CLOSE)
-            .with_timer(tracing_subscriber::fmt::time::time())
-            .with_env_filter(env_filter)
-            .init();
-    }
+    init_tracing()?;
 
     let mut cfg = futures::executor::block_on(get_config())?;
 
