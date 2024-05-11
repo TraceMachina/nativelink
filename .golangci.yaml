@@ -13,6 +13,8 @@ linters:
     - maligned
     - scopelint
     - structcheck
+    - execinquery
+    - gomnd
 
     # Allow all packages for now.
     - depguard

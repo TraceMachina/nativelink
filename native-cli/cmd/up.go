@@ -20,7 +20,7 @@ func runUpCmd(_ *cobra.Command, _ []string) {
 		cluster.ProviderWithLogger(kindcmd.NewLogger()),
 	)
 
-	//nolint:gomnd
+	//nolint:mnd
 	if err := clusters.CreateLocalCluster(kindProvider, 5000, 5001); err != nil {
 		log.Println(err)
 		log.Println("Skipping kind cluster creation")

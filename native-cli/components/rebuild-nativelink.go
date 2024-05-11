@@ -83,7 +83,7 @@ func (component *RebuildNativeLink) Install(
 			}
 
 			// Write file with owner-read-only permissions.
-			//nolint:gomnd
+			//nolint:mnd
 			if err := os.WriteFile(outPath, data, os.FileMode(0o600)); err != nil {
 				return fmt.Errorf("failed to write file: %w", err)
 			}
