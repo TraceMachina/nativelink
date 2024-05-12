@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cell::RefCell;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
@@ -20,9 +19,8 @@ use std::marker::PhantomData;
 use std::ops::DerefMut;
 use std::path::Path;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
@@ -32,8 +30,9 @@ use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
 use futures::task::Poll;
 use futures::{poll, Future, FutureExt};
-use nativelink_error::{Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{
     digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
 };
@@ -44,7 +43,9 @@ use nativelink_util::origin_context::ContextAwareFuture;
 use nativelink_util::store_trait::{Store, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
+use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Barrier;
@@ -231,9 +232,25 @@ async fn write_file(file_name: &OsStr, data: &[u8]) -> Result<(), Error> {
         .err_tip(|| "Could not sync file")
 }
 
+async fn wait_for_no_open_files() -> Result<(), Error> {
+    let mut counter = 0;
+    while fs::get_open_files_for_test() != 0 {
+        sleep(Duration::from_millis(1)).await;
+        counter += 1;
+        if counter > 1000 {
+            return Err(make_err!(
+                Code::Internal,
+                "Timed out waiting all files to close"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod filesystem_store_tests {
     use pretty_assertions::assert_eq;
+    use tokio::io::AsyncSeekExt;
 
     use super::*; // Must be declared in every module.
 
@@ -242,6 +259,7 @@ mod filesystem_store_tests {
     const VALUE1: &str = "0123456789";
     const VALUE2: &str = "9876543210";
 
+    #[serial]
     #[nativelink_test]
     async fn valid_results_after_shutdown_test() -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -292,6 +310,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -382,6 +401,7 @@ mod filesystem_store_tests {
     // This test ensures that if a file is overridden and an open stream to the file already
     // exists, the open stream will continue to work properly and when the stream is done the
     // temporary file (of the object that was deleted) is cleaned up.
+    #[serial]
     #[nativelink_test]
     async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -514,6 +534,7 @@ mod filesystem_store_tests {
     // Eviction has a different code path than a file replacement, so we check that if a
     // file is evicted and has an open stream on it, it will stay alive and eventually
     // get deleted.
+    #[serial]
     #[nativelink_test]
     async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -628,6 +649,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     async fn atime_updates_on_get_part_test() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -677,6 +699,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(), Error> {
         // Note these are swapped to ensure they aren't in numerical order.
@@ -731,6 +754,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     async fn eviction_drops_file_test() -> Result<(), Error> {
         let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -783,6 +807,7 @@ mod filesystem_store_tests {
     // Test to ensure that if we are holding a reference to `FileEntry` and the contents are
     // replaced, the `FileEntry` continues to use the old data.
     // `FileEntry` file contents should be immutable for the lifetime of the object.
+    #[serial]
     #[nativelink_test]
     async fn digest_contents_replaced_continues_using_old_data() -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -829,6 +854,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
         const SMALL_VALUE: &str = "01";
@@ -844,7 +870,7 @@ mod filesystem_store_tests {
                     let path = Path::new(&path_str);
                     let digest =
                         digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
-                    UNREFED_DIGESTS.lock().unwrap().push(digest);
+                    UNREFED_DIGESTS.lock().push(digest);
                     Ok(())
                 }))
                 .unwrap();
@@ -878,7 +904,7 @@ mod filesystem_store_tests {
 
         {
             // Our first digest should have been unrefed exactly once.
-            let unrefed_digests = UNREFED_DIGESTS.lock().unwrap();
+            let unrefed_digests = UNREFED_DIGESTS.lock();
             assert_eq!(
                 unrefed_digests.len(),
                 1,
@@ -890,6 +916,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     #[allow(clippy::await_holding_refcell_ref)]
     async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens(
@@ -921,7 +948,7 @@ mod filesystem_store_tests {
         );
 
         let (mut tx, rx) = make_buf_channel_pair();
-        let update_fut = Rc::new(RefCell::new(store.as_ref().update(
+        let update_fut = Arc::new(async_lock::Mutex::new(store.as_ref().update(
             digest,
             rx,
             UploadSizeInfo::MaxSize(100),
@@ -929,7 +956,7 @@ mod filesystem_store_tests {
         // This will process as much of the future as it can before it needs to pause.
         // Our temp file will be created and opened and ready to have contents streamed
         // to it.
-        assert_eq!(poll!(update_fut.borrow_mut().deref_mut())?, Poll::Pending);
+        assert_eq!(poll!(update_fut.lock().await.deref_mut())?, Poll::Pending);
         const INITIAL_CONTENT: &str = "hello";
         tx.send(INITIAL_CONTENT.into()).await?;
 
@@ -979,7 +1006,7 @@ mod filesystem_store_tests {
                 // This will ensure we yield to our future and other potential spawns.
                 tokio::task::yield_now().await;
                 assert_eq!(
-                    poll!(update_fut_clone.borrow_mut().deref_mut())?,
+                    poll!(update_fut_clone.lock().await.deref_mut())?,
                     Poll::Pending
                 );
                 Ok(())
@@ -1001,7 +1028,7 @@ mod filesystem_store_tests {
 
         // Now finish waiting on update(). This should reuslt in an error because we deleted our dest
         // folder.
-        let update_result = update_fut.borrow_mut().deref_mut().await;
+        let update_result = update_fut.lock().await.deref_mut().await;
         assert!(
             update_result.is_err(),
             "Expected update to fail due to temp file being deleted before rename"
@@ -1030,6 +1057,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     async fn get_part_timeout_test() -> Result<(), Error> {
         let large_value = "x".repeat(1024);
@@ -1082,6 +1110,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     async fn get_part_is_zero_digest() -> Result<(), Error> {
         let digest = DigestInfo {
@@ -1126,6 +1155,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         let digest = DigestInfo {
@@ -1197,12 +1227,13 @@ mod filesystem_store_tests {
     }
 
     /// Regression test for: https://github.com/TraceMachina/nativelink/issues/495.
+    #[serial]
     #[nativelink_test(flavor = "multi_thread")]
     async fn update_file_future_drops_before_rename() -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
 
         // Mutex can be used to signal to the rename function to pause execution.
-        static RENAME_REQUEST_PAUSE_MUX: Mutex<()> = Mutex::new(());
+        static RENAME_REQUEST_PAUSE_MUX: async_lock::Mutex<()> = async_lock::Mutex::new(());
         // Boolean used to know if the rename function is currently paused.
         static RENAME_IS_PAUSED: AtomicBool = AtomicBool::new(false);
 
@@ -1219,9 +1250,11 @@ mod filesystem_store_tests {
                 |from, to| {
                     // If someone locked our mutex, it means we need to pause, so we
                     // simply request a lock on the same mutex.
-                    if RENAME_REQUEST_PAUSE_MUX.try_lock().is_err() {
+                    if RENAME_REQUEST_PAUSE_MUX.try_lock().is_none() {
                         RENAME_IS_PAUSED.store(true, Ordering::Release);
-                        let _lock = RENAME_REQUEST_PAUSE_MUX.lock();
+                        while RENAME_REQUEST_PAUSE_MUX.try_lock().is_none() {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
                         RENAME_IS_PAUSED.store(false, Ordering::Release);
                     }
                     std::fs::rename(from, to)
@@ -1242,7 +1275,7 @@ mod filesystem_store_tests {
         //    the replace/update future.
         // 4. Then drop the lock.
         {
-            let rename_pause_request_lock = RENAME_REQUEST_PAUSE_MUX.lock();
+            let rename_pause_request_lock = RENAME_REQUEST_PAUSE_MUX.lock().await;
             let mut update_fut = store.as_ref().update_oneshot(digest, VALUE2.into()).boxed();
 
             loop {
@@ -1287,6 +1320,7 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
     #[nativelink_test]
     async fn deleted_file_removed_from_store() -> Result<(), Error> {
         let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -1332,6 +1366,7 @@ mod filesystem_store_tests {
     // assume block size 4K
     // 1B data size = 4K size on disk
     // 5K data size = 8K size on disk
+    #[serial]
     #[nativelink_test]
     async fn get_file_size_uses_block_size() -> Result<(), Error> {
         let content_path = make_temp_path("content_path");
@@ -1379,8 +1414,137 @@ mod filesystem_store_tests {
         Ok(())
     }
 
+    #[serial]
+    #[nativelink_test]
+    async fn update_with_whole_file_closes_file() -> Result<(), Error> {
+        let mut permits = vec![];
+        // Grab all permits to ensure only 1 permit is available.
+        {
+            wait_for_no_open_files().await?;
+            while fs::OPEN_FILE_SEMAPHORE.available_permits() > 1 {
+                permits.push(fs::get_permit().await);
+            }
+            assert_eq!(
+                fs::OPEN_FILE_SEMAPHORE.available_permits(),
+                1,
+                "Expected 1 permit to be available"
+            );
+        }
+        let content_path = make_temp_path("content_path");
+        let temp_path = make_temp_path("temp_path");
+
+        let value = "x".repeat(1024);
+
+        let digest = DigestInfo::try_new(HASH1, value.len())?;
+
+        let store = Box::pin(
+            FilesystemStore::<FileEntryImpl>::new(&nativelink_config::stores::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                read_buffer_size: 1,
+                ..Default::default()
+            })
+            .await?,
+        );
+        store
+            .as_ref()
+            .update_oneshot(digest, value.clone().into())
+            .await?;
+
+        let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
+        {
+            let writer = file.as_writer().await?;
+            writer.write_all(value.as_bytes()).await?;
+            writer.as_mut().sync_all().await?;
+            writer.seek(tokio::io::SeekFrom::Start(0)).await?;
+        }
+
+        store
+            .as_ref()
+            .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
+            .await?;
+        Ok(())
+    }
+
+    #[serial]
+    #[nativelink_test]
+    async fn update_with_whole_file_slow_path_when_low_file_descriptors() -> Result<(), Error> {
+        let mut permits = vec![];
+        // Grab all permits to ensure only 1 permit is available.
+        {
+            wait_for_no_open_files().await?;
+            while fs::OPEN_FILE_SEMAPHORE.available_permits() > 1 {
+                permits.push(fs::get_permit().await);
+            }
+            assert_eq!(
+                fs::OPEN_FILE_SEMAPHORE.available_permits(),
+                1,
+                "Expected 1 permit to be available"
+            );
+        }
+
+        let value = "x".repeat(1024);
+
+        let digest = DigestInfo::try_new(HASH1, value.len())?;
+
+        let store = Box::pin(FastSlowStore::new(
+            // Note: The config is not needed for this test, so use dummy data.
+            &nativelink_config::stores::FastSlowStore {
+                fast: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
+                slow: nativelink_config::stores::StoreConfig::memory(
+                    nativelink_config::stores::MemoryStore::default(),
+                ),
+            },
+            Arc::new(
+                FilesystemStore::<FileEntryImpl>::new(
+                    &nativelink_config::stores::FilesystemStore {
+                        content_path: make_temp_path("content_path"),
+                        temp_path: make_temp_path("temp_path"),
+                        read_buffer_size: 1,
+                        ..Default::default()
+                    },
+                )
+                .await?,
+            ),
+            Arc::new(
+                FilesystemStore::<FileEntryImpl>::new(
+                    &nativelink_config::stores::FilesystemStore {
+                        content_path: make_temp_path("content_path1"),
+                        temp_path: make_temp_path("temp_path1"),
+                        read_buffer_size: 1,
+                        ..Default::default()
+                    },
+                )
+                .await?,
+            ),
+        ));
+        store
+            .as_ref()
+            .update_oneshot(digest, value.clone().into())
+            .await?;
+
+        let temp_path = make_temp_path("temp_path2");
+        fs::create_dir_all(&temp_path).await?;
+        let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
+        {
+            let writer = file.as_writer().await?;
+            writer.write_all(value.as_bytes()).await?;
+            writer.as_mut().sync_all().await?;
+            writer.seek(tokio::io::SeekFrom::Start(0)).await?;
+        }
+
+        store
+            .as_ref()
+            .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
+            .await?;
+        Ok(())
+    }
+
     // Ensure that update_with_whole_file() moves the file without making a copy.
     #[cfg(target_family = "unix")]
+    #[serial]
     #[nativelink_test]
     async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         use std::os::unix::fs::MetadataExt;

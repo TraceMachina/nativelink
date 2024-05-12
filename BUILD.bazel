@@ -25,7 +25,6 @@ rust_binary(
         "@crates//:async-lock",
         "@crates//:axum",
         "@crates//:clap",
-        "@crates//:console-subscriber",
         "@crates//:futures",
         "@crates//:hyper",
         "@crates//:mimalloc",
@@ -39,7 +38,6 @@ rust_binary(
         "@crates//:tonic",
         "@crates//:tower",
         "@crates//:tracing",
-        "@crates//:tracing-subscriber",
     ],
 )
 
