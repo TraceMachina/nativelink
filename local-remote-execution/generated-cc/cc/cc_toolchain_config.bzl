@@ -1286,7 +1286,9 @@ def _impl(ctx):
             ),
             flag_set(
                 actions = all_link_actions,
-                flag_groups = [flag_group(flags = ["-Wl,-fatal-warnings"])],
+                flag_groups = [flag_group(
+                    flags = ["-Wl,-fatal-warnings"] if is_linux else ["-Wl,-fatal_warnings"],
+                )],
             ),
         ],
     )
@@ -1335,7 +1337,7 @@ def _impl(ctx):
         flag_sets = [
             flag_set(
                 actions = all_compile_actions + all_link_actions,
-                flag_groups = [flag_group(flags = ["-mmacos-version-min={}".format(_target_os_version(ctx))])],
+                flag_groups = [flag_group(flags = ["-mmacosx-version-min={}".format(_target_os_version(ctx))])],
             ),
         ],
     )

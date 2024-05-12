@@ -26,26 +26,6 @@
       ]))
 
     "CC=${customClang}/bin/customClang"
-
-    # TODO(aaronmondal): The rbe_config_gen tool invokes bazel inside the
-    #                    container to determine compileflags/linkflags.
-    #                    Setting these variables here causes them to be baked
-    #                    into the generated toolchain config. They don't
-    #                    influence remote action invocations as NativeLink
-    #                    invokes commands "raw" in the container. However, it
-    #                    would be nicer to handle this as part of the nix
-    #                    stdenv instead.
-    "BAZEL_LINKOPTS=${pkgs.lib.concatStringsSep ":" [
-      "-L${llvmPackages.libcxx}/lib"
-      "-L${llvmPackages.libunwind}/lib"
-      "-lc++"
-      (
-        "-Wl,"
-        + "-rpath,${llvmPackages.libcxx}/lib,"
-        + "-rpath,${llvmPackages.libunwind}/lib,"
-        + "-rpath,${pkgs.glibc}/lib"
-      )
-    ]}"
   ];
 in
   buildImage {

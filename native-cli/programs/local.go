@@ -17,8 +17,8 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		ctx,
 		"kind-registry",
 		&components.Registry{
-			InternalPort: 5000, //nolint:gomnd
-			ExternalPort: 5001, //nolint:gomnd
+			InternalPort: 5000, //nolint:mnd
+			ExternalPort: 5001, //nolint:mnd
 		},
 	))
 
