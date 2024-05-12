@@ -20,7 +20,19 @@ curl -v \
     -d '{"flakeOutput": "./src_root#nativelink-worker-lre-cc"}' \
     http://${EVENTLISTENER}:8080
 
-# Wait for the pipelines to finish.
+until kubectl get pipelinerun \
+        -l tekton.dev/pipeline=rebuild-nativelink | grep -q 'NAME'; do
+    echo "Waiting for PipelineRuns to start..."
+    sleep 0.1
+done
+
+printf 'Waiting for PipelineRuns to finish...
+
+You may cancel this script now and use `tkn pr ls` and `tkn pr logs -f` to
+monitor the PipelineRun logs.
+
+'
+
 kubectl wait \
     --for=condition=Succeeded \
     --timeout=30m \
