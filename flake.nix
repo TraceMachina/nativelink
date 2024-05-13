@@ -229,7 +229,7 @@
           nativeBuildInputs = let
             bazel = pkgs.writeShellScriptBin "bazel" ''
               unset TMPDIR TMP
-              exec ${pkgs.bazel_7}/bin/bazel "$@"
+              exec ${pkgs.bazelisk}/bin/bazelisk "$@"
             '';
           in
             [
