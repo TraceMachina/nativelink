@@ -22,6 +22,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_s
 use nativelink_proto::build::bazel::remote::execution::v2::{compressor, digest_function, Digest};
 use nativelink_proto::google::rpc::Status as GrpcStatus;
 use nativelink_service::cas_server::CasServer;
+use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
@@ -324,6 +325,246 @@ mod batch_read_blobs {
     }
 }
 
+mod get_tree {
+    use futures::StreamExt;
+    use nativelink_proto::build::bazel::remote::execution::v2::{
+        digest_function, Directory, DirectoryNode, GetTreeRequest, GetTreeResponse, NodeProperties,
+    };
+    use nativelink_util::{digest_hasher::DigestHasherFunc, store_trait::Store};
+    use pretty_assertions::assert_eq; // Must be declared in every module.
+    use prost_types::Timestamp;
+
+    use super::*;
+
+    async fn setup_directory_structure(
+        store_pinned: Pin<&dyn Store>,
+    ) -> Result<
+        (
+            Digest,
+            Directory,
+            DigestInfo,
+            Vec<Directory>,
+            Vec<DigestInfo>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        // Set up 5 sub-directories.
+        const SUB_DIRECTORIES_LENGTH: i32 = 5;
+        let mut sub_directory_nodes: Vec<DirectoryNode> = vec![];
+        let mut sub_directories: Vec<Directory> = vec![];
+        let mut sub_directory_digest_infos: Vec<DigestInfo> = vec![];
+
+        for i in 0..SUB_DIRECTORIES_LENGTH {
+            let sub_directory: Directory = Directory {
+                files: vec![],
+                directories: vec![],
+                symlinks: vec![],
+                node_properties: Some(NodeProperties {
+                    properties: vec![],
+                    mtime: Some(Timestamp {
+                        seconds: i as i64,
+                        nanos: 0,
+                    }),
+                    unix_mode: Some(0755),
+                }),
+            };
+            let sub_directory_digest_info: DigestInfo = serialize_and_upload_message(
+                &sub_directory,
+                store_pinned,
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            sub_directory_digest_infos.push(sub_directory_digest_info);
+            sub_directory_nodes.push(DirectoryNode {
+                name: format!("sub_directory_{}", i),
+                digest: Some(sub_directory_digest_info.into()),
+            });
+            sub_directories.push(sub_directory);
+        }
+
+        // Set up a root directory.
+        let root_directory: Directory = Directory {
+            files: vec![],
+            directories: sub_directory_nodes,
+            symlinks: vec![],
+            node_properties: None,
+        };
+        let root_directory_digest_info: DigestInfo = serialize_and_upload_message(
+            &root_directory,
+            store_pinned,
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let root_directory_digest: Digest = root_directory_digest_info.into();
+        Ok((
+            root_directory_digest,
+            root_directory,
+            root_directory_digest_info,
+            sub_directories,
+            sub_directory_digest_infos,
+        ))
+    }
+
+    #[nativelink_test]
+    async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn std::error::Error>> {
+        let store_manager = make_store_manager().await?;
+        let cas_server = make_cas_server(&store_manager)?;
+        let store_owned = store_manager.get_store("main_cas").unwrap();
+        let store_pinned = Pin::new(store_owned.as_ref());
+
+        // Setup directory structure.
+        let (root_directory_digest, root_directory, root_directory_digest_info, sub_directories, _) =
+            setup_directory_structure(store_pinned).await?;
+
+        // Must work when paging is disabled ( `page_size` is 0 ).
+        // It reads all directories at once.
+        let raw_response = cas_server
+            .get_tree(Request::new(GetTreeRequest {
+                instance_name: INSTANCE_NAME.to_string(),
+                page_size: 0,
+                page_token: format!(
+                    "{}-{}",
+                    root_directory_digest_info.hash_str(),
+                    root_directory_digest_info.size_bytes
+                ),
+                root_digest: Some(root_directory_digest.clone()),
+                digest_function: digest_function::Value::Sha256.into(),
+            }))
+            .await;
+        assert!(raw_response.is_ok());
+        assert_eq!(
+            raw_response
+                .unwrap()
+                .into_inner()
+                .filter_map(|x| async move { Some(x.unwrap()) })
+                .collect::<Vec<_>>()
+                .await,
+            vec![GetTreeResponse {
+                directories: vec![
+                    root_directory.clone(),
+                    sub_directories[0].clone(),
+                    sub_directories[1].clone(),
+                    sub_directories[2].clone(),
+                    sub_directories[3].clone(),
+                    sub_directories[4].clone()
+                ],
+                next_page_token: String::new()
+            }]
+        );
+
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::error::Error>> {
+        let store_manager = make_store_manager().await?;
+        let cas_server = make_cas_server(&store_manager)?;
+        let store_owned = store_manager.get_store("main_cas").unwrap();
+        let store_pinned = Pin::new(store_owned.as_ref());
+
+        // Setup directory structure.
+        let (
+            root_directory_digest,
+            root_directory,
+            root_directory_digest_info,
+            sub_directories,
+            sub_directory_digest_infos,
+        ) = setup_directory_structure(store_pinned).await?;
+
+        // Must work when paging is enabled ( `page_size` is 2 ).
+        // First, it reads `root_directory` and `sub_directory[0]`.
+        // Then, it reads `sub_directory[1]` and `sub_directory[2]`.
+        // Finally, it reads `sub_directory[3]` and `sub_directory[4]`.
+        let raw_response = cas_server
+            .get_tree(Request::new(GetTreeRequest {
+                instance_name: INSTANCE_NAME.to_string(),
+                page_size: 2,
+                page_token: format!(
+                    "{}-{}",
+                    root_directory_digest_info.hash_str(),
+                    root_directory_digest_info.size_bytes
+                ),
+                root_digest: Some(root_directory_digest.clone()),
+                digest_function: digest_function::Value::Sha256.into(),
+            }))
+            .await;
+        assert!(raw_response.is_ok());
+        assert_eq!(
+            raw_response
+                .unwrap()
+                .into_inner()
+                .filter_map(|x| async move { Some(x.unwrap()) })
+                .collect::<Vec<_>>()
+                .await,
+            vec![GetTreeResponse {
+                directories: vec![root_directory.clone(), sub_directories[0].clone()],
+                next_page_token: format!(
+                    "{}-{}",
+                    sub_directory_digest_infos[1].hash_str(),
+                    sub_directory_digest_infos[1].size_bytes
+                ),
+            }]
+        );
+        let raw_response = cas_server
+            .get_tree(Request::new(GetTreeRequest {
+                instance_name: INSTANCE_NAME.to_string(),
+                page_size: 2,
+                page_token: format!(
+                    "{}-{}",
+                    sub_directory_digest_infos[1].hash_str(),
+                    sub_directory_digest_infos[1].size_bytes
+                ),
+                root_digest: Some(root_directory_digest.clone()),
+                digest_function: digest_function::Value::Sha256.into(),
+            }))
+            .await;
+        assert!(raw_response.is_ok());
+        assert_eq!(
+            raw_response
+                .unwrap()
+                .into_inner()
+                .filter_map(|x| async move { Some(x.unwrap()) })
+                .collect::<Vec<_>>()
+                .await,
+            vec![GetTreeResponse {
+                directories: vec![sub_directories[1].clone(), sub_directories[2].clone()],
+                next_page_token: format!(
+                    "{}-{}",
+                    sub_directory_digest_infos[3].hash_str(),
+                    sub_directory_digest_infos[3].size_bytes
+                ),
+            }]
+        );
+        let raw_response = cas_server
+            .get_tree(Request::new(GetTreeRequest {
+                instance_name: INSTANCE_NAME.to_string(),
+                page_size: 2,
+                page_token: format!(
+                    "{}-{}",
+                    sub_directory_digest_infos[3].hash_str(),
+                    sub_directory_digest_infos[3].size_bytes
+                ),
+                root_digest: Some(root_directory_digest.clone()),
+                digest_function: digest_function::Value::Sha256.into(),
+            }))
+            .await;
+        assert!(raw_response.is_ok());
+        assert_eq!(
+            raw_response
+                .unwrap()
+                .into_inner()
+                .filter_map(|x| async move { Some(x.unwrap()) })
+                .collect::<Vec<_>>()
+                .await,
+            vec![GetTreeResponse {
+                directories: vec![sub_directories[3].clone(), sub_directories[4].clone()],
+                next_page_token: String::new(),
+            }]
+        );
+
+        Ok(())
+    }
+}
 #[cfg(test)]
 mod end_to_end {
     use nativelink_proto::build::bazel::remote::execution::v2::{
