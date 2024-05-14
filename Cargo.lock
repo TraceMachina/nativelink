@@ -1812,6 +1812,7 @@ dependencies = [
  "blake3",
  "futures",
  "hashbrown 0.14.3",
+ "hex",
  "lru",
  "nativelink-config",
  "nativelink-error",

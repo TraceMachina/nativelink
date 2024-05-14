@@ -30,7 +30,7 @@ mod utils {
 }
 use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
+    update_for_worker, ConnectionResult, KillActionRequest, StartExecute, UpdateForWorker,
 };
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::{Worker, WorkerId};
@@ -1601,6 +1601,69 @@ mod scheduler_tests {
             assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn kill_running_action() -> Result<(), Error> {
+        const WORKER_ID: WorkerId = WorkerId(0x1234_5678_9111);
+
+        let scheduler = SimpleScheduler::new_with_callback(
+            &nativelink_config::schedulers::SimpleScheduler::default(),
+            || async move {},
+        );
+        let action_digest = DigestInfo::new([99u8; 32], 512);
+
+        let mut rx_from_worker =
+            setup_new_worker(&scheduler, WORKER_ID, PlatformProperties::default()).await?;
+        let insert_timestamp = make_system_time(1);
+        let client_rx = setup_action(
+            &scheduler,
+            action_digest,
+            PlatformProperties::default(),
+            insert_timestamp,
+        )
+        .await?;
+
+        // Drop our receiver and look up a new one.
+        let unique_qualifier = client_rx.borrow().unique_qualifier.clone();
+
+        {
+            // Worker should have been sent an execute command.
+            let expected_msg_for_worker = UpdateForWorker {
+                update: Some(update_for_worker::Update::StartAction(StartExecute {
+                    execute_request: Some(ExecuteRequest {
+                        instance_name: INSTANCE_NAME.to_string(),
+                        skip_cache_lookup: true,
+                        action_digest: Some(action_digest.into()),
+                        digest_function: digest_function::Value::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    salt: 0,
+                    queued_timestamp: Some(insert_timestamp.into()),
+                })),
+            };
+            let msg_for_worker = rx_from_worker.recv().await.unwrap();
+            assert_eq!(msg_for_worker, expected_msg_for_worker);
+        }
+
+        assert_eq!(
+            scheduler
+                .kill_running_action_on_worker(&WORKER_ID, &unique_qualifier)
+                .await,
+            Ok(())
+        );
+
+        assert_eq!(
+            Some(UpdateForWorker {
+                update: Some(update_for_worker::Update::KillActionRequest(
+                    KillActionRequest {
+                        action_id: hex::encode(unique_qualifier.get_hash())
+                    }
+                ))
+            }),
+            rx_from_worker.recv().await
+        );
         Ok(())
     }
 }
