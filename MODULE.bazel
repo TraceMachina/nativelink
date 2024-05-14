@@ -6,7 +6,7 @@ module(
 
 bazel_dep(name = "rules_cc", version = "0.0.9")
 bazel_dep(name = "platforms", version = "0.0.10")
-bazel_dep(name = "rules_python", version = "0.31.0")
+bazel_dep(name = "rules_python", version = "0.32.1")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
@@ -23,6 +23,18 @@ bazel_dep(name = "rules_rust", version = "0.44.0")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
+    sha256s = {
+        "2024-05-10/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "34c251c59c99d68d13144ca00f7dd1af47227640ffdd00c6966342535a6c6f6b",
+        "2024-05-10/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "cf705952dd0f4e8d9f6fd69bb3810370e7d8ac78cb96419a2883eee8f182c7fb",
+        "2024-05-10/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "a96ec1120436493e018df070625e46764987d60e7293533fdbfdbca16967c81a",
+        "2024-05-10/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "bc134e14df374e7dc86fa726de75c7d145bc68be9476af5d395252345e41a45f",
+        "2024-05-10/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "878dacc66ead1a12ebc1c9996d4d4be40b8931b8dd6de55433d872f88399fe7d",
+        "2024-05-10/rustc-nightly-x86_64-apple-darwin.tar.xz": "8832320e438a1702571630e12d73194c964c8d21c8fe621cc8bed4ae0ce97625",
+        "2024-05-10/clippy-nightly-x86_64-apple-darwin.tar.xz": "80657ff2c67fe37469940e5983ec868c566b017bc1620f11a6a65e5f029ac42e",
+        "2024-05-10/cargo-nightly-x86_64-apple-darwin.tar.xz": "7390b4d229d9d3a8108c632939426021c12d63ae2681554386a344dd44c50e83",
+        "2024-05-10/llvm-tools-nightly-x86_64-apple-darwin.tar.xz": "b69cd7d16d6fcd78c26a5e78fb9a56fa4116f49d4ece7282253dd9b8fc276b04",
+        "2024-05-10/rust-std-nightly-x86_64-apple-darwin.tar.xz": "0e5f07efa6660c48ceaff776aa4616992a985b5d41247f79304fdaec231e63d2",
+    },
     versions = [
         "1.78.0",
         "nightly/2024-05-10",
