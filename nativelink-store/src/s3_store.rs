@@ -257,7 +257,7 @@ impl S3Store {
             let http_client =
                 HyperClientBuilder::new().build(TlsConnector::new(config, jitter_fn.clone()));
             let credential_provider = credentials::default_provider().await;
-            let mut config_builder = aws_config::defaults(BehaviorVersion::v2023_11_09())
+            let mut config_builder = aws_config::defaults(BehaviorVersion::v2024_03_28())
                 .credentials_provider(credential_provider)
                 .app_name(AppName::new("nativelink").expect("valid app name"))
                 .timeout_config(

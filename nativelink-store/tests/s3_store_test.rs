@@ -57,7 +57,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -92,7 +92,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -150,7 +150,7 @@ mod s3_store_tests {
             ),
         ]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -203,7 +203,7 @@ mod s3_store_tests {
                 .unwrap(),
             ));
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -290,7 +290,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -335,7 +335,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client.clone())
             .build();
@@ -395,7 +395,7 @@ mod s3_store_tests {
             ),
         ]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -523,7 +523,7 @@ mod s3_store_tests {
             ),
         ]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client.clone())
             .build();
@@ -561,7 +561,7 @@ mod s3_store_tests {
                 .unwrap(),
         )]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client.clone())
             .build();
@@ -607,7 +607,7 @@ mod s3_store_tests {
 
         let mock_client = StaticReplayClient::new(vec![]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
@@ -651,7 +651,7 @@ mod s3_store_tests {
 
         let mock_client = StaticReplayClient::new(vec![]);
         let test_config = Builder::new()
-            .behavior_version(BehaviorVersion::v2023_11_09())
+            .behavior_version(BehaviorVersion::v2024_03_28())
             .region(Region::from_static(REGION))
             .http_client(mock_client)
             .build();
