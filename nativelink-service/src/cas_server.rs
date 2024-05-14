@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -20,16 +20,17 @@ use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
 use futures::TryStreamExt;
 use nativelink_config::cas_server::{CasStoreConfig, InstanceName};
-use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{error_if, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer as Server,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::{
     batch_read_blobs_response, batch_update_blobs_response, compressor, BatchReadBlobsRequest,
-    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse,
+    BatchReadBlobsResponse, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, Directory,
     FindMissingBlobsRequest, FindMissingBlobsResponse, GetTreeRequest, GetTreeResponse,
 };
 use nativelink_proto::google::rpc::Status as GrpcStatus;
+use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
@@ -238,10 +239,71 @@ impl CasServer {
                 .into_inner();
             return Ok(Response::new(Box::pin(stream)));
         }
-        Err(make_err!(
-            Code::Unimplemented,
-            "get_tree is not implemented"
-        ))
+        let store_pin = Pin::new(store.as_ref());
+        let root_digest: DigestInfo = inner_request
+            .root_digest
+            .err_tip(|| "Expected root_digest to exist in GetTreeRequest")?
+            .try_into()
+            .err_tip(|| "In GetTreeRequest::root_digest")?;
+
+        let mut deque: VecDeque<DigestInfo> = VecDeque::new();
+        let mut directories: Vec<Directory> = Vec::new();
+        // `page_token` will return the `{hash_str}-{size_bytes}` of the current request's first directory digest.
+        let mut page_token_parts = inner_request.page_token.split("-");
+        let page_token_digest = DigestInfo::try_new(
+            page_token_parts
+                .next()
+                .err_tip(|| "Failed to parse `hash_str` in `page_token`")?,
+            page_token_parts
+                .next()
+                .err_tip(|| "Failed to parse `size_bytes` in `page_token`")?
+                .parse::<i64>()
+                .err_tip(|| "Failed to parse `size_bytes` as i64")?,
+        )
+        .err_tip(|| "Failed to parse `page_token` as `Digest` in `GetTreeRequest`")?;
+        let page_size = inner_request.page_size;
+        // If `page_size` is 0, paging is not necessary.
+        let mut page_token_matched = page_size == 0;
+        deque.push_back(root_digest);
+
+        while !deque.is_empty() {
+            let digest: DigestInfo = deque.pop_front().err_tip(|| "In VecDeque::pop_front")?;
+            let directory = get_and_decode_digest::<Directory>(store_pin, &digest)
+                .await
+                .err_tip(|| "Converting digest to Directory")?;
+            if digest == page_token_digest {
+                page_token_matched = true;
+            }
+            for directory in &directory.directories {
+                let digest: DigestInfo = directory
+                    .digest
+                    .clone()
+                    .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
+                    .try_into()
+                    .err_tip(|| "In Directory::file::digest")?;
+                deque.push_back(digest);
+            }
+            if page_token_matched {
+                directories.push(directory);
+                if directories.len() as i32 == page_size {
+                    break;
+                }
+            }
+        }
+        // `next_page_token` will return the `{hash_str}:{size_bytes}` of the next request's first directory digest.
+        // It will be an empty string when it reached the end of the directory tree.
+        let next_page_token: String = if let Some(value) = deque.front() {
+            format!("{}-{}", value.hash_str(), value.size_bytes)
+        } else {
+            String::new()
+        };
+
+        Ok(Response::new(Box::pin(futures::stream::once(async {
+            Ok(GetTreeResponse {
+                directories,
+                next_page_token,
+            })
+        }))))
     }
 }
 
