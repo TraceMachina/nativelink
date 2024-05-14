@@ -87,10 +87,12 @@ commit_parsers = [
   # Filter these out early but show them later in the changelog.
   { message = "docs", group = "<!-- 3 -->📚 Documentation" },
   { message = "document", group = "<!-- 3 -->📚 Documentation" },
+  { message = "Document", group = "<!-- 3 -->📚 Documentation" },
   { message = "documentation", group = "<!-- 3 -->📚 Documentation" },
   { message = "README", group = "<!-- 3 -->📚 Documentation" },
   { message = "Example", group = "<!-- 3 -->📚 Documentation" },
   { message = "Breakdown", group = "<!-- 3 -->📚 Documentation" },
+  { message = "Update .* Readme", group = "<!-- 3 -->📚 Documentation" },
 
   # Filter out all updates, but show them last.
   { message = "to [0-9.]+", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
