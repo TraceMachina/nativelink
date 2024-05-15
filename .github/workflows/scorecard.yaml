@@ -16,7 +16,7 @@ jobs:
     permissions:
       security-events: write
       id-token: write
-
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: >- # v4.1.1
