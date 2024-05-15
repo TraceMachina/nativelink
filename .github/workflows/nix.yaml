@@ -17,6 +17,7 @@ jobs:
         os: [ubuntu-22.04]
     name: Bazel Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
 
       - name: Checkout
@@ -61,6 +62,7 @@ jobs:
         os: [ubuntu-22.04, macos-13]
     name: Cargo Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: >- # v4.1.1

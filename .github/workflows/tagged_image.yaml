@@ -17,6 +17,7 @@ jobs:
     permissions:
       packages: write
       id-token: write
+    timeout-minutes: 60
     steps:
 
       - name: Checkout

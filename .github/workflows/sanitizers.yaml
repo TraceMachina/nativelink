@@ -18,6 +18,7 @@ jobs:
         sanitizer: [asan]
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: >- # v4.1.1
           actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
