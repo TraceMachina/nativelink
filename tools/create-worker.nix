@@ -95,7 +95,7 @@ in
       # Override the final image tag with the one from the base image. This way
       # the nativelink executable doesn't influence this tag and and changes to
       # its codebase don't invalidate existing toolchain containers.
-      tag = image.imageTag;
+      tag = null;
 
       config = {
         User = user;

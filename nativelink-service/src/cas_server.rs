@@ -34,9 +34,10 @@ use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::make_ctx_for_hash_func;
 use nativelink_util::store_trait::Store;
 use tonic::{Request, Response, Status};
-use tracing::{event, instrument, Level};
+use tracing::{error_span, event, instrument, Level};
 
 pub struct CasServer {
     stores: HashMap<String, Arc<dyn Store>>,
@@ -65,19 +66,17 @@ impl CasServer {
 
     async fn inner_find_missing_blobs(
         &self,
-        grpc_request: Request<FindMissingBlobsRequest>,
+        request: FindMissingBlobsRequest,
     ) -> Result<Response<FindMissingBlobsResponse>, Error> {
-        let inner_request = grpc_request.into_inner();
-
-        let instance_name = &inner_request.instance_name;
+        let instance_name = &request.instance_name;
         let store = self
             .stores
             .get(instance_name)
             .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
-        let mut requested_blobs = Vec::with_capacity(inner_request.blob_digests.len());
-        for digest in inner_request.blob_digests.iter() {
+        let mut requested_blobs = Vec::with_capacity(request.blob_digests.len());
+        for digest in request.blob_digests.iter() {
             requested_blobs.push(DigestInfo::try_from(digest.clone())?);
         }
         let sizes = Pin::new(store.as_ref())
@@ -86,7 +85,7 @@ impl CasServer {
             .err_tip(|| "In find_missing_blobs")?;
         let missing_blob_digests = sizes
             .into_iter()
-            .zip(inner_request.blob_digests)
+            .zip(request.blob_digests)
             .filter_map(|(maybe_size, digest)| maybe_size.map_or_else(|| Some(digest), |_| None))
             .collect();
 
@@ -97,10 +96,9 @@ impl CasServer {
 
     async fn inner_batch_update_blobs(
         &self,
-        grpc_request: Request<BatchUpdateBlobsRequest>,
+        request: BatchUpdateBlobsRequest,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Error> {
-        let inner_request = grpc_request.into_inner();
-        let instance_name = &inner_request.instance_name;
+        let instance_name = &request.instance_name;
 
         let store = self
             .stores
@@ -113,13 +111,11 @@ impl CasServer {
         // check to see if it's a grpc store.
         let any_store = store.inner_store(None).as_any();
         if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
-            return grpc_store
-                .batch_update_blobs(Request::new(inner_request))
-                .await;
+            return grpc_store.batch_update_blobs(Request::new(request)).await;
         }
 
         let store_pin = Pin::new(store.as_ref());
-        let update_futures: FuturesUnordered<_> = inner_request
+        let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
             .map(|request| async move {
@@ -156,10 +152,9 @@ impl CasServer {
 
     async fn inner_batch_read_blobs(
         &self,
-        grpc_request: Request<BatchReadBlobsRequest>,
+        request: BatchReadBlobsRequest,
     ) -> Result<Response<BatchReadBlobsResponse>, Error> {
-        let inner_request = grpc_request.into_inner();
-        let instance_name = &inner_request.instance_name;
+        let instance_name = &request.instance_name;
 
         let store = self
             .stores
@@ -172,13 +167,11 @@ impl CasServer {
         // check to see if it's a grpc store.
         let any_store = store.inner_store(None).as_any();
         if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
-            return grpc_store
-                .batch_read_blobs(Request::new(inner_request))
-                .await;
+            return grpc_store.batch_read_blobs(Request::new(request)).await;
         }
 
         let store_pin = Pin::new(store.as_ref());
-        let read_futures: FuturesUnordered<_> = inner_request
+        let read_futures: FuturesUnordered<_> = request
             .digests
             .into_iter()
             .map(|digest| async move {
@@ -217,10 +210,9 @@ impl CasServer {
 
     async fn inner_get_tree(
         &self,
-        grpc_request: Request<GetTreeRequest>,
+        request: GetTreeRequest,
     ) -> Result<Response<GetTreeStream>, Error> {
-        let inner_request = grpc_request.into_inner();
-        let instance_name = &inner_request.instance_name;
+        let instance_name = &request.instance_name;
 
         let store = self
             .stores
@@ -234,13 +226,13 @@ impl CasServer {
         let any_store = store.inner_store(None).as_any();
         if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
             let stream = grpc_store
-                .get_tree(Request::new(inner_request))
+                .get_tree(Request::new(request))
                 .await?
                 .into_inner();
             return Ok(Response::new(Box::pin(stream)));
         }
         let store_pin = Pin::new(store.as_ref());
-        let root_digest: DigestInfo = inner_request
+        let root_digest: DigestInfo = request
             .root_digest
             .err_tip(|| "Expected root_digest to exist in GetTreeRequest")?
             .try_into()
@@ -249,7 +241,7 @@ impl CasServer {
         let mut deque: VecDeque<DigestInfo> = VecDeque::new();
         let mut directories: Vec<Directory> = Vec::new();
         // `page_token` will return the `{hash_str}-{size_bytes}` of the current request's first directory digest.
-        let mut page_token_parts = inner_request.page_token.split("-");
+        let mut page_token_parts = request.page_token.split("-");
         let page_token_digest = DigestInfo::try_new(
             page_token_parts
                 .next()
@@ -261,7 +253,7 @@ impl CasServer {
                 .err_tip(|| "Failed to parse `size_bytes` as i64")?,
         )
         .err_tip(|| "Failed to parse `page_token` as `Digest` in `GetTreeRequest`")?;
-        let page_size = inner_request.page_size;
+        let page_size = request.page_size;
         // If `page_size` is 0, paging is not necessary.
         let mut page_token_matched = page_size == 0;
         deque.push_back(root_digest);
@@ -323,7 +315,13 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        self.inner_find_missing_blobs(grpc_request)
+        let request = grpc_request.into_inner();
+        make_ctx_for_hash_func(request.digest_function)
+            .err_tip(|| "In CasServer::find_missing_blobs")?
+            .wrap_async(
+                error_span!("cas_server_find_missing_blobs"),
+                self.inner_find_missing_blobs(request),
+            )
             .await
             .err_tip(|| "Failed on find_missing_blobs() command")
             .map_err(|e| e.into())
@@ -341,7 +339,13 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        self.inner_batch_update_blobs(grpc_request)
+        let request = grpc_request.into_inner();
+        make_ctx_for_hash_func(request.digest_function)
+            .err_tip(|| "In CasServer::batch_update_blobs")?
+            .wrap_async(
+                error_span!("cas_server_batch_update_blobs"),
+                self.inner_batch_update_blobs(request),
+            )
             .await
             .err_tip(|| "Failed on batch_update_blobs() command")
             .map_err(|e| e.into())
@@ -359,7 +363,13 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        self.inner_batch_read_blobs(grpc_request)
+        let request = grpc_request.into_inner();
+        make_ctx_for_hash_func(request.digest_function)
+            .err_tip(|| "In CasServer::batch_read_blobs")?
+            .wrap_async(
+                error_span!("cas_server_batch_read_blobs"),
+                self.inner_batch_read_blobs(request),
+            )
             .await
             .err_tip(|| "Failed on batch_read_blobs() command")
             .map_err(|e| e.into())
@@ -376,8 +386,13 @@ impl ContentAddressableStorage for CasServer {
         &self,
         grpc_request: Request<GetTreeRequest>,
     ) -> Result<Response<Self::GetTreeStream>, Status> {
-        let resp = self
-            .inner_get_tree(grpc_request)
+        let request = grpc_request.into_inner();
+        let resp = make_ctx_for_hash_func(request.digest_function)
+            .err_tip(|| "In CasServer::get_tree")?
+            .wrap_async(
+                error_span!("cas_server_get_tree"),
+                self.inner_get_tree(request),
+            )
             .await
             .err_tip(|| "Failed on get_tree() command")
             .map_err(|e| e.into());
