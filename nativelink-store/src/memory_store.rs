@@ -51,7 +51,7 @@ impl LenEntry for BytesWrapper {
 }
 
 pub struct MemoryStore {
-    evicting_map: EvictingMap<BytesWrapper, SystemTime>,
+    evicting_map: EvictingMap<DigestInfo, BytesWrapper, SystemTime>,
 }
 
 impl MemoryStore {

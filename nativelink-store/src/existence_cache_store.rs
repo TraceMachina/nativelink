@@ -43,7 +43,7 @@ impl LenEntry for ExistanceItem {
 
 pub struct ExistenceCacheStore {
     inner_store: Arc<dyn Store>,
-    existence_cache: EvictingMap<ExistanceItem, SystemTime>,
+    existence_cache: EvictingMap<DigestInfo, ExistanceItem, SystemTime>,
 }
 
 impl ExistenceCacheStore {
