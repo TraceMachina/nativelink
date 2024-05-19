@@ -16,6 +16,7 @@ pub mod action_messages;
 pub mod buf_channel;
 pub mod common;
 pub mod connection_manager;
+pub mod default_store_key_subscribe;
 pub mod digest_hasher;
 pub mod evicting_map;
 pub mod fastcdc;

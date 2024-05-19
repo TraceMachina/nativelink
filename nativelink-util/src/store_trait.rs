@@ -28,10 +28,12 @@ use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncSeekExt;
+use tokio::sync::watch;
 use tokio::time::timeout;
 
 use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
+use crate::default_store_key_subscribe::default_store_key_subscribe;
 use crate::digest_hasher::{default_digest_hasher_func, DigestHasher};
 use crate::fs::{self, idle_file_descriptor_timeout};
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
@@ -146,6 +148,44 @@ pub enum StoreOptimizations {
 
     /// If the store will never serve downloads.
     NoopDownloads,
+
+    /// If the store is optimized for serving subscriptions to keys.
+    SubscribeChanges,
+}
+
+/// An item that has been subscribed to in the store. Some stores may have
+/// the data already available when the data changes. This allows the store
+/// to store a reference to the data and return it when requested, otherwise
+/// the store can lazily retrieve the data when requested.
+#[async_trait]
+pub trait StoreSubscriptionItem: Send + Sync + Unpin {
+    /// Returns the key of the item being represented.
+    async fn get_key(&self) -> Result<DigestInfo, Error>;
+
+    /// Same as `Store::get_part_ref`, but without the key.
+    async fn get_part_ref(
+        self: Pin<&Self>,
+        writer: &mut DropCloserWriteHalf,
+        offset: usize,
+        length: Option<usize>,
+    ) -> Result<(), Error>;
+
+    /// Same as `Store::get_part`, but without the key.
+    #[inline]
+    async fn get_part(
+        self: Pin<&Self>,
+        mut writer: DropCloserWriteHalf,
+        offset: usize,
+        length: Option<usize>,
+    ) -> Result<(), Error> {
+        self.get_part_ref(&mut writer, offset, length).await
+    }
+
+    /// Same as `Store::get`, but without the key.
+    #[inline]
+    async fn get(self: Pin<&Self>, writer: DropCloserWriteHalf) -> Result<(), Error> {
+        self.get_part(writer, 0, None).await
+    }
 }
 
 #[async_trait]
@@ -318,6 +358,21 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         get_part_res
             .err_tip(|| "Failed to get_part in get_part_unchunked")
             .merge(data_res.err_tip(|| "Failed to read stream to completion in get_part_unchunked"))
+    }
+
+    /// Subscribe to a key in the store. The store will notify the subscriber
+    /// when the data for the key changes.
+    /// There is no guarantee that the store will notify the subscriber of all changes,
+    /// and there is no guarantee that the store will notify the subscriber of changes
+    /// in a timely manner.
+    /// Note: It can be quite expensive to subscribe to a key in stores that do not
+    /// have the optimization for this. One may check if a store has the optimization
+    /// by calling `optimized_for(StoreOptimizations::SubscribeChanges)`.
+    async fn subscribe(
+        self: Arc<Self>,
+        key: DigestInfo,
+    ) -> watch::Receiver<Result<Arc<dyn StoreSubscriptionItem>, Error>> {
+        default_store_key_subscribe(self, key).await
     }
 
     // Default implementation of the health check. Some stores may want to override this
