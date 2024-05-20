@@ -48,6 +48,13 @@ pub mod google {
     pub mod bytestream {
         include!("google.bytestream.pb.rs");
     }
+    pub mod devtools {
+        pub mod build {
+            pub mod v1 {
+                include!("google.devtools.build.v1.pb.rs");
+            }
+        }
+    }
     pub mod longrunning {
         include!("google.longrunning.pb.rs");
     }
