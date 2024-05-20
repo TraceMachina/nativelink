@@ -16,6 +16,52 @@
 // This file is auto-generated. To update it, run:
 // `bazel run nativelink-proto:update_protos`
 
+#![allow(clippy::large_enum_variant)]
+
+pub mod com {
+    pub mod github {
+        pub mod bazelbuild {
+            pub mod bazel {
+                pub mod blaze {
+                    include!("com.github.bazelbuild.bazel.blaze.pb.rs");
+                    pub mod invocation_policy {
+                        include!("com.github.bazelbuild.bazel.blaze.invocation_policy.pb.rs");
+                    }
+                }
+                pub mod build_event_stream {
+                    include!("com.github.bazelbuild.bazel.build_event_stream.pb.rs");
+                }
+                pub mod failure_details {
+                    include!("com.github.bazelbuild.bazel.failure_details.pb.rs");
+                }
+                pub mod options {
+                    include!("com.github.bazelbuild.bazel.options.pb.rs");
+                }
+                pub mod command_line {
+                    include!("com.github.bazelbuild.bazel.command_line.pb.rs");
+                }
+            }
+        }
+        pub mod trace_machina {
+            pub mod nativelink {
+                pub mod remote_execution {
+                    include!("com.github.trace_machina.nativelink.remote_execution.pb.rs");
+                }
+            }
+        }
+    }
+}
+pub mod devtools {
+    pub mod build {
+        pub mod lib {
+            pub mod packages {
+                pub mod metrics {
+                    include!("devtools.build.lib.packages.metrics.pb.rs");
+                }
+            }
+        }
+    }
+}
 pub mod build {
     pub mod bazel {
         pub mod remote {
@@ -27,17 +73,6 @@ pub mod build {
         }
         pub mod semver {
             include!("build.bazel.semver.pb.rs");
-        }
-    }
-}
-pub mod com {
-    pub mod github {
-        pub mod trace_machina {
-            pub mod nativelink {
-                pub mod remote_execution {
-                    include!("com.github.trace_machina.nativelink.remote_execution.pb.rs");
-                }
-            }
         }
     }
 }

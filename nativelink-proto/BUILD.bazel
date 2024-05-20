@@ -1,6 +1,13 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 
 PROTO_NAMES = [
+    "com.github.bazelbuild.bazel.blaze",
+    "com.github.bazelbuild.bazel.build_event_stream",
+    "com.github.bazelbuild.bazel.blaze.invocation_policy",
+    "com.github.bazelbuild.bazel.failure_details",
+    "com.github.bazelbuild.bazel.options",
+    "com.github.bazelbuild.bazel.command_line",
+    "devtools.build.lib.packages.metrics",
     "build.bazel.remote.execution.v2",
     "build.bazel.semver",
     "com.github.trace_machina.nativelink.remote_execution",
@@ -23,6 +30,13 @@ rust_binary(
 genrule(
     name = "gen_rs_protos",
     srcs = [
+        "com/github/bazelbuild/bazel/src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto",
+        "com/github/bazelbuild/bazel/src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto",
+        "com/github/bazelbuild/bazel/src/main/protobuf/command_line.proto",
+        "com/github/bazelbuild/bazel/src/main/protobuf/failure_details.proto",
+        "com/github/bazelbuild/bazel/src/main/protobuf/action_cache.proto",
+        "com/github/bazelbuild/bazel/src/main/protobuf/option_filters.proto",
+        "com/github/bazelbuild/bazel/src/main/protobuf/invocation_policy.proto",
         "build/bazel/remote/execution/v2/remote_execution.proto",
         "build/bazel/semver/semver.proto",
         "com/github/trace_machina/nativelink/remote_execution/worker_api.proto",
