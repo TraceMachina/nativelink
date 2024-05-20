@@ -198,6 +198,14 @@ pub struct HealthConfig {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct BepConfig {
+    /// The store to publish build events to.
+    /// The store name referenced in the `stores` map in the main config.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub store: StoreRefName,
+}
+
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ServicesConfig {
     /// The Content Addressable Storage (CAS) backend config.
@@ -233,6 +241,11 @@ pub struct ServicesConfig {
     /// risk, as workers have a different permission set than a client
     /// that makes the remote execution/cache requests.
     pub worker_api: Option<WorkerApiConfig>,
+
+    /// Experimental - Build Event Protocol (BEP) configuration. This is
+    /// the service that will consume build events from the client and
+    /// publish them to a store for processing by an external service.
+    pub experimental_bep: Option<BepConfig>,
 
     /// Experimental - Prometheus metrics configuration. Metrics are gathered
     /// as a singleton but may be served on multiple endpoints.

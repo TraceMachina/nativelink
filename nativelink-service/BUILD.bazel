@@ -10,6 +10,7 @@ rust_library(
     name = "nativelink-service",
     srcs = [
         "src/ac_server.rs",
+        "src/bep_server.rs",
         "src/bytestream_server.rs",
         "src/capabilities_server.rs",
         "src/cas_server.rs",
@@ -47,6 +48,7 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/ac_server_test.rs",
+        "tests/bep_server_test.rs",
         "tests/bytestream_server_test.rs",
         "tests/cas_server_test.rs",
         "tests/worker_api_server_test.rs",
