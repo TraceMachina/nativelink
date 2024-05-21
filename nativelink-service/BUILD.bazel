@@ -10,6 +10,7 @@ rust_library(
     name = "nativelink-service",
     srcs = [
         "src/ac_server.rs",
+        "src/bep_server.rs",
         "src/bytestream_server.rs",
         "src/capabilities_server.rs",
         "src/cas_server.rs",

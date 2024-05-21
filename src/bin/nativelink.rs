@@ -34,6 +34,7 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
 use nativelink_scheduler::worker::WorkerId;
 use nativelink_service::ac_server::AcServer;
+use nativelink_service::bep_server::BepServer;
 use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
@@ -375,6 +376,32 @@ async fn inner_main(
                     .worker_api
                     .map_or(Ok(None), |cfg| {
                         WorkerApiServer::new(&cfg, &worker_schedulers).map(|v| {
+                            let mut service = v.into_service();
+                            let send_algo = &http_config.compression.send_compression_algorithm;
+                            if let Some(encoding) =
+                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                            {
+                                service = service.send_compressed(encoding);
+                            }
+                            for encoding in http_config
+                                .compression
+                                .accepted_compression_algorithms
+                                .iter()
+                                // Filter None values.
+                                .filter_map(into_encoding)
+                            {
+                                service = service.accept_compressed(encoding);
+                            }
+                            Some(service)
+                        })
+                    })
+                    .err_tip(|| "Could not create WorkerApi service")?,
+            )
+            .add_optional_service(
+                services
+                    .experimental_bep
+                    .map_or(Ok(None), |cfg| {
+                        BepServer::new(&cfg, &store_manager).map(|v| {
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
