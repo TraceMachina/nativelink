@@ -30,7 +30,9 @@ use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::action_messages::{ActionInfoHashKey, ActionResult, ActionStage, ActionState};
+use nativelink_util::action_messages::{
+    ActionInfoHashKey, ActionResult, ActionStage, ActionState, Id,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::Store;
 use prost::Message;
@@ -96,7 +98,7 @@ mod cache_lookup_scheduler_tests {
             .await?;
         let (_forward_watch_channel_tx, forward_watch_channel_rx) =
             watch::channel(Arc::new(ActionState {
-                unique_qualifier: action_info.unique_qualifier.clone(),
+                id: Id::new(action_info.unique_qualifier.clone()),
                 stage: ActionStage::Queued,
             }));
         let mut skip_cache_action = action_info.clone();

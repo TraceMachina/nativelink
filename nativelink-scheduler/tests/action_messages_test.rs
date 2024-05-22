@@ -22,7 +22,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::ExecuteResponse;
 use nativelink_proto::google::longrunning::{operation, Operation};
 use nativelink_proto::google::rpc::Status;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata, Id,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -44,12 +44,14 @@ mod action_messages_tests {
 
     #[nativelink_test]
     async fn action_state_any_url_test() -> Result<(), Error> {
+        let unique_qualifier = ActionInfoHashKey {
+            instance_name: "foo_instance".to_string(),
+            digest: DigestInfo::new([1u8; 32], 5),
+            salt: 0,
+        };
+        let id = Id::new(unique_qualifier);
         let action_state = ActionState {
-            unique_qualifier: ActionInfoHashKey {
-                instance_name: "foo_instance".to_string(),
-                digest: DigestInfo::new([1u8; 32], 5),
-                salt: 0,
-            },
+            id,
             // Result is only populated if has_action_result.
             stage: ActionStage::Completed(ActionResult::default()),
         };

@@ -28,7 +28,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
-use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage, ActionState};
+use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage, ActionState, Id};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::platform_properties::PlatformPropertyValue;
 use tokio::sync::watch;
@@ -73,7 +73,7 @@ mod property_modifier_scheduler_tests {
         let action_info = make_base_action_info(UNIX_EPOCH);
         let (_forward_watch_channel_tx, forward_watch_channel_rx) =
             watch::channel(Arc::new(ActionState {
-                unique_qualifier: action_info.unique_qualifier.clone(),
+                id: Id::new(action_info.unique_qualifier.clone()),
                 stage: ActionStage::Queued,
             }));
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
@@ -113,7 +113,7 @@ mod property_modifier_scheduler_tests {
             .insert(name.clone(), PlatformPropertyValue::Unknown(original_value));
         let (_forward_watch_channel_tx, forward_watch_channel_rx) =
             watch::channel(Arc::new(ActionState {
-                unique_qualifier: action_info.unique_qualifier.clone(),
+                id: Id::new(action_info.unique_qualifier.clone()),
                 stage: ActionStage::Queued,
             }));
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
@@ -150,7 +150,7 @@ mod property_modifier_scheduler_tests {
         let action_info = make_base_action_info(UNIX_EPOCH);
         let (_forward_watch_channel_tx, forward_watch_channel_rx) =
             watch::channel(Arc::new(ActionState {
-                unique_qualifier: action_info.unique_qualifier.clone(),
+                id: Id::new(action_info.unique_qualifier.clone()),
                 stage: ActionStage::Queued,
             }));
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
@@ -187,7 +187,7 @@ mod property_modifier_scheduler_tests {
         let action_info = make_base_action_info(UNIX_EPOCH);
         let (_forward_watch_channel_tx, forward_watch_channel_rx) =
             watch::channel(Arc::new(ActionState {
-                unique_qualifier: action_info.unique_qualifier.clone(),
+                id: Id::new(action_info.unique_qualifier.clone()),
                 stage: ActionStage::Queued,
             }));
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
@@ -222,7 +222,7 @@ mod property_modifier_scheduler_tests {
             .insert(name, PlatformPropertyValue::Unknown(value));
         let (_forward_watch_channel_tx, forward_watch_channel_rx) =
             watch::channel(Arc::new(ActionState {
-                unique_qualifier: action_info.unique_qualifier.clone(),
+                id: Id::new(action_info.unique_qualifier.clone()),
                 stage: ActionStage::Queued,
             }));
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));

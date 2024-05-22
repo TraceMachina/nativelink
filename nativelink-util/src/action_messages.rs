@@ -14,7 +14,6 @@
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -33,6 +32,7 @@ use nativelink_proto::google::rpc::Status;
 use prost::bytes::Bytes;
 use prost::Message;
 use prost_types::Any;
+use uuid::Uuid;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
@@ -41,6 +41,69 @@ use crate::platform_properties::PlatformProperties;
 
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
+
+pub type WorkerTimestamp = u64;
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Id {
+    pub unique_qualifier: ActionInfoHashKey,
+    pub id: Uuid,
+}
+
+// TODO: Eventually we should make this it's own hash rather than delegate to ActionInfoHashKey.
+impl Hash for Id {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        ActionInfoHashKey::hash(&self.unique_qualifier, state)
+    }
+}
+
+impl Id {
+    pub fn new(unique_qualifier: ActionInfoHashKey) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            unique_qualifier
+        }
+    }
+
+    /// Utility function used to make a unique hash of the digest including the salt.
+    pub fn get_hash(&self) -> [u8; 32] {
+        self.unique_qualifier.get_hash()
+    }
+
+    /// Returns the salt used for cache busting/hashing.
+    #[inline]
+    pub fn action_name(&self) -> String {
+        self.unique_qualifier.action_name()
+    }
+}
+
+impl TryFrom<&str> for Id {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Error> {
+        let (unique_qualifier, id) = value
+            .split_once(':')
+            .err_tip(|| "Invalid Id string - {value}")?;
+        Ok(Self {
+            unique_qualifier: ActionInfoHashKey::try_from(unique_qualifier)?,
+            id: Uuid::parse_str(id).map_err(|e| {make_input_err!("Failed to parse {e} as uuid") })?,
+        })
+    }
+}
+
+impl std::fmt::Display for Id {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let id_str = format!("{}:{}", self.unique_qualifier.action_name(), self.id);
+        write!(f, "{id_str}")
+    }
+}
+
+impl std::fmt::Debug for Id {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let id_str = format!("{}:{}", self.unique_qualifier.action_name(), self.id);
+        write!(f, "{id_str}")
+    }
+}
 
 /// This is a utility struct used to make it easier to match `ActionInfos` in a
 /// `HashMap` without needing to construct an entire `ActionInfo`.
@@ -956,12 +1019,6 @@ impl TryFrom<Operation> for ActionState {
         )
         .err_tip(|| "Could not decode metadata in upstream operation")?;
 
-        let action_digest = metadata
-            .action_digest
-            .err_tip(|| "No action digest in upstream operation metadata")?
-            .try_into()
-            .err_tip(|| "Could not convert Digest to DigestInfo")?;
-
         let stage = match execution_stage::Value::try_from(metadata.stage).err_tip(|| {
             format!(
                 "Could not convert {} to execution_stage::Value",
@@ -993,23 +1050,12 @@ impl TryFrom<Operation> for ActionState {
             }
         };
 
-        let unique_qualifier = if let Ok(v) = operation.name.as_str().try_into() {
-            v
-        } else {
-            // This branch might happen in a case where we are forwarding an operation from
-            // one remote execution system to another that does not use our operation name
-            // format (ie: very unlikely, but possible).
-            let mut hasher = DefaultHasher::new();
-            operation.name.hash(&mut hasher);
-            ActionInfoHashKey {
-                instance_name: "UNKNOWN_INSTANCE_NAME_INOPERATION_CONVERSION".to_string(),
-                digest: action_digest,
-                salt: hasher.finish(),
-            }
-        };
-
+        // NOTE: This will error if we are forwarding an operation from
+        // one remote execution system to another that does not use our operation name
+        // format (ie: very unlikely, but possible).
+        let id = Id::try_from(operation.name.as_str())?;
         Ok(Self {
-            unique_qualifier,
+            id,
             stage,
         })
     }
@@ -1020,13 +1066,18 @@ impl TryFrom<Operation> for ActionState {
 #[derive(PartialEq, Debug, Clone)]
 pub struct ActionState {
     pub stage: ActionStage,
-    pub unique_qualifier: ActionInfoHashKey,
+    pub id: Id
 }
+
 
 impl ActionState {
     #[inline]
+    pub fn unique_qualifier(&self) -> &ActionInfoHashKey {
+        &self.id.unique_qualifier
+    }
+    #[inline]
     pub fn action_digest(&self) -> &DigestInfo {
-        &self.unique_qualifier.digest
+        &self.id.unique_qualifier.digest
     }
 }
 
@@ -1039,6 +1090,7 @@ impl MetricsComponent for ActionState {
 impl From<ActionState> for Operation {
     fn from(val: ActionState) -> Self {
         let stage = Into::<execution_stage::Value>::into(&val.stage) as i32;
+        let name = val.id.to_string();
 
         let result = if val.stage.has_action_result() {
             let execute_response: ExecuteResponse = val.stage.into();
@@ -1046,10 +1098,11 @@ impl From<ActionState> for Operation {
         } else {
             None
         };
+        let digest = Some(val.id.unique_qualifier.digest.into());
 
         let metadata = ExecuteOperationMetadata {
             stage,
-            action_digest: Some((&val.unique_qualifier.digest).into()),
+            action_digest: digest,
             // TODO(blaise.bruer) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
@@ -1057,7 +1110,7 @@ impl From<ActionState> for Operation {
         };
 
         Self {
-            name: val.unique_qualifier.action_name(),
+            name,
             metadata: Some(to_any(&metadata)),
             done: result.is_some(),
             result,
