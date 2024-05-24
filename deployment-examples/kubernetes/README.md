@@ -42,8 +42,8 @@ This demo setup creates two gateways to expose the `cas` and `scheduler`
 deployments via your local docker network:
 
 ```bash
-CACHE=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')
-SCHEDULER=$(kubectl get gtw scheduler -o=jsonpath='{.status.addresses[0].value}')
+CACHE=$(kubectl get gtw cache-gateway -o=jsonpath='{.status.addresses[0].value}')
+SCHEDULER=$(kubectl get gtw scheduler-gateway -o=jsonpath='{.status.addresses[0].value}')
 
 echo "Cache IP: $CACHE"
 echo "Scheduler IP: $SCHEDULER"
@@ -61,8 +61,8 @@ cache and executor:
 bazel build \
     --config=lre \
     --remote_instance_name=main \
-    --remote_cache=grpc://$CACHE:50051 \
-    --remote_executor=grpc://$SCHEDULER:50052 \
+    --remote_cache=grpc://$CACHE \
+    --remote_executor=grpc://$SCHEDULER \
     //local-remote-execution/examples:hello_lre
 ```
 
@@ -74,8 +74,8 @@ bazel build \
 > # .bazelrc.user
 > build --config=lre
 > build --remote_instance_name=main
-> build --remote_cache=grpc://172.20.255.4:50051
-> build --remote_executor=grpc://172.20.255.5:50052
+> build --remote_cache=grpc://172.20.255.4
+> build --remote_executor=grpc://172.20.255.5
 > ```
 
 When you're done testing, delete the cluster:

@@ -96,11 +96,89 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 			),
 		},
 	))
-	components.Check(components.AddComponent(
+
+	nativeLinkGateways, err := components.AddComponent(
 		ctx,
 		"nativelink-gatways",
 		&components.NativeLinkGateways{
 			Dependencies: cilium,
+		},
+	)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	nativeLinkRoutes, err := components.AddComponent(
+		ctx,
+		"nativelink-routes",
+		&components.NativeLinkRoutes{
+			Dependencies: nativeLinkGateways,
+		},
+	)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	hubbleGateway := components.Gateway{
+		ExternalPort: 8080, //nolint:mnd
+		InternalPort: 80,   //nolint:mnd
+		Routes: []components.RouteConfig{
+			{
+				Prefix:  "/",
+				Cluster: "hubble-gateway",
+			},
+		},
+	}
+
+	tknGateway := components.Gateway{
+		ExternalPort: 8081, //nolint:mnd
+		InternalPort: 8080, //nolint:mnd
+		Routes: []components.RouteConfig{
+			{
+				Prefix:  "/",
+				Cluster: "tkn-gateway",
+			},
+		},
+	}
+
+	nativelinkGateway := components.Gateway{
+		ExternalPort: 8082, //nolint:mnd
+		InternalPort: 8089, //nolint:mnd
+		Routes: []components.RouteConfig{
+			{
+				Prefix:  "/eventlistener",
+				Cluster: "el-gateway",
+			},
+			// Add grpc proxy support in future.
+			// {
+			// 	Prefix: "/cache",
+			// 	Cluster:       "cache-gateway",
+			// 	PrefixRewrite: "/",
+			// 	GRPC: false,
+			// },
+			// {
+			// 	Prefix: "/scheduler",
+			// 	Cluster:       "scheduler-gateway",
+			// 	PrefixRewrite: "/",
+			// 	GRPC: false,
+			// },
+		},
+	}
+
+	components.Check(components.AddComponent(
+		ctx,
+		"kind-loadbalancer",
+		&components.Loadbalancer{
+			Gateways: []components.Gateway{
+				nativelinkGateway,
+				hubbleGateway,
+				tknGateway,
+			},
+			Dependencies: slices.Concat(
+				nativeLinkRoutes,
+			),
 		},
 	))
 

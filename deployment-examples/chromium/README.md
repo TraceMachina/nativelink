@@ -56,8 +56,8 @@ This demo setup creates two gateways to expose the `cas` and `scheduler`
 deployments via your local docker network:
 
 ```bash
-CACHE=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')
-SCHEDULER=$(kubectl get gtw scheduler -o=jsonpath='{.status.addresses[0].value}')
+CACHE=$(kubectl get gtw cache-gateway -o=jsonpath='{.status.addresses[0].value}')
+SCHEDULER=$(kubectl get gtw scheduler-gateway -o=jsonpath='{.status.addresses[0].value}')
 
 echo "Cache IP: $CACHE"
 echo "Scheduler IP: $SCHEDULER"
