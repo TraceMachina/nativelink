@@ -4,13 +4,13 @@
 // There are various equivalent ways to declare your Docusaurus config.
 // See: https://docusaurus.io/docs/api/docusaurus-config
 
-import {themes as prismThemes} from 'prism-react-renderer';
+import { themes as prismThemes } from 'prism-react-renderer';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'NativeLink',
   tagline: 'An extremely fast and efficient build cache and remote executor for Bazel RBE',
-  favicon: 'img/favicon.svg',
+  favicon: 'img/favicon.ico',
 
   url: 'https://docs.nativelink.dev',
   baseUrl: '/',
@@ -33,8 +33,8 @@ const config = {
         docs: {
           routeBasePath: '/',
           sidebarPath: './sidebars.js',
-          editUrl: ({versionDocsDirPath, docPath}) =>
-          `https://github.com/TraceMachina/nativelink/edit/main/nativelink-docs/docs/${docPath}`,
+          editUrl: ({ versionDocsDirPath, docPath }) =>
+            `https://github.com/TraceMachina/nativelink/edit/main/nativelink-docs/docs/${docPath}`,
         },
         blog: {
           showReadingTime: true,
@@ -60,21 +60,16 @@ const config = {
       },
       navbar: {
         logo: {
-          alt: 'My Site Logo',
+          alt: 'NativeLink Logo',
           src: 'img/light.svg',
           srcDark: 'img/dark.svg',
         },
         items: [
           {
-            type: 'docSidebar',
-            sidebarId: 'tutorialSidebar',
-            position: 'left',
-            label: 'Docs',
-          },
-          {
             href: 'https://nativelink.substack.com/',
             label: 'Blog',
-            position: 'right'},
+            position: 'right'
+          },
           {
             href: 'https://join.slack.com/t/nativelink/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A',
             label: 'Community',
