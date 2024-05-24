@@ -1,0 +1,59 @@
+static_resources:
+  listeners:
+    {{- range $i, $port := .Ports }}
+    - name: listener_{{ $i }}
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: {{ $port.InternalPort }}
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                upgrade_configs:
+                  - upgrade_type: websocket
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: local_service
+                      domains: ["*"]
+                      routes:
+                        {{- if eq $port.InternalPort 8089 }}
+                        - match: { prefix: "/eventlistener" }
+                          route: { cluster: el-gateway }
+                        # TODO(SchahinRohani) working grpc proxy
+                        # - match: { prefix: "/cache" }
+                        #   route: { cluster: cache-gateway }
+                        # - match: { prefix: "/scheduler" }
+                        #   route: { cluster: scheduler-gateway }
+                        {{- else if eq $port.InternalPort 80 }}
+                        - match: { prefix: "/" }
+                          route: { cluster: hubble-gateway }
+                        {{- else if eq $port.InternalPort 8080 }}
+                        - match: { prefix: "/" }
+                          route: { cluster: tkn-gateway }
+                        {{- end }}
+                http_filters:
+                  # - name: envoy.filters.http.grpc_http1_bridge
+                  #   typed_config:
+                  #     "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_http1_bridge.v3.Config
+                  - name: envoy.filters.http.router
+    {{- end }}
+  clusters:
+    {{- range .Gateways }}
+    - name: {{ .Name }}
+      connect_timeout: 0.25s
+      type: LOGICAL_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: {{ .Name }}
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: {{ .IP }}
+                      port_value: 80
+    {{- end }}

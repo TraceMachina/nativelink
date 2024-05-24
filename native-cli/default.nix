@@ -3,7 +3,7 @@ pkgs.buildGoModule {
   pname = "native-cli";
   version = "0.3.0";
   src = ./.;
-  vendorHash = "sha256-NWmtaXfwuZEUu/CXqdlgkIzegrnsijMtUrfTgiaVSHg=";
+  vendorHash = "sha256-PseP9FP0PhHVGr86QYJwGrbbC172SgBTPcfy/1y392o=";
   buildInputs = [pkgs.makeWrapper];
   installPhase = ''
     runHook preInstall
