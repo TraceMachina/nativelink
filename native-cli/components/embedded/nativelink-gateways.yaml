@@ -1,24 +1,58 @@
 # TODO(aaronmondal): There should just be a single gateway. But that's currently
 #                    bugged: https://github.com/cilium/cilium/issues/29099
----
-apiVersion: gateway.networking.k8s.io/v1
+# ---
+apiVersion: gateway.networking.k8s.io/v1beta1
 kind: Gateway
 metadata:
-  name: cache
+  name: nativelink-gateway
 spec:
   gatewayClassName: cilium
   listeners:
-    - name: cache
+    - name: nativelink-gateway
       protocol: HTTP
-      port: 50051
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
 ---
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: Gateway
 metadata:
-  name: scheduler
+  name: el-gateway
 spec:
   gatewayClassName: cilium
   listeners:
-    - name: scheduler
+    - name: el-gateway
       protocol: HTTP
-      port: 50052
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: Gateway
+metadata:
+  name: hubble-gateway
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: hubble-gateway
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: Gateway
+metadata:
+  name: tkn-gateway
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: tkn-gateway
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All

@@ -3,14 +3,16 @@ package clusters
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"log"
-	"text/template"
+	"runtime"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 	git "github.com/go-git/go-git/v5"
+	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kind/pkg/cluster"
 )
 
@@ -56,55 +58,81 @@ func gitSrcRoot() string {
 //     the hosts default "bridge" network and the cluster's "kind" network so
 //     that images copied to the host's local registry become available to the
 //     kind nodes as well.
-func CreateLocalKindConfig() bytes.Buffer {
-	kindConfigTemplate, err := template.New("kind-config.yaml").Parse(`
----
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-- role: worker
-  extraMounts:
-    - hostPath:  {{ .GitSrcRoot }}
-      containerPath: /mnt/src_root
-    - hostPath: /nix
-      containerPath: /nix
-      readOnly: true
-- role: worker
-  extraMounts:
-    - hostPath:  {{ .GitSrcRoot }}
-      containerPath: /mnt/src_root
-    - hostPath: /nix
-      containerPath: /nix
-      readOnly: true
-- role: worker
-  extraMounts:
-    - hostPath:  {{ .GitSrcRoot }}
-      containerPath: /mnt/src_root
-    - hostPath: /nix
-      containerPath: /nix
-      readOnly: true
-networking:
-  disableDefaultCNI: true
-  kubeProxyMode: none
-containerdConfigPatches:
-  - |-
-    [plugins."io.containerd.grpc.v1.cri".registry]
-      config_path = "/etc/containerd/certs.d"
-`)
+
+//go:embed config.yaml
+var kindDevConfig string
+
+type ExtraMount struct {
+	HostPath      string `yaml:"hostPath"`
+	ContainerPath string `yaml:"containerPath"`
+	ReadOnly      bool   `yaml:"readOnly,omitempty"`
+}
+
+type Networking struct {
+	DisableDefaultCNI bool   `yaml:"disableDefaultCNI"` //nolint:tagliatelle
+	KubeProxyMode     string `yaml:"kubeProxyMode"`
+}
+
+type Node struct {
+	Role        string       `yaml:"role"`
+	ExtraMounts []ExtraMount `yaml:"extraMounts,omitempty"`
+}
+
+type ClusterConfig struct {
+	Kind                    string     `yaml:"kind"`
+	APIVersion              string     `yaml:"apiVersion"`
+	Networking              Networking `yaml:"networking"`
+	Nodes                   []Node     `yaml:"nodes"`
+	ContainerdConfigPatches []string   `yaml:"containerdConfigPatches"`
+}
+
+func (c *ClusterConfig) get() *ClusterConfig {
+	err := yaml.Unmarshal([]byte(kindDevConfig), c)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Unmarshal: %v", err)
+	}
+
+	return c
+}
+
+func CreateLocalKindConfig() bytes.Buffer {
+	var config ClusterConfig
+
+	config.get()
+
+	gitRoot := gitSrcRoot()
+
+	for node := range config.Nodes {
+		if config.Nodes[node].Role == "worker" {
+			config.Nodes[node].ExtraMounts = append(
+				config.Nodes[node].ExtraMounts,
+				ExtraMount{
+					HostPath:      gitRoot,
+					ContainerPath: "/mnt/src_root",
+				},
+			)
+			if runtime.GOOS == "linux" {
+				config.Nodes[node].ExtraMounts = append(
+					config.Nodes[node].ExtraMounts,
+					ExtraMount{
+						HostPath:      "/nix",
+						ContainerPath: "/nix",
+						ReadOnly:      false,
+					},
+				)
+			}
+		}
+	}
+
+	// Marshal the config back to YAML.
+	configYAML, err := yaml.Marshal(config)
+	if err != nil {
+		log.Fatalf("Error marshalling config to YAML: %v", err)
 	}
 
 	var kindConfig bytes.Buffer
-	if err = kindConfigTemplate.Execute(
-		&kindConfig,
-		map[string]interface{}{
-			"GitSrcRoot": gitSrcRoot(),
-		},
-	); err != nil {
-		log.Fatal(err)
-	}
+
+	kindConfig.Write(configYAML)
 
 	return kindConfig
 }

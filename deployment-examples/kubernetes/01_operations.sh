@@ -7,18 +7,15 @@ set -xeuo pipefail
 
 SRC_ROOT=$(git rev-parse --show-toplevel)
 
-EVENTLISTENER=$(kubectl get \
-    gtw eventlistener -o=jsonpath='{.status.addresses[0].value}')
-
 curl -v \
     -H 'content-Type: application/json' \
     -d '{"flakeOutput": "./src_root#image"}' \
-    http://${EVENTLISTENER}:8080
+    localhost:8082/eventlistener
 
 curl -v \
     -H 'content-Type: application/json' \
     -d '{"flakeOutput": "./src_root#nativelink-worker-lre-cc"}' \
-    http://${EVENTLISTENER}:8080
+    localhost:8082/eventlistener
 
 until kubectl get pipelinerun \
         -l tekton.dev/pipeline=rebuild-nativelink | grep -q 'NAME'; do

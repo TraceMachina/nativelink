@@ -96,11 +96,58 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 			),
 		},
 	))
-	components.Check(components.AddComponent(
+
+	nativeLinkGateways, err := components.AddComponent(
 		ctx,
 		"nativelink-gatways",
 		&components.NativeLinkGateways{
 			Dependencies: cilium,
+		},
+	)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	nativeLinkRoutes, err := components.AddComponent(
+		ctx,
+		"nativelink-routes",
+		&components.NativeLinkRoutes{
+			Dependencies: nativeLinkGateways,
+		},
+	)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	hubblePort := components.Port{
+		ExternalPort: 8080, //nolint:gomnd
+		InternalPort: 80,   //nolint:gomnd
+	}
+
+	tknPort := components.Port{
+		ExternalPort: 8081, //nolint:gomnd
+		InternalPort: 8080, //nolint:gomnd
+	}
+
+	nativelinkPort := components.Port{
+		ExternalPort: 8082, //nolint:gomnd
+		InternalPort: 8089, //nolint:gomnd
+	}
+
+	components.Check(components.AddComponent(
+		ctx,
+		"kind-loadbalancer",
+		&components.Loadbalancer{
+			Ports: []components.Port{
+				nativelinkPort,
+				hubblePort,
+				tknPort,
+			},
+			Dependencies: slices.Concat(
+				nativeLinkRoutes,
+			),
 		},
 	))
 
