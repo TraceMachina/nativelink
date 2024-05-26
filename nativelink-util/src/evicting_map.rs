@@ -12,26 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Borrow;
+use std::cmp::Eq;
 use std::fmt::Debug;
+use std::hash::Hash;
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use async_trait::async_trait;
-use futures::stream::FuturesUnordered;
-use futures::{future, join, StreamExt};
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use serde::{Deserialize, Serialize};
 use tracing::{event, Level};
 
-use crate::common::DigestInfo;
 use crate::metrics_utils::{CollectorState, Counter, CounterWithTime, MetricsComponent};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct SerializedLRU {
-    pub data: Vec<(DigestInfo, i32)>,
+pub struct SerializedLRU<K> {
+    pub data: Vec<(K, i32)>,
     pub anchor_time: u64,
 }
 
@@ -119,8 +119,8 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
-struct State<T: LenEntry + Debug> {
-    lru: LruCache<DigestInfo, EvictionItem<T>>,
+struct State<K: Hash + Eq + Debug, T: LenEntry + Debug> {
+    lru: LruCache<K, EvictionItem<T>>,
     sum_store_size: u64,
 
     // Metrics.
@@ -133,7 +133,7 @@ struct State<T: LenEntry + Debug> {
     lifetime_inserted_bytes: Counter,
 }
 
-impl<T: LenEntry + Debug + Sync> State<T> {
+impl<K: Hash + Eq + Debug, T: LenEntry + Debug + Sync> State<K, T> {
     async fn remove(&mut self, eviction_item: &EvictionItem<T>, replaced: bool) {
         self.sum_store_size -= eviction_item.data.len() as u64;
         if replaced {
@@ -148,8 +148,8 @@ impl<T: LenEntry + Debug + Sync> State<T> {
     }
 }
 
-pub struct EvictingMap<T: LenEntry + Debug, I: InstantWrapper> {
-    state: Mutex<State<T>>,
+pub struct EvictingMap<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrapper> {
+    state: Mutex<State<K, T>>,
     anchor_time: I,
     max_bytes: u64,
     evict_bytes: u64,
@@ -157,8 +157,9 @@ pub struct EvictingMap<T: LenEntry + Debug, I: InstantWrapper> {
     max_count: u64,
 }
 
-impl<T, I> EvictingMap<T, I>
+impl<K, T, I> EvictingMap<K, T, I>
 where
+    K: Hash + Eq + Debug,
     T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
 {
@@ -191,44 +192,6 @@ where
         self.state.lock().await.lru.len()
     }
 
-    pub async fn build_lru_index(&self) -> SerializedLRU {
-        let mut state = self.state.lock().await;
-        self.evict_items(state.deref_mut()).await;
-
-        let mut serialized_lru = SerializedLRU {
-            data: Vec::with_capacity(state.lru.len()),
-            anchor_time: self.anchor_time.unix_timestamp(),
-        };
-        for (digest, eviction_item) in state.lru.iter() {
-            serialized_lru
-                .data
-                .push((*digest, eviction_item.seconds_since_anchor));
-        }
-        serialized_lru
-    }
-
-    pub async fn restore_lru(
-        &mut self,
-        seiralized_lru: SerializedLRU,
-        entry_builder: impl Fn(&DigestInfo) -> T,
-    ) {
-        let mut state = self.state.lock().await;
-        self.anchor_time = I::from_secs(seiralized_lru.anchor_time);
-        state.lru.clear();
-        for (digest, seconds_since_anchor) in seiralized_lru.data {
-            let entry = entry_builder(&digest);
-            state.lru.put(
-                digest,
-                EvictionItem {
-                    seconds_since_anchor,
-                    data: entry,
-                },
-            );
-        }
-        // Just in case we allow for some cleanup (eg: old items).
-        self.evict_items(state.deref_mut()).await;
-    }
-
     fn should_evict(
         &self,
         lru_len: usize,
@@ -248,7 +211,7 @@ where
         is_over_size || old_item_exists || is_over_count
     }
 
-    async fn evict_items(&self, state: &mut State<T>) {
+    async fn evict_items(&self, state: &mut State<K, T>) {
         let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
             return;
         };
@@ -286,121 +249,84 @@ where
         }
     }
 
-    /// Return the size of a `DigestInfo`, if not found `None` is returned.
-    pub async fn size_for_key(&self, digest: &DigestInfo) -> Option<usize> {
+    /// Return the size of a `key`, if not found `None` is returned.
+    pub async fn size_for_key(&self, key: &impl Borrow<K>) -> Option<usize> {
         let mut results = [None];
-        self.sizes_for_keys(&[*digest], &mut results[..]).await;
+        self.sizes_for_keys([key.borrow()], &mut results[..]).await;
         results[0]
     }
 
-    async fn touch_or_remove(&self, digest: &DigestInfo, data: T) -> Option<T> {
-        if data.touch().await {
-            return Some(data);
+    /// Return the sizes of a collection of `keys`. Expects `results` collection
+    /// to be provided for storing the resulting key sizes. Each index value in
+    /// `keys` maps directly to the size value for the key in `results`.
+    /// If no key is found in the internal map, `None` is filled in its place.
+    pub async fn sizes_for_keys<It, RefKey>(&self, keys: It, results: &mut [Option<usize>])
+    where
+        It: IntoIterator<Item = RefKey>,
+        RefKey: Borrow<K>,
+    {
+        let mut state = self.state.lock().await;
+
+        let lru_len = state.lru.len();
+        for (key, result) in keys.into_iter().zip(results.iter_mut()) {
+            match state.lru.get(key.borrow()) {
+                Some(entry) => {
+                    // Since we are not inserting anythign we don't need to evict based
+                    // on the size of the store.
+                    let should_evict = self.should_evict(lru_len, entry, 0, u64::MAX);
+                    if !should_evict && entry.data.touch().await {
+                        *result = Some(entry.data.len());
+                    } else {
+                        *result = None;
+                        if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
+                            if should_evict {
+                                event!(Level::INFO, ?key, "Item expired, evicting");
+                            } else {
+                                event!(Level::INFO, ?key, "Touch failed, evicting");
+                            }
+                            state.remove(&eviction_item, false).await;
+                        }
+                    }
+                }
+                None => *result = None,
+            }
+        }
+    }
+
+    pub async fn get(&self, key: &impl Borrow<K>) -> Option<T> {
+        let mut state = self.state.lock().await;
+        self.evict_items(state.deref_mut()).await;
+
+        let entry = state.lru.get_mut(key.borrow())?;
+
+        if entry.data.touch().await {
+            return Some(entry.data.clone());
         }
 
-        let mut state = self.state.lock().await;
-        let (key, eviction_item) = state.lru.pop_entry(digest)?;
-        event!(Level::INFO, ?key, "Touch failed, evicting",);
+        let (key, eviction_item) = state.lru.pop_entry(key.borrow())?;
+        event!(Level::INFO, ?key, "Touch failed, evicting");
         state.remove(&eviction_item, false).await;
         None
     }
 
-    /// Return the sizes of a collection of `DigestInfo`. Expects `results` collection
-    /// to be provided for storing the resulting `DigestInfo` size. Each index value in
-    /// `digests` maps directly to the size value of the `DigestInfo` in `results`.
-    /// If no digest is found in the internal map, `None` is filled in its place.
-    pub async fn sizes_for_keys(&self, digests: &[DigestInfo], results: &mut [Option<usize>]) {
-        let mut state = self.state.lock().await;
-        let mut remove_digests: Vec<&DigestInfo> = Vec::new();
-
-        let mut lru_len = state.lru.len();
-        let mut sum_store_size = state.sum_store_size;
-        let to_touch_or_remove: Vec<Option<T>> = digests
-            .iter()
-            .map(|digest| {
-                // Determine if a digest should be evicted or data should be touched.
-                // Digests to be eviected are collected in separate vector and chained
-                // in a single future.
-                if let Some(entry) = state.lru.get(digest) {
-                    if self.should_evict(lru_len, entry, sum_store_size, self.max_bytes) {
-                        // Important to track the eviction size, otherwise if we
-                        // reach the maximum we end up eviciting everything!
-                        sum_store_size -= entry.data.len() as u64;
-                        lru_len -= 1;
-                        // Digest should be evicted.
-                        remove_digests.push(digest);
-                        None
-                    } else {
-                        // Extract data entry to be touched.
-                        Some(entry.data.clone())
-                    }
-                } else {
-                    // Digest will be evicted if not in lru map, this is a pedantic case.
-                    remove_digests.push(digest);
-                    None
-                }
-            })
-            .collect();
-
-        join!(
-            to_touch_or_remove
-                .into_iter()
-                .zip(results.iter_mut())
-                .zip(digests.iter())
-                .filter_map(|((data, result), digest)| Some((data?, result, digest)))
-                .map(|(data, result, digest)| async move {
-                    *result = self
-                        .touch_or_remove(digest, data)
-                        .await
-                        .map(|data| data.len());
-                })
-                .collect::<FuturesUnordered<_>>()
-                .for_each(|_| future::ready(())),
-            async move {
-                for digest in remove_digests {
-                    // Do not use inner_remove as it calls evict_items, which
-                    // is precisely what we're doing here.
-                    if let Some(entry) = state.lru.pop(digest) {
-                        state.remove(&entry, false).await;
-                    }
-                }
-            }
-        );
-    }
-
-    pub async fn get(&self, digest: &DigestInfo) -> Option<T> {
-        let mut state = self.state.lock().await;
-        self.evict_items(state.deref_mut()).await;
-
-        let entry = state.lru.get_mut(digest)?;
-        let data = entry.data.clone();
-        drop(state);
-        self.touch_or_remove(digest, data).await
-    }
-
     /// Returns the replaced item if any.
-    pub async fn insert(&self, digest: DigestInfo, data: T) -> Option<T> {
-        self.insert_with_time(digest, data, self.anchor_time.elapsed().as_secs() as i32)
+    pub async fn insert(&self, key: K, data: T) -> Option<T> {
+        self.insert_with_time(key, data, self.anchor_time.elapsed().as_secs() as i32)
             .await
     }
 
     /// Returns the replaced item if any.
-    pub async fn insert_with_time(
-        &self,
-        digest: DigestInfo,
-        data: T,
-        seconds_since_anchor: i32,
-    ) -> Option<T> {
+    pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
         let mut state = self.state.lock().await;
         let results = self
-            .inner_insert_many(&mut state, [(digest, data)], seconds_since_anchor)
+            .inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
             .await;
         results.into_iter().next()
     }
 
     /// Same as insert(), but optimized for multiple inserts.
     /// Returns the replaced items if any.
-    pub async fn insert_many(&self, inserts: impl IntoIterator<Item = (DigestInfo, T)>) -> Vec<T> {
+    pub async fn insert_many(&self, inserts: impl IntoIterator<Item = (K, T)>) -> Vec<T> {
         let mut inserts = inserts.into_iter().peekable();
         // Shortcut for cases where there are no inserts, so we don't need to lock.
         if inserts.peek().is_none() {
@@ -413,19 +339,19 @@ where
 
     async fn inner_insert_many(
         &self,
-        mut state: &mut State<T>,
-        inserts: impl IntoIterator<Item = (DigestInfo, T)>,
+        mut state: &mut State<K, T>,
+        inserts: impl IntoIterator<Item = (K, T)>,
         seconds_since_anchor: i32,
     ) -> Vec<T> {
         let mut replaced_items = Vec::new();
-        for (digest, data) in inserts.into_iter() {
+        for (key, data) in inserts.into_iter() {
             let new_item_size = data.len() as u64;
             let eviction_item = EvictionItem {
                 seconds_since_anchor,
                 data,
             };
 
-            if let Some(old_item) = state.lru.put(digest, eviction_item) {
+            if let Some(old_item) = state.lru.put(key, eviction_item) {
                 state.remove(&old_item, true).await;
                 replaced_items.push(old_item.data);
             }
@@ -436,14 +362,14 @@ where
         replaced_items
     }
 
-    pub async fn remove(&self, digest: &DigestInfo) -> bool {
+    pub async fn remove(&self, key: &impl Borrow<K>) -> bool {
         let mut state = self.state.lock().await;
-        self.inner_remove(&mut state, digest).await
+        self.inner_remove(&mut state, key).await
     }
 
-    async fn inner_remove(&self, mut state: &mut State<T>, digest: &DigestInfo) -> bool {
+    async fn inner_remove(&self, mut state: &mut State<K, T>, key: &impl Borrow<K>) -> bool {
         self.evict_items(state.deref_mut()).await;
-        if let Some(entry) = state.lru.pop(digest) {
+        if let Some(entry) = state.lru.pop(key.borrow()) {
             state.remove(&entry, false).await;
             return true;
         }
@@ -452,19 +378,21 @@ where
 
     /// Same as remove(), but allows for a conditional to be applied to the entry before removal
     /// in an atomic fashion.
-    pub async fn remove_if<F: FnOnce(&T) -> bool>(&self, digest: &DigestInfo, cond: F) -> bool {
+    pub async fn remove_if<F: FnOnce(&T) -> bool>(&self, key: &impl Borrow<K>, cond: F) -> bool {
         let mut state = self.state.lock().await;
-        if let Some(entry) = state.lru.get(digest) {
+        if let Some(entry) = state.lru.get(key.borrow()) {
             if !cond(&entry.data) {
                 return false;
             }
-            return self.inner_remove(&mut state, digest).await;
+            return self.inner_remove(&mut state, key).await;
         }
         false
     }
 }
 
-impl<T: LenEntry + Debug, I: InstantWrapper> MetricsComponent for EvictingMap<T, I> {
+impl<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrapper> MetricsComponent
+    for EvictingMap<K, T, I>
+{
     fn gather_metrics(&self, c: &mut CollectorState) {
         c.publish(
             "max_bytes",

@@ -401,13 +401,13 @@ pub fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
 async fn add_files_to_cache<Fe: FileEntry>(
-    evicting_map: &EvictingMap<Arc<Fe>, SystemTime>,
+    evicting_map: &EvictingMap<DigestInfo, Arc<Fe>, SystemTime>,
     anchor_time: &SystemTime,
     shared_context: &Arc<SharedContext>,
     block_size: u64,
 ) -> Result<(), Error> {
     async fn process_entry<Fe: FileEntry>(
-        evicting_map: &EvictingMap<Arc<Fe>, SystemTime>,
+        evicting_map: &EvictingMap<DigestInfo, Arc<Fe>, SystemTime>,
         file_name: &str,
         atime: SystemTime,
         data_size: u64,
@@ -519,7 +519,7 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
 
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     shared_context: Arc<SharedContext>,
-    evicting_map: Arc<EvictingMap<Arc<Fe>, SystemTime>>,
+    evicting_map: Arc<EvictingMap<DigestInfo, Arc<Fe>, SystemTime>>,
     block_size: u64,
     read_buffer_size: usize,
     sleep_fn: fn(Duration) -> Sleep,
