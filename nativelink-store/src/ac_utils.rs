@@ -24,7 +24,7 @@ use futures::TryFutureExt;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasher;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::StoreLike;
 use prost::Message;
 
 // NOTE(blaise.bruer) From some local testing it looks like action cache items are rarely greater than
@@ -37,8 +37,8 @@ pub const ESTIMATED_DIGEST_SIZE: usize = 2048;
 const MAX_ACTION_MSG_SIZE: usize = 10 << 20; // 10mb.
 
 /// Attempts to fetch the digest contents from a store into the associated proto.
-pub async fn get_and_decode_digest<T: Message + Default>(
-    store: Pin<&dyn Store>,
+pub async fn get_and_decode_digest<'a, T: Message + Default>(
+    store: &impl StoreLike,
     digest: &DigestInfo,
 ) -> Result<T, Error> {
     get_size_and_decode_digest(store, digest)
@@ -47,8 +47,8 @@ pub async fn get_and_decode_digest<T: Message + Default>(
 }
 
 /// Attempts to fetch the digest contents from a store into the associated proto.
-pub async fn get_size_and_decode_digest<T: Message + Default>(
-    store: Pin<&dyn Store>,
+pub async fn get_size_and_decode_digest<'a, T: Message + Default>(
+    store: &impl StoreLike,
     digest: &DigestInfo,
 ) -> Result<(T, usize), Error> {
     let mut store_data_resp = store
@@ -91,7 +91,7 @@ pub fn message_to_digest(
 /// Takes a proto message and will serialize it and upload it to the provided store.
 pub async fn serialize_and_upload_message<'a, T: Message>(
     message: &'a T,
-    cas_store: Pin<&'a dyn Store>,
+    cas_store: Pin<&'a impl StoreLike>,
     hasher: &mut impl DigestHasher,
 ) -> Result<DigestInfo, Error> {
     let mut buffer = BytesMut::with_capacity(message.encoded_len());

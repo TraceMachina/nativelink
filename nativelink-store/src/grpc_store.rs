@@ -45,7 +45,7 @@ use nativelink_util::proto_stream_utils::{
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use parking_lot::Mutex;
 use prost::Message;
@@ -501,7 +501,7 @@ impl GrpcStore {
 }
 
 #[async_trait]
-impl Store for GrpcStore {
+impl StoreDriver for GrpcStore {
     // NOTE: This function can only be safely used on CAS stores. AC stores may return a size that
     // is incorrect.
     async fn has_with_results(
@@ -735,11 +735,7 @@ impl Store for GrpcStore {
             .await
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
         self
     }
 

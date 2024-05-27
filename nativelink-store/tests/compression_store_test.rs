@@ -30,7 +30,7 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
@@ -75,7 +75,7 @@ mod compression_store_tests {
 
     #[nativelink_test]
     async fn simple_smoke_test() -> Result<(), Error> {
-        let store_owned = CompressionStore::new(
+        let store = CompressionStore::new(
             nativelink_config::stores::CompressionStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -86,12 +86,11 @@ mod compression_store_tests {
                     },
                 ),
             },
-            Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )),
+            ))),
         )
         .err_tip(|| "Failed to create compression store")?;
-        let store = Pin::new(&store_owned);
 
         const RAW_INPUT: &str = "123";
         let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
@@ -124,9 +123,9 @@ mod compression_store_tests {
                     },
                 ),
             },
-            Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )),
+            ))),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -182,9 +181,9 @@ mod compression_store_tests {
                     },
                 ),
             },
-            Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )),
+            ))),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -221,7 +220,7 @@ mod compression_store_tests {
                     },
                 ),
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -279,7 +278,7 @@ mod compression_store_tests {
                     },
                 ),
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -368,7 +367,7 @@ mod compression_store_tests {
                     },
                 ),
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(&store_owned);
@@ -520,7 +519,7 @@ mod compression_store_tests {
                     },
                 ),
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         )
         .err_tip(|| "Failed to create compression store")?;
         let store = Pin::new(Arc::new(store_owned));

@@ -21,20 +21,20 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
 use tokio::join;
 
 pub struct SizePartitioningStore {
     partition_size: i64,
-    lower_store: Arc<dyn Store>,
-    upper_store: Arc<dyn Store>,
+    lower_store: Store,
+    upper_store: Store,
 }
 
 impl SizePartitioningStore {
     pub fn new(
         config: &nativelink_config::stores::SizePartitioningStore,
-        lower_store: Arc<dyn Store>,
-        upper_store: Arc<dyn Store>,
+        lower_store: Store,
+        upper_store: Store,
     ) -> Self {
         SizePartitioningStore {
             partition_size: config.size as i64,
@@ -45,7 +45,7 @@ impl SizePartitioningStore {
 }
 
 #[async_trait]
-impl Store for SizePartitioningStore {
+impl StoreDriver for SizePartitioningStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -56,8 +56,8 @@ impl Store for SizePartitioningStore {
             .cloned()
             .partition(|digest| digest.size_bytes < self.partition_size);
         let (lower_results, upper_results) = join!(
-            Pin::new(self.lower_store.as_ref()).has_many(&lower_digests),
-            Pin::new(self.upper_store.as_ref()).has_many(&upper_digests),
+            self.lower_store.has_many(&lower_digests),
+            self.upper_store.has_many(&upper_digests),
         );
         let mut lower_results = match lower_results {
             Ok(lower_results) => lower_results.into_iter(),
@@ -90,13 +90,9 @@ impl Store for SizePartitioningStore {
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         if digest.size_bytes < self.partition_size {
-            return Pin::new(self.lower_store.as_ref())
-                .update(digest, reader, size_info)
-                .await;
+            return self.lower_store.update(digest, reader, size_info).await;
         }
-        Pin::new(self.upper_store.as_ref())
-            .update(digest, reader, size_info)
-            .await
+        self.upper_store.update(digest, reader, size_info).await
     }
 
     async fn get_part_ref(
@@ -107,16 +103,17 @@ impl Store for SizePartitioningStore {
         length: Option<usize>,
     ) -> Result<(), Error> {
         if digest.size_bytes < self.partition_size {
-            return Pin::new(self.lower_store.as_ref())
+            return self
+                .lower_store
                 .get_part_ref(digest, writer, offset, length)
                 .await;
         }
-        Pin::new(self.upper_store.as_ref())
+        self.upper_store
             .get_part_ref(digest, writer, offset, length)
             .await
     }
 
-    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn Store {
+    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn StoreDriver {
         let Some(digest) = digest else {
             return self;
         };
@@ -124,16 +121,6 @@ impl Store for SizePartitioningStore {
             return self.lower_store.inner_store(Some(digest));
         }
         self.upper_store.inner_store(Some(digest))
-    }
-
-    fn inner_store_arc(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        let Some(digest) = digest else {
-            return self;
-        };
-        if digest.size_bytes < self.partition_size {
-            return self.lower_store.clone().inner_store_arc(Some(digest));
-        }
-        self.upper_store.clone().inner_store_arc(Some(digest))
     }
 
     fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
@@ -146,13 +133,9 @@ impl Store for SizePartitioningStore {
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         let lower_store_registry = registry.sub_registry_with_prefix("lower_store");
-        self.lower_store
-            .clone()
-            .register_metrics(lower_store_registry);
+        self.lower_store.register_metrics(lower_store_registry);
         let upper_store_registry = registry.sub_registry_with_prefix("upper_store");
-        self.upper_store
-            .clone()
-            .register_metrics(upper_store_registry);
+        self.upper_store.register_metrics(upper_store_registry);
         registry.register_collector(Box::new(Collector::new(&self)));
     }
 }

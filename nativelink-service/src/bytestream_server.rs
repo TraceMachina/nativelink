@@ -44,7 +44,7 @@ use nativelink_util::digest_hasher::{
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::Mutex;
 use tokio::time::sleep;
@@ -153,7 +153,7 @@ type BytesWrittenAndIdleStream = (Arc<AtomicU64>, Option<IdleStream>);
 type SleepFn = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
 
 pub struct ByteStreamServer {
-    stores: HashMap<String, Arc<dyn Store>>,
+    stores: HashMap<String, Store>,
     // Max number of bytes to send on each grpc stream chunk.
     max_bytes_per_stream: usize,
     active_uploads: Arc<Mutex<HashMap<String, BytesWrittenAndIdleStream>>>,
@@ -206,7 +206,7 @@ impl ByteStreamServer {
     fn create_or_join_upload_stream(
         &self,
         uuid: String,
-        store: Arc<dyn Store>,
+        store: Store,
         digest: DigestInfo,
     ) -> Result<ActiveStreamGuard<'_>, Error> {
         let (uuid, bytes_received) = match self.active_uploads.lock().entry(uuid) {
@@ -236,7 +236,7 @@ impl ByteStreamServer {
         let store_update_fut = Box::pin(async move {
             // We need to wrap `Store::update()` in a another future because we need to capture
             // `store` to ensure it's lifetime follows the future and not the caller.
-            Pin::new(store.as_ref())
+            store
                 // Bytestream always uses digest size as the actual byte size.
                 .update(
                     digest,
@@ -260,7 +260,7 @@ impl ByteStreamServer {
 
     async fn inner_read(
         &self,
-        store: Arc<dyn Store>,
+        store: Store,
         digest: DigestInfo,
         read_request: ReadRequest,
     ) -> Result<Response<ReadStream>, Error> {
@@ -289,7 +289,7 @@ impl ByteStreamServer {
             maybe_get_part_result: None,
             get_part_fut: Box::pin(async move {
                 store
-                    .get_part_arc(digest, tx, read_request.read_offset as usize, read_limit)
+                    .get_part(digest, tx, read_request.read_offset as usize, read_limit)
                     .await
             }),
         });
@@ -383,7 +383,7 @@ impl ByteStreamServer {
     )]
     async fn inner_write(
         &self,
-        store: Arc<dyn Store>,
+        store: Store,
         digest: DigestInfo,
         stream: WriteRequestStreamWrapper<Streaming<WriteRequest>, Status>,
     ) -> Result<Response<WriteResponse>, Error> {
@@ -520,8 +520,7 @@ impl ByteStreamServer {
         let digest = DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store_clone.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        if let Some(grpc_store) = store_clone.downcast_ref::<GrpcStore>(Some(digest)) {
             return grpc_store
                 .query_write_status(Request::new(query_request.clone()))
                 .await;
@@ -544,7 +543,7 @@ impl ByteStreamServer {
             }
         }
 
-        let has_fut = Pin::new(store_clone.as_ref()).has(digest);
+        let has_fut = store_clone.has(digest);
         let Some(item_size) = has_fut.await.err_tip(|| "Failed to call .has() on store")? else {
             return Err(make_err!(Code::NotFound, "{}", "not found"));
         };
@@ -583,8 +582,7 @@ impl ByteStream for ByteStreamServer {
         let digest = DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest)) {
             let stream = grpc_store.read(Request::new(read_request)).await?;
             return Ok(Response::new(Box::pin(stream)));
         }
@@ -640,8 +638,7 @@ impl ByteStream for ByteStreamServer {
         .err_tip(|| "Invalid digest input in ByteStream::write")?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest)) {
             return grpc_store.write(stream).await.map_err(|e| e.into());
         }
 

@@ -31,7 +31,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::cas_utils::is_zero_digest;
@@ -211,7 +211,7 @@ impl UploadState {
 /// result in the entire contents being read from the inner store but will
 /// only send the contents requested.
 pub struct CompressionStore {
-    inner_store: Arc<dyn Store>,
+    inner_store: Store,
     config: nativelink_config::stores::Lz4Config,
     bincode_options: BincodeOptions,
 }
@@ -219,7 +219,7 @@ pub struct CompressionStore {
 impl CompressionStore {
     pub fn new(
         compression_config: nativelink_config::stores::CompressionStore,
-        inner_store: Arc<dyn Store>,
+        inner_store: Store,
     ) -> Result<Self, Error> {
         let lz4_config = match compression_config.compression_algorithm {
             nativelink_config::stores::CompressionAlgorithm::lz4(mut lz4_config) => {
@@ -241,15 +241,13 @@ impl CompressionStore {
 }
 
 #[async_trait]
-impl Store for CompressionStore {
+impl StoreDriver for CompressionStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        Pin::new(self.inner_store.as_ref())
-            .has_with_results(digests, results)
-            .await
+        self.inner_store.has_with_results(digests, results).await
     }
 
     async fn update(
@@ -264,7 +262,7 @@ impl Store for CompressionStore {
 
         let inner_store = self.inner_store.clone();
         let update_fut = spawn!("compression_store_update_spawn", async move {
-            Pin::new(inner_store.as_ref())
+            inner_store
                 .update(
                     digest,
                     rx,
@@ -407,7 +405,7 @@ impl Store for CompressionStore {
 
         let inner_store = self.inner_store.clone();
         let get_part_fut = spawn!("compression_store_get_part_spawn", async move {
-            Pin::new(inner_store.as_ref())
+            inner_store
                 .get_part(digest, tx, 0, None)
                 .await
                 .err_tip(|| "Inner store get in compression store failed")
@@ -613,11 +611,7 @@ impl Store for CompressionStore {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
         self
     }
 
@@ -631,9 +625,7 @@ impl Store for CompressionStore {
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
-        self.inner_store
-            .clone()
-            .register_metrics(inner_store_registry);
+        self.inner_store.register_metrics(inner_store_registry);
     }
 }
 

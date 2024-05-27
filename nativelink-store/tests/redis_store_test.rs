@@ -12,15 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
-
 use bytes::Bytes;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::redis_store::{LazyConnection, RedisStore};
+use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use redis::{Pipeline, RedisError};
 use redis_test::{MockCmd, MockRedisConnection};
 
@@ -39,9 +38,6 @@ fn mock_uuid_generator() -> String {
 
 #[cfg(test)]
 mod redis_store_tests {
-    use nativelink_util::buf_channel::make_buf_channel_pair;
-    use nativelink_util::store_trait::UploadSizeInfo;
-
     use super::*;
 
     struct MockRedisConnectionBuilder {
@@ -114,17 +110,16 @@ mod redis_store_tests {
             LazyConnection::Connection(Ok(redis_connection)),
             mock_uuid_generator,
         );
-        let pinned_store: Pin<&RedisStore<MockRedisConnection>> = Pin::new(&store);
 
-        pinned_store.update_oneshot(digest, data.clone()).await?;
+        store.update_oneshot(digest, data.clone()).await?;
 
-        let result = pinned_store.has(digest).await?;
+        let result = store.has(digest).await?;
         assert!(
             result.is_some(),
             "Expected redis store to have hash: {VALID_HASH1}",
         );
 
-        let result = pinned_store
+        let result = store
             .get_part_unchunked(digest, 0, Some(data.clone().len()))
             .await?;
 
@@ -145,11 +140,10 @@ mod redis_store_tests {
             LazyConnection::Connection(Ok(redis_connection)),
             mock_uuid_generator,
         );
-        let pinned_store: Pin<&RedisStore<MockRedisConnection>> = Pin::new(&store);
 
-        pinned_store.update_oneshot(digest, data).await?;
+        store.update_oneshot(digest, data).await?;
 
-        let result = pinned_store.has(digest).await?;
+        let result = store.has(digest).await?;
         assert!(
             result.is_some(),
             "Expected redis store to have hash: {VALID_HASH1}",
@@ -205,17 +199,16 @@ mod redis_store_tests {
             LazyConnection::Connection(Ok(redis_connection)),
             mock_uuid_generator,
         );
-        let pinned_store: Pin<&RedisStore<MockRedisConnection>> = Pin::new(&store);
 
-        pinned_store.update_oneshot(digest, data.clone()).await?;
+        store.update_oneshot(digest, data.clone()).await?;
 
-        let result = pinned_store.has(digest).await?;
+        let result = store.has(digest).await?;
         assert!(
             result.is_some(),
             "Expected redis store to have hash: {VALID_HASH1}",
         );
 
-        let get_result: Bytes = pinned_store
+        let get_result: Bytes = store
             .get_part_unchunked(digest, 0, Some(data.clone().len()))
             .await?;
 
@@ -272,24 +265,23 @@ mod redis_store_tests {
             LazyConnection::Connection(Ok(redis_connection)),
             mock_uuid_generator,
         );
-        let pinned_store: Pin<&RedisStore<MockRedisConnection>> = Pin::new(&store);
 
         let (mut tx, rx) = make_buf_channel_pair();
         tx.send(data_p1).await?;
         tokio::task::yield_now().await;
         tx.send(data_p2).await?;
         tx.send_eof()?;
-        pinned_store
+        store
             .update(digest, rx, UploadSizeInfo::ExactSize(data.len()))
             .await?;
 
-        let result = pinned_store.has(digest).await?;
+        let result = store.has(digest).await?;
         assert!(
             result.is_some(),
             "Expected redis store to have hash: {VALID_HASH1}",
         );
 
-        let result = pinned_store
+        let result = store
             .get_part_unchunked(digest, 0, Some(data.clone().len()))
             .await?;
 

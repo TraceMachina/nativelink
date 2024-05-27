@@ -18,7 +18,6 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::DerefMut;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -40,7 +39,7 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -266,7 +265,7 @@ mod filesystem_store_tests {
         let content_path = make_temp_path("content_path");
         let temp_path = make_temp_path("temp_path");
         {
-            let store = Box::pin(
+            let store = Store::new(
                 FilesystemStore::<FileEntryImpl>::new(
                     &nativelink_config::stores::FilesystemStore {
                         content_path: content_path.clone(),
@@ -280,10 +279,10 @@ mod filesystem_store_tests {
             );
 
             // Insert dummy value into store.
-            store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
+            store.update_oneshot(digest, VALUE1.into()).await?;
 
             assert_eq!(
-                store.as_ref().has(digest).await,
+                store.has(digest).await,
                 Ok(Some(VALUE1.len())),
                 "Expected filesystem store to have hash: {}",
                 HASH1
@@ -303,7 +302,7 @@ mod filesystem_store_tests {
                 .await?,
             );
 
-            let content = store.as_ref().get_part_unchunked(digest, 0, None).await?;
+            let content = store.get_part_unchunked(digest, 0, None).await?;
             assert_eq!(content, VALUE1.as_bytes());
         }
 
@@ -340,10 +339,7 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        store
-            .as_ref()
-            .update_oneshot(digest1, VALUE1.into())
-            .await?;
+        store.update_oneshot(digest1, VALUE1.into()).await?;
 
         let expected_file_name = OsString::from(format!(
             "{}/{}-{}",
@@ -362,10 +358,7 @@ mod filesystem_store_tests {
         }
 
         // Replace content.
-        store
-            .as_ref()
-            .update_oneshot(digest1, VALUE2.into())
-            .await?;
+        store.update_oneshot(digest1, VALUE2.into()).await?;
 
         {
             // Check to ensure our file now has new content.
@@ -432,23 +425,15 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        let store_pin = Pin::new(store.as_ref());
         // Insert data into store.
-        store_pin
-            .as_ref()
-            .update_oneshot(digest1, VALUE1.into())
-            .await?;
+        store.update_oneshot(digest1, VALUE1.into()).await?;
 
         let (writer, mut reader) = make_buf_channel_pair();
         let store_clone = store.clone();
         let digest1_clone = digest1;
         background_spawn!(
             "file_continues_to_stream_on_content_replace_test_store_get",
-            async move {
-                Pin::new(store_clone.as_ref())
-                    .get(digest1_clone, writer)
-                    .await
-            },
+            async move { store_clone.get(digest1_clone, writer).await },
         );
 
         {
@@ -465,10 +450,7 @@ mod filesystem_store_tests {
         }
 
         // Replace content.
-        store_pin
-            .as_ref()
-            .update_oneshot(digest1, VALUE2.into())
-            .await?;
+        store.update_oneshot(digest1, VALUE2.into()).await?;
 
         // Ensure we let any background tasks finish.
         tokio::task::yield_now().await;
@@ -566,19 +548,15 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        let store_pin = Pin::new(store.as_ref());
         // Insert data into store.
-        store_pin
-            .as_ref()
-            .update_oneshot(digest1, VALUE1.into())
-            .await?;
+        store.update_oneshot(digest1, VALUE1.into()).await?;
 
         let mut reader = {
             let (writer, reader) = make_buf_channel_pair();
             let store_clone = store.clone();
             background_spawn!(
                 "file_gets_cleans_up_on_cache_eviction_store_get",
-                async move { Pin::new(store_clone.as_ref()).get(digest1, writer).await },
+                async move { store_clone.get(digest1, writer).await },
             );
             reader
         };
@@ -587,10 +565,7 @@ mod filesystem_store_tests {
         assert!(reader.peek().await.is_ok(), "Could not peek into reader");
 
         // Insert new content. This will evict the old item.
-        store_pin
-            .as_ref()
-            .update_oneshot(digest2, VALUE2.into())
-            .await?;
+        store.update_oneshot(digest2, VALUE2.into()).await?;
 
         // Ensure we let any background tasks finish.
         tokio::task::yield_now().await;
@@ -664,10 +639,7 @@ mod filesystem_store_tests {
             .await?,
         );
         // Insert data into store.
-        store
-            .as_ref()
-            .update_oneshot(digest1, VALUE1.into())
-            .await?;
+        store.update_oneshot(digest1, VALUE1.into()).await?;
 
         let file_entry = store.get_file_entry_for_digest(&digest1).await?;
         file_entry
@@ -685,7 +657,7 @@ mod filesystem_store_tests {
             .await?;
 
         // Now touch digest1.
-        let data = store.as_ref().get_part_unchunked(digest1, 0, None).await?;
+        let data = store.get_part_unchunked(digest1, 0, None).await?;
         assert_eq!(data, VALUE1.as_bytes());
 
         file_entry
@@ -769,10 +741,7 @@ mod filesystem_store_tests {
             .await?,
         );
         // Insert data into store.
-        store
-            .as_ref()
-            .update_oneshot(digest1, VALUE1.into())
-            .await?;
+        store.update_oneshot(digest1, VALUE1.into()).await?;
 
         let file_entry = store.get_file_entry_for_digest(&digest1).await?;
         file_entry
@@ -790,7 +759,7 @@ mod filesystem_store_tests {
             .await?;
 
         // Now touch digest1.
-        let data = store.as_ref().get_part_unchunked(digest1, 0, None).await?;
+        let data = store.get_part_unchunked(digest1, 0, None).await?;
         assert_eq!(data, VALUE1.as_bytes());
 
         file_entry
@@ -822,7 +791,7 @@ mod filesystem_store_tests {
             .await?,
         );
         // Insert data into store.
-        store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
+        store.update_oneshot(digest, VALUE1.into()).await?;
         let file_entry = store.get_file_entry_for_digest(&digest).await?;
         {
             // The file contents should equal our initial data.
@@ -837,7 +806,7 @@ mod filesystem_store_tests {
         }
 
         // Now replace the data.
-        store.as_ref().update_oneshot(digest, VALUE2.into()).await?;
+        store.update_oneshot(digest, VALUE2.into()).await?;
 
         {
             // The file contents still equal our old data.
@@ -894,13 +863,9 @@ mod filesystem_store_tests {
         );
         // Insert data into store.
         store
-            .as_ref()
             .update_oneshot(small_digest, SMALL_VALUE.into())
             .await?;
-        store
-            .as_ref()
-            .update_oneshot(big_digest, BIG_VALUE.into())
-            .await?;
+        store.update_oneshot(big_digest, BIG_VALUE.into()).await?;
 
         {
             // Our first digest should have been unrefed exactly once.
@@ -948,7 +913,7 @@ mod filesystem_store_tests {
         );
 
         let (mut tx, rx) = make_buf_channel_pair();
-        let update_fut = Arc::new(async_lock::Mutex::new(store.as_ref().update(
+        let update_fut = Arc::new(async_lock::Mutex::new(store.update(
             digest,
             rx,
             UploadSizeInfo::MaxSize(100),
@@ -1050,7 +1015,7 @@ mod filesystem_store_tests {
 
         // Finally ensure that our entry is not in the store.
         assert_eq!(
-            store.as_ref().has(digest).await?,
+            store.has(digest).await?,
             None,
             "Entry should not be in store"
         );
@@ -1079,10 +1044,7 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        let store_pin = Pin::new(store.as_ref());
-
-        store_pin
-            .as_ref()
+        store
             .update_oneshot(digest, large_value.clone().into())
             .await?;
 
@@ -1091,9 +1053,7 @@ mod filesystem_store_tests {
         let digest_clone = digest;
 
         let _drop_guard = spawn!("get_part_timeout_test_get", async move {
-            Pin::new(store_clone.as_ref())
-                .get(digest_clone, writer)
-                .await
+            store_clone.get(digest_clone, writer).await
         });
 
         let file_data = reader
@@ -1138,7 +1098,7 @@ mod filesystem_store_tests {
         let (mut writer, mut reader) = make_buf_channel_pair();
 
         let _drop_guard = spawn!("get_part_is_zero_digest_get_part_ref", async move {
-            let _ = Pin::new(store_clone.as_ref())
+            let _ = store_clone
                 .get_part_ref(digest, &mut writer, 0, None)
                 .await
                 .err_tip(|| "Failed to get_part_ref");
@@ -1181,7 +1141,7 @@ mod filesystem_store_tests {
 
         let digests = vec![digest];
         let mut results = vec![None];
-        let _ = Pin::new(store.as_ref())
+        let _ = store
             .has_with_results(&digests, &mut results)
             .await
             .err_tip(|| "Failed to get_part_ref");
@@ -1265,7 +1225,7 @@ mod filesystem_store_tests {
 
         // Populate our first store entry.
         let first_file_entry = {
-            store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
+            store.update_oneshot(digest, VALUE1.into()).await?;
             store.get_file_entry_for_digest(&digest).await?
         };
 
@@ -1276,7 +1236,7 @@ mod filesystem_store_tests {
         // 4. Then drop the lock.
         {
             let rename_pause_request_lock = RENAME_REQUEST_PAUSE_MUX.lock().await;
-            let mut update_fut = store.as_ref().update_oneshot(digest, VALUE2.into()).boxed();
+            let mut update_fut = store.update_oneshot(digest, VALUE2.into()).boxed();
 
             loop {
                 // Try to advance our update future.
@@ -1341,7 +1301,7 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        store.as_ref().update_oneshot(digest, VALUE1.into()).await?;
+        store.update_oneshot(digest, VALUE1.into()).await?;
 
         let stored_file_path = OsString::from(format!(
             "{}/{}-{}",
@@ -1352,7 +1312,6 @@ mod filesystem_store_tests {
         std::fs::remove_file(stored_file_path)?;
 
         let digest_result = store
-            .as_ref()
             .has(digest)
             .await
             .err_tip(|| "Failed to execute has")?;
@@ -1392,24 +1351,12 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        store
-            .as_ref()
-            .update_oneshot(digest_1kb, value_1kb.into())
-            .await?;
-        let short_entry = store
-            .as_ref()
-            .get_file_entry_for_digest(&digest_1kb)
-            .await?;
+        store.update_oneshot(digest_1kb, value_1kb.into()).await?;
+        let short_entry = store.get_file_entry_for_digest(&digest_1kb).await?;
         assert_eq!(short_entry.size_on_disk(), 4 * 1024);
 
-        store
-            .as_ref()
-            .update_oneshot(digest_5kb, value_5kb.into())
-            .await?;
-        let long_entry = store
-            .as_ref()
-            .get_file_entry_for_digest(&digest_5kb)
-            .await?;
+        store.update_oneshot(digest_5kb, value_5kb.into()).await?;
+        let long_entry = store.get_file_entry_for_digest(&digest_5kb).await?;
         assert_eq!(long_entry.size_on_disk(), 8 * 1024);
         Ok(())
     }
@@ -1446,10 +1393,7 @@ mod filesystem_store_tests {
             })
             .await?,
         );
-        store
-            .as_ref()
-            .update_oneshot(digest, value.clone().into())
-            .await?;
+        store.update_oneshot(digest, value.clone().into()).await?;
 
         let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
         {
@@ -1460,7 +1404,6 @@ mod filesystem_store_tests {
         }
 
         store
-            .as_ref()
             .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
             .await?;
         Ok(())
@@ -1487,7 +1430,7 @@ mod filesystem_store_tests {
 
         let digest = DigestInfo::try_new(HASH1, value.len())?;
 
-        let store = Box::pin(FastSlowStore::new(
+        let store = FastSlowStore::new(
             // Note: The config is not needed for this test, so use dummy data.
             &nativelink_config::stores::FastSlowStore {
                 fast: nativelink_config::stores::StoreConfig::memory(
@@ -1497,7 +1440,7 @@ mod filesystem_store_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
             },
-            Arc::new(
+            Store::new(
                 FilesystemStore::<FileEntryImpl>::new(
                     &nativelink_config::stores::FilesystemStore {
                         content_path: make_temp_path("content_path"),
@@ -1508,7 +1451,7 @@ mod filesystem_store_tests {
                 )
                 .await?,
             ),
-            Arc::new(
+            Store::new(
                 FilesystemStore::<FileEntryImpl>::new(
                     &nativelink_config::stores::FilesystemStore {
                         content_path: make_temp_path("content_path1"),
@@ -1519,11 +1462,8 @@ mod filesystem_store_tests {
                 )
                 .await?,
             ),
-        ));
-        store
-            .as_ref()
-            .update_oneshot(digest, value.clone().into())
-            .await?;
+        );
+        store.update_oneshot(digest, value.clone().into()).await?;
 
         let temp_path = make_temp_path("temp_path2");
         fs::create_dir_all(&temp_path).await?;
@@ -1536,7 +1476,6 @@ mod filesystem_store_tests {
         }
 
         store
-            .as_ref()
             .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
             .await?;
         Ok(())
@@ -1581,7 +1520,6 @@ mod filesystem_store_tests {
             .ino();
 
         let result = store
-            .as_ref()
             .update_with_whole_file(digest, file, UploadSizeInfo::ExactSize(value.len()))
             .await?;
         assert!(
