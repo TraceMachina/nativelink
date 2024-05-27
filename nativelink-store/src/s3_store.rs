@@ -48,7 +48,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::fs;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
 use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -354,7 +354,7 @@ impl S3Store {
 }
 
 #[async_trait]
-impl Store for S3Store {
+impl StoreDriver for S3Store {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -639,7 +639,7 @@ impl Store for S3Store {
             .await
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -649,7 +649,7 @@ impl Store for S3Store {
         if is_zero_digest(&digest) {
             writer
                 .send_eof()
-                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
 
@@ -738,11 +738,7 @@ impl Store for S3Store {
             .await
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn StoreDriver {
         self
     }
 

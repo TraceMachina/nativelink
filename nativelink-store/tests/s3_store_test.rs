@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,7 +31,7 @@ use nativelink_store::s3_store::S3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use sha2::{Digest, Sha256};
 
 // TODO(aaronmondal): Figure out how to test the connector retry mechanism.
@@ -70,10 +69,9 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let store_pin = Pin::new(&store);
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = store_pin.has(digest).await;
+        let result = store.has(digest).await;
         assert_eq!(
             result,
             Ok(Some(512)),
@@ -105,9 +103,8 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let store_pin = Pin::new(&store);
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = store_pin.has(digest).await;
+        let result = store.has(digest).await;
         assert_eq!(
             result,
             Ok(None),
@@ -170,10 +167,9 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let store_pin = Pin::new(&store);
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = store_pin.has(digest).await;
+        let result = store.has(digest).await;
         assert_eq!(
             result,
             Ok(Some(111)),
@@ -220,7 +216,7 @@ mod s3_store_tests {
         // Make future responsible for processing the datastream
         // and forwarding it to the s3 backend/server.
         let mut update_fut = Box::pin(async move {
-            Pin::new(&store)
+            store
                 .update(
                     DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
                     rx,
@@ -303,9 +299,8 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let store_pin = Pin::new(&store);
 
-        let store_data = store_pin
+        let store_data = store
             .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?, 0, None)
             .await?;
         assert_eq!(
@@ -348,9 +343,8 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let store_pin = Pin::new(&store);
 
-        store_pin
+        store
             .get_part_unchunked(
                 DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
                 OFFSET,
@@ -417,7 +411,7 @@ mod s3_store_tests {
         )?;
 
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-        let result = Pin::new(&store).get_part_unchunked(digest, 0, None).await;
+        let result = store.get_part_unchunked(digest, 0, None).await;
         assert!(result.is_ok(), "Expected to find item, got: {result:?}");
         Ok(())
     }
@@ -536,9 +530,7 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let _ = Pin::new(&store)
-            .update_oneshot(digest, send_data.clone().into())
-            .await;
+        let _ = store.update_oneshot(digest, send_data.clone().into()).await;
         mock_client.assert_requests_match(&[]);
         Ok(())
     }
@@ -574,7 +566,6 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let store_pin = Pin::new(&store);
 
         let (_, get_part_result) = join!(
             async move {
@@ -583,7 +574,7 @@ mod s3_store_tests {
                 tx.send_data(Bytes::from_static(b"world")).await?;
                 Result::<(), hyper::Error>::Ok(())
             },
-            store_pin.get_part_unchunked(
+            store.get_part_unchunked(
                 DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE)?,
                 0,
                 Some(CAS_ENTRY_SIZE),
@@ -624,10 +615,10 @@ mod s3_store_tests {
         let (mut writer, mut reader) = make_buf_channel_pair();
 
         let _drop_guard = spawn!("get_part_is_zero_digest", async move {
-            let _ = Pin::new(store_clone.as_ref())
-                .get_part_ref(digest, &mut writer, 0, None)
+            let _ = store_clone
+                .get_part(digest, &mut writer, 0, None)
                 .await
-                .err_tip(|| "Failed to get_part_ref");
+                .err_tip(|| "Failed to get_part");
         });
 
         let file_data = reader
@@ -656,7 +647,7 @@ mod s3_store_tests {
             .http_client(mock_client)
             .build();
         let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-        let store_owned = S3Store::new_with_client_and_jitter(
+        let store = S3Store::new_with_client_and_jitter(
             &nativelink_config::stores::S3Store {
                 bucket: BUCKET_NAME.to_string(),
                 ..Default::default()
@@ -664,13 +655,11 @@ mod s3_store_tests {
             s3_client,
             Arc::new(move |_delay| Duration::from_secs(0)),
         )?;
-        let store = Pin::new(&store_owned);
 
         let _ = store
-            .as_ref()
             .has_with_results(&digests, &mut results)
             .await
-            .err_tip(|| "Failed to get_part_ref");
+            .err_tip(|| "Failed to get_part");
         assert_eq!(results, vec!(Some(0)));
 
         Ok(())

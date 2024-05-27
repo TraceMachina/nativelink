@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_config::stores::{ExistenceCacheStore as ExistenceCacheStoreConfig, StoreConfig};
@@ -21,7 +20,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreLike};
 
 #[cfg(test)]
 mod verify_store_tests {
@@ -36,11 +35,10 @@ mod verify_store_tests {
             backend: StoreConfig::noop, // Note: Not used.
             eviction_policy: Default::default(),
         };
-        let inner_store = Arc::new(MemoryStore::new(
+        let inner_store = Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        ));
-        let store_owned = ExistenceCacheStore::new(&config, inner_store.clone());
-        let store = Pin::new(&store_owned);
+        )));
+        let store = ExistenceCacheStore::new(&config, inner_store.clone());
 
         let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
         store
@@ -77,13 +75,13 @@ mod verify_store_tests {
             backend: StoreConfig::noop,
             eviction_policy: Default::default(),
         };
-        let inner_store = Arc::new(MemoryStore::new(
+        let inner_store = Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        ));
+        )));
         let store = ExistenceCacheStore::new(&config, inner_store.clone());
 
         let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
-        Pin::new(&store)
+        store
             .update_oneshot(digest, VALUE.into())
             .await
             .err_tip(|| "Failed to update store")?;
@@ -102,17 +100,17 @@ mod verify_store_tests {
             backend: StoreConfig::noop,
             eviction_policy: Default::default(),
         };
-        let inner_store = Arc::new(MemoryStore::new(
+        let inner_store = Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        ));
+        )));
         let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
-        Pin::new(inner_store.as_ref())
+        inner_store
             .update_oneshot(digest, VALUE.into())
             .await
             .err_tip(|| "Failed to update store")?;
         let store = ExistenceCacheStore::new(&config, inner_store.clone());
 
-        let _ = Pin::new(&store)
+        let _ = store
             .get_part_unchunked(digest, 0, None)
             .await
             .err_tip(|| "Expected get_part to succeed")?;

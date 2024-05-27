@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::poll;
@@ -27,6 +26,7 @@ use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::{encode_stream_proto, DigestInfo};
 use nativelink_util::spawn;
+use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
 use prometheus_client::registry::Registry;
 use tokio::task::yield_now;
@@ -86,9 +86,7 @@ pub mod write_tests {
     pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-
-        let store = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         // Setup stream.
         let (mut tx, join_handle) = {
@@ -181,9 +179,7 @@ pub mod write_tests {
     pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-
-        let store = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         async fn setup_stream(
             bs_server: ByteStreamServer,
@@ -277,9 +273,7 @@ pub mod write_tests {
     pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-
-        let store = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         async fn setup_stream(
             bs_server: ByteStreamServer,
@@ -379,9 +373,7 @@ pub mod write_tests {
     pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-
-        let store = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         async fn setup_stream(
             bs_server: ByteStreamServer,
@@ -485,9 +477,7 @@ pub mod write_tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-
-        let store = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         // Setup stream.
         let (mut tx, mut write_fut) = {
@@ -658,8 +648,7 @@ pub mod write_tests {
     pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-        let store = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         async fn setup_stream(
             bs_server: ByteStreamServer,
@@ -854,9 +843,7 @@ pub mod read_tests {
     {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-
-        let store = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         const VALUE1: &str = "12456789abcdefghijk";
 
@@ -890,9 +877,7 @@ pub mod read_tests {
     pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let bs_server = make_bytestream_server(store_manager.as_ref())?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-
-        let store = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         const DATA_SIZE: usize = 10_000_000;
         let mut raw_data = vec![41u8; DATA_SIZE];

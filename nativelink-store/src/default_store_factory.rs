@@ -21,7 +21,7 @@ use nativelink_config::stores::StoreConfig;
 use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::metrics_utils::Registry;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreDriver};
 
 use crate::completeness_checking_store::CompletenessCheckingStore;
 use crate::compression_store::CompressionStore;
@@ -40,7 +40,7 @@ use crate::size_partitioning_store::SizePartitioningStore;
 use crate::store_manager::StoreManager;
 use crate::verify_store::VerifyStore;
 
-type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Arc<dyn Store>, Error>> + 'a>;
+type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Store, Error>> + 'a>;
 
 pub fn store_factory<'a>(
     backend: &'a StoreConfig,
@@ -49,7 +49,7 @@ pub fn store_factory<'a>(
     maybe_health_registry_builder: Option<&'a mut HealthRegistryBuilder>,
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
-        let store: Arc<dyn Store> = match backend {
+        let store: Arc<dyn StoreDriver> = match backend {
             StoreConfig::memory(config) => Arc::new(MemoryStore::new(config)),
             StoreConfig::experimental_s3_store(config) => Arc::new(S3Store::new(config).await?),
             StoreConfig::redis_store(config) => Arc::new(RedisStore::new(config)?),
@@ -74,12 +74,12 @@ pub fn store_factory<'a>(
                 store_factory(&config.backend, store_manager, None, None).await?,
                 store_factory(&config.cas_store, store_manager, None, None).await?,
             )),
-            StoreConfig::fast_slow(config) => Arc::new(FastSlowStore::new(
+            StoreConfig::fast_slow(config) => FastSlowStore::new(
                 config,
                 store_factory(&config.fast, store_manager, None, None).await?,
                 store_factory(&config.slow, store_manager, None, None).await?,
-            )),
-            StoreConfig::filesystem(config) => Arc::new(<FilesystemStore>::new(config).await?),
+            ),
+            StoreConfig::filesystem(config) => <FilesystemStore>::new(config).await?,
             StoreConfig::ref_store(config) => {
                 Arc::new(RefStore::new(config, Arc::downgrade(store_manager)))
             }
@@ -111,6 +111,6 @@ pub fn store_factory<'a>(
             store.clone().register_health(health_registry_builder);
         }
 
-        Ok(store)
+        Ok(Store::new(store))
     })
 }

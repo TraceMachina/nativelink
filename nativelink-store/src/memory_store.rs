@@ -25,7 +25,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -75,7 +75,7 @@ impl MemoryStore {
 }
 
 #[async_trait]
-impl Store for MemoryStore {
+impl StoreDriver for MemoryStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -118,7 +118,7 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -128,7 +128,7 @@ impl Store for MemoryStore {
         if is_zero_digest(&digest) {
             writer
                 .send_eof()
-                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
 
@@ -156,11 +156,7 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
         self
     }
 

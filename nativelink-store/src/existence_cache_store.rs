@@ -24,7 +24,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
 
 #[derive(Clone, Debug)]
 struct ExistanceItem(usize);
@@ -42,12 +42,12 @@ impl LenEntry for ExistanceItem {
 }
 
 pub struct ExistenceCacheStore {
-    inner_store: Arc<dyn Store>,
+    inner_store: Store,
     existence_cache: EvictingMap<DigestInfo, ExistanceItem, SystemTime>,
 }
 
 impl ExistenceCacheStore {
-    pub fn new(config: &ExistenceCacheStoreConfig, inner_store: Arc<dyn Store>) -> Self {
+    pub fn new(config: &ExistenceCacheStoreConfig, inner_store: Store) -> Self {
         let empty_policy = EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
         Self {
@@ -84,7 +84,7 @@ impl ExistenceCacheStore {
 
         // Now query only the items not found in the cache.
         let mut inner_results = vec![None; not_cached_digests.len()];
-        self.pin_inner()
+        self.inner_store
             .has_with_results(&not_cached_digests, &mut inner_results)
             .await
             .err_tip(|| "In ExistenceCacheStore::inner_has_with_results")?;
@@ -122,14 +122,10 @@ impl ExistenceCacheStore {
 
         Ok(())
     }
-
-    fn pin_inner(&self) -> Pin<&dyn Store> {
-        Pin::new(self.inner_store.as_ref())
-    }
 }
 
 #[async_trait]
-impl Store for ExistenceCacheStore {
+impl StoreDriver for ExistenceCacheStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -157,7 +153,7 @@ impl Store for ExistenceCacheStore {
                 .err_tip(|| "In ExistenceCacheStore::update")?;
             return Ok(());
         }
-        let result = self.pin_inner().update(digest, reader, size_info).await;
+        let result = self.inner_store.update(digest, reader, size_info).await;
         if result.is_ok() {
             if let UploadSizeInfo::ExactSize(size) = size_info {
                 let _ = self
@@ -169,7 +165,7 @@ impl Store for ExistenceCacheStore {
         result
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -177,8 +173,8 @@ impl Store for ExistenceCacheStore {
         length: Option<usize>,
     ) -> Result<(), Error> {
         let result = self
-            .pin_inner()
-            .get_part_ref(digest, writer, offset, length)
+            .inner_store
+            .get_part(digest, writer, offset, length)
             .await;
         if result.is_ok() {
             let size = usize::try_from(digest.size_bytes)
@@ -191,11 +187,7 @@ impl Store for ExistenceCacheStore {
         result
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
         self
     }
 
@@ -209,9 +201,7 @@ impl Store for ExistenceCacheStore {
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
-        self.inner_store
-            .clone()
-            .register_metrics(inner_store_registry);
+        self.inner_store.register_metrics(inner_store_registry);
     }
 }
 

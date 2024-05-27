@@ -12,50 +12,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
 use std::sync::Arc;
+
+use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
+use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::ref_store::RefStore;
+use nativelink_store::store_manager::StoreManager;
+use nativelink_util::common::DigestInfo;
+use nativelink_util::store_trait::{Store, StoreDriver, StoreLike};
 
 #[cfg(test)]
 mod ref_store_tests {
-    use nativelink_error::Error;
-    use nativelink_macro::nativelink_test;
-    use nativelink_store::memory_store::MemoryStore;
-    use nativelink_store::ref_store::RefStore;
-    use nativelink_store::store_manager::StoreManager;
-    use nativelink_util::common::DigestInfo;
-    use nativelink_util::store_trait::Store;
     use pretty_assertions::assert_eq; // Must be declared in every module.
 
     use super::*;
 
     const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
-    fn setup_stores() -> (Arc<StoreManager>, Arc<MemoryStore>, Arc<RefStore>) {
+    fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
         let store_manager = Arc::new(StoreManager::new());
 
-        let memory_store_owned = Arc::new(MemoryStore::new(
+        let memory_store = Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        ));
-        store_manager.add_store("foo", memory_store_owned.clone());
+        )));
+        store_manager.add_store("foo", memory_store.clone());
 
-        let ref_store_owned = Arc::new(RefStore::new(
+        let ref_store = Store::new(Arc::new(RefStore::new(
             &nativelink_config::stores::RefStore {
                 name: "foo".to_string(),
             },
             Arc::downgrade(&store_manager),
-        ));
-        store_manager.add_store("bar", ref_store_owned.clone());
-        (store_manager, memory_store_owned, ref_store_owned)
+        )));
+        store_manager.add_store("bar", ref_store.clone());
+        (store_manager, memory_store, ref_store)
     }
 
     #[nativelink_test]
     async fn has_test() -> Result<(), Error> {
-        let (_store_manager, memory_store_owned, ref_store_owned) = setup_stores();
+        let (_store_manager, memory_store, ref_store) = setup_stores();
 
         const VALUE1: &str = "13";
         {
             // Insert data into memory store.
-            Pin::new(memory_store_owned.as_ref())
+            memory_store
                 .update_oneshot(
                     DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
                     VALUE1.into(),
@@ -64,7 +64,7 @@ mod ref_store_tests {
         }
         {
             // Now check if we check of ref_store has the data.
-            let has_result = Pin::new(ref_store_owned.as_ref())
+            let has_result = ref_store
                 .has(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?)
                 .await;
             assert_eq!(
@@ -79,12 +79,12 @@ mod ref_store_tests {
 
     #[nativelink_test]
     async fn get_test() -> Result<(), Error> {
-        let (_store_manager, memory_store_owned, ref_store_owned) = setup_stores();
+        let (_store_manager, memory_store, ref_store) = setup_stores();
 
         const VALUE1: &str = "13";
         {
             // Insert data into memory store.
-            Pin::new(memory_store_owned.as_ref())
+            memory_store
                 .update_oneshot(
                     DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
                     VALUE1.into(),
@@ -93,7 +93,7 @@ mod ref_store_tests {
         }
         {
             // Now check if we read it from ref_store it has same data.
-            let data = Pin::new(ref_store_owned.as_ref())
+            let data = ref_store
                 .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, 0, None)
                 .await
                 .expect("Get should have succeeded");
@@ -109,12 +109,12 @@ mod ref_store_tests {
 
     #[nativelink_test]
     async fn update_test() -> Result<(), Error> {
-        let (_store_manager, memory_store_owned, ref_store_owned) = setup_stores();
+        let (_store_manager, memory_store, ref_store) = setup_stores();
 
         const VALUE1: &str = "13";
         {
             // Insert data into ref_store.
-            Pin::new(ref_store_owned.as_ref())
+            ref_store
                 .update_oneshot(
                     DigestInfo::try_new(VALID_HASH1, VALUE1.len())?,
                     VALUE1.into(),
@@ -123,7 +123,7 @@ mod ref_store_tests {
         }
         {
             // Now check if we read it from memory_store it has same data.
-            let data = Pin::new(memory_store_owned.as_ref())
+            let data = memory_store
                 .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, VALUE1.len())?, 0, None)
                 .await
                 .expect("Get should have succeeded");
@@ -141,31 +141,31 @@ mod ref_store_tests {
     async fn inner_store_test() -> Result<(), Error> {
         let store_manager = Arc::new(StoreManager::new());
 
-        let memory_store = Arc::new(MemoryStore::new(
+        let memory_store = Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        ));
+        )));
         store_manager.add_store("mem_store", memory_store.clone());
 
-        let ref_store_inner = Arc::new(RefStore::new(
+        let ref_store_inner = Store::new(Arc::new(RefStore::new(
             &nativelink_config::stores::RefStore {
                 name: "mem_store".to_string(),
             },
             Arc::downgrade(&store_manager),
-        ));
+        )));
         store_manager.add_store("ref_store_inner", ref_store_inner.clone());
 
-        let ref_store_outer = Arc::new(RefStore::new(
+        let ref_store_outer = Store::new(Arc::new(RefStore::new(
             &nativelink_config::stores::RefStore {
                 name: "ref_store_inner".to_string(),
             },
             Arc::downgrade(&store_manager),
-        ));
+        )));
         store_manager.add_store("ref_store_outer", ref_store_outer.clone());
 
         // Ensure the result of inner_store() points to exact same memory store.
         assert_eq!(
-            Arc::as_ptr(&ref_store_outer.inner_store_arc(None)) as *const (),
-            Arc::as_ptr(&memory_store) as *const (),
+            ref_store_outer.inner_store(None) as *const dyn StoreDriver as *const (),
+            memory_store.into_inner().as_ref() as *const dyn StoreDriver as *const (),
             "Expected inner store to be memory store"
         );
         Ok(())
