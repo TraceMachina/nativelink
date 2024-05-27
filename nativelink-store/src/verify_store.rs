@@ -29,10 +29,10 @@ use nativelink_util::metrics_utils::{
     Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
 };
 use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
 
 pub struct VerifyStore {
-    inner_store: Arc<dyn Store>,
+    inner_store: Store,
     verify_size: bool,
     verify_hash: bool,
 
@@ -42,10 +42,7 @@ pub struct VerifyStore {
 }
 
 impl VerifyStore {
-    pub fn new(
-        config: &nativelink_config::stores::VerifyStore,
-        inner_store: Arc<dyn Store>,
-    ) -> Self {
+    pub fn new(config: &nativelink_config::stores::VerifyStore, inner_store: Store) -> Self {
         VerifyStore {
             inner_store,
             verify_size: config.verify_size,
@@ -53,10 +50,6 @@ impl VerifyStore {
             size_verification_failures: CounterWithTime::default(),
             hash_verification_failures: CounterWithTime::default(),
         }
-    }
-
-    fn pin_inner(&self) -> Pin<&dyn Store> {
-        Pin::new(self.inner_store.as_ref())
     }
 
     async fn inner_check_update<D: DigestHasher>(
@@ -118,13 +111,13 @@ impl VerifyStore {
 }
 
 #[async_trait]
-impl Store for VerifyStore {
+impl StoreDriver for VerifyStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.pin_inner().has_with_results(digests, results).await
+        self.inner_store.has_with_results(digests, results).await
     }
 
     async fn update(
@@ -159,7 +152,7 @@ impl Store for VerifyStore {
 
         let (tx, rx) = make_buf_channel_pair();
 
-        let update_fut = self.pin_inner().update(digest, rx, size_info);
+        let update_fut = self.inner_store.update(digest, rx, size_info);
         let check_fut =
             self.inner_check_update(tx, reader, size_info, digest.packed_hash, hasher.as_mut());
 
@@ -168,23 +161,19 @@ impl Store for VerifyStore {
         update_res.merge(check_res)
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        self.pin_inner()
-            .get_part_ref(digest, writer, offset, length)
+        self.inner_store
+            .get_part(digest, writer, offset, length)
             .await
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn StoreDriver {
         self
     }
 
@@ -198,7 +187,7 @@ impl Store for VerifyStore {
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         let backend_store = registry.sub_registry_with_prefix("backend");
-        self.inner_store.clone().register_metrics(backend_store);
+        self.inner_store.register_metrics(backend_store);
         registry.register_collector(Box::new(Collector::new(&self)));
     }
 }

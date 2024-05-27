@@ -14,14 +14,13 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::{fs, DigestInfo};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use rand::{thread_rng, Rng};
 use tokio::io::AsyncWriteExt;
 
@@ -56,7 +55,6 @@ mod ac_utils_tests {
         let store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_pin = Pin::new(store.as_ref());
         let digest = DigestInfo::try_new(HASH1, HASH1_SIZE)?; // Dummy hash data.
         {
             // Write 1MB of 0x88s to the file.
@@ -72,7 +70,7 @@ mod ac_utils_tests {
         {
             // Upload our file.
             let resumeable_file = fs::open_file(filepath, u64::MAX).await?;
-            store_pin
+            store
                 .update_with_whole_file(
                     digest,
                     resumeable_file,
@@ -82,7 +80,7 @@ mod ac_utils_tests {
         }
         {
             // Check to make sure the file was saved correctly to the store.
-            let store_data = store_pin.get_part_unchunked(digest, 0, None).await?;
+            let store_data = store.get_part_unchunked(digest, 0, None).await?;
             assert_eq!(store_data.len(), expected_data.len());
             assert_eq!(store_data, expected_data);
         }

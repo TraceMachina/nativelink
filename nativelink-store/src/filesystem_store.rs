@@ -17,7 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
@@ -34,7 +34,7 @@ use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::time::{sleep, timeout, Sleep};
@@ -522,12 +522,15 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     evicting_map: Arc<EvictingMap<DigestInfo, Arc<Fe>, SystemTime>>,
     block_size: u64,
     read_buffer_size: usize,
+    weak_self: Weak<Self>,
     sleep_fn: fn(Duration) -> Sleep,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
 }
 
 impl<Fe: FileEntry> FilesystemStore<Fe> {
-    pub async fn new(config: &nativelink_config::stores::FilesystemStore) -> Result<Self, Error> {
+    pub async fn new(
+        config: &nativelink_config::stores::FilesystemStore,
+    ) -> Result<Arc<Self>, Error> {
         Self::new_with_timeout_and_rename_fn(config, sleep, |from, to| std::fs::rename(from, to))
             .await
     }
@@ -536,7 +539,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         config: &nativelink_config::stores::FilesystemStore,
         sleep_fn: fn(Duration) -> Sleep,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Arc<Self>, Error> {
         let now = SystemTime::now();
 
         let empty_policy = nativelink_config::stores::EvictionPolicy::default();
@@ -569,15 +572,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             config.read_buffer_size as usize
         };
-        let store = Self {
+        Ok(Arc::new_cyclic(|weak_self| Self {
             shared_context,
             evicting_map,
             block_size,
             read_buffer_size,
+            weak_self: weak_self.clone(),
             sleep_fn,
             rename_fn,
-        };
-        Ok(store)
+        }))
+    }
+
+    pub fn get_arc(&self) -> Option<Arc<Self>> {
+        self.weak_self.upgrade()
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
@@ -714,7 +721,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 }
 
 #[async_trait]
-impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
+impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -811,7 +818,7 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         return Ok(None);
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -824,7 +831,7 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
                 .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
             writer
                 .send_eof()
-                .err_tip(|| "Failed to send zero EOF in filesystem store get_part_ref")?;
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
 
@@ -886,11 +893,7 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
         self
     }
 
@@ -944,6 +947,6 @@ impl<Fe: FileEntry> HealthStatusIndicator for FilesystemStore<Fe> {
     }
 
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        Store::check_health(Pin::new(self), namespace).await
+        StoreDriver::check_health(Pin::new(self), namespace).await
     }
 }
