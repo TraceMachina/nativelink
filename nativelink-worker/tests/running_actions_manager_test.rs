@@ -20,7 +20,6 @@ use std::fs::Permissions;
 use std::io::{Cursor, Write};
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::pin::Pin;
 use std::str::from_utf8;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -49,7 +48,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreLike};
 use nativelink_worker::running_actions_manager::{
     download_to_directory, Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl,
     RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
@@ -80,10 +79,10 @@ fn make_temp_path(data: &str) -> String {
 
 async fn setup_stores() -> Result<
     (
-        Pin<Arc<FilesystemStore>>,
-        Pin<Arc<MemoryStore>>,
-        Pin<Arc<FastSlowStore>>,
-        Pin<Arc<MemoryStore>>,
+        Arc<FilesystemStore>,
+        Arc<MemoryStore>,
+        Arc<FastSlowStore>,
+        Arc<MemoryStore>,
     ),
     Error,
 > {
@@ -94,17 +93,17 @@ async fn setup_stores() -> Result<
         ..Default::default()
     };
     let slow_config = nativelink_config::stores::MemoryStore::default();
-    let fast_store = Pin::new(Arc::new(FilesystemStore::new(&fast_config).await?));
-    let slow_store = Pin::new(Arc::new(MemoryStore::new(&slow_config)));
-    let ac_store = Pin::new(Arc::new(MemoryStore::new(&slow_config)));
-    let cas_store = Pin::new(Arc::new(FastSlowStore::new(
+    let fast_store = FilesystemStore::new(&fast_config).await?;
+    let slow_store = Arc::new(MemoryStore::new(&slow_config));
+    let ac_store = Arc::new(MemoryStore::new(&slow_config));
+    let cas_store = FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
             fast: nativelink_config::stores::StoreConfig::filesystem(fast_config),
             slow: nativelink_config::stores::StoreConfig::memory(slow_config),
         },
-        Pin::into_inner(fast_store.clone()),
-        Pin::into_inner(slow_store.clone()),
-    )));
+        Store::new(fast_store.clone()),
+        Store::new(slow_store.clone()),
+    );
     Ok((fast_store, slow_store, cas_store, ac_store))
 }
 
@@ -214,7 +213,7 @@ mod running_actions_manager_tests {
                 .err_tip(|| format!("Could not make download_dir : {download_dir}"))?;
             download_to_directory(
                 cas_store.as_ref(),
-                fast_store.as_ref(),
+                fast_store.as_pin(),
                 &root_directory_digest,
                 &download_dir,
             )
@@ -319,7 +318,7 @@ mod running_actions_manager_tests {
                 .err_tip(|| format!("Could not make download_dir : {download_dir}"))?;
             download_to_directory(
                 cas_store.as_ref(),
-                fast_store.as_ref(),
+                fast_store.as_pin(),
                 &root_directory_digest,
                 &download_dir,
             )
@@ -393,7 +392,7 @@ mod running_actions_manager_tests {
                 .err_tip(|| format!("Could not make download_dir : {download_dir}"))?;
             download_to_directory(
                 cas_store.as_ref(),
-                fast_store.as_ref(),
+                fast_store.as_pin(),
                 &root_directory_digest,
                 &download_dir,
             )
@@ -434,9 +433,9 @@ mod running_actions_manager_tests {
             RunningActionsManagerArgs {
                 root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -460,7 +459,7 @@ mod running_actions_manager_tests {
             };
             let command_digest = serialize_and_upload_message(
                 &command,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -471,7 +470,7 @@ mod running_actions_manager_tests {
                         digest: Some(
                             serialize_and_upload_message(
                                 &Directory::default(),
-                                cas_store.as_ref(),
+                                cas_store.as_pin(),
                                 &mut DigestHasherFunc::Sha256.hasher(),
                             )
                             .await?
@@ -480,7 +479,7 @@ mod running_actions_manager_tests {
                     }],
                     ..Default::default()
                 },
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -491,7 +490,7 @@ mod running_actions_manager_tests {
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -549,9 +548,9 @@ mod running_actions_manager_tests {
             RunningActionsManagerArgs {
                 root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -577,7 +576,7 @@ mod running_actions_manager_tests {
             };
             let command_digest = serialize_and_upload_message(
                 &command,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -588,7 +587,7 @@ mod running_actions_manager_tests {
                         digest: Some(
                             serialize_and_upload_message(
                                 &Directory::default(),
-                                cas_store.as_ref(),
+                                cas_store.as_pin(),
                                 &mut DigestHasherFunc::Sha256.hasher(),
                             )
                             .await?
@@ -597,7 +596,7 @@ mod running_actions_manager_tests {
                     }],
                     ..Default::default()
                 },
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -608,7 +607,7 @@ mod running_actions_manager_tests {
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -666,9 +665,9 @@ mod running_actions_manager_tests {
             RunningActionsManagerArgs {
                 root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -709,7 +708,7 @@ mod running_actions_manager_tests {
             };
             let command_digest = serialize_and_upload_message(
                 &command,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Blake3.hasher(),
             )
             .await?;
@@ -720,7 +719,7 @@ mod running_actions_manager_tests {
                         digest: Some(
                             serialize_and_upload_message(
                                 &Directory::default(),
-                                cas_store.as_ref(),
+                                cas_store.as_pin(),
                                 &mut DigestHasherFunc::Blake3.hasher(),
                             )
                             .await?
@@ -729,7 +728,7 @@ mod running_actions_manager_tests {
                     }],
                     ..Default::default()
                 },
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Blake3.hasher(),
             )
             .await?;
@@ -740,7 +739,7 @@ mod running_actions_manager_tests {
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Blake3.hasher(),
             )
             .await?;
@@ -838,9 +837,9 @@ mod running_actions_manager_tests {
             RunningActionsManagerArgs {
                 root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -881,7 +880,7 @@ mod running_actions_manager_tests {
             };
             let command_digest = serialize_and_upload_message(
                 &command,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -892,7 +891,7 @@ mod running_actions_manager_tests {
                         digest: Some(
                             serialize_and_upload_message(
                                 &Directory::default(),
-                                cas_store.as_ref(),
+                                cas_store.as_pin(),
                                 &mut DigestHasherFunc::Sha256.hasher(),
                             )
                             .await?
@@ -901,7 +900,7 @@ mod running_actions_manager_tests {
                     }],
                     ..Default::default()
                 },
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -912,7 +911,7 @@ mod running_actions_manager_tests {
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -1012,9 +1011,9 @@ mod running_actions_manager_tests {
             RunningActionsManagerArgs {
                 root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -1051,13 +1050,13 @@ mod running_actions_manager_tests {
             };
             let command_digest = serialize_and_upload_message(
                 &command,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory::default(),
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -1068,7 +1067,7 @@ mod running_actions_manager_tests {
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -1212,9 +1211,9 @@ mod running_actions_manager_tests {
             RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -1246,13 +1245,13 @@ mod running_actions_manager_tests {
             };
             let command_digest = serialize_and_upload_message(
                 &command,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory::default(),
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -1263,7 +1262,7 @@ mod running_actions_manager_tests {
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -1340,9 +1339,9 @@ mod running_actions_manager_tests {
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -1376,13 +1375,13 @@ mod running_actions_manager_tests {
         };
         let command_digest = serialize_and_upload_message(
             &command,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -1393,7 +1392,7 @@ mod running_actions_manager_tests {
         };
         let action_digest = serialize_and_upload_message(
             &action,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -1500,9 +1499,9 @@ exit 0
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: None,
                 },
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -1523,13 +1522,13 @@ exit 0
         };
         let command_digest = serialize_and_upload_message(
             &command,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -1540,7 +1539,7 @@ exit 0
         };
         let action_digest = serialize_and_upload_message(
             &action,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -1657,9 +1656,9 @@ exit 0
                         ),
                     ])),
                 },
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -1680,13 +1679,13 @@ exit 0
         };
         let command_digest = serialize_and_upload_message(
             &command,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -1708,7 +1707,7 @@ exit 0
         };
         let action_digest = serialize_and_upload_message(
             &action,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -1813,9 +1812,9 @@ exit 1
                         EnvironmentSource::side_channel_file,
                     )])),
                 },
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -1833,13 +1832,13 @@ exit 1
         };
         let command_digest = serialize_and_upload_message(
             &command,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -1850,7 +1849,7 @@ exit 1
         };
         let action_digest = serialize_and_upload_message(
             &action,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -1888,9 +1887,9 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -1961,9 +1960,9 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -2033,9 +2032,9 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_historical_results_strategy: Some(
@@ -2134,9 +2133,9 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_historical_results_strategy: Some(
@@ -2174,9 +2173,9 @@ exit 1
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: String::new(),
             execution_configuration: ExecutionConfiguration::default(),
-            cas_store: Pin::into_inner(cas_store.clone()),
-            ac_store: Some(Pin::into_inner(ac_store.clone())),
-            historical_store: Pin::into_inner(cas_store.clone()),
+            cas_store: cas_store.clone(),
+            ac_store: Some(Store::new(ac_store.clone())),
+            historical_store: Store::new(cas_store.clone()),
             upload_action_result_config: &nativelink_config::cas_server::UploadActionResultConfig {
                 upload_historical_results_strategy: Some(
                     nativelink_config::cas_server::UploadCacheResultsStrategy::failures_only,
@@ -2240,9 +2239,9 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: String::new(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -2317,13 +2316,13 @@ exit 1
         };
         let command_digest = serialize_and_upload_message(
             &command,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -2345,7 +2344,7 @@ exit 1
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -2354,9 +2353,9 @@ exit 1
                 RunningActionsManagerArgs {
                     root_action_directory: root_action_directory.clone(),
                     execution_configuration: ExecutionConfiguration::default(),
-                    cas_store: Pin::into_inner(cas_store.clone()),
-                    ac_store: Some(Pin::into_inner(ac_store.clone())),
-                    historical_store: Pin::into_inner(cas_store.clone()),
+                    cas_store: cas_store.clone(),
+                    ac_store: Some(Store::new(ac_store.clone())),
+                    historical_store: Store::new(cas_store.clone()),
                     upload_action_result_config:
                         &nativelink_config::cas_server::UploadActionResultConfig {
                             upload_ac_results_strategy:
@@ -2423,7 +2422,7 @@ exit 1
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -2432,9 +2431,9 @@ exit 1
                 RunningActionsManagerArgs {
                     root_action_directory: root_action_directory.clone(),
                     execution_configuration: ExecutionConfiguration::default(),
-                    cas_store: Pin::into_inner(cas_store.clone()),
-                    ac_store: Some(Pin::into_inner(ac_store.clone())),
-                    historical_store: Pin::into_inner(cas_store.clone()),
+                    cas_store: cas_store.clone(),
+                    ac_store: Some(Store::new(ac_store.clone())),
+                    historical_store: Store::new(cas_store.clone()),
                     upload_action_result_config:
                         &nativelink_config::cas_server::UploadActionResultConfig {
                             upload_ac_results_strategy:
@@ -2501,7 +2500,7 @@ exit 1
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -2510,9 +2509,9 @@ exit 1
                 RunningActionsManagerArgs {
                     root_action_directory: root_action_directory.clone(),
                     execution_configuration: ExecutionConfiguration::default(),
-                    cas_store: Pin::into_inner(cas_store.clone()),
-                    ac_store: Some(Pin::into_inner(ac_store.clone())),
-                    historical_store: Pin::into_inner(cas_store.clone()),
+                    cas_store: cas_store.clone(),
+                    ac_store: Some(Store::new(ac_store.clone())),
+                    historical_store: Store::new(cas_store.clone()),
                     upload_action_result_config:
                         &nativelink_config::cas_server::UploadActionResultConfig {
                             upload_ac_results_strategy:
@@ -2586,9 +2585,9 @@ exit 1
             RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -2632,13 +2631,13 @@ exit 1
         };
         let command_digest = serialize_and_upload_message(
             &command,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -2649,7 +2648,7 @@ exit 1
         };
         let action_digest = serialize_and_upload_message(
             &action,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -2709,9 +2708,9 @@ exit 1
             RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -2750,13 +2749,13 @@ exit 1
         };
         let command_digest = serialize_and_upload_message(
             &command,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -2767,7 +2766,7 @@ exit 1
         };
         let action_digest = serialize_and_upload_message(
             &action,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -2868,10 +2867,10 @@ exit 1
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
                 root_action_directory,
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
                 execution_configuration: ExecutionConfiguration::default(),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -2901,13 +2900,13 @@ exit 1
             };
             let command_digest = serialize_and_upload_message(
                 &command,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
             let input_root_digest = serialize_and_upload_message(
                 &Directory::default(),
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -2918,7 +2917,7 @@ exit 1
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -2961,9 +2960,9 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -2989,13 +2988,13 @@ exit 1
         };
         let command_digest = serialize_and_upload_message(
             &command,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -3006,7 +3005,7 @@ exit 1
         };
         let action_digest = serialize_and_upload_message(
             &action,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -3066,9 +3065,9 @@ exit 1
             RunningActionsManagerArgs {
                 root_action_directory,
                 execution_configuration: ExecutionConfiguration::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -3109,7 +3108,7 @@ exit 1
             };
             let command_digest = serialize_and_upload_message(
                 &command,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -3120,7 +3119,7 @@ exit 1
                         digest: Some(
                             serialize_and_upload_message(
                                 &Directory::default(),
-                                cas_store.as_ref(),
+                                cas_store.as_pin(),
                                 &mut DigestHasherFunc::Sha256.hasher(),
                             )
                             .await?
@@ -3129,7 +3128,7 @@ exit 1
                     }],
                     ..Default::default()
                 },
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -3140,7 +3139,7 @@ exit 1
             };
             let action_digest = serialize_and_upload_message(
                 &action,
-                cas_store.as_ref(),
+                cas_store.as_pin(),
                 &mut DigestHasherFunc::Sha256.hasher(),
             )
             .await?;
@@ -3248,9 +3247,9 @@ exit 1
             RunningActionsManagerArgs {
                 root_action_directory,
                 execution_configuration: Default::default(),
-                cas_store: Pin::into_inner(cas_store.clone()),
-                ac_store: Some(Pin::into_inner(ac_store.clone())),
-                historical_store: Pin::into_inner(cas_store.clone()),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
                 upload_action_result_config:
                     &nativelink_config::cas_server::UploadActionResultConfig {
                         upload_ac_results_strategy:
@@ -3286,13 +3285,13 @@ exit 1
         };
         let command_digest = serialize_and_upload_message(
             &command,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
         let input_root_digest = serialize_and_upload_message(
             &Directory::default(),
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
@@ -3313,7 +3312,7 @@ exit 1
         };
         let action_digest = serialize_and_upload_message(
             &action,
-            cas_store.as_ref(),
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;

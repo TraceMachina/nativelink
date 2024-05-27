@@ -20,7 +20,7 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreOptimizations, UploadSizeInfo};
 
 #[derive(Default)]
 pub struct NoopStore;
@@ -32,7 +32,7 @@ impl NoopStore {
 }
 
 #[async_trait]
-impl Store for NoopStore {
+impl StoreDriver for NoopStore {
     async fn has_with_results(
         self: Pin<&Self>,
         _digests: &[DigestInfo],
@@ -59,7 +59,7 @@ impl Store for NoopStore {
             || optimization == StoreOptimizations::NoopDownloads
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
         _digest: DigestInfo,
         _writer: &mut DropCloserWriteHalf,
@@ -69,11 +69,7 @@ impl Store for NoopStore {
         Err(make_err!(Code::NotFound, "Not found in noop store"))
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
         self
     }
 

@@ -16,22 +16,22 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::try_join;
+use nativelink_error::{Error, ResultExt};
+use nativelink_macro::nativelink_test;
+use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::verify_store::VerifyStore;
+use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
+use nativelink_util::spawn;
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use tracing::info_span;
 
 #[cfg(test)]
 mod verify_store_tests {
-    use nativelink_error::{Error, ResultExt};
-    use nativelink_macro::nativelink_test;
-    use nativelink_store::memory_store::MemoryStore;
-    use nativelink_store::verify_store::VerifyStore;
-    use nativelink_util::buf_channel::make_buf_channel_pair;
-    use nativelink_util::common::DigestInfo;
-    use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
-    use nativelink_util::spawn;
-    use nativelink_util::store_trait::{Store, UploadSizeInfo};
-    use pretty_assertions::assert_eq; // Must be declared in every module.
-    use tracing::info_span;
+    use pretty_assertions::assert_eq;
 
-    use super::*;
+    use super::*; // Must be declared in every module.
 
     const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
@@ -40,7 +40,7 @@ mod verify_store_tests {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_owned = VerifyStore::new(
+        let store = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -48,9 +48,8 @@ mod verify_store_tests {
                 verify_size: false,
                 verify_hash: false,
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         );
-        let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "123";
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
@@ -62,7 +61,7 @@ mod verify_store_tests {
             result
         );
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
+            inner_store.has(digest).await,
             Ok(Some(VALUE1.len())),
             "Expected data to exist in store after update"
         );
@@ -74,7 +73,7 @@ mod verify_store_tests {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_owned = VerifyStore::new(
+        let store = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -82,9 +81,8 @@ mod verify_store_tests {
                 verify_size: true,
                 verify_hash: false,
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         );
-        let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "123";
         let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
@@ -105,7 +103,7 @@ mod verify_store_tests {
             "Error should contain '{EXPECTED_ERR}', got: {err:?}"
         );
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
+            inner_store.has(digest).await,
             Ok(None),
             "Expected data to not exist in store after update"
         );
@@ -117,7 +115,7 @@ mod verify_store_tests {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_owned = VerifyStore::new(
+        let store = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -125,16 +123,15 @@ mod verify_store_tests {
                 verify_size: true,
                 verify_hash: false,
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         );
-        let store = Pin::new(&store_owned);
 
         const VALUE1: &str = "123";
         let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
         let result = store.update_oneshot(digest, VALUE1.into()).await;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
+            inner_store.has(digest).await,
             Ok(Some(VALUE1.len())),
             "Expected data to exist in store after update"
         );
@@ -146,7 +143,7 @@ mod verify_store_tests {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_owned = VerifyStore::new(
+        let store = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -154,7 +151,7 @@ mod verify_store_tests {
                 verify_size: true,
                 verify_hash: false,
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         );
 
         let (mut tx, rx) = make_buf_channel_pair();
@@ -164,7 +161,7 @@ mod verify_store_tests {
         let future = spawn!(
             "verify_size_true_suceeds_on_multi_chunk_stream_update",
             async move {
-                Pin::new(&store_owned)
+                Pin::new(&store)
                     .update(digest_clone, rx, UploadSizeInfo::ExactSize(6))
                     .await
             },
@@ -175,7 +172,7 @@ mod verify_store_tests {
         let result = future.await.err_tip(|| "Failed to join spawn future")?;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
+            inner_store.has(digest).await,
             Ok(Some(6)),
             "Expected data to exist in store after update"
         );
@@ -187,7 +184,7 @@ mod verify_store_tests {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_owned = VerifyStore::new(
+        let store = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -195,9 +192,8 @@ mod verify_store_tests {
                 verify_size: false,
                 verify_hash: true,
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         );
-        let store = Pin::new(&store_owned);
 
         /// This value is sha256("123").
         const HASH: &str = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3";
@@ -206,7 +202,7 @@ mod verify_store_tests {
         let result = store.update_oneshot(digest, VALUE.into()).await;
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
+            inner_store.has(digest).await,
             Ok(Some(VALUE.len())),
             "Expected data to exist in store after update"
         );
@@ -218,7 +214,7 @@ mod verify_store_tests {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_owned = VerifyStore::new(
+        let store = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -226,9 +222,8 @@ mod verify_store_tests {
                 verify_size: false,
                 verify_hash: true,
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         );
-        let store = Pin::new(&store_owned);
 
         /// This value is sha256("12").
         const HASH: &str = "6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918";
@@ -245,7 +240,7 @@ mod verify_store_tests {
             "Error should contain '{expected_err}', got: {err:?}"
         );
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
+            inner_store.has(digest).await,
             Ok(None),
             "Expected data to not exist in store after update"
         );
@@ -257,7 +252,7 @@ mod verify_store_tests {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_owned = VerifyStore::new(
+        let store = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -265,9 +260,8 @@ mod verify_store_tests {
                 verify_size: false,
                 verify_hash: true,
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         );
-        let store = Pin::new(&store_owned);
 
         /// This value is blake3("123").
         const HASH: &str = "b3d4f8803f7e24b8f389b072e75477cdbcfbe074080fb5e500e53e26e054158e";
@@ -282,7 +276,7 @@ mod verify_store_tests {
 
         assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
+            inner_store.has(digest).await,
             Ok(Some(VALUE.len())),
             "Expected data to exist in store after update"
         );
@@ -294,7 +288,7 @@ mod verify_store_tests {
         let inner_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_owned = VerifyStore::new(
+        let store = VerifyStore::new(
             &nativelink_config::stores::VerifyStore {
                 backend: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -302,9 +296,8 @@ mod verify_store_tests {
                 verify_size: false,
                 verify_hash: true,
             },
-            inner_store.clone(),
+            Store::new(inner_store.clone()),
         );
-        let store = Pin::new(&store_owned);
 
         /// This value is blake3("12").
         const HASH: &str = "b944a0a3b20cf5927e594ff306d256d16cd5b0ba3e27b3285f40d7ef5e19695b";
@@ -329,7 +322,7 @@ mod verify_store_tests {
             "Error should contain '{expected_err}', got: {err:?}"
         );
         assert_eq!(
-            Pin::new(inner_store.as_ref()).has(digest).await,
+            inner_store.has(digest).await,
             Ok(None),
             "Expected data to not exist in store after update"
         );
