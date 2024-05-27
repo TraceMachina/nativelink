@@ -32,11 +32,12 @@ mod utils {
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
 use nativelink_error::{make_err, make_input_err, Code, Error};
 use nativelink_macro::nativelink_test;
+use nativelink_proto::build::bazel::remote::execution::v2::digest_function;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ConnectionResult, ExecuteResult, StartExecute, SupportedProperties,
-    UpdateForWorker,
+    execute_result, ConnectionResult, ExecuteResult, KillActionRequest, StartExecute,
+    SupportedProperties, UpdateForWorker,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -47,6 +48,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::{encode_stream_proto, fs, DigestInfo};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::store_trait::Store;
 use nativelink_worker::local_worker::new_local_worker;
 use prost::Message;
 use rand::{thread_rng, Rng};
@@ -72,8 +74,6 @@ fn make_temp_path(data: &str) -> String {
 
 #[cfg(test)]
 mod local_worker_tests {
-    use nativelink_proto::build::bazel::remote::execution::v2::digest_function;
-    use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::KillActionRequest;
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
@@ -420,7 +420,7 @@ mod local_worker_tests {
     #[nativelink_test]
     async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn std::error::Error>>
     {
-        let cas_store = Arc::new(FastSlowStore::new(
+        let cas_store = Store::new(Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
                 fast: nativelink_config::stores::StoreConfig::memory(
@@ -430,21 +430,21 @@ mod local_worker_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
             },
-            Arc::new(
+            Store::new(Arc::new(
                 <FilesystemStore>::new(&nativelink_config::stores::FilesystemStore {
                     content_path: make_temp_path("content_path"),
                     temp_path: make_temp_path("temp_path"),
                     ..Default::default()
                 })
                 .await?,
-            ),
-            Arc::new(MemoryStore::new(
-                &nativelink_config::stores::MemoryStore::default(),
             )),
-        ));
-        let ac_store = Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
+                &nativelink_config::stores::MemoryStore::default(),
+            ))),
+        )));
+        let ac_store = Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        ));
+        )));
         let work_directory = make_temp_path("foo");
         new_local_worker(
             Arc::new(LocalWorkerConfig {
@@ -468,7 +468,7 @@ mod local_worker_tests {
     #[nativelink_test]
     async fn new_local_worker_removes_work_directory_before_start_test(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let cas_store = Arc::new(FastSlowStore::new(
+        let cas_store = Store::new(Arc::new(FastSlowStore::new(
             &nativelink_config::stores::FastSlowStore {
                 // Note: These are not needed for this test, so we put dummy memory stores here.
                 fast: nativelink_config::stores::StoreConfig::memory(
@@ -478,21 +478,21 @@ mod local_worker_tests {
                     nativelink_config::stores::MemoryStore::default(),
                 ),
             },
-            Arc::new(
+            Store::new(Arc::new(
                 <FilesystemStore>::new(&nativelink_config::stores::FilesystemStore {
                     content_path: make_temp_path("content_path"),
                     temp_path: make_temp_path("temp_path"),
                     ..Default::default()
                 })
                 .await?,
-            ),
-            Arc::new(MemoryStore::new(
-                &nativelink_config::stores::MemoryStore::default(),
             )),
-        ));
-        let ac_store = Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
+                &nativelink_config::stores::MemoryStore::default(),
+            ))),
+        )));
+        let ac_store = Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        ));
+        )));
         let work_directory = make_temp_path("foo");
         fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
         let mut file =

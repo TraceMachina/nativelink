@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -30,7 +29,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreLike};
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::select;
@@ -50,7 +49,7 @@ type CheckActions = HashMap<ActionInfoHashKey, Arc<watch::Sender<Arc<ActionState
 pub struct CacheLookupScheduler {
     /// A reference to the AC to find existing actions in.
     /// To prevent unintended issues, this store should probably be a CompletenessCheckingStore.
-    ac_store: Arc<dyn Store>,
+    ac_store: Store,
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
     action_scheduler: Arc<dyn ActionScheduler>,
@@ -59,14 +58,13 @@ pub struct CacheLookupScheduler {
 }
 
 async fn get_action_from_store(
-    ac_store: Pin<&dyn Store>,
+    ac_store: &Store,
     action_digest: DigestInfo,
     instance_name: String,
     digest_function: DigestHasherFunc,
 ) -> Option<ProtoActionResult> {
     // If we are a GrpcStore we shortcut here, as this is a special store.
-    let any_store = ac_store.inner_store(Some(action_digest)).as_any();
-    if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+    if let Some(grpc_store) = ac_store.downcast_ref::<GrpcStore>(Some(action_digest)) {
         let action_result_request = GetActionResultRequest {
             instance_name,
             action_digest: Some(action_digest.into()),
@@ -103,10 +101,7 @@ fn subscribe_to_existing_action(
 }
 
 impl CacheLookupScheduler {
-    pub fn new(
-        ac_store: Arc<dyn Store>,
-        action_scheduler: Arc<dyn ActionScheduler>,
-    ) -> Result<Self, Error> {
+    pub fn new(ac_store: Store, action_scheduler: Arc<dyn ActionScheduler>) -> Result<Self, Error> {
         Ok(Self {
             ac_store,
             action_scheduler,
@@ -169,17 +164,14 @@ impl ActionScheduler for CacheLookupScheduler {
             let action_digest = current_state.action_digest();
             let instance_name = action_info.instance_name().clone();
             if let Some(action_result) = get_action_from_store(
-                Pin::new(ac_store.as_ref()),
+                &ac_store,
                 *action_digest,
                 instance_name,
                 current_state.unique_qualifier.digest_function,
             )
             .await
             {
-                match Pin::new(ac_store.clone().as_ref())
-                    .has(*action_digest)
-                    .await
-                {
+                match ac_store.has(*action_digest).await {
                     Ok(Some(_)) => {
                         Arc::make_mut(&mut current_state).stage =
                             ActionStage::CompletedFromCache(action_result);

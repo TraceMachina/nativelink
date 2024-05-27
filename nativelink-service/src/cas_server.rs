@@ -14,7 +14,6 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
-use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::stream::{FuturesUnordered, Stream};
@@ -35,12 +34,12 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreLike};
 use tonic::{Request, Response, Status};
 use tracing::{error_span, event, instrument, Level};
 
 pub struct CasServer {
-    stores: HashMap<String, Arc<dyn Store>>,
+    stores: HashMap<String, Store>,
 }
 
 type GetTreeStream = Pin<Box<dyn Stream<Item = Result<GetTreeResponse, Status>> + Send + 'static>>;
@@ -79,7 +78,7 @@ impl CasServer {
         for digest in request.blob_digests.iter() {
             requested_blobs.push(DigestInfo::try_from(digest.clone())?);
         }
-        let sizes = Pin::new(store.as_ref())
+        let sizes = store
             .has_many(&requested_blobs)
             .await
             .err_tip(|| "In find_missing_blobs")?;
@@ -109,12 +108,11 @@ impl CasServer {
         // If we are a GrpcStore we shortcut here, as this is a special store.
         // Note: We don't know the digests here, so we try perform a very shallow
         // check to see if it's a grpc store.
-        let any_store = store.inner_store(None).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(None) {
             return grpc_store.batch_update_blobs(Request::new(request)).await;
         }
 
-        let store_pin = Pin::new(store.as_ref());
+        let store_ref = &store;
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
@@ -133,7 +131,7 @@ impl CasServer {
                     size_bytes,
                     request_data.len()
                 );
-                let result = store_pin
+                let result = store_ref
                     .update_oneshot(digest_info, request_data)
                     .await
                     .err_tip(|| "Error writing to store");
@@ -165,19 +163,18 @@ impl CasServer {
         // If we are a GrpcStore we shortcut here, as this is a special store.
         // Note: We don't know the digests here, so we try perform a very shallow
         // check to see if it's a grpc store.
-        let any_store = store.inner_store(None).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(None) {
             return grpc_store.batch_read_blobs(Request::new(request)).await;
         }
 
-        let store_pin = Pin::new(store.as_ref());
+        let store_ref = &store;
         let read_futures: FuturesUnordered<_> = request
             .digests
             .into_iter()
             .map(|digest| async move {
                 let digest_copy = DigestInfo::try_from(digest.clone())?;
                 // TODO(allada) There is a security risk here of someone taking all the memory on the instance.
-                let result = store_pin
+                let result = store_ref
                     .get_part_unchunked(digest_copy, 0, None)
                     .await
                     .err_tip(|| "Error reading from store");
@@ -223,15 +220,13 @@ impl CasServer {
         // If we are a GrpcStore we shortcut here, as this is a special store.
         // Note: We don't know the digests here, so we try perform a very shallow
         // check to see if it's a grpc store.
-        let any_store = store.inner_store(None).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(None) {
             let stream = grpc_store
                 .get_tree(Request::new(request))
                 .await?
                 .into_inner();
             return Ok(Response::new(Box::pin(stream)));
         }
-        let store_pin = Pin::new(store.as_ref());
         let root_digest: DigestInfo = request
             .root_digest
             .err_tip(|| "Expected root_digest to exist in GetTreeRequest")?
@@ -260,7 +255,7 @@ impl CasServer {
 
         while !deque.is_empty() {
             let digest: DigestInfo = deque.pop_front().err_tip(|| "In VecDeque::pop_front")?;
-            let directory = get_and_decode_digest::<Directory>(store_pin, &digest)
+            let directory = get_and_decode_digest::<Directory>(&store, &digest)
                 .await
                 .err_tip(|| "Converting digest to Directory")?;
             if digest == page_token_digest {

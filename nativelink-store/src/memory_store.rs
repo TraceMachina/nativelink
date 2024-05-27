@@ -25,7 +25,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -75,7 +75,7 @@ impl MemoryStore {
 }
 
 #[async_trait]
-impl Store for MemoryStore {
+impl StoreDriver for MemoryStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -154,14 +154,6 @@ impl Store for MemoryStore {
             .send_eof()
             .err_tip(|| "Failed to write EOF in memory store get_part")?;
         Ok(())
-    }
-
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        self
     }
 
     fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {

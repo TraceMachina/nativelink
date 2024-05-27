@@ -21,13 +21,13 @@ use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
 use tracing::{event, Level};
 
 use crate::store_manager::StoreManager;
 
 #[repr(C, align(8))]
-struct AlignedStoreCell(UnsafeCell<Option<Arc<dyn Store>>>);
+struct AlignedStoreCell(UnsafeCell<Option<Store>>);
 
 struct StoreReference {
     cell: AlignedStoreCell,
@@ -65,7 +65,7 @@ impl RefStore {
     // 2. It should only happen on platforms that are < 64 bit address space
     // 3. It is likely that the internals of how Option work protect us anyway.
     #[inline]
-    fn get_store(&self) -> Result<&Arc<dyn Store>, Error> {
+    fn get_store(&self) -> Result<&Store, Error> {
         let ref_store = self.ref_store.cell.0.get();
         unsafe {
             if let Some(ref store) = *ref_store {
@@ -87,7 +87,7 @@ impl RefStore {
             .err_tip(|| "Store manager is gone")?;
         if let Some(store) = store_manager.get_store(&self.ref_store_name) {
             unsafe {
-                *ref_store = Some(store.clone());
+                *ref_store = Some(store);
                 return Ok((*ref_store).as_ref().unwrap());
             }
         }
@@ -99,16 +99,13 @@ impl RefStore {
 }
 
 #[async_trait]
-impl Store for RefStore {
+impl StoreDriver for RefStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        let store = self.get_store()?;
-        Pin::new(store.as_ref())
-            .has_with_results(digests, results)
-            .await
+        self.get_store()?.has_with_results(digests, results).await
     }
 
     async fn update(
@@ -117,10 +114,7 @@ impl Store for RefStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let store = self.get_store()?;
-        Pin::new(store.as_ref())
-            .update(digest, reader, size_info)
-            .await
+        self.get_store()?.update(digest, reader, size_info).await
     }
 
     async fn get_part_ref(
@@ -130,15 +124,16 @@ impl Store for RefStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        let store = self.get_store()?;
-        Pin::new(store.as_ref())
+        self.get_store()?
             .get_part_ref(digest, writer, offset, length)
             .await
     }
 
-    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn Store {
+    fn maybe_inner_store(&self, digest: Option<DigestInfo>) -> Option<&Arc<dyn StoreDriver>> {
         match self.get_store() {
-            Ok(store) => store.inner_store(digest),
+            // TODO(allada) We can't do maybe_inner_store this way. It needs to return a store
+            // always.
+            Ok(store) => store.as_store_api().maybe_inner_store(digest),
             Err(err) => {
                 event!(
                     Level::ERROR,
@@ -146,22 +141,7 @@ impl Store for RefStore {
                     ?err,
                     "Failed to get store for digest",
                 );
-                self
-            }
-        }
-    }
-
-    fn inner_store_arc(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        match self.get_store() {
-            Ok(store) => store.clone().inner_store_arc(digest),
-            Err(err) => {
-                event!(
-                    Level::ERROR,
-                    ?digest,
-                    ?err,
-                    "Failed to get store for digest",
-                );
-                self
+                None
             }
         }
     }
