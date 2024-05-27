@@ -29,7 +29,7 @@ use nativelink_util::fs;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{
-    slow_update_store_with_file, Store, StoreOptimizations, UploadSizeInfo,
+    slow_update_store_with_file, Store, StoreApi, StoreLike, StoreOptimizations, UploadSizeInfo,
 };
 
 // TODO(blaise.bruer) This store needs to be evaluated for more efficient memory usage,
@@ -40,8 +40,8 @@ use nativelink_util::store_trait::{
 // "BufferedStore" that could be placed on the "slow" store that would hang up early
 // if data is in the buffer.
 pub struct FastSlowStore {
-    fast_store: Arc<dyn Store>,
-    slow_store: Arc<dyn Store>,
+    fast_store: Store,
+    slow_store: Store,
 
     metrics: FastSlowStoreMetrics,
 }
@@ -49,8 +49,8 @@ pub struct FastSlowStore {
 impl FastSlowStore {
     pub fn new(
         _config: &nativelink_config::stores::FastSlowStore,
-        fast_store: Arc<dyn Store>,
-        slow_store: Arc<dyn Store>,
+        fast_store: Store,
+        slow_store: Store,
     ) -> Self {
         Self {
             fast_store,
@@ -59,11 +59,11 @@ impl FastSlowStore {
         }
     }
 
-    pub fn fast_store(&self) -> &Arc<dyn Store> {
+    pub fn fast_store(&self) -> &Store {
         &self.fast_store
     }
 
-    pub fn slow_store(&self) -> &Arc<dyn Store> {
+    pub fn slow_store(&self) -> &Store {
         &self.slow_store
     }
 
@@ -71,9 +71,9 @@ impl FastSlowStore {
     /// cost function. Since the data itself is shared and not copied it should be fairly
     /// low cost to just discard the data, but does cost a few mutex locks while
     /// streaming.
-    pub async fn populate_fast_store(self: Pin<&Self>, digest: DigestInfo) -> Result<(), Error> {
+    pub async fn populate_fast_store(&self, digest: DigestInfo) -> Result<(), Error> {
         let maybe_size_info = self
-            .pin_fast_store()
+            .fast_store
             .has(digest)
             .await
             .err_tip(|| "While querying in populate_fast_store")?;
@@ -88,16 +88,8 @@ impl FastSlowStore {
             while !rx.recv().await?.is_empty() {}
             Ok(())
         };
-        let (drain_res, get_res) = join!(drain_fut, self.get(digest, tx));
+        let (drain_res, get_res) = join!(drain_fut, StoreApi::get(Pin::new(self), digest, tx));
         get_res.err_tip(|| "Failed to populate()").merge(drain_res)
-    }
-
-    fn pin_fast_store(&self) -> Pin<&dyn Store> {
-        Pin::new(self.fast_store.as_ref())
-    }
-
-    fn pin_slow_store(&self) -> Pin<&dyn Store> {
-        Pin::new(self.slow_store.as_ref())
     }
 
     /// Returns the range of bytes that should be sent given a slice bounds
@@ -125,7 +117,7 @@ impl FastSlowStore {
 }
 
 #[async_trait]
-impl Store for FastSlowStore {
+impl StoreApi for FastSlowStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -135,18 +127,13 @@ impl Store for FastSlowStore {
         // so only check the fast store in such case.
         let slow_store = self.slow_store.inner_store(None);
         if slow_store.optimized_for(StoreOptimizations::NoopDownloads) {
-            return self
-                .pin_fast_store()
-                .has_with_results(digests, results)
-                .await;
+            return self.fast_store.has_with_results(digests, results).await;
         }
         // Only check the slow store because if it's not there, then something
         // down stream might be unable to get it.  This should not affect
         // workers as they only use get() and a CAS can use an
         // ExistenceCacheStore to avoid the bottleneck.
-        self.pin_slow_store()
-            .has_with_results(digests, results)
-            .await
+        self.slow_store.has_with_results(digests, results).await
     }
 
     async fn update(
@@ -159,17 +146,11 @@ impl Store for FastSlowStore {
         // and just use the store that is not a noop store.
         let slow_store = self.slow_store.inner_store(Some(digest));
         if slow_store.optimized_for(StoreOptimizations::NoopUpdates) {
-            return self
-                .pin_fast_store()
-                .update(digest, reader, size_info)
-                .await;
+            return self.fast_store.update(digest, reader, size_info).await;
         }
         let fast_store = self.fast_store.inner_store(Some(digest));
         if fast_store.optimized_for(StoreOptimizations::NoopUpdates) {
-            return self
-                .pin_slow_store()
-                .update(digest, reader, size_info)
-                .await;
+            return self.slow_store.update(digest, reader, size_info).await;
         }
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
@@ -212,8 +193,8 @@ impl Store for FastSlowStore {
             }
         };
 
-        let fast_store_fut = self.pin_fast_store().update(digest, fast_rx, size_info);
-        let slow_store_fut = self.pin_slow_store().update(digest, slow_rx, size_info);
+        let fast_store_fut = self.fast_store.update(digest, fast_rx, size_info);
+        let slow_store_fut = self.slow_store.update(digest, slow_rx, size_info);
 
         let (data_stream_res, fast_res, slow_res) =
             join!(data_stream_fut, fast_store_fut, slow_store_fut);
@@ -235,26 +216,48 @@ impl Store for FastSlowStore {
         mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
-        let fast_store = self.fast_store.inner_store(Some(digest));
-        let slow_store = self.slow_store.inner_store(Some(digest));
-        if fast_store.optimized_for(StoreOptimizations::FileUpdates) {
-            if !slow_store.optimized_for(StoreOptimizations::NoopUpdates) {
-                slow_update_store_with_file(Pin::new(slow_store), digest, &mut file, upload_size)
-                    .await
-                    .err_tip(|| "In FastSlowStore::update_with_whole_file slow_store")?;
+        if self
+            .fast_store
+            .optimized_for(StoreOptimizations::FileUpdates)
+        {
+            if !self
+                .slow_store
+                .optimized_for(StoreOptimizations::NoopUpdates)
+            {
+                slow_update_store_with_file(
+                    self.slow_store.as_store_api_pin(),
+                    digest,
+                    &mut file,
+                    upload_size,
+                )
+                .await
+                .err_tip(|| "In FastSlowStore::update_with_whole_file slow_store")?;
             }
-            return Pin::new(fast_store)
+            return self
+                .fast_store
                 .update_with_whole_file(digest, file, upload_size)
                 .await;
         }
 
-        if slow_store.optimized_for(StoreOptimizations::FileUpdates) {
-            if !fast_store.optimized_for(StoreOptimizations::NoopUpdates) {
-                slow_update_store_with_file(Pin::new(fast_store), digest, &mut file, upload_size)
-                    .await
-                    .err_tip(|| "In FastSlowStore::update_with_whole_file fast_store")?;
+        if self
+            .slow_store
+            .optimized_for(StoreOptimizations::FileUpdates)
+        {
+            if !self
+                .fast_store
+                .optimized_for(StoreOptimizations::NoopUpdates)
+            {
+                slow_update_store_with_file(
+                    self.fast_store.as_store_api_pin(),
+                    digest,
+                    &mut file,
+                    upload_size,
+                )
+                .await
+                .err_tip(|| "In FastSlowStore::update_with_whole_file fast_store")?;
             }
-            return Pin::new(slow_store)
+            return self
+                .slow_store
                 .update_with_whole_file(digest, file, upload_size)
                 .await;
         }
@@ -274,13 +277,11 @@ impl Store for FastSlowStore {
     ) -> Result<(), Error> {
         // TODO(blaise.bruer) Investigate if we should maybe ignore errors here instead of
         // forwarding the up.
-        let fast_store = self.pin_fast_store();
-        let slow_store = self.pin_slow_store();
-        if fast_store.has(digest).await?.is_some() {
+        if self.fast_store.has(digest).await?.is_some() {
             self.metrics
                 .fast_store_hit_count
                 .fetch_add(1, Ordering::Acquire);
-            fast_store
+            self.fast_store
                 .get_part_ref(digest, writer, offset, length)
                 .await?;
             self.metrics
@@ -289,7 +290,8 @@ impl Store for FastSlowStore {
             return Ok(());
         }
 
-        let sz = slow_store
+        let sz = self
+            .slow_store
             .has(digest)
             .await
             .err_tip(|| "Failed to run has() on slow store")?
@@ -343,8 +345,10 @@ impl Store for FastSlowStore {
             }
         };
 
-        let slow_store_fut = slow_store.get(digest, slow_tx);
-        let fast_store_fut = fast_store.update(digest, fast_rx, UploadSizeInfo::ExactSize(sz));
+        let slow_store_fut = self.slow_store.get(digest, slow_tx);
+        let fast_store_fut = self
+            .fast_store
+            .update(digest, fast_rx, UploadSizeInfo::ExactSize(sz));
 
         let (data_stream_res, slow_res, fast_res) =
             join!(data_stream_fut, slow_store_fut, fast_store_fut);
@@ -362,14 +366,6 @@ impl Store for FastSlowStore {
         }
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        self
-    }
-
     fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
         self
     }
@@ -380,13 +376,9 @@ impl Store for FastSlowStore {
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         let fast_store_registry = registry.sub_registry_with_prefix("fast");
-        self.fast_store
-            .clone()
-            .register_metrics(fast_store_registry);
+        self.fast_store.register_metrics(fast_store_registry);
         let slow_store_registry = registry.sub_registry_with_prefix("slow");
-        self.slow_store
-            .clone()
-            .register_metrics(slow_store_registry);
+        self.slow_store.register_metrics(slow_store_registry);
     }
 }
 

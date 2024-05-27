@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 use nativelink_util::store_trait::Store;
 
 pub struct StoreManager {
-    stores: RwLock<HashMap<String, Arc<dyn Store>>>,
+    stores: RwLock<HashMap<String, Store>>,
 }
 
 impl StoreManager {
@@ -28,7 +28,7 @@ impl StoreManager {
         }
     }
 
-    pub fn add_store(&self, name: &str, store: Arc<dyn Store>) {
+    pub fn add_store(&self, name: &str, store: Store) {
         let mut stores = self
             .stores
             .write()
@@ -36,7 +36,7 @@ impl StoreManager {
         stores.insert(name.to_string(), store);
     }
 
-    pub fn get_store(&self, name: &str) -> Option<Arc<dyn Store>> {
+    pub fn get_store(&self, name: &str) -> Option<Store> {
         let stores = self
             .stores
             .read()

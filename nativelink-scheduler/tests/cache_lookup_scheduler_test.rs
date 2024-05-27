@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
@@ -33,7 +32,7 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{ActionInfoHashKey, ActionResult, ActionStage, ActionState};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreLike};
 use prost::Message;
 use tokio::sync::watch;
 use tokio::{self};
@@ -42,15 +41,15 @@ use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
 
 struct TestContext {
     mock_scheduler: Arc<MockActionScheduler>,
-    ac_store: Arc<dyn Store>,
+    ac_store: Store,
     cache_scheduler: CacheLookupScheduler,
 }
 
 fn make_cache_scheduler() -> Result<TestContext, Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
-    let ac_store = Arc::new(MemoryStore::new(
+    let ac_store = Store::new(Arc::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    ));
+    )));
     let cache_scheduler = CacheLookupScheduler::new(ac_store.clone(), mock_scheduler.clone())?;
     Ok(TestContext {
         mock_scheduler,
@@ -91,8 +90,8 @@ mod cache_lookup_scheduler_tests {
         let context = make_cache_scheduler()?;
         let action_info = make_base_action_info(UNIX_EPOCH);
         let action_result = ProtoActionResult::from(ActionResult::default());
-        let store_pin = Pin::new(context.ac_store.as_ref());
-        store_pin
+        context
+            .ac_store
             .update_oneshot(*action_info.digest(), action_result.encode_to_vec().into())
             .await?;
         let (_forward_watch_channel_tx, forward_watch_channel_rx) =

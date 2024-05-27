@@ -23,18 +23,18 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::Registry;
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreApi, StoreLike, UploadSizeInfo};
 
 pub struct ShardStore {
     // The weights will always be in ascending order a specific store is choosen based on the
     // the hash of the digest hash that is nearest-binary searched using the u32 as the index.
-    weights_and_stores: Vec<(u32, Arc<dyn Store>)>,
+    weights_and_stores: Vec<(u32, Store)>,
 }
 
 impl ShardStore {
     pub fn new(
         config: &nativelink_config::stores::ShardStore,
-        stores: Vec<Arc<dyn Store>>,
+        stores: Vec<Store>,
     ) -> Result<Self, Error> {
         error_if!(
             config.stores.len() != stores.len(),
@@ -107,14 +107,14 @@ impl ShardStore {
             .unwrap_or_else(|index| index)
     }
 
-    fn get_store(&self, digest: &DigestInfo) -> Pin<&dyn Store> {
+    fn get_store(&self, digest: &DigestInfo) -> &Store {
         let index = self.get_store_index(digest);
-        Pin::new(self.weights_and_stores[index].1.as_ref())
+        &self.weights_and_stores[index].1
     }
 }
 
 #[async_trait]
-impl Store for ShardStore {
+impl StoreApi for ShardStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -123,7 +123,7 @@ impl Store for ShardStore {
         if digests.len() == 1 {
             // Hot path: It is very common to lookup only one digest.
             let store_idx = self.get_store_index(&digests[0]);
-            let store = Pin::new(self.weights_and_stores[store_idx].1.as_ref());
+            let store = &self.weights_and_stores[store_idx].1;
             return store
                 .has_with_results(digests, results)
                 .await
@@ -151,7 +151,7 @@ impl Store for ShardStore {
             .into_iter()
             .enumerate()
             .map(|(store_idx, (digest_idxs, digests))| async move {
-                let store = Pin::new(self.weights_and_stores[store_idx].1.as_ref());
+                let store = &self.weights_and_stores[store_idx].1;
                 let mut inner_results = vec![None; digests.len()];
                 store
                     .has_with_results(&digests, &mut inner_results)
@@ -205,23 +205,13 @@ impl Store for ShardStore {
         self
     }
 
-    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn Store {
-        let Some(digest) = digest else {
-            return self;
-        };
-        let index = self.get_store_index(&digest);
-        self.weights_and_stores[index].1.inner_store(Some(digest))
-    }
-
-    fn inner_store_arc(self: Arc<Self>, digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        let Some(digest) = digest else {
-            return self;
-        };
+    fn maybe_inner_store(&self, digest: Option<DigestInfo>) -> Option<&Arc<dyn StoreApi>> {
+        let digest = digest?;
         let index = self.get_store_index(&digest);
         self.weights_and_stores[index]
             .1
-            .clone()
-            .inner_store_arc(Some(digest))
+            .as_store_api()
+            .maybe_inner_store(Some(digest))
     }
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {

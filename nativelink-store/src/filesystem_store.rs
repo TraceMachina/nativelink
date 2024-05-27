@@ -34,7 +34,7 @@ use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreApi, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::time::{sleep, timeout, Sleep};
@@ -714,7 +714,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 }
 
 #[async_trait]
-impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
+impl<Fe: FileEntry> StoreApi for FilesystemStore<Fe> {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -886,14 +886,6 @@ impl<Fe: FileEntry> Store for FilesystemStore<Fe> {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        self
-    }
-
     fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
         self
     }
@@ -944,6 +936,6 @@ impl<Fe: FileEntry> HealthStatusIndicator for FilesystemStore<Fe> {
     }
 
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        Store::check_health(Pin::new(self), namespace).await
+        StoreApi::check_health(Pin::new(self), namespace).await
     }
 }

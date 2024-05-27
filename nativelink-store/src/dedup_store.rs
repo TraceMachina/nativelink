@@ -25,7 +25,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreApi, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
@@ -44,8 +44,8 @@ pub struct DedupIndex {
 }
 
 pub struct DedupStore {
-    index_store: Arc<dyn Store>,
-    content_store: Arc<dyn Store>,
+    index_store: Store,
+    content_store: Store,
     fast_cdc_decoder: FastCDC,
     max_concurrent_fetch_per_get: usize,
     bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
@@ -54,8 +54,8 @@ pub struct DedupStore {
 impl DedupStore {
     pub fn new(
         config: &nativelink_config::stores::DedupStore,
-        index_store: Arc<dyn Store>,
-        content_store: Arc<dyn Store>,
+        index_store: Store,
+        content_store: Store,
     ) -> Self {
         let min_size = if config.min_size == 0 {
             DEFAULT_MIN_SIZE
@@ -86,16 +86,12 @@ impl DedupStore {
         }
     }
 
-    fn pin_index_store(&self) -> Pin<&dyn Store> {
-        Pin::new(self.index_store.as_ref())
-    }
-
     async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
         // First we need to load the index that contains where the individual parts actually
         // can be fetched from.
         let index_entries = {
             let maybe_data = self
-                .pin_index_store()
+                .index_store
                 .get_part_unchunked(digest, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store");
@@ -130,10 +126,7 @@ impl DedupStore {
             .map(|index_entry| DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes))
             .collect();
         let mut sum = 0;
-        for size in Pin::new(self.content_store.as_ref())
-            .has_many(&digests)
-            .await?
-        {
+        for size in self.content_store.has_many(&digests).await? {
             let Some(size) = size else {
                 // A part is missing so return None meaning not-found.
                 // This will abort all in-flight queries related to this request.
@@ -146,7 +139,7 @@ impl DedupStore {
 }
 
 #[async_trait]
-impl Store for DedupStore {
+impl StoreApi for DedupStore {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -178,13 +171,13 @@ impl Store for DedupStore {
     ) -> Result<(), Error> {
         let mut bytes_reader = StreamReader::new(reader);
         let frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
-        let content_store_pin = Pin::new(self.content_store.as_ref());
         let index_entries = frame_reader
             .map(|r| r.err_tip(|| "Failed to decode frame from fast_cdc"))
             .map_ok(|frame| async move {
                 let hash = blake3::hash(&frame[..]).into();
                 let index_entry = DigestInfo::new(hash, frame.len() as i64);
-                if content_store_pin
+                if self
+                    .content_store
                     .has(index_entry)
                     .await
                     .err_tip(|| "Failed to call .has() in DedupStore::update()")?
@@ -193,7 +186,7 @@ impl Store for DedupStore {
                     // If our store has this digest, we don't need to upload it.
                     return Result::<_, Error>::Ok(index_entry);
                 }
-                content_store_pin
+                self.content_store
                     .update_oneshot(index_entry, frame)
                     .await
                     .err_tip(|| "Failed to update content store in dedup_store")?;
@@ -216,7 +209,7 @@ impl Store for DedupStore {
                 )
             })?;
 
-        self.pin_index_store()
+        self.index_store
             .update_oneshot(digest, serialized_index.into())
             .await
             .err_tip(|| "Failed to insert our index entry to index_store in dedup_store")?;
@@ -242,7 +235,7 @@ impl Store for DedupStore {
         // can be fetched from.
         let index_entries = {
             let data = self
-                .pin_index_store()
+                .index_store
                 .get_part_unchunked(digest, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
@@ -296,17 +289,14 @@ impl Store for DedupStore {
         // Note: We will buffer our data here up to:
         // `config.max_size * config.max_concurrent_fetch_per_get` per `get_part()` request.
         let mut entries_stream = stream::iter(entries)
-            .map(move |index_entry| {
-                let content_store = self.content_store.clone();
+            .map(move |index_entry| async move {
+                let data = self
+                    .content_store
+                    .get_part_unchunked(index_entry, 0, None)
+                    .await
+                    .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
 
-                async move {
-                    let data = Pin::new(content_store.as_ref())
-                        .get_part_unchunked(index_entry, 0, None)
-                        .await
-                        .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
-
-                    Result::<_, Error>::Ok(data)
-                }
+                Result::<_, Error>::Ok(data)
             })
             .buffered(self.max_concurrent_fetch_per_get);
 
@@ -341,14 +331,6 @@ impl Store for DedupStore {
             .send_eof()
             .err_tip(|| "Failed to write EOF out from get_part dedup")?;
         Ok(())
-    }
-
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        self
     }
 
     fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {

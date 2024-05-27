@@ -64,7 +64,7 @@ use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent,
 };
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
@@ -121,7 +121,7 @@ struct SideChannelInfo {
 // of the future. So we need to force this function to return a dynamic future instead.
 // see: https://github.com/rust-lang/rust/issues/78649
 pub fn download_to_directory<'a>(
-    cas_store: Pin<&'a FastSlowStore>,
+    cas_store: &'a FastSlowStore,
     filesystem_store: Pin<&'a FilesystemStore>,
     digest: &'a DigestInfo,
     current_directory: &'a str,
@@ -256,7 +256,7 @@ fn is_executable(metadata: &std::fs::Metadata, _full_path: &impl AsRef<Path>) ->
 }
 
 async fn upload_file(
-    cas_store: Pin<&dyn Store>,
+    cas_store: Pin<&impl StoreLike>,
     full_path: impl AsRef<Path> + Debug,
     hasher: DigestHasherFunc,
     metadata: std::fs::Metadata,
@@ -364,7 +364,7 @@ async fn upload_symlink(
 }
 
 fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
-    cas_store: Pin<&'a dyn Store>,
+    cas_store: Pin<&'a impl StoreLike>,
     full_dir_path: P,
     full_work_directory: &'a str,
     hasher: DigestHasherFunc,
@@ -664,10 +664,9 @@ impl RunningActionImpl {
         }
         let command = {
             // Download and build out our input files/folders. Also fetch and decode our Command.
-            let cas_store_pin = Pin::new(self.running_actions_manager.cas_store.as_ref());
             let command_fut = self.metrics().get_proto_command_from_store.wrap(async {
                 get_and_decode_digest::<ProtoCommand>(
-                    cas_store_pin,
+                    self.running_actions_manager.cas_store.as_ref(),
                     &self.action_info.command_digest,
                 )
                 .await
@@ -683,7 +682,7 @@ impl RunningActionImpl {
                 self.metrics()
                     .download_to_directory
                     .wrap(download_to_directory(
-                        cas_store_pin,
+                        &self.running_actions_manager.cas_store,
                         filesystem_store_pin,
                         &self.action_info.input_root_digest,
                         &self.work_directory,
@@ -1029,7 +1028,7 @@ impl RunningActionImpl {
                 state.execution_metadata.clone(),
             )
         };
-        let cas_store = Pin::new(self.running_actions_manager.cas_store.as_ref());
+        let cas_store = self.running_actions_manager.cas_store.as_ref();
         let hasher = self.action_info.unique_qualifier.digest_function;
         enum OutputType {
             None,
@@ -1073,7 +1072,7 @@ impl RunningActionImpl {
 
                     if metadata.is_file() {
                         return Ok(OutputType::File(
-                            upload_file(cas_store, &full_path, hasher, metadata)
+                            upload_file(cas_store.as_pin(), &full_path, hasher, metadata)
                                 .await
                                 .map(|mut file_info| {
                                     file_info.name_or_path = NameOrPath::Path(entry);
@@ -1086,7 +1085,7 @@ impl RunningActionImpl {
                 };
                 if metadata.is_dir() {
                     Ok(OutputType::Directory(
-                        upload_directory(cas_store, &full_path, work_directory, hasher)
+                        upload_directory(cas_store.as_pin(), &full_path, work_directory, hasher)
                             .and_then(|(root_dir, children)| async move {
                                 let tree = ProtoTree {
                                     root: Some(root_dir),
@@ -1094,7 +1093,7 @@ impl RunningActionImpl {
                                 };
                                 let tree_digest = serialize_and_upload_message(
                                     &tree,
-                                    cas_store,
+                                    cas_store.as_pin(),
                                     &mut hasher.hasher(),
                                 )
                                 .await
@@ -1389,8 +1388,8 @@ pub struct ExecutionConfiguration {
 struct UploadActionResults {
     upload_ac_results_strategy: UploadCacheResultsStrategy,
     upload_historical_results_strategy: UploadCacheResultsStrategy,
-    ac_store: Option<Arc<dyn Store>>,
-    historical_store: Arc<dyn Store>,
+    ac_store: Option<Store>,
+    historical_store: Store,
     success_message_template: Template,
     failure_message_template: Template,
 }
@@ -1398,8 +1397,8 @@ struct UploadActionResults {
 impl UploadActionResults {
     fn new(
         config: &UploadActionResultConfig,
-        ac_store: Option<Arc<dyn Store>>,
-        historical_store: Arc<dyn Store>,
+        ac_store: Option<Store>,
+        historical_store: Store,
     ) -> Result<Self, Error> {
         let upload_historical_results_strategy = config
             .upload_historical_results_strategy
@@ -1489,12 +1488,11 @@ impl UploadActionResults {
         action_result: ProtoActionResult,
         hasher: DigestHasherFunc,
     ) -> Result<(), Error> {
-        let Some(ac_store) = self.ac_store.as_deref() else {
+        let Some(ac_store) = self.ac_store.as_ref() else {
             return Ok(());
         };
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = ac_store.inner_store(Some(action_digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        if let Some(grpc_store) = ac_store.downcast_ref::<GrpcStore>(Some(action_digest)) {
             let update_action_request = UpdateActionResultRequest {
                 // This is populated by `update_action_result`.
                 instance_name: String::new(),
@@ -1515,7 +1513,7 @@ impl UploadActionResults {
             .encode(&mut store_data)
             .err_tip(|| "Encoding ActionResult for caching")?;
 
-        Pin::new(ac_store)
+        ac_store
             .update_oneshot(action_digest, store_data.split().freeze())
             .await
             .err_tip(|| "Caching ActionResult")
@@ -1533,7 +1531,7 @@ impl UploadActionResults {
                 action_digest: Some(action_digest.into()),
                 execute_response: Some(execute_response.clone()),
             },
-            Pin::new(self.historical_store.as_ref()),
+            self.historical_store.as_pin(),
             &mut hasher.hasher(),
         )
         .await
@@ -1625,8 +1623,8 @@ pub struct RunningActionsManagerArgs<'a> {
     pub root_action_directory: String,
     pub execution_configuration: ExecutionConfiguration,
     pub cas_store: Arc<FastSlowStore>,
-    pub ac_store: Option<Arc<dyn Store>>,
-    pub historical_store: Arc<dyn Store>,
+    pub ac_store: Option<Store>,
+    pub historical_store: Store,
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub timeout_handled_externally: bool,
@@ -1656,17 +1654,16 @@ impl RunningActionsManagerImpl {
         callbacks: Callbacks,
     ) -> Result<Self, Error> {
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
-        let any_store = args
+        let filesystem_store = args
             .cas_store
             .fast_store()
             .clone()
-            .inner_store_arc(None)
-            .as_any_arc();
-        let filesystem_store = any_store.downcast::<FilesystemStore>().map_err(|_| {
-            make_input_err!(
-                "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl"
-            )
-        })?;
+            .downcast::<FilesystemStore>(None)
+            .ok_or_else(|| {
+                make_input_err!(
+                    "Expected FilesystemStore store for .fast_store() in RunningActionsManagerImpl"
+                )
+            })?;
         let (action_done_tx, _) = watch::channel(());
         Ok(Self {
             root_action_directory: args.root_action_directory,
@@ -1727,10 +1724,9 @@ impl RunningActionsManagerImpl {
                 .err_tip(|| "Expected action_digest to exist on StartExecute")?
                 .try_into()?;
             let load_start_timestamp = (self.callbacks.now_fn)();
-            let action =
-                get_and_decode_digest::<Action>(Pin::new(self.cas_store.as_ref()), &action_digest)
-                    .await
-                    .err_tip(|| "During start_action")?;
+            let action = get_and_decode_digest::<Action>(self.cas_store.as_ref(), &action_digest)
+                .await
+                .err_tip(|| "During start_action")?;
             let action_info = ActionInfo::try_from_action_and_execute_request_with_salt(
                 execute_request,
                 action,

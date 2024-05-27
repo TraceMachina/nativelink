@@ -200,7 +200,7 @@ macro_rules! default_health_status_indicator {
                 &self,
                 namespace: std::borrow::Cow<'static, str>,
             ) -> nativelink_util::health_utils::HealthStatus {
-                Store::check_health(Pin::new(self), namespace).await
+                StoreApi::check_health(Pin::new(self), namespace).await
             }
         }
     };

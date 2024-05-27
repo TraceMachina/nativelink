@@ -48,7 +48,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::fs;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreApi, UploadSizeInfo};
 use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -354,7 +354,7 @@ impl S3Store {
 }
 
 #[async_trait]
-impl Store for S3Store {
+impl StoreApi for S3Store {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -736,14 +736,6 @@ impl Store for S3Store {
                 Some((RetryResult::Ok(()), writer))
             }))
             .await
-    }
-
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        self
     }
 
     fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {

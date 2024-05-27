@@ -14,8 +14,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::pin::Pin;
-use std::sync::Arc;
 
 use bytes::BytesMut;
 use nativelink_config::cas_server::{AcStoreConfig, InstanceName};
@@ -31,14 +29,14 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::make_ctx_for_hash_func;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreLike};
 use prost::Message;
 use tonic::{Request, Response, Status};
 use tracing::{error_span, event, instrument, Level};
 
 #[derive(Clone)]
 pub struct AcStoreInfo {
-    store: Arc<dyn Store>,
+    store: Store,
     read_only: bool,
 }
 
@@ -97,14 +95,12 @@ impl AcServer {
             .try_into()?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store_info.store.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        if let Some(grpc_store) = store_info.store.downcast_ref::<GrpcStore>(Some(digest)) {
             return grpc_store.get_action_result(Request::new(request)).await;
         }
 
         Ok(Response::new(
-            get_and_decode_digest::<ActionResult>(Pin::new(store_info.store.as_ref()), &digest)
-                .await?,
+            get_and_decode_digest::<ActionResult>(&store_info.store, &digest).await?,
         ))
     }
 
@@ -132,8 +128,7 @@ impl AcServer {
             .try_into()?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        let any_store = store_info.store.inner_store(Some(digest)).as_any();
-        if let Some(grpc_store) = any_store.downcast_ref::<GrpcStore>() {
+        if let Some(grpc_store) = store_info.store.downcast_ref::<GrpcStore>(Some(digest)) {
             return grpc_store.update_action_result(Request::new(request)).await;
         }
 
@@ -146,7 +141,8 @@ impl AcServer {
             .encode(&mut store_data)
             .err_tip(|| "Provided ActionResult could not be serialized")?;
 
-        Pin::new(store_info.store.as_ref())
+        store_info
+            .store
             .update_oneshot(digest, store_data.freeze())
             .await
             .err_tip(|| "Failed to update in action cache")?;

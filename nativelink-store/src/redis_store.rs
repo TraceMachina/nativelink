@@ -27,7 +27,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreApi, UploadSizeInfo};
 use redis::aio::{ConnectionLike, ConnectionManager};
 use redis::AsyncCommands;
 
@@ -112,7 +112,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync> RedisStore<T> {
 }
 
 #[async_trait]
-impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> Store for RedisStore<T> {
+impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreApi for RedisStore<T> {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -308,14 +308,6 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> Store for RedisS
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
-        self
-    }
-
     fn as_any(&self) -> &(dyn std::any::Any + Sync + Send) {
         self
     }
@@ -346,7 +338,7 @@ impl<T: ConnectionLike + ConnectionLike + Unpin + Clone + Send + Sync + 'static>
     }
 
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        Store::check_health(Pin::new(self), namespace).await
+        StoreApi::check_health(Pin::new(self), namespace).await
     }
 }
 

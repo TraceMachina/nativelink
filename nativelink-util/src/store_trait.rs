@@ -22,7 +22,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::future::{select, Either};
-use futures::{join, try_join, FutureExt};
+use futures::{join, try_join, Future, FutureExt};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
@@ -74,7 +74,7 @@ pub enum UploadSizeInfo {
 /// Utility to send all the data to the store from a file.
 // Note: This is not inlined because some code may want to bypass any underlying
 // optimizations that may be present in the inner store.
-pub async fn slow_update_store_with_file<S: Store + ?Sized>(
+pub async fn slow_update_store_with_file<S: StoreApi + ?Sized>(
     store: Pin<&S>,
     digest: DigestInfo,
     file: &mut fs::ResumeableFileSlot,
@@ -148,8 +148,241 @@ pub enum StoreOptimizations {
     NoopDownloads,
 }
 
+#[derive(Clone)]
+#[repr(transparent)]
+pub struct Store {
+    inner: Arc<dyn StoreApi>,
+}
+
+impl Store {
+    pub fn new(inner: Arc<dyn StoreApi>) -> Self {
+        Self { inner }
+    }
+}
+
+impl Store {
+    #[inline]
+    pub fn into_inner(self) -> Arc<dyn StoreApi> {
+        self.inner
+    }
+
+    /// Gets the underlying store for the given digest.
+    /// A caller might want to use this to obtain a reference to the "real" underlying store
+    /// (if applicable) and check if it implements some special traits that allow optimizations.
+    /// Note: If the store performs complex operations on the data, it should return itself.
+    #[inline]
+    pub fn inner_store(&self, digest: Option<DigestInfo>) -> &Arc<dyn StoreApi> {
+        self.inner
+            .maybe_inner_store(digest)
+            .unwrap_or_else(|| &self.inner)
+    }
+
+    #[inline]
+    pub fn downcast<U>(self, maybe_digest: Option<DigestInfo>) -> Option<Arc<U>>
+    where
+        Self: Sized,
+        U: StoreApi,
+    {
+        let Some(inner_store) = self.inner.maybe_inner_store(maybe_digest) else {
+            return self.inner.as_any_arc().downcast().ok();
+        };
+        inner_store.clone().as_any_arc().downcast().ok()
+    }
+
+    #[inline]
+    pub fn downcast_ref<U: StoreApi>(&self, maybe_digest: Option<DigestInfo>) -> Option<&U> {
+        let Some(inner_store) = self.inner.maybe_inner_store(maybe_digest) else {
+            return self.inner.as_any().downcast_ref();
+        };
+        inner_store.as_any().downcast_ref()
+    }
+
+    /// Register any metrics that this store wants to expose to the Prometheus.
+    #[inline]
+    pub fn register_metrics(&self, registry: &mut Registry) {
+        self.inner.clone().register_metrics(registry)
+    }
+
+    /// Register health checks used to monitor the store.
+    #[inline]
+    pub fn register_health(&self, registry: &mut HealthRegistryBuilder) {
+        self.inner.clone().register_health(registry)
+    }
+}
+
+impl StoreLike for Store {
+    #[inline]
+    fn as_store_api(&self) -> &'_ dyn StoreApi {
+        self.inner.as_ref()
+    }
+
+    fn as_pin(&self) -> Pin<&Self> {
+        Pin::new(self)
+    }
+}
+
+impl<T> StoreLike for T
+where
+    T: StoreApi + Sized,
+{
+    #[inline]
+    fn as_store_api(&self) -> &'_ dyn StoreApi {
+        self
+    }
+
+    fn as_pin(&self) -> Pin<&Self> {
+        Pin::new(self)
+    }
+}
+
+pub trait StoreLike: Send + Sync + Sized {
+    fn as_store_api(&self) -> &'_ dyn StoreApi;
+    fn as_pin(&self) -> Pin<&Self>;
+
+    #[inline]
+    fn as_store_api_pin(&self) -> Pin<&'_ dyn StoreApi> {
+        Pin::new(self.as_store_api())
+    }
+
+    /// Look up a digest in the store and return None if it does not exist in
+    /// the store, or Some(size) if it does.
+    /// Note: On an AC store the size will be incorrect and should not be used!
+    #[inline]
+    fn has(&self, digest: DigestInfo) -> impl Future<Output = Result<Option<usize>, Error>> + '_ {
+        self.as_store_api_pin().has(digest)
+    }
+
+    /// Look up a list of digests in the store and return a result for each in
+    /// the same order as input.  The result will either be None if it does not
+    /// exist in the store, or Some(size) if it does.
+    /// Note: On an AC store the size will be incorrect and should not be used!
+    #[inline]
+    fn has_many<'b>(
+        &'b self,
+        digests: &'b [DigestInfo],
+    ) -> impl Future<Output = Result<Vec<Option<usize>>, Error>> + Send + 'b {
+        self.as_store_api_pin().has_many(digests)
+    }
+
+    /// The implementation of the above has and has_many functions.  See their
+    /// documentation for details.
+    #[inline]
+    fn has_with_results<'b>(
+        &'b self,
+        digests: &'b [DigestInfo],
+        results: &'b mut [Option<usize>],
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'b {
+        self.as_store_api_pin().has_with_results(digests, results)
+    }
+
+    #[inline]
+    fn update(
+        &self,
+        digest: DigestInfo,
+        reader: DropCloserReadHalf,
+        upload_size: UploadSizeInfo,
+    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+        self.as_store_api_pin().update(digest, reader, upload_size)
+    }
+
+    /// Any optimizations the store might want to expose to the callers.
+    /// By default, no optimizations are exposed.
+    #[inline]
+    fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
+        self.as_store_api_pin().optimized_for(optimization)
+    }
+
+    /// Specialized version of `.update()` which takes a `ResumeableFileSlot`.
+    /// This is useful if the underlying store can optimize the upload process
+    /// when it knows the data is coming from a file.
+    #[inline]
+    fn update_with_whole_file(
+        &self,
+        digest: DigestInfo,
+        file: fs::ResumeableFileSlot,
+        upload_size: UploadSizeInfo,
+    ) -> impl Future<Output = Result<Option<fs::ResumeableFileSlot>, Error>> + Send + '_ {
+        self.as_store_api_pin()
+            .update_with_whole_file(digest, file, upload_size)
+    }
+
+    /// Utility to send all the data to the store when you have all the bytes.
+    #[inline]
+    fn update_oneshot(
+        &self,
+        digest: DigestInfo,
+        data: Bytes,
+    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+        self.as_store_api_pin().update_oneshot(digest, data)
+    }
+
+    /// Retreives part of the data from the store and writes it to the given writer.
+    #[inline]
+    fn get_part_ref<'b>(
+        &'b self,
+        digest: DigestInfo,
+        writer: &'b mut DropCloserWriteHalf,
+        offset: usize,
+        length: Option<usize>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'b {
+        self.as_store_api_pin()
+            .get_part_ref(digest, writer, offset, length)
+    }
+
+    /// Same as `get_part_ref`, but takes ownership of the writer. This is preferred
+    /// when the writer is definitly not going to be needed after the function returns.
+    /// This is useful because the read half of the writer will block until the writer
+    /// is dropped or EOF is sent. If the writer was passed as a reference, and the
+    /// reader was being waited with the `.get_part()`, it could deadlock if the writer
+    /// is not dropped or EOF sent. `.get_part_ref()` should be used when the writer
+    /// might be used after the function returns.
+    #[inline]
+    fn get_part(
+        &self,
+        digest: DigestInfo,
+        writer: DropCloserWriteHalf,
+        offset: usize,
+        length: Option<usize>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+        self.as_store_api_pin()
+            .get_part(digest, writer, offset, length)
+    }
+
+    /// Utility that works the same as ``.get_part()`, but writes all the data.
+    #[inline]
+    fn get(
+        &self,
+        digest: DigestInfo,
+        writer: DropCloserWriteHalf,
+    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+        self.as_store_api_pin().get(digest, writer)
+    }
+
+    /// Utility that will return all the bytes at once instead of in a streaming manner.
+    #[inline]
+    fn get_part_unchunked(
+        &self,
+        digest: DigestInfo,
+        offset: usize,
+        length: Option<usize>,
+    ) -> impl Future<Output = Result<Bytes, Error>> + Send + '_ {
+        self.as_store_api_pin()
+            .get_part_unchunked(digest, offset, length)
+    }
+
+    /// Default implementation of the health check. Some stores may want to override this
+    /// in situations where the default implementation is not sufficient.
+    #[inline]
+    fn check_health(
+        &self,
+        namespace: Cow<'static, str>,
+    ) -> impl Future<Output = HealthStatus> + Send + '_ {
+        self.as_store_api_pin().check_health(namespace)
+    }
+}
+
 #[async_trait]
-pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
+pub trait StoreApi: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     /// Look up a digest in the store and return None if it does not exist in
     /// the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
@@ -204,15 +437,16 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
-        let inner_store = self.inner_store(Some(digest));
-        if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
-            error_if!(
-                addr_eq(inner_store, self.deref()),
-                "Store::inner_store() returned self when optimization present"
-            );
-            return Pin::new(inner_store)
-                .update_with_whole_file(digest, file, upload_size)
-                .await;
+        if let Some(inner_store) = self.maybe_inner_store(Some(digest)) {
+            if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
+                error_if!(
+                    addr_eq(inner_store, self.deref()),
+                    "Store::inner_store() returned self when optimization present"
+                );
+                return Pin::new(inner_store.as_ref())
+                    .update_with_whole_file(digest, file, upload_size)
+                    .await;
+            }
         }
         slow_update_store_with_file(self, digest, &mut file, upload_size).await?;
         Ok(Some(file))
@@ -403,8 +637,9 @@ pub trait Store: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     /// A caller might want to use this to obtain a reference to the "real" underlying store
     /// (if applicable) and check if it implements some special traits that allow optimizations.
     /// Note: If the store performs complex operations on the data, it should return itself.
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store;
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store>;
+    fn maybe_inner_store(&self, _digest: Option<DigestInfo>) -> Option<&Arc<dyn StoreApi>> {
+        None
+    }
 
     /// Returns an Any variation of whatever Self is.
     fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static);

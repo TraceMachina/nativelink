@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_config::stores::MemoryStore as MemoryStoreConfig;
@@ -27,7 +26,7 @@ use nativelink_store::completeness_checking_store::CompletenessCheckingStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreLike};
 
 #[cfg(test)]
 mod completeness_checking_store_tests {
@@ -42,21 +41,19 @@ mod completeness_checking_store_tests {
 
     async fn setup() -> Result<(Arc<CompletenessCheckingStore>, Arc<MemoryStore>, DigestInfo), Error>
     {
-        let backend_store = Arc::new(MemoryStore::new(&MemoryStoreConfig::default()));
+        let backend_store = Store::new(Arc::new(MemoryStore::new(&MemoryStoreConfig::default())));
         let cas_store = Arc::new(MemoryStore::new(&MemoryStoreConfig::default()));
-        let ac_owned = Arc::new(CompletenessCheckingStore::new(
+        let ac_store = Arc::new(CompletenessCheckingStore::new(
             backend_store.clone(),
-            cas_store.clone(),
+            Store::new(cas_store.clone()),
         ));
-        let pinned_ac: Pin<&dyn Store> = Pin::new(backend_store.as_ref());
-        let pinned_cas: Pin<&dyn Store> = Pin::new(cas_store.as_ref());
 
-        pinned_cas.update_oneshot(ROOT_FILE, "".into()).await?;
+        cas_store.update_oneshot(ROOT_FILE, "".into()).await?;
         // Note: Explicitly not uploading `ROOT_DIRECTORY`. See: TraceMachina/nativelink#747.
-        pinned_cas.update_oneshot(CHILD_FILE, "".into()).await?;
-        pinned_cas.update_oneshot(OUTPUT_FILE, "".into()).await?;
-        pinned_cas.update_oneshot(STDOUT, "".into()).await?;
-        pinned_cas.update_oneshot(STDERR, "".into()).await?;
+        cas_store.update_oneshot(CHILD_FILE, "".into()).await?;
+        cas_store.update_oneshot(OUTPUT_FILE, "".into()).await?;
+        cas_store.update_oneshot(STDOUT, "".into()).await?;
+        cas_store.update_oneshot(STDERR, "".into()).await?;
 
         let tree = Tree {
             root: Some(Directory {
@@ -79,9 +76,12 @@ mod completeness_checking_store_tests {
             }],
         };
 
-        let tree_digest =
-            serialize_and_upload_message(&tree, pinned_cas, &mut DigestHasherFunc::Blake3.hasher())
-                .await?;
+        let tree_digest = serialize_and_upload_message(
+            &tree,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Blake3.hasher(),
+        )
+        .await?;
 
         let output_directory = OutputDirectory {
             tree_digest: Some(tree_digest.into()),
@@ -90,7 +90,7 @@ mod completeness_checking_store_tests {
 
         serialize_and_upload_message(
             &output_directory,
-            pinned_cas,
+            cas_store.as_pin(),
             &mut DigestHasherFunc::Blake3.hasher(),
         )
         .await?;
@@ -109,12 +109,12 @@ mod completeness_checking_store_tests {
         // The structure of the action result is not following the spec, but is simplified for testing purposes.
         let action_result_digest = serialize_and_upload_message(
             &action_result,
-            pinned_ac,
+            ac_store.as_pin(),
             &mut DigestHasherFunc::Blake3.hasher(),
         )
         .await?;
 
-        Ok((ac_owned, cas_store, action_result_digest))
+        Ok((ac_store, cas_store, action_result_digest))
     }
 
     #[nativelink_test]
@@ -124,12 +124,7 @@ mod completeness_checking_store_tests {
 
             let (ac_store, _cas_store, action_result_digest) = setup().await?;
 
-            let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
-
-            let res = pinned_store
-                .has_many(&[action_result_digest])
-                .await
-                .unwrap();
+            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
             assert!(
                 res[0].is_some(),
                 "Results should be some with all items in CAS."
@@ -141,14 +136,9 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
-
             cas_store.remove_entry(&ROOT_FILE).await;
 
-            let res = pinned_store
-                .has_many(&[action_result_digest])
-                .await
-                .unwrap();
+            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -160,13 +150,8 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
-
             cas_store.remove_entry(&CHILD_FILE).await;
-            let res = pinned_store
-                .has_many(&[action_result_digest])
-                .await
-                .unwrap();
+            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -178,13 +163,8 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
-
             cas_store.remove_entry(&OUTPUT_FILE).await;
-            let res = pinned_store
-                .has_many(&[action_result_digest])
-                .await
-                .unwrap();
+            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -196,13 +176,8 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
-
             cas_store.remove_entry(&STDOUT).await;
-            let res = pinned_store
-                .has_many(&[action_result_digest])
-                .await
-                .unwrap();
+            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -214,13 +189,8 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
-
             cas_store.remove_entry(&STDERR).await;
-            let res = pinned_store
-                .has_many(&[action_result_digest])
-                .await
-                .unwrap();
+            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -237,10 +207,8 @@ mod completeness_checking_store_tests {
 
             let (ac_store, _cas_store, action_result_digest) = setup().await?;
 
-            let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
-
             assert!(
-                pinned_store
+                ac_store
                     .get_part_unchunked(action_result_digest, 0, None)
                     .await
                     .is_ok(),
@@ -253,12 +221,10 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            let pinned_store: Pin<&dyn Store> = Pin::new(ac_store.as_ref());
-
             cas_store.remove_entry(&OUTPUT_FILE).await;
 
             assert!(
-                pinned_store
+                ac_store
                     .get_part_unchunked(action_result_digest, 0, None)
                     .await
                     .is_err(),
