@@ -75,7 +75,7 @@ mod evicting_map_tests {
 
     #[nativelink_test]
     async fn insert_purges_at_max_count() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 3,
                 max_seconds: 0,
@@ -131,7 +131,7 @@ mod evicting_map_tests {
 
     #[nativelink_test]
     async fn insert_purges_at_max_bytes() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 0,
@@ -188,7 +188,7 @@ mod evicting_map_tests {
 
     #[nativelink_test]
     async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 0,
@@ -245,7 +245,7 @@ mod evicting_map_tests {
 
     #[nativelink_test]
     async fn insert_purges_at_max_seconds() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 5,
@@ -306,7 +306,7 @@ mod evicting_map_tests {
 
     #[nativelink_test]
     async fn get_refreshes_time() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 3,
@@ -385,7 +385,7 @@ mod evicting_map_tests {
             }
         }
 
-        let evicting_map = EvictingMap::<Arc<MockEntry>, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, Arc<MockEntry>, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 1,
                 max_seconds: 0,
@@ -431,7 +431,7 @@ mod evicting_map_tests {
 
     #[nativelink_test]
     async fn contains_key_refreshes_time() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 3,
@@ -485,7 +485,7 @@ mod evicting_map_tests {
 
     #[nativelink_test]
     async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 0,
@@ -537,93 +537,8 @@ mod evicting_map_tests {
     }
 
     #[nativelink_test]
-    async fn build_lru_index_and_reload() -> Result<(), Error> {
-        let mut evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
-            &EvictionPolicy {
-                max_count: 0,
-                max_seconds: 0,
-                max_bytes: 0,
-                evict_bytes: 0,
-            },
-            MockInstantWrapped(MockInstant::now()),
-        );
-
-        let value1 = BytesWrapper(Bytes::new());
-        let value2 = BytesWrapper(Bytes::new());
-        evicting_map
-            .insert(DigestInfo::try_new(HASH1, 0)?, value1.clone())
-            .await;
-        evicting_map
-            .insert(DigestInfo::try_new(HASH2, 1)?, value2.clone())
-            .await;
-
-        let serialized_index = evicting_map.build_lru_index().await;
-
-        {
-            // Now insert another entry.
-            let value3 = BytesWrapper(Bytes::new());
-            evicting_map
-                .insert(DigestInfo::try_new(HASH3, 3)?, value3.clone())
-                .await;
-
-            assert_eq!(
-                evicting_map
-                    .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                    .await,
-                Some(value1.len()),
-                "HASH1/0 should exist"
-            );
-            assert_eq!(
-                evicting_map
-                    .size_for_key(&DigestInfo::try_new(HASH2, 1)?)
-                    .await,
-                Some(value2.len()),
-                "HASH2/1 should exist"
-            );
-            assert_eq!(
-                evicting_map
-                    .size_for_key(&DigestInfo::try_new(HASH3, 3)?)
-                    .await,
-                Some(value3.len()),
-                "HASH3/1 should exist"
-            );
-        }
-
-        // Now reload from the serialized version.
-        evicting_map
-            .restore_lru(serialized_index, move |_digest| BytesWrapper(Bytes::new()))
-            .await;
-
-        // Data should now have the previously inserted data, but not the newly inserted data
-        // that was inserted after the `build_lru_index` call.
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH1, 0)?)
-                .await,
-            Some(value1.len()),
-            "HASH1/0 should exist"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH2, 1)?)
-                .await,
-            Some(value2.len()),
-            "HASH2/1 should exist"
-        );
-        assert_eq!(
-            evicting_map
-                .size_for_key(&DigestInfo::try_new(HASH3, 3)?)
-                .await,
-            None,
-            "HASH3/2 should be empty"
-        );
-
-        Ok(())
-    }
-
-    #[nativelink_test]
     async fn get_evicts_on_time() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 5,
@@ -655,7 +570,7 @@ mod evicting_map_tests {
 
     #[nativelink_test]
     async fn remove_evicts_on_time() -> Result<(), Error> {
-        let evicting_map = EvictingMap::<BytesWrapper, MockInstantWrapped>::new(
+        let evicting_map = EvictingMap::<DigestInfo, BytesWrapper, MockInstantWrapped>::new(
             &EvictionPolicy {
                 max_count: 0,
                 max_seconds: 5,
