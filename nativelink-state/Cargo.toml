@@ -1,0 +1,18 @@
+[package]
+name = "nativelink-state"
+version = "0.4.0"
+edition = "2021"
+
+[dependencies]
+nativelink-error = { path = "../nativelink-error" }
+nativelink-util = { path = "../nativelink-util" }
+
+async-trait = "0.1.80"
+tokio = { version = "1.37.0", features = ["sync", "rt", "parking_lot"] }
+bitflags = "2.5.0"
+futures = "0.3.30"
+
+[dev-dependencies]
+nativelink-macro = { path = "../nativelink-macro" }
+
+pretty_assertions = "1.4.0"
