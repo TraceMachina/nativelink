@@ -22,7 +22,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_util::action_messages::{
     ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata,
-    FileInfo, NameOrPath, SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
+    FileInfo, NameOrPath, OperationId, SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 mod utils {
@@ -147,7 +147,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Executing,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -178,7 +178,7 @@ mod scheduler_tests {
         .await?;
 
         // Drop our receiver and look up a new one.
-        let unique_qualifier = client_rx.borrow().unique_qualifier.clone();
+        let unique_qualifier = client_rx.borrow().id.unique_qualifier.clone();
         drop(client_rx);
         let mut client_rx = scheduler
             .find_existing_action(&unique_qualifier)
@@ -208,7 +208,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Executing,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -257,14 +257,15 @@ mod scheduler_tests {
             salt: 0,
         };
 
+        let id = OperationId::new(unique_qualifier);
         let mut expected_action_state1 = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            unique_qualifier: unique_qualifier.clone(),
+            id: id.clone(),
             stage: ActionStage::Executing,
         };
         let mut expected_action_state2 = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            unique_qualifier,
+            id,
             stage: ActionStage::Executing,
         };
 
@@ -313,14 +314,14 @@ mod scheduler_tests {
             // Client should get notification saying it's being executed.
             let action_state = client_rx1.borrow_and_update();
             // We now know the name of the action so populate it.
-            expected_action_state1.unique_qualifier = action_state.unique_qualifier.clone();
+            expected_action_state1.id = action_state.id.clone();
             assert_eq!(action_state.as_ref(), &expected_action_state1);
         }
         {
             // Client should get notification saying it's being executed.
             let action_state = client_rx2.borrow_and_update();
             // We now know the name of the action so populate it.
-            expected_action_state2.unique_qualifier = action_state.unique_qualifier.clone();
+            expected_action_state2.id = action_state.id.clone();
             assert_eq!(action_state.as_ref(), &expected_action_state2);
         }
 
@@ -414,7 +415,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Queued,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -429,7 +430,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Executing,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -475,7 +476,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Queued,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -506,7 +507,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Executing,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -531,13 +532,15 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
+        let unique_qualifier = ActionInfoHashKey {
+            instance_name: "".to_string(),
+            digest: DigestInfo::zero_digest(),
+            digest_function: DigestHasherFunc::Sha256,
+            salt: 0,
+        };
+        let id = OperationId::new(unique_qualifier);
         let mut expected_action_state = ActionState {
-            unique_qualifier: ActionInfoHashKey {
-                instance_name: "".to_string(),
-                digest_function: DigestHasherFunc::Sha256,
-                digest: DigestInfo::zero_digest(),
-                salt: 0,
-            }, // Will be filled later.
+            id,
             stage: ActionStage::Queued,
         };
 
@@ -563,7 +566,7 @@ mod scheduler_tests {
             let action_state1 = client1_rx.borrow_and_update();
             let action_state2 = client2_rx.borrow_and_update();
             // Name is random so we set force it to be the same.
-            expected_action_state.unique_qualifier = action_state1.unique_qualifier.clone();
+            expected_action_state.id = action_state1.id.clone();
             assert_eq!(action_state1.as_ref(), &expected_action_state);
             assert_eq!(action_state2.as_ref(), &expected_action_state);
         }
@@ -652,7 +655,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Queued,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -690,14 +693,15 @@ mod scheduler_tests {
         let mut rx_from_worker2 =
             setup_new_worker(&scheduler, WORKER_ID2, PlatformProperties::default()).await?;
 
+        let unique_qualifier = ActionInfoHashKey {
+            instance_name: "".to_string(),
+            digest: DigestInfo::zero_digest(),
+            digest_function: DigestHasherFunc::Sha256,
+            salt: 0,
+        };
+        let id = OperationId::new(unique_qualifier);
         let mut expected_action_state = ActionState {
-            // Name is a random string, so we ignore it and just make it the same.
-            unique_qualifier: ActionInfoHashKey {
-                instance_name: "".to_string(),
-                digest_function: DigestHasherFunc::Sha256,
-                digest: DigestInfo::zero_digest(),
-                salt: 0,
-            },
+            id,
             stage: ActionStage::Executing,
         };
 
@@ -725,7 +729,7 @@ mod scheduler_tests {
             // Client should get notification saying it's being executed.
             let action_state = client_rx.borrow_and_update();
             // We now know the name of the action so populate it.
-            expected_action_state.unique_qualifier = action_state.unique_qualifier.clone();
+            expected_action_state.id = action_state.id.clone();
             assert_eq!(action_state.as_ref(), &expected_action_state);
         }
 
@@ -851,7 +855,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Completed(action_result),
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -890,7 +894,7 @@ mod scheduler_tests {
         .await?;
 
         // Drop our receiver and don't reconnect until completed.
-        let unique_qualifier = client_rx.borrow().unique_qualifier.clone();
+        let unique_qualifier = client_rx.borrow().id.unique_qualifier.clone();
         drop(client_rx);
 
         {
@@ -962,7 +966,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Completed(action_result),
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -1078,13 +1082,15 @@ mod scheduler_tests {
         );
         let action_digest = DigestInfo::new([99u8; 32], 512);
 
+        let unique_qualifier = ActionInfoHashKey {
+            instance_name: "".to_string(),
+            digest: DigestInfo::zero_digest(),
+            digest_function: DigestHasherFunc::Sha256,
+            salt: 0,
+        };
+        let id = OperationId::new(unique_qualifier);
         let mut expected_action_state = ActionState {
-            unique_qualifier: ActionInfoHashKey {
-                instance_name: "".to_string(),
-                digest_function: DigestHasherFunc::Sha256,
-                digest: DigestInfo::zero_digest(),
-                salt: 0,
-            }, // Will be filled later.
+            id,
             stage: ActionStage::Executing,
         };
 
@@ -1122,7 +1128,7 @@ mod scheduler_tests {
             // Client should get notification saying it's being executed.
             let action_state = client_rx.borrow_and_update();
             // We now know the name of the action so populate it.
-            expected_action_state.unique_qualifier = action_state.unique_qualifier.clone();
+            expected_action_state.id = action_state.id.clone();
             assert_eq!(action_state.as_ref(), &expected_action_state);
         }
 
@@ -1189,7 +1195,7 @@ mod scheduler_tests {
             expected_action_state.stage = ActionStage::Executing;
             let action_state = client_rx.borrow_and_update();
             // The name of the action changed (since it's a new action), so update it.
-            expected_action_state.unique_qualifier = action_state.unique_qualifier.clone();
+            expected_action_state.id = action_state.id.clone();
             assert_eq!(action_state.as_ref(), &expected_action_state);
         }
 
@@ -1293,11 +1299,11 @@ mod scheduler_tests {
             let action_state = client1_rx.borrow_and_update();
             let mut expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Completed(action_result.clone()),
             };
             // We now know the name of the action so populate it.
-            expected_action_state.unique_qualifier = action_state.unique_qualifier.clone();
+            expected_action_state.id.unique_qualifier = action_state.id.unique_qualifier.clone();
             assert_eq!(action_state.as_ref(), &expected_action_state);
         }
 
@@ -1333,11 +1339,11 @@ mod scheduler_tests {
             let action_state = client2_rx.borrow_and_update();
             let mut expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Completed(action_result.clone()),
             };
             // We now know the name of the action so populate it.
-            expected_action_state.unique_qualifier = action_state.unique_qualifier.clone();
+            expected_action_state.id.unique_qualifier = action_state.id.unique_qualifier.clone();
             assert_eq!(action_state.as_ref(), &expected_action_state);
         }
 
@@ -1450,7 +1456,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Queued,
             };
             assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -1480,7 +1486,7 @@ mod scheduler_tests {
             let action_state = client_rx.borrow_and_update();
             let expected_action_state = ActionState {
                 // Name is a random string, so we ignore it and just make it the same.
-                unique_qualifier: action_state.unique_qualifier.clone(),
+                id: action_state.id.clone(),
                 stage: ActionStage::Completed(ActionResult {
                     output_files: Vec::default(),
                     output_folders: Vec::default(),
