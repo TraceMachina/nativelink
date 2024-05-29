@@ -31,6 +31,7 @@ nativelink-proto = { path = "nativelink-proto" }
 nativelink-config = { path = "nativelink-config" }
 nativelink-scheduler = { path = "nativelink-scheduler" }
 nativelink-service = { path = "nativelink-service" }
+nativelink-state = { path = "nativelink-state" }
 nativelink-store = { path = "nativelink-store" }
 nativelink-util = { path = "nativelink-util" }
 nativelink-worker = { path = "nativelink-worker" }
