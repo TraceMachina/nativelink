@@ -59,6 +59,7 @@ rust_library(
         "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:tracing-subscriber",
+        "@crates//:uuid",
     ],
 )
 

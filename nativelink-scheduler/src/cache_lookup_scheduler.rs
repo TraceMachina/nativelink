@@ -25,7 +25,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState,
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, OperationId,
 };
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
@@ -130,12 +130,13 @@ impl ActionScheduler for CacheLookupScheduler {
         &self,
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+        let id = OperationId::new(action_info.unique_qualifier.clone());
         if action_info.skip_cache_lookup {
             // Cache lookup skipped, forward to the upstream.
             return self.action_scheduler.add_action(action_info).await;
         }
         let mut current_state = Arc::new(ActionState {
-            unique_qualifier: action_info.unique_qualifier.clone(),
+            id,
             stage: ActionStage::CacheCheck,
         });
         let (tx, rx) = watch::channel(current_state.clone());
@@ -172,7 +173,7 @@ impl ActionScheduler for CacheLookupScheduler {
                 Pin::new(ac_store.as_ref()),
                 *action_digest,
                 instance_name,
-                current_state.unique_qualifier.digest_function,
+                current_state.id.unique_qualifier.digest_function,
             )
             .await
             {
