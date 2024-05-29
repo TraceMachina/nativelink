@@ -1755,6 +1755,7 @@ dependencies = [
  "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-service",
+ "nativelink-state",
  "nativelink-store",
  "nativelink-util",
  "nativelink-worker",
@@ -1866,6 +1867,20 @@ dependencies = [
  "tower",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "nativelink-state"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "bitflags 2.5.0",
+ "futures",
+ "nativelink-error",
+ "nativelink-macro",
+ "nativelink-util",
+ "pretty_assertions",
+ "tokio",
 ]
 
 [[package]]
