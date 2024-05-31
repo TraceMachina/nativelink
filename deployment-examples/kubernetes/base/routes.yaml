@@ -5,8 +5,8 @@ metadata:
   name: cache-route
 spec:
   parentRefs:
-    - name: cache
-      sectionName: cache
+    - name: cache-gateway
+      sectionName: cache-gateway
   rules:
     - backendRefs:
         - name: nativelink-cas
@@ -18,8 +18,8 @@ metadata:
   name: scheduler-route
 spec:
   parentRefs:
-    - name: scheduler
-      sectionName: scheduler
+    - name: scheduler-gateway
+      sectionName: scheduler-gateway
   rules:
     - backendRefs:
         - name: nativelink-scheduler
