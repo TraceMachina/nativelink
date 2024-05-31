@@ -6,7 +6,7 @@ module(
 
 bazel_dep(name = "rules_cc", version = "0.0.9")
 bazel_dep(name = "platforms", version = "0.0.10")
-bazel_dep(name = "rules_python", version = "0.32.1")
+bazel_dep(name = "rules_python", version = "0.32.2")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
@@ -18,7 +18,7 @@ python.toolchain(
 )
 use_repo(python, python = "python_versions")
 
-bazel_dep(name = "rules_rust", version = "0.44.0")
+bazel_dep(name = "rules_rust", version = "0.45.1")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
@@ -69,7 +69,7 @@ crate.from_cargo(
 )
 use_repo(crate, "crates")
 
-bazel_dep(name = "protobuf", version = "26.0.bcr.1")
+bazel_dep(name = "protobuf", version = "27.0")
 
 # Local remote execution.
 bazel_dep(name = "local-remote-execution", version = "0.0.0")

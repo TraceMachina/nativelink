@@ -3,11 +3,11 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
     flake-utils.url = "github:numtide/flake-utils";
-    pre-commit-hooks = {
-      url = "github:cachix/pre-commit-hooks.nix";
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
     };
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -40,7 +40,7 @@
         "aarch64-darwin"
       ];
       imports = [
-        inputs.pre-commit-hooks.flakeModule
+        inputs.git-hooks.flakeModule
         ./local-remote-execution/flake-module.nix
       ];
       perSystem = {
@@ -164,7 +164,10 @@
           nixpkgs-patched = (import self.inputs.nixpkgs {inherit system;}).applyPatches {
             name = "nixpkgs-patched";
             src = self.inputs.nixpkgs;
-            patches = [./tools/nixpkgs_link_libunwind_and_libcxx.diff];
+            patches = [
+              ./tools/nixpkgs_link_libunwind_and_libcxx.diff
+              ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
+            ];
           };
         in
           import nixpkgs-patched {
