@@ -22,3 +22,4 @@ pub mod property_modifier_scheduler;
 pub mod simple_scheduler;
 pub mod worker;
 pub mod worker_scheduler;
+pub mod wrapper_types;

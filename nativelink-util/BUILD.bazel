@@ -28,6 +28,7 @@ rust_library(
         "src/store_trait.rs",
         "src/task.rs",
         "src/tls_utils.rs",
+        "src/wrapper_types.rs",
         "src/write_counter.rs",
     ],
     proc_macro_deps = [
@@ -39,6 +40,7 @@ rust_library(
         "//nativelink-error",
         "//nativelink-proto",
         "@crates//:async-lock",
+        "@crates//:bitmap",
         "@crates//:blake3",
         "@crates//:bytes",
         "@crates//:console-subscriber",
