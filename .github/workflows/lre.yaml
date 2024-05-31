@@ -78,8 +78,8 @@ jobs:
       - name: Get gateway IPs
         id: gateway-ips
         run: |
-          echo "cache_ip=$(kubectl get gtw cache -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
-          echo "scheduler_ip=$(kubectl get gtw scheduler -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
+          echo "cache_ip=$(kubectl get gtw cache-gateway -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
+          echo "scheduler_ip=$(kubectl get gtw scheduler-gateway -o=jsonpath='{.status.addresses[0].value}')" >> "$GITHUB_ENV"
 
       - name: Print cluster state
         run: |
@@ -101,7 +101,7 @@ jobs:
           bash -c "bazel run \
             --config=lre \
             --remote_instance_name=main \
-            --remote_cache=grpc://$cache_ip:50051 \
-            --remote_executor=grpc://$scheduler_ip:50052 \
+            --remote_cache=grpc://$cache_ip \
+            --remote_executor=grpc://$scheduler_ip \
             --verbose_failures \
             @local-remote-execution//examples:hello_lre"
