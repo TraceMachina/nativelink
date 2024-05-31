@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
+use nativelink_util::metrics_utils::Registry;
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
@@ -122,5 +123,11 @@ impl ActionScheduler for PropertyModifierScheduler {
 
     async fn clean_recently_completed_actions(&self) {
         self.scheduler.clean_recently_completed_actions().await
+    }
+
+    // Register metrics for the underlying ActionScheduler
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        let scheduler_registry = registry.sub_registry_with_prefix("property_modifier");
+        self.scheduler.clone().register_metrics(scheduler_registry);
     }
 }
