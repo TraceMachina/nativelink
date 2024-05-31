@@ -1,17 +1,12 @@
 diff --git a/pkgs/tools/admin/pulumi/default.nix b/pkgs/tools/admin/pulumi/default.nix
-index d63bef2a0270..e85b4956b9ee 100644
+index d63bef2a0270..512ca00dec18 100644
 --- a/pkgs/tools/admin/pulumi/default.nix
 +++ b/pkgs/tools/admin/pulumi/default.nix
-@@ -103,6 +103,12 @@ buildGoModule rec {
-         # +aws
-         "TestPluginMapper_MappedNamesDifferFromPulumiName"
-         "TestProtect"
-+        # These potentially exceed GitHub's rate limits.
-+        "TestProviderVersionInputAndOption"
-+        "TestPulumiNewSetsTemplateTag"
-+        "TestProviderDeterministicPreview"
-+        "TestExpectedUnneededCreate"
-+        "TestMarshalDeployment"
-       ];
-     in
-     [ "-skip=^${lib.concatStringsSep "$|^" disabledTests}$" ];
+@@ -78,6 +78,7 @@ buildGoModule rec {
+     export PULUMI_HOME=$(mktemp -d)
+   '';
+
++  doCheck = false;
+   checkFlags =
+     let
+       disabledTests = [
