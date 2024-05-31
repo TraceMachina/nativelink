@@ -241,7 +241,7 @@ impl CasServer {
         let mut deque: VecDeque<DigestInfo> = VecDeque::new();
         let mut directories: Vec<Directory> = Vec::new();
         // `page_token` will return the `{hash_str}-{size_bytes}` of the current request's first directory digest.
-        let mut page_token_parts = request.page_token.split("-");
+        let mut page_token_parts = request.page_token.split('-');
         let page_token_digest = DigestInfo::try_new(
             page_token_parts
                 .next()
