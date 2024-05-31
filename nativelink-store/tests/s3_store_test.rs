@@ -438,7 +438,7 @@ mod s3_store_tests {
             ReplayEvent::new(
                 http::Request::builder()
                     .uri(format!(
-                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?uploads&x-id=CreateMultipartUpload",
+                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?uploads",
                     ))
                     .method("POST")
                     .body(SdkBody::empty())
@@ -504,7 +504,7 @@ mod s3_store_tests {
             ReplayEvent::new(
                 http::Request::builder()
                     .uri(format!(
-                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=CompleteMultipartUpload&uploadId=Dummy-uploadid",
+                        "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?uploadId=Dummy-uploadid",
                     ))
                     .method("POST")
                     .header("content-length", "216")
