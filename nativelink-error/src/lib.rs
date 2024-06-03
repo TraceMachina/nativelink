@@ -191,6 +191,12 @@ impl From<std::io::Error> for Error {
     }
 }
 
+impl From<redis::RedisError> for Error {
+    fn from(err: redis::RedisError) -> Self {
+        make_err!(Code::Internal, "{}", err.to_string())
+    }
+}
+
 impl From<Code> for Error {
     fn from(code: Code) -> Self {
         make_err!(code, "")
