@@ -3,16 +3,6 @@ linters:
   enable-all: true
   disable:
     # Deprecated.
-    - nosnakecase
-    - interfacer
-    - exhaustivestruct
-    - ifshort
-    - deadcode
-    - varcheck
-    - golint
-    - maligned
-    - scopelint
-    - structcheck
     - execinquery
     - gomnd
 
