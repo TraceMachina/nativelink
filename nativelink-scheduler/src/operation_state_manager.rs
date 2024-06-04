@@ -43,6 +43,9 @@ pub trait ActionStateResult: Send + Sync + 'static {
     async fn as_state(&self) -> Result<Arc<ActionState>, Error>;
     // Subscribes to the state of the action, receiving updates as they are published.
     async fn as_receiver(&self) -> Result<&'_ watch::Receiver<Arc<ActionState>>, Error>;
+    // Provide result as action info. This behavior will not be supported by all implementations.
+    // TODO(adams): Expectation is this to experimental and removed in the future.
+    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error>;
 }
 
 /// The filters used to query operations from the state manager.
@@ -70,8 +73,23 @@ pub struct OperationFilter {
     /// The operation must have it's last client update before this time.
     pub last_client_update_before: Option<SystemTime>,
 
-    /* Why is this now not optional?*/
+    /// The unique key for filtering specific action results.
     pub unique_qualifier: Option<ActionInfoHashKey>,
+
+    /// The order by in which results are returned by the filter operation.
+    pub order_by: Option<OrderBy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum OperationFields {
+    Priority,
+    Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OrderBy {
+    pub fields: Vec<OperationFields>,
+    pub desc: bool,
 }
 
 type ActionStateResultStream = Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>;
@@ -80,7 +98,7 @@ type ActionStateResultStream = Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResu
 pub trait ClientStateManager {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
-        &self,
+        &mut self,
         action_info: ActionInfo,
     ) -> Result<Arc<dyn ActionStateResult>, Error>;
 
@@ -98,7 +116,7 @@ pub trait WorkerStateManager {
     /// did not change with a modified timestamp in order to prevent
     /// the operation from being considered stale and being rescheduled.
     async fn update_operation(
-        &self,
+        &mut self,
         operation_id: OperationId,
         worker_id: WorkerId,
         action_stage: Result<ActionStage, Error>,
@@ -112,7 +130,7 @@ pub trait MatchingEngineStateManager {
 
     /// Update that state of an operation.
     async fn update_operation(
-        &self,
+        &mut self,
         operation_id: OperationId,
         worker_id: Option<WorkerId>,
         action_stage: Result<ActionStage, Error>,
@@ -121,5 +139,5 @@ pub trait MatchingEngineStateManager {
     /// Remove an operation from the state manager.
     /// It is important to use this function to remove operations
     /// that are no longer needed to prevent memory leaks.
-    async fn remove_operation(&self, operation_id: OperationId) -> Result<(), Error>;
+    async fn remove_operation(&mut self, operation_id: OperationId) -> Result<(), Error>;
 }
