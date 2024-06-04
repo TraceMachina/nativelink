@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use nativelink_util::common::DigestInfo;
+use nativelink_util::store_trait::StoreKey;
 
 pub const ZERO_BYTE_DIGESTS: [DigestInfo; 2] = [
     // Sha256 hash of zero bytes.
@@ -36,6 +37,9 @@ pub const ZERO_BYTE_DIGESTS: [DigestInfo; 2] = [
 ];
 
 #[inline]
-pub fn is_zero_digest(digest: &DigestInfo) -> bool {
-    digest.size_bytes == 0 && ZERO_BYTE_DIGESTS.contains(digest)
+pub fn is_zero_digest<'a>(digest: impl Into<StoreKey<'a>>) -> bool {
+    match digest.into() {
+        StoreKey::Digest(digest) => digest.size_bytes == 0 && ZERO_BYTE_DIGESTS.contains(&digest),
+        _ => false,
+    }
 }

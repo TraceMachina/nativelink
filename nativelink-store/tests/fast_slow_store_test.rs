@@ -26,7 +26,7 @@ use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreLike};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
@@ -248,12 +248,12 @@ mod fast_slow_store_tests {
         impl StoreDriver for DropCheckStore {
             async fn has_with_results(
                 self: Pin<&Self>,
-                digests: &[DigestInfo],
+                digests: &[StoreKey<'_>],
                 results: &mut [Option<usize>],
             ) -> Result<(), Error> {
                 if let Some(has_digest) = self.digest {
                     for (digest, result) in digests.iter().zip(results.iter_mut()) {
-                        if digest.hash_str() == has_digest.hash_str() {
+                        if *digest == has_digest.into() {
                             *result = Some(has_digest.size_bytes as usize);
                         }
                     }
@@ -263,7 +263,7 @@ mod fast_slow_store_tests {
 
             async fn update(
                 self: Pin<&Self>,
-                _digest: DigestInfo,
+                _digest: StoreKey<'_>,
                 mut reader: nativelink_util::buf_channel::DropCloserReadHalf,
                 _size_info: nativelink_util::store_trait::UploadSizeInfo,
             ) -> Result<(), Error> {
@@ -284,20 +284,20 @@ mod fast_slow_store_tests {
 
             async fn get_part(
                 self: Pin<&Self>,
-                digest: DigestInfo,
+                key: StoreKey<'_>,
                 writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
                 offset: usize,
                 length: Option<usize>,
             ) -> Result<(), Error> {
                 // Gets called in the slow store and we provide the data that's
                 // sent to the upstream and the fast store.
-                let bytes = length.unwrap_or(digest.size_bytes as usize) - offset;
+                let bytes = length.unwrap_or(key.into_digest().size_bytes as usize) - offset;
                 let data = vec![0_u8; bytes];
                 writer.send(Bytes::copy_from_slice(&data)).await?;
                 writer.send_eof()
             }
 
-            fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn StoreDriver {
+            fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
                 self
             }
 

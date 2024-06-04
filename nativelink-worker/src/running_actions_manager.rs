@@ -127,7 +127,7 @@ pub fn download_to_directory<'a>(
     current_directory: &'a str,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
-        let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest)
+        let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
             .await
             .err_tip(|| "Converting digest to Directory")?;
         let mut futures = FuturesUnordered::new();
@@ -149,7 +149,7 @@ pub fn download_to_directory<'a>(
             }
             futures.push(
                 cas_store
-                    .populate_fast_store(digest)
+                    .populate_fast_store(digest.into())
                     .and_then(move |_| async move {
                         let file_entry = filesystem_store
                             .get_file_entry_for_digest(&digest)
@@ -282,9 +282,14 @@ async fn upload_file(
         .await
         .err_tip(|| "Could not rewind file")?;
 
+    // Note: For unknown reasons we appear to be hitting:
+    // https://github.com/rust-lang/rust/issues/92096
+    // or a smiliar issue if we try to use the non-store driver function, so we
+    // are using the store driver function here.
     cas_store
+        .as_store_driver_pin()
         .update_with_whole_file(
-            digest,
+            digest.into(),
             resumeable_file,
             UploadSizeInfo::ExactSize(digest.size_bytes as usize),
         )
@@ -667,7 +672,7 @@ impl RunningActionImpl {
             let command_fut = self.metrics().get_proto_command_from_store.wrap(async {
                 get_and_decode_digest::<ProtoCommand>(
                     self.running_actions_manager.cas_store.as_ref(),
-                    &self.action_info.command_digest,
+                    self.action_info.command_digest.into(),
                 )
                 .await
                 .err_tip(|| "Converting command_digest to Command")
@@ -1492,7 +1497,7 @@ impl UploadActionResults {
             return Ok(());
         };
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        if let Some(grpc_store) = ac_store.downcast_ref::<GrpcStore>(Some(action_digest)) {
+        if let Some(grpc_store) = ac_store.downcast_ref::<GrpcStore>(Some(action_digest.into())) {
             let update_action_request = UpdateActionResultRequest {
                 // This is populated by `update_action_result`.
                 instance_name: String::new(),
@@ -1723,9 +1728,10 @@ impl RunningActionsManagerImpl {
                 .err_tip(|| "Expected action_digest to exist on StartExecute")?
                 .try_into()?;
             let load_start_timestamp = (self.callbacks.now_fn)();
-            let action = get_and_decode_digest::<Action>(self.cas_store.as_ref(), &action_digest)
-                .await
-                .err_tip(|| "During start_action")?;
+            let action =
+                get_and_decode_digest::<Action>(self.cas_store.as_ref(), action_digest.into())
+                    .await
+                    .err_tip(|| "During start_action")?;
             let action_info = ActionInfo::try_from_action_and_execute_request_with_salt(
                 execute_request,
                 action,

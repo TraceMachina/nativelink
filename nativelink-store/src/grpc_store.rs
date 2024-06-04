@@ -45,7 +45,7 @@ use nativelink_util::proto_stream_utils::{
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::{default_health_status_indicator, tls_utils};
 use parking_lot::Mutex;
 use prost::Message;
@@ -506,18 +506,18 @@ impl StoreDriver for GrpcStore {
     // is incorrect.
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
-            digests
-                .iter()
+            keys.iter()
                 .zip(results.iter_mut())
-                .map(|(digest, result)| async move {
+                .map(|(key, result)| async move {
                     // The length of an AC is incorrect, so we don't figure out the
                     // length, instead the biggest possible result is returned in the
                     // hope that we detect incorrect usage.
-                    self.get_action_result_from_digest(*digest).await?;
+                    self.get_action_result_from_digest(key.borrow().into_digest())
+                        .await?;
                     *result = Some(usize::MAX);
                     Ok::<_, Error>(())
                 })
@@ -531,7 +531,10 @@ impl StoreDriver for GrpcStore {
         let missing_blobs_response = self
             .find_missing_blobs(Request::new(FindMissingBlobsRequest {
                 instance_name: self.instance_name.clone(),
-                blob_digests: digests.iter().map(|digest| digest.into()).collect(),
+                blob_digests: keys
+                    .iter()
+                    .map(|k| k.borrow().into_digest().into())
+                    .collect(),
                 digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
                     .err_tip(|| "In GrpcStore::has_with_results")?
                     .map_or_else(default_digest_hasher_func, |v| *v)
@@ -552,8 +555,12 @@ impl StoreDriver for GrpcStore {
             missing_digests.push(DigestInfo::try_from(missing_digest)?);
         }
         missing_digests.sort_unstable();
-        for (digest, result) in digests.iter().zip(results.iter_mut()) {
-            match missing_digests.binary_search(digest) {
+        for (digest, result) in keys
+            .iter()
+            .map(|v| v.borrow().into_digest())
+            .zip(results.iter_mut())
+        {
+            match missing_digests.binary_search(&digest) {
                 Ok(_) => *result = None,
                 Err(_) => *result = Some(usize::try_from(digest.size_bytes)?),
             }
@@ -564,10 +571,11 @@ impl StoreDriver for GrpcStore {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
@@ -642,11 +650,12 @@ impl StoreDriver for GrpcStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         if matches!(self.store_type, nativelink_config::stores::StoreType::ac) {
             return self
                 .get_action_result_as_part(digest, writer, offset, length)
@@ -735,7 +744,7 @@ impl StoreDriver for GrpcStore {
             .await
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 

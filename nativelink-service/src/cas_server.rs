@@ -76,7 +76,7 @@ impl CasServer {
 
         let mut requested_blobs = Vec::with_capacity(request.blob_digests.len());
         for digest in request.blob_digests.iter() {
-            requested_blobs.push(DigestInfo::try_from(digest.clone())?);
+            requested_blobs.push(DigestInfo::try_from(digest.clone())?.into());
         }
         let sizes = store
             .has_many(&requested_blobs)
@@ -255,7 +255,7 @@ impl CasServer {
 
         while !deque.is_empty() {
             let digest: DigestInfo = deque.pop_front().err_tip(|| "In VecDeque::pop_front")?;
-            let directory = get_and_decode_digest::<Directory>(&store, &digest)
+            let directory = get_and_decode_digest::<Directory>(&store, digest.into())
                 .await
                 .err_tip(|| "Converting digest to Directory")?;
             if digest == page_token_digest {

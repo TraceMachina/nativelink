@@ -44,11 +44,10 @@ use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
-use nativelink_util::common::DigestInfo;
 use nativelink_util::fs;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::retry::{Retrier, RetryResult};
-use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use rand::rngs::OsRng;
 use rand::Rng;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -301,23 +300,18 @@ impl S3Store {
         })
     }
 
-    fn make_s3_path(&self, digest: &DigestInfo) -> String {
-        format!(
-            "{}{}-{}",
-            self.key_prefix,
-            digest.hash_str(),
-            digest.size_bytes
-        )
+    fn make_s3_path(&self, key: StoreKey<'_>) -> String {
+        format!("{}{}", self.key_prefix, key.as_str(),)
     }
 
-    async fn has(self: Pin<&Self>, digest: &DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<usize>, Error> {
         self.retrier
             .retry(unfold((), move |state| async move {
                 let result = self
                     .s3_client
                     .head_object()
                     .bucket(&self.bucket)
-                    .key(&self.make_s3_path(digest))
+                    .key(&self.make_s3_path(digest.borrow()))
                     .send()
                     .await;
 
@@ -357,19 +351,18 @@ impl S3Store {
 impl StoreDriver for S3Store {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        digests
-            .iter()
+        keys.iter()
             .zip(results.iter_mut())
-            .map(|(digest, result)| async move {
-                // We need to do a special pass to ensure our zero digest exist.
-                if is_zero_digest(digest) {
+            .map(|(key, result)| async move {
+                // We need to do a special pass to ensure our zero key exist.
+                if is_zero_digest(key.borrow()) {
                     *result = Some(0);
                     return Ok::<_, Error>(());
                 }
-                *result = self.has(digest).await?;
+                *result = self.has(key).await?;
                 Ok::<_, Error>(())
             })
             .collect::<FuturesUnordered<_>>()
@@ -380,11 +373,11 @@ impl StoreDriver for S3Store {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        digest: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let s3_path = &self.make_s3_path(&digest);
+        let s3_path = &self.make_s3_path(digest.borrow());
 
         let max_size = match upload_size {
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
@@ -641,19 +634,19 @@ impl StoreDriver for S3Store {
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        if is_zero_digest(&digest) {
+        if is_zero_digest(key.borrow()) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
             return Ok(());
         }
 
-        let s3_path = &self.make_s3_path(&digest);
+        let s3_path = &self.make_s3_path(key);
         let end_read_byte = length
             .map_or(Some(None), |length| Some(offset.checked_add(length)))
             .err_tip(|| "Integer overflow protection triggered")?;
@@ -738,7 +731,7 @@ impl StoreDriver for S3Store {
             .await
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn StoreDriver {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
         self
     }
 

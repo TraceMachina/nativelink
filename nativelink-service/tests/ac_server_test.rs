@@ -129,7 +129,7 @@ mod get_action_result {
         assert_eq!(err.code(), Code::NotFound);
         assert_eq!(
             err.message(),
-            "Hash 0123456789abcdef000000000000000000000000000000000123456789abcdef not found"
+            "Key Digest(DigestInfo { size_bytes: 0, hash: \"0123456789abcdef000000000000000000000000000000000123456789abcdef\" }) not found"
         );
         Ok(())
     }
@@ -174,7 +174,7 @@ mod get_action_result {
         assert_eq!(err.code(), Code::NotFound);
         assert_eq!(
             err.message(),
-            "Hash 0123456789abcdef000000000000000000000000000000000123456789abcdef not found"
+            "Key Digest(DigestInfo { size_bytes: 146, hash: \"0123456789abcdef000000000000000000000000000000000123456789abcdef\" }) not found"
         );
         Ok(())
     }

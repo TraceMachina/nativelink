@@ -64,7 +64,7 @@ async fn get_action_from_store(
     digest_function: DigestHasherFunc,
 ) -> Option<ProtoActionResult> {
     // If we are a GrpcStore we shortcut here, as this is a special store.
-    if let Some(grpc_store) = ac_store.downcast_ref::<GrpcStore>(Some(action_digest)) {
+    if let Some(grpc_store) = ac_store.downcast_ref::<GrpcStore>(Some(action_digest.into())) {
         let action_result_request = GetActionResultRequest {
             instance_name,
             action_digest: Some(action_digest.into()),
@@ -79,7 +79,7 @@ async fn get_action_from_store(
             .map(|response| response.into_inner())
             .ok()
     } else {
-        get_and_decode_digest::<ProtoActionResult>(ac_store, &action_digest)
+        get_and_decode_digest::<ProtoActionResult>(ac_store, action_digest.into())
             .await
             .ok()
     }

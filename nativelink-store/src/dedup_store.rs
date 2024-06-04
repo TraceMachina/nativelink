@@ -25,7 +25,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
 use tokio_util::io::StreamReader;
@@ -86,13 +86,13 @@ impl DedupStore {
         }
     }
 
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<usize>, Error> {
         // First we need to load the index that contains where the individual parts actually
         // can be fetched from.
         let index_entries = {
             let maybe_data = self
                 .index_store
-                .get_part_unchunked(digest, 0, None)
+                .get_part_unchunked(key.borrow(), 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store");
             let data = match maybe_data {
@@ -109,7 +109,7 @@ impl DedupStore {
                 Err(err) => {
                     event!(
                         Level::WARN,
-                        ?digest,
+                        ?key,
                         ?err,
                         "Failed to deserialize index in dedup store",
                     );
@@ -120,10 +120,12 @@ impl DedupStore {
             }
         };
 
-        let digests: Vec<DigestInfo> = index_entries
+        let digests: Vec<_> = index_entries
             .entries
             .into_iter()
-            .map(|index_entry| DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes))
+            .map(|index_entry| {
+                DigestInfo::new(index_entry.packed_hash, index_entry.size_bytes).into()
+            })
             .collect();
         let mut sum = 0;
         for size in self.content_store.has_many(&digests).await? {
@@ -142,14 +144,14 @@ impl DedupStore {
 impl StoreDriver for DedupStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         digests
             .iter()
             .zip(results.iter_mut())
-            .map(|(digest, result)| async move {
-                match self.has(*digest).await {
+            .map(|(key, result)| async move {
+                match self.has(key.borrow()).await {
                     Ok(maybe_size) => {
                         *result = maybe_size;
                         Ok(())
@@ -165,7 +167,7 @@ impl StoreDriver for DedupStore {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
@@ -210,7 +212,7 @@ impl StoreDriver for DedupStore {
             })?;
 
         self.index_store
-            .update_oneshot(digest, serialized_index.into())
+            .update_oneshot(key, serialized_index.into())
             .await
             .err_tip(|| "Failed to insert our index entry to index_store in dedup_store")?;
 
@@ -219,7 +221,7 @@ impl StoreDriver for DedupStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
@@ -236,7 +238,7 @@ impl StoreDriver for DedupStore {
         let index_entries = {
             let data = self
                 .index_store
-                .get_part_unchunked(digest, 0, None)
+                .get_part_unchunked(key, 0, None)
                 .await
                 .err_tip(|| "Failed to read index store in dedup store")?;
 
@@ -333,7 +335,7 @@ impl StoreDriver for DedupStore {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 

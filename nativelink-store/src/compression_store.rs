@@ -27,11 +27,10 @@ use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
-use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::cas_utils::is_zero_digest;
@@ -244,7 +243,7 @@ impl CompressionStore {
 impl StoreDriver for CompressionStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         self.inner_store.has_with_results(digests, results).await
@@ -252,7 +251,7 @@ impl StoreDriver for CompressionStore {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
@@ -261,10 +260,11 @@ impl StoreDriver for CompressionStore {
         let (mut tx, rx) = make_buf_channel_pair();
 
         let inner_store = self.inner_store.clone();
+        let key = key.into_owned();
         let update_fut = spawn!("compression_store_update_spawn", async move {
             inner_store
                 .update(
-                    digest,
+                    key,
                     rx,
                     UploadSizeInfo::MaxSize(output_state.max_output_size),
                 )
@@ -388,12 +388,12 @@ impl StoreDriver for CompressionStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        if is_zero_digest(&digest) {
+        if is_zero_digest(key.borrow()) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
@@ -404,9 +404,10 @@ impl StoreDriver for CompressionStore {
         let (tx, mut rx) = make_buf_channel_pair();
 
         let inner_store = self.inner_store.clone();
+        let key = key.into_owned();
         let get_part_fut = spawn!("compression_store_get_part_spawn", async move {
             inner_store
-                .get_part(digest, tx, 0, None)
+                .get_part(key, tx, 0, None)
                 .await
                 .err_tip(|| "Inner store get in compression store failed")
         })
@@ -611,7 +612,7 @@ impl StoreDriver for CompressionStore {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 
