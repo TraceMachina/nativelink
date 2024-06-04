@@ -38,7 +38,9 @@ pub struct BepServer {
     store: Arc<dyn Store>,
 }
 
-fn get_stream_digest(stream_id: &StreamId) -> Result<DigestInfo, Error> {
+// TODO(caass): how are people expected to retrieve streams? if they need to access them via [`DigestInfo`]
+// then we'll need to expose this function...
+pub fn get_stream_digest(stream_id: &StreamId) -> Result<DigestInfo, Error> {
     let mut hasher = DigestHasherFunc::Blake3.hasher();
     hasher.update(stream_id.build_id.as_bytes());
     hasher.update(stream_id.invocation_id.as_bytes());
