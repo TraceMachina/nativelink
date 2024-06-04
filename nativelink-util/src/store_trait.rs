@@ -33,7 +33,7 @@ use tokio::time::timeout;
 
 use crate::buf_channel::{make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
-use crate::digest_hasher::{default_digest_hasher_func, DigestHasher};
+use crate::digest_hasher::{default_digest_hasher_func, DigestHasher, DigestHasherFunc};
 use crate::fs::{self, idle_file_descriptor_timeout};
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use crate::metrics_utils::Registry;
@@ -77,7 +77,7 @@ pub enum UploadSizeInfo {
 // optimizations that may be present in the inner store.
 pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     store: Pin<&S>,
-    digest: DigestInfo,
+    digest: impl Into<StoreKey<'_>>,
     file: &mut fs::ResumeableFileSlot,
     upload_size: UploadSizeInfo,
 ) -> Result<(), Error> {
@@ -90,7 +90,7 @@ pub async fn slow_update_store_with_file<S: StoreDriver + ?Sized>(
     let (tx, rx) = make_buf_channel_pair();
 
     let mut update_fut = store
-        .update(digest, rx, upload_size)
+        .update(digest.into(), rx, upload_size)
         .map(|r| r.err_tip(|| "Could not upload data to store in upload_file_to_store"));
     let read_result = {
         let read_data_fut = async {
@@ -144,6 +144,124 @@ pub enum StoreOptimizations {
     NoopDownloads,
 }
 
+/// Holds something that can be converted into a key the
+/// store API can understand. Generally this is a digest
+/// but it can also be a string if the caller wishes to
+/// store the data directly and reference it by a string
+/// directly.
+#[derive(Debug, Eq)]
+pub enum StoreKey<'a> {
+    /// A string key.
+    Str(Cow<'a, str>),
+
+    /// A key that is a digest.
+    Digest(DigestInfo),
+}
+
+impl<'a> StoreKey<'a> {
+    /// Returns a shallow clone of the key.
+    /// This is extremely cheap and should be used when clone
+    /// is needed but the key is not going to be modified.
+    pub fn borrow(&'a self) -> StoreKey<'a> {
+        match self {
+            StoreKey::Str(Cow::Owned(s)) => StoreKey::Str(Cow::Borrowed(s)),
+            StoreKey::Str(Cow::Borrowed(s)) => StoreKey::Str(Cow::Borrowed(s)),
+            StoreKey::Digest(d) => StoreKey::Digest(*d),
+        }
+    }
+
+    /// Converts the key into an owned version. This is useful
+    /// when the caller needs an owned version of the key.
+    pub fn into_owned(self) -> StoreKey<'static> {
+        match self {
+            StoreKey::Str(Cow::Owned(s)) => StoreKey::Str(Cow::Owned(s)),
+            StoreKey::Str(Cow::Borrowed(s)) => StoreKey::Str(Cow::Owned(s.to_owned())),
+            StoreKey::Digest(d) => StoreKey::Digest(d),
+        }
+    }
+
+    /// Converts the key into a digest. This is useful when the caller
+    /// must have a digest key. If the data is not a digest, it may
+    /// hash the underlying key and return a digest of the hash of the key
+    pub fn into_digest(self) -> DigestInfo {
+        match self {
+            StoreKey::Digest(digest) => digest,
+            StoreKey::Str(s) => {
+                let mut hasher = DigestHasherFunc::Blake3.hasher();
+                hasher.update(s.as_bytes());
+                hasher.finalize_digest()
+            }
+        }
+    }
+
+    /// Returns the key as a string. If the key is a digest, it will
+    /// return a string representation of the digest. If the key is a string,
+    /// it will return the string itself.
+    pub fn as_str(&'a self) -> Cow<'a, str> {
+        match self {
+            StoreKey::Str(Cow::Owned(s)) => Cow::Borrowed(s),
+            StoreKey::Str(Cow::Borrowed(s)) => Cow::Borrowed(s),
+            StoreKey::Digest(d) => Cow::Owned(format!("{}-{}", d.hash_str(), d.size_bytes)),
+        }
+    }
+}
+
+impl PartialEq for StoreKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (StoreKey::Str(a), StoreKey::Str(b)) => a == b,
+            (StoreKey::Digest(a), StoreKey::Digest(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Hash for StoreKey<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        /// Salts the hash with the enum value that represents
+        /// the type of the key.
+        #[repr(u8)]
+        enum HashId {
+            Str = 0,
+            Digest = 1,
+        }
+        match self {
+            StoreKey::Str(s) => {
+                (HashId::Str as u8).hash(state);
+                s.hash(state)
+            }
+            StoreKey::Digest(d) => {
+                (HashId::Digest as u8).hash(state);
+                d.hash(state)
+            }
+        }
+    }
+}
+
+impl<'a> From<&'a str> for StoreKey<'a> {
+    fn from(s: &'a str) -> Self {
+        StoreKey::Str(Cow::Borrowed(s))
+    }
+}
+
+impl From<String> for StoreKey<'static> {
+    fn from(s: String) -> Self {
+        StoreKey::Str(Cow::Owned(s))
+    }
+}
+
+impl<'a> From<DigestInfo> for StoreKey<'a> {
+    fn from(d: DigestInfo) -> Self {
+        StoreKey::Digest(d)
+    }
+}
+
+impl<'a> From<&DigestInfo> for StoreKey<'a> {
+    fn from(d: &DigestInfo) -> Self {
+        StoreKey::Digest(*d)
+    }
+}
+
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct Store {
@@ -170,13 +288,13 @@ impl Store {
     /// (if applicable) and check if it implements some special traits that allow optimizations.
     /// Note: If the store performs complex operations on the data, it should return itself.
     #[inline]
-    pub fn inner_store(&self, digest: Option<DigestInfo>) -> &dyn StoreDriver {
-        self.inner.inner_store(digest)
+    pub fn inner_store<'a, K: Into<StoreKey<'a>>>(&self, digest: Option<K>) -> &dyn StoreDriver {
+        self.inner.inner_store(digest.map(|v| v.into()))
     }
 
     /// Tries to cast the underlying store to the given type.
     #[inline]
-    pub fn downcast_ref<U: StoreDriver>(&self, maybe_digest: Option<DigestInfo>) -> Option<&U> {
+    pub fn downcast_ref<U: StoreDriver>(&self, maybe_digest: Option<StoreKey<'_>>) -> Option<&U> {
         self.inner.inner_store(maybe_digest).as_any().downcast_ref()
     }
 
@@ -218,7 +336,7 @@ where
     }
 }
 
-pub trait StoreLike: Send + Sync + Sized {
+pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     /// Returns the immediate inner store driver.
     fn as_store_driver(&self) -> &'_ dyn StoreDriver;
 
@@ -235,8 +353,11 @@ pub trait StoreLike: Send + Sync + Sized {
     /// the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
     #[inline]
-    fn has(&self, digest: DigestInfo) -> impl Future<Output = Result<Option<usize>, Error>> + '_ {
-        self.as_store_driver_pin().has(digest)
+    fn has<'a>(
+        &'a self,
+        digest: impl Into<StoreKey<'a>>,
+    ) -> impl Future<Output = Result<Option<usize>, Error>> + 'a {
+        self.as_store_driver_pin().has(digest.into())
     }
 
     /// Look up a list of digests in the store and return a result for each in
@@ -244,35 +365,35 @@ pub trait StoreLike: Send + Sync + Sized {
     /// exist in the store, or Some(size) if it does.
     /// Note: On an AC store the size will be incorrect and should not be used!
     #[inline]
-    fn has_many<'b>(
-        &'b self,
-        digests: &'b [DigestInfo],
-    ) -> impl Future<Output = Result<Vec<Option<usize>>, Error>> + Send + 'b {
+    fn has_many<'a>(
+        &'a self,
+        digests: &'a [StoreKey<'a>],
+    ) -> impl Future<Output = Result<Vec<Option<usize>>, Error>> + Send + 'a {
         self.as_store_driver_pin().has_many(digests)
     }
 
     /// The implementation of the above has and has_many functions.  See their
     /// documentation for details.
     #[inline]
-    fn has_with_results<'b>(
-        &'b self,
-        digests: &'b [DigestInfo],
-        results: &'b mut [Option<usize>],
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'b {
+    fn has_with_results<'a>(
+        &'a self,
+        digests: &'a [StoreKey<'a>],
+        results: &'a mut [Option<usize>],
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         self.as_store_driver_pin()
             .has_with_results(digests, results)
     }
 
     /// Sends the data to the store.
     #[inline]
-    fn update(
-        &self,
-        digest: DigestInfo,
+    fn update<'a>(
+        &'a self,
+        digest: impl Into<StoreKey<'a>>,
         reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
-    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
         self.as_store_driver_pin()
-            .update(digest, reader, upload_size)
+            .update(digest.into(), reader, upload_size)
     }
 
     /// Any optimizations the store might want to expose to the callers.
@@ -286,66 +407,68 @@ pub trait StoreLike: Send + Sync + Sized {
     /// This is useful if the underlying store can optimize the upload process
     /// when it knows the data is coming from a file.
     #[inline]
-    fn update_with_whole_file(
-        &self,
-        digest: DigestInfo,
+    fn update_with_whole_file<'a>(
+        &'a self,
+        digest: impl Into<StoreKey<'a>>,
         file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
-    ) -> impl Future<Output = Result<Option<fs::ResumeableFileSlot>, Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Option<fs::ResumeableFileSlot>, Error>> + Send + 'a {
         self.as_store_driver_pin()
-            .update_with_whole_file(digest, file, upload_size)
+            .update_with_whole_file(digest.into(), file, upload_size)
     }
 
     /// Utility to send all the data to the store when you have all the bytes.
     #[inline]
-    fn update_oneshot(
-        &self,
-        digest: DigestInfo,
+    fn update_oneshot<'a>(
+        &'a self,
+        digest: impl Into<StoreKey<'a>>,
         data: Bytes,
-    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
-        self.as_store_driver_pin().update_oneshot(digest, data)
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+        self.as_store_driver_pin()
+            .update_oneshot(digest.into(), data)
     }
 
     /// Retreives part of the data from the store and writes it to the given writer.
     #[inline]
-    fn get_part<'b>(
-        &'b self,
-        digest: DigestInfo,
-        mut writer: impl BorrowMut<DropCloserWriteHalf> + Send + 'b,
+    fn get_part<'a>(
+        &'a self,
+        digest: impl Into<StoreKey<'a>>,
+        mut writer: impl BorrowMut<DropCloserWriteHalf> + Send + 'a,
         offset: usize,
         length: Option<usize>,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'b {
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+        let key = digest.into();
         // Note: We need to capture `writer` just in case the caller
         // expects the drop() method to be called on it when the future
         // is done due to the complex interaction between the DropCloserWriteHalf
         // and the DropCloserReadHalf during drop().
         async move {
             self.as_store_driver_pin()
-                .get_part(digest, writer.borrow_mut(), offset, length)
+                .get_part(key, writer.borrow_mut(), offset, length)
                 .await
         }
     }
 
     /// Utility that works the same as `.get_part()`, but writes all the data.
     #[inline]
-    fn get(
-        &self,
-        digest: DigestInfo,
+    fn get<'a>(
+        &'a self,
+        key: impl Into<StoreKey<'a>>,
         writer: DropCloserWriteHalf,
-    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
-        self.as_store_driver_pin().get(digest, writer)
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+        self.as_store_driver_pin().get(key.into(), writer)
     }
 
     /// Utility that will return all the bytes at once instead of in a streaming manner.
     #[inline]
-    fn get_part_unchunked(
-        &self,
-        digest: DigestInfo,
+    fn get_part_unchunked<'a>(
+        &'a self,
+        key: impl Into<StoreKey<'a>>,
         offset: usize,
         length: Option<usize>,
-    ) -> impl Future<Output = Result<Bytes, Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
         self.as_store_driver_pin()
-            .get_part_unchunked(digest, offset, length)
+            .get_part_unchunked(key.into(), offset, length)
     }
 
     /// Default implementation of the health check. Some stores may want to override this
@@ -354,7 +477,7 @@ pub trait StoreLike: Send + Sync + Sized {
     fn check_health(
         &self,
         namespace: Cow<'static, str>,
-    ) -> impl Future<Output = HealthStatus> + Send + '_ {
+    ) -> impl Future<Output = HealthStatus> + Send {
         self.as_store_driver_pin().check_health(namespace)
     }
 }
@@ -363,9 +486,9 @@ pub trait StoreLike: Send + Sync + Sized {
 pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     /// See: `StoreLike::has()` for details.
     #[inline]
-    async fn has(self: Pin<&Self>, digest: DigestInfo) -> Result<Option<usize>, Error> {
+    async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<usize>, Error> {
         let mut result = [None];
-        self.has_with_results(&[digest], &mut result).await?;
+        self.has_with_results(&[key], &mut result).await?;
         Ok(result[0])
     }
 
@@ -373,7 +496,7 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     #[inline]
     async fn has_many(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        digests: &[StoreKey<'_>],
     ) -> Result<Vec<Option<usize>>, Error> {
         let mut results = vec![None; digests.len()];
         self.has_with_results(digests, &mut results).await?;
@@ -383,14 +506,14 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     /// See: `StoreLike::has_with_results()` for details.
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error>;
 
     /// See: `StoreLike::update()` for details.
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         upload_size: UploadSizeInfo,
     ) -> Result<(), Error>;
@@ -403,30 +526,26 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     /// See: `StoreLike::update_with_whole_file()` for details.
     async fn update_with_whole_file(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
-        let inner_store = self.inner_store(Some(digest));
+        let inner_store = self.inner_store(Some(key.borrow()));
         if inner_store.optimized_for(StoreOptimizations::FileUpdates) {
             error_if!(
                 addr_eq(inner_store, self.deref()),
                 "Store::inner_store() returned self when optimization present"
             );
             return Pin::new(inner_store)
-                .update_with_whole_file(digest, file, upload_size)
+                .update_with_whole_file(key, file, upload_size)
                 .await;
         }
-        slow_update_store_with_file(self, digest, &mut file, upload_size).await?;
+        slow_update_store_with_file(self, key, &mut file, upload_size).await?;
         Ok(Some(file))
     }
 
     /// See: `StoreLike::update_oneshot()` for details.
-    async fn update_oneshot(
-        self: Pin<&Self>,
-        digest: DigestInfo,
-        data: Bytes,
-    ) -> Result<(), Error> {
+    async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
         // TODO(blaise.bruer) This is extremely inefficient, since we have exactly
         // what we need here. Maybe we could instead make a version of the stream
         // that can take objects already fully in memory instead?
@@ -446,7 +565,7 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         };
         try_join!(
             send_fut,
-            self.update(digest, rx, UploadSizeInfo::ExactSize(data_len))
+            self.update(key, rx, UploadSizeInfo::ExactSize(data_len))
         )?;
         Ok(())
     }
@@ -454,7 +573,7 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     /// See: `StoreLike::get_part()` for details.
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
@@ -464,16 +583,16 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     #[inline]
     async fn get(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut writer: DropCloserWriteHalf,
     ) -> Result<(), Error> {
-        self.get_part(digest, &mut writer, 0, None).await
+        self.get_part(key, &mut writer, 0, None).await
     }
 
     /// See: `StoreLike::get_part_unchunked()` for details.
     async fn get_part_unchunked(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         offset: usize,
         length: Option<usize>,
     ) -> Result<Bytes, Error> {
@@ -486,7 +605,7 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
             rx.consume(length),
             // We use a closure here to ensure that the `tx` is dropped when the
             // future is done.
-            async move { self.get_part(digest, &mut tx, offset, length).await },
+            async move { self.get_part(key, &mut tx, offset, length).await },
         );
         get_part_res
             .err_tip(|| "Failed to get_part in get_part_unchunked")
@@ -514,18 +633,21 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         let mut digest_hasher = default_digest_hasher_func().hasher();
         digest_hasher.update(&digest_data);
         let digest_data_len = digest_data.len();
-        let digest_info = digest_hasher.finalize_digest();
+        let digest_info = StoreKey::from(digest_hasher.finalize_digest());
 
         let digest_bytes = bytes::Bytes::copy_from_slice(&digest_data);
 
-        if let Err(e) = self.update_oneshot(digest_info, digest_bytes.clone()).await {
+        if let Err(e) = self
+            .update_oneshot(digest_info.borrow(), digest_bytes.clone())
+            .await
+        {
             return HealthStatus::new_failed(
                 self.get_ref(),
                 format!("Store.update_oneshot() failed: {e}").into(),
             );
         }
 
-        match self.has(digest_info).await {
+        match self.has(digest_info.borrow()).await {
             Ok(Some(s)) => {
                 if s != digest_data_len {
                     return HealthStatus::new_failed(
@@ -572,7 +694,7 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     }
 
     /// See: `StoreLike::inner_store()` for details.
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver;
+    fn inner_store(&self, _digest: Option<StoreKey<'_>>) -> &dyn StoreDriver;
 
     /// Returns an Any variation of whatever Self is.
     fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static);

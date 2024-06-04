@@ -21,11 +21,10 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 
 use crate::cas_utils::is_zero_digest;
 
@@ -51,7 +50,7 @@ impl LenEntry for BytesWrapper {
 }
 
 pub struct MemoryStore {
-    evicting_map: EvictingMap<DigestInfo, BytesWrapper, SystemTime>,
+    evicting_map: EvictingMap<StoreKey<'static>, BytesWrapper, SystemTime>,
 }
 
 impl MemoryStore {
@@ -69,8 +68,8 @@ impl MemoryStore {
         self.evicting_map.len_for_test().await
     }
 
-    pub async fn remove_entry(&self, digest: &DigestInfo) -> bool {
-        self.evicting_map.remove(digest).await
+    pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
+        self.evicting_map.remove(&key.into_owned()).await
     }
 }
 
@@ -78,16 +77,18 @@ impl MemoryStore {
 impl StoreDriver for MemoryStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
+        // TODO(allada): This is a dirty hack to get around the lifetime issues with the
+        // evicting map.
+        let digests: Vec<_> = keys.iter().map(|key| key.borrow().into_owned()).collect();
         self.evicting_map.sizes_for_keys(digests, results).await;
         // We need to do a special pass to ensure our zero digest exist.
-        digests
-            .iter()
+        keys.iter()
             .zip(results.iter_mut())
-            .for_each(|(digest, result)| {
-                if is_zero_digest(digest) {
+            .for_each(|(key, result)| {
+                if is_zero_digest(key.borrow()) {
                     *result = Some(0);
                 }
             });
@@ -96,7 +97,7 @@ impl StoreDriver for MemoryStore {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
@@ -113,19 +114,19 @@ impl StoreDriver for MemoryStore {
         };
 
         self.evicting_map
-            .insert(digest, BytesWrapper(final_buffer))
+            .insert(key.into_owned(), BytesWrapper(final_buffer))
             .await;
         Ok(())
     }
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        if is_zero_digest(&digest) {
+        if is_zero_digest(key.borrow()) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
@@ -134,14 +135,9 @@ impl StoreDriver for MemoryStore {
 
         let value = self
             .evicting_map
-            .get(&digest)
+            .get(&key.borrow().into_owned())
             .await
-            .err_tip_with_code(|_| {
-                (
-                    Code::NotFound,
-                    format!("Hash {} not found", digest.hash_str()),
-                )
-            })?;
+            .err_tip_with_code(|_| (Code::NotFound, format!("Key {key:?} not found")))?;
         let default_len = value.len() - offset;
         let length = length.unwrap_or(default_len).min(default_len);
         if length > 0 {
@@ -156,7 +152,7 @@ impl StoreDriver for MemoryStore {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 

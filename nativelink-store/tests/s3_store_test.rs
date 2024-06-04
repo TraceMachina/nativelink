@@ -637,7 +637,7 @@ mod s3_store_tests {
             packed_hash: Sha256::new().finalize().into(),
             size_bytes: 0,
         };
-        let digests = vec![digest];
+        let keys = vec![digest.into()];
         let mut results = vec![None];
 
         let mock_client = StaticReplayClient::new(vec![]);
@@ -657,7 +657,7 @@ mod s3_store_tests {
         )?;
 
         let _ = store
-            .has_with_results(&digests, &mut results)
+            .has_with_results(&keys, &mut results)
             .await
             .err_tip(|| "Failed to get_part");
         assert_eq!(results, vec!(Some(0)));

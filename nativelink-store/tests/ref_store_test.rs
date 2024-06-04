@@ -164,7 +164,8 @@ mod ref_store_tests {
 
         // Ensure the result of inner_store() points to exact same memory store.
         assert_eq!(
-            ref_store_outer.inner_store(None) as *const dyn StoreDriver as *const (),
+            ref_store_outer.inner_store(Option::<DigestInfo>::None) as *const dyn StoreDriver
+                as *const (),
             memory_store.into_inner().as_ref() as *const dyn StoreDriver as *const (),
             "Expected inner store to be memory store"
         );

@@ -24,7 +24,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
 #[derive(Clone, Debug)]
 struct ExistanceItem(usize);
@@ -66,26 +66,26 @@ impl ExistenceCacheStore {
 
     async fn inner_has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[DigestInfo],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.existence_cache.sizes_for_keys(digests, results).await;
+        self.existence_cache.sizes_for_keys(keys, results).await;
 
-        let not_cached_digests: Vec<DigestInfo> = digests
+        let not_cached_keys: Vec<_> = keys
             .iter()
             .zip(results.iter())
-            .filter_map(|(digest, result)| result.map_or_else(|| Some(*digest), |_| None))
+            .filter_map(|(digest, result)| result.map_or_else(|| Some(digest.into()), |_| None))
             .collect();
 
-        // Hot path optimization when all digests are cached.
-        if not_cached_digests.is_empty() {
+        // Hot path optimization when all keys are cached.
+        if not_cached_keys.is_empty() {
             return Ok(());
         }
 
         // Now query only the items not found in the cache.
-        let mut inner_results = vec![None; not_cached_digests.len()];
+        let mut inner_results = vec![None; not_cached_keys.len()];
         self.inner_store
-            .has_with_results(&not_cached_digests, &mut inner_results)
+            .has_with_results(&not_cached_keys, &mut inner_results)
             .await
             .err_tip(|| "In ExistenceCacheStore::inner_has_with_results")?;
 
@@ -93,10 +93,12 @@ impl ExistenceCacheStore {
         {
             // Note: Sadly due to some weird lifetime issues we need to collect here, but
             // in theory we don't actually need to collect.
-            let inserts = not_cached_digests
+            let inserts = not_cached_keys
                 .iter()
                 .zip(inner_results.iter())
-                .filter_map(|(digest, result)| result.map(|size| (*digest, ExistanceItem(size))))
+                .filter_map(|(key, result)| {
+                    result.map(|size| (key.borrow().into_digest(), ExistanceItem(size)))
+                })
                 .collect::<Vec<_>>();
             let _ = self.existence_cache.insert_many(inserts).await;
         }
@@ -128,18 +130,27 @@ impl ExistenceCacheStore {
 impl StoreDriver for ExistenceCacheStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.inner_has_with_results(digests, results).await
+        // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
+        // existence_cache. We need to convert the digests to owned values to be able to
+        // insert them into the cache. In theory it should be able to elide this conversion
+        // but it seems to be a bit tricky to get right.
+        let digests: Vec<_> = digests
+            .iter()
+            .map(|key| key.borrow().into_digest())
+            .collect();
+        self.inner_has_with_results(&digests, results).await
     }
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         let mut exists = [None];
         self.inner_has_with_results(&[digest], &mut exists)
             .await
@@ -167,11 +178,12 @@ impl StoreDriver for ExistenceCacheStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         let result = self
             .inner_store
             .get_part(digest, writer, offset, length)
@@ -187,7 +199,7 @@ impl StoreDriver for ExistenceCacheStore {
         result
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 

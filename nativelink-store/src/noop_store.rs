@@ -18,9 +18,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{StoreDriver, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
 
 #[derive(Default)]
 pub struct NoopStore;
@@ -35,7 +34,7 @@ impl NoopStore {
 impl StoreDriver for NoopStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        _digests: &[DigestInfo],
+        _keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         results.iter_mut().for_each(|r| *r = None);
@@ -44,7 +43,7 @@ impl StoreDriver for NoopStore {
 
     async fn update(
         self: Pin<&Self>,
-        _digest: DigestInfo,
+        _key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
@@ -61,7 +60,7 @@ impl StoreDriver for NoopStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        _digest: DigestInfo,
+        _key: StoreKey<'_>,
         _writer: &mut DropCloserWriteHalf,
         _offset: usize,
         _length: Option<usize>,
@@ -69,7 +68,7 @@ impl StoreDriver for NoopStore {
         Err(make_err!(Code::NotFound, "Not found in noop store"))
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 

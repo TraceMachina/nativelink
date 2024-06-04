@@ -279,7 +279,7 @@ mod memory_store_tests {
             packed_hash: Sha256::new().finalize().into(),
             size_bytes: 0,
         };
-        let digests = vec![digest];
+        let keys = vec![digest.into()];
         let mut results = vec![None];
 
         let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
@@ -287,7 +287,7 @@ mod memory_store_tests {
 
         let _ = store
             .as_ref()
-            .has_with_results(&digests, &mut results)
+            .has_with_results(&keys, &mut results)
             .await
             .err_tip(|| "Failed to get_part");
         assert_eq!(results, vec!(Some(0)));

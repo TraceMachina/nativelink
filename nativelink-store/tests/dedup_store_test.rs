@@ -111,7 +111,11 @@ mod dedup_store_tests {
         const LAST_CHUNK_SIZE: usize = 25779;
 
         let did_delete = content_store
-            .remove_entry(&DigestInfo::try_new(LAST_CHUNK_HASH, LAST_CHUNK_SIZE).unwrap())
+            .remove_entry(
+                DigestInfo::try_new(LAST_CHUNK_HASH, LAST_CHUNK_SIZE)
+                    .unwrap()
+                    .into(),
+            )
             .await;
 
         assert_eq!(did_delete, true, "Expected item to exist in store");

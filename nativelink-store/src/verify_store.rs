@@ -20,7 +20,6 @@ use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
-use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
     default_digest_hasher_func, DigestHasher, ACTIVE_HASHER_FUNC,
 };
@@ -29,7 +28,7 @@ use nativelink_util::metrics_utils::{
     Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
 };
 use nativelink_util::origin_context::ActiveOriginContext;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
 pub struct VerifyStore {
     inner_store: Store,
@@ -114,7 +113,7 @@ impl VerifyStore {
 impl StoreDriver for VerifyStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         self.inner_store.has_with_results(digests, results).await
@@ -122,10 +121,18 @@ impl StoreDriver for VerifyStore {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let digest = match key {
+            StoreKey::Digest(digest) => digest,
+            _ => {
+                return Err(make_input_err!(
+                    "Only digests are supported in VerifyStore. Got {key:?}"
+                ));
+            }
+        };
         let digest_size = usize::try_from(digest.size_bytes)
             .err_tip(|| "Digest size_bytes was not convertible to usize")?;
         if let UploadSizeInfo::ExactSize(expected_size) = size_info {
@@ -163,17 +170,15 @@ impl StoreDriver for VerifyStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        self.inner_store
-            .get_part(digest, writer, offset, length)
-            .await
+        self.inner_store.get_part(key, writer, offset, length).await
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn StoreDriver {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
         self
     }
 

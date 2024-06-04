@@ -1139,10 +1139,10 @@ mod filesystem_store_tests {
             .await?,
         );
 
-        let digests = vec![digest];
+        let keys = vec![digest.into()];
         let mut results = vec![None];
         let _ = store
-            .has_with_results(&digests, &mut results)
+            .has_with_results(&keys, &mut results)
             .await
             .err_tip(|| "Failed to get_part");
         assert_eq!(results, vec!(Some(0)));

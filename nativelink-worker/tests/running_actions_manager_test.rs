@@ -1091,7 +1091,7 @@ mod running_actions_manager_tests {
         };
         let tree = get_and_decode_digest::<Tree>(
             slow_store.as_ref(),
-            &action_result.output_folders[0].tree_digest,
+            action_result.output_folders[0].tree_digest.into(),
         )
         .await?;
         let root_directory = Directory {
@@ -1943,7 +1943,8 @@ exit 1
             .await?;
 
         let retrieved_result =
-            get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
+            get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), action_digest.into())
+                .await?;
 
         let proto_result: ProtoActionResult = action_result.into();
         assert_eq!(proto_result, retrieved_result);
@@ -2016,7 +2017,8 @@ exit 1
             .await?;
 
         let retrieved_result =
-            get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_digest).await?;
+            get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), action_digest.into())
+                .await?;
 
         let proto_result: ProtoActionResult = action_result.into();
         assert_eq!(proto_result, retrieved_result);
@@ -2105,7 +2107,7 @@ exit 1
         };
         let retrieved_result = get_and_decode_digest::<HistoricalExecuteResponse>(
             cas_store.as_ref(),
-            &historical_digest,
+            historical_digest.into(),
         )
         .await?;
 
@@ -2213,7 +2215,7 @@ exit 1
 
         let retrieved_result = get_and_decode_digest::<HistoricalExecuteResponse>(
             cas_store.as_ref(),
-            &historical_digest,
+            historical_digest.into(),
         )
         .await?;
 
@@ -2274,9 +2276,11 @@ exit 1
             DigestInfo::try_new(action_result_hash, action_result_size.parse::<i64>()?)?
         };
 
-        let retrieved_result =
-            get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), &action_result_digest)
-                .await?;
+        let retrieved_result = get_and_decode_digest::<ProtoActionResult>(
+            ac_store.as_ref(),
+            action_result_digest.into(),
+        )
+        .await?;
 
         let proto_result: ProtoActionResult = action_result.into();
         assert_eq!(proto_result, retrieved_result);

@@ -34,7 +34,7 @@ use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{StoreDriver, StoreOptimizations, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::time::{sleep, timeout, Sleep};
@@ -724,22 +724,27 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.evicting_map.sizes_for_keys(digests, results).await;
+        // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
+        // existence_cache. We need to convert the digests to owned values to be able to
+        // insert them into the cache. In theory it should be able to elide this conversion
+        // but it seems to be a bit tricky to get right.
+        let keys: Vec<_> = keys.iter().map(|v| v.borrow().into_digest()).collect();
+        self.evicting_map.sizes_for_keys(&keys, results).await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to
         // create the file by spec.
-        for (digest, result) in digests.iter().zip(results.iter_mut()) {
+        for (digest, result) in keys.iter().zip(results.iter_mut()) {
             if result.is_some() || !is_zero_digest(digest) {
                 continue;
             }
             let (mut tx, rx) = make_buf_channel_pair();
             let send_eof_result = tx.send_eof();
-            self.update(*digest, rx, UploadSizeInfo::ExactSize(0))
+            self.update(digest.into(), rx, UploadSizeInfo::ExactSize(0))
                 .await
-                .err_tip(|| format!("Failed to create zero file for digest {digest:?}"))
+                .err_tip(|| format!("Failed to create zero file for key {digest:?}"))
                 .merge(
                     send_eof_result
                         .err_tip(|| "Failed to send zero file EOF in filesystem store has"),
@@ -752,10 +757,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let digest = key.into_digest();
         let mut temp_digest = digest;
         make_temp_digest(&mut temp_digest);
 
@@ -780,10 +786,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
     async fn update_with_whole_file(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
+        let digest = key.into_digest();
         let path = file.get_path().as_os_str().to_os_string();
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size as u64,
@@ -820,13 +827,14 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        if is_zero_digest(&digest) {
-            self.has(digest)
+        let digest = key.into_digest();
+        if is_zero_digest(digest) {
+            self.has(digest.into())
                 .await
                 .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
             writer
@@ -893,7 +901,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 

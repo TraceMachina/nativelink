@@ -24,20 +24,15 @@ use futures::future::{BoxFuture, FutureExt, Shared};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use redis::aio::{ConnectionLike, ConnectionManager};
 use redis::AsyncCommands;
 
 use crate::cas_utils::is_zero_digest;
 
 const READ_CHUNK_SIZE: isize = 64 * 1024;
-
-fn digest_to_key(digest: &DigestInfo) -> String {
-    format!("{}-{}", digest.hash_str(), digest.size_bytes)
-}
 
 /// Holds a connection result or a future that resolves to a connection.
 /// This is a utility to allow us to start a connection but not block on it.
@@ -115,10 +110,10 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync> RedisStore<T> {
 impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for RedisStore<T> {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        if digests.len() == 1 && is_zero_digest(&digests[0]) {
+        if keys.len() == 1 && is_zero_digest(keys[0].borrow()) {
             results[0] = Some(0);
             return Ok(());
         }
@@ -128,12 +123,12 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
         pipe.atomic();
 
         let mut zero_digest_indexes = Vec::new();
-        digests.iter().enumerate().for_each(|(index, digest)| {
-            if is_zero_digest(digest) {
+        keys.iter().enumerate().for_each(|(index, key)| {
+            if is_zero_digest(key.borrow()) {
                 zero_digest_indexes.push(index);
             }
 
-            pipe.strlen(digest_to_key(digest));
+            pipe.strlen(key.as_str().as_ref());
         });
 
         let digest_sizes = pipe
@@ -163,7 +158,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
@@ -183,11 +178,11 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
                     .err_tip(|| "Failed to reach chunk in update in redis store")?;
 
                 if chunk.is_empty() {
-                    if is_zero_digest(&digest) {
+                    if is_zero_digest(key.borrow()) {
                         return Ok(());
                     }
                     if force_recv {
-                        conn.append(digest_to_key(&digest), &chunk[..])
+                        conn.append(key.as_str().as_ref(), &chunk[..])
                             .await
                             .map_err(from_redis_err)
                             .err_tip(|| "In RedisStore::update() single chunk")?;
@@ -214,7 +209,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
 
         pipe.cmd("RENAME")
             .arg(temp_key.get_or_init(make_temp_name))
-            .arg(digest_to_key(&digest));
+            .arg(key.as_str().as_ref());
         pipe.query_async(&mut conn)
             .await
             .map_err(from_redis_err)
@@ -225,14 +220,14 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
         // To follow RBE spec we need to consider any digest's with
         // zero size to be existing.
-        if is_zero_digest(&digest) {
+        if is_zero_digest(key.borrow()) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in redis store get_part")?;
@@ -242,15 +237,14 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
         let mut conn = self.get_conn().await?;
         if length == Some(0) {
             let exists = conn
-                .exists::<_, bool>(digest_to_key(&digest))
+                .exists::<_, bool>(key.as_str().as_ref())
                 .await
                 .map_err(from_redis_err)
                 .err_tip(|| "In RedisStore::get_part::zero_exists")?;
             if !exists {
                 return Err(make_err!(
                     Code::NotFound,
-                    "Data not found in Redis store for digest: {}",
-                    digest_to_key(&digest)
+                    "Data not found in Redis store for digest: {key:?}"
                 ));
             }
             writer
@@ -270,7 +264,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
             let current_end =
                 std::cmp::min(current_start.saturating_add(READ_CHUNK_SIZE), end_position) - 1;
             let chunk = conn
-                .getrange::<_, Bytes>(digest_to_key(&digest), current_start, current_end)
+                .getrange::<_, Bytes>(key.as_str().as_ref(), current_start, current_end)
                 .await
                 .map_err(from_redis_err)
                 .err_tip(|| "In RedisStore::get_part::getrange")?;
@@ -308,7 +302,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
 

@@ -19,9 +19,8 @@ use std::sync::{Arc, Mutex, Weak};
 use async_trait::async_trait;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use tracing::{event, Level};
 
 use crate::store_manager::StoreManager;
@@ -102,43 +101,38 @@ impl RefStore {
 impl StoreDriver for RefStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        self.get_store()?.has_with_results(digests, results).await
+        self.get_store()?.has_with_results(keys, results).await
     }
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        self.get_store()?.update(digest, reader, size_info).await
+        self.get_store()?.update(key, reader, size_info).await
     }
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
         self.get_store()?
-            .get_part(digest, writer, offset, length)
+            .get_part(key, writer, offset, length)
             .await
     }
 
-    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn StoreDriver {
+    fn inner_store(&self, key: Option<StoreKey>) -> &'_ dyn StoreDriver {
         match self.get_store() {
-            Ok(store) => store.inner_store(digest),
+            Ok(store) => store.inner_store(key),
             Err(err) => {
-                event!(
-                    Level::ERROR,
-                    ?digest,
-                    ?err,
-                    "Failed to get store for digest",
-                );
+                event!(Level::ERROR, ?key, ?err, "Failed to get store for key",);
                 self
             }
         }
