@@ -82,7 +82,7 @@ pub trait ClientStateManager {
     async fn add_action(
         &self,
         action_info: ActionInfo,
-    ) -> Result<Arc<dyn ActionStateResult>, Error>;
+    ) -> Result<Box<Arc<dyn ActionStateResult>>, Error>;
 
     /// Returns a stream of operations that match the filter.
     async fn filter_operations(
