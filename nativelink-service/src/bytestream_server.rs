@@ -520,7 +520,7 @@ impl ByteStreamServer {
         let digest = DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        if let Some(grpc_store) = store_clone.downcast_ref::<GrpcStore>(Some(digest)) {
+        if let Some(grpc_store) = store_clone.downcast_ref::<GrpcStore>(Some(digest.into())) {
             return grpc_store
                 .query_write_status(Request::new(query_request.clone()))
                 .await;
@@ -582,7 +582,7 @@ impl ByteStream for ByteStreamServer {
         let digest = DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest)) {
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
             let stream = grpc_store.read(Request::new(read_request)).await?;
             return Ok(Response::new(Box::pin(stream)));
         }
@@ -638,7 +638,7 @@ impl ByteStream for ByteStreamServer {
         .err_tip(|| "Invalid digest input in ByteStream::write")?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest)) {
+        if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
             return grpc_store.write(stream).await.map_err(|e| e.into());
         }
 

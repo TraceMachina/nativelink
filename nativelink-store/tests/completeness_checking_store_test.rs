@@ -124,7 +124,10 @@ mod completeness_checking_store_tests {
 
             let (ac_store, _cas_store, action_result_digest) = setup().await?;
 
-            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
+            let res = ac_store
+                .has_many(&[action_result_digest.into()])
+                .await
+                .unwrap();
             assert!(
                 res[0].is_some(),
                 "Results should be some with all items in CAS."
@@ -136,9 +139,12 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            cas_store.remove_entry(&ROOT_FILE).await;
+            cas_store.remove_entry(ROOT_FILE.into()).await;
 
-            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
+            let res = ac_store
+                .has_many(&[action_result_digest.into()])
+                .await
+                .unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -150,8 +156,11 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            cas_store.remove_entry(&CHILD_FILE).await;
-            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
+            cas_store.remove_entry(CHILD_FILE.into()).await;
+            let res = ac_store
+                .has_many(&[action_result_digest.into()])
+                .await
+                .unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -163,8 +172,11 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            cas_store.remove_entry(&OUTPUT_FILE).await;
-            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
+            cas_store.remove_entry(OUTPUT_FILE.into()).await;
+            let res = ac_store
+                .has_many(&[action_result_digest.into()])
+                .await
+                .unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -176,8 +188,11 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            cas_store.remove_entry(&STDOUT).await;
-            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
+            cas_store.remove_entry(STDOUT.into()).await;
+            let res = ac_store
+                .has_many(&[action_result_digest.into()])
+                .await
+                .unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -189,8 +204,11 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            cas_store.remove_entry(&STDERR).await;
-            let res = ac_store.has_many(&[action_result_digest]).await.unwrap();
+            cas_store.remove_entry(STDERR.into()).await;
+            let res = ac_store
+                .has_many(&[action_result_digest.into()])
+                .await
+                .unwrap();
             assert!(
                 res[0].is_none(),
                 "Results should be none with missing root file."
@@ -221,7 +239,7 @@ mod completeness_checking_store_tests {
 
             let (ac_store, cas_store, action_result_digest) = setup().await?;
 
-            cas_store.remove_entry(&OUTPUT_FILE).await;
+            cas_store.remove_entry(OUTPUT_FILE.into()).await;
 
             assert!(
                 ac_store

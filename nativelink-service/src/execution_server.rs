@@ -95,7 +95,7 @@ impl InstanceInfo {
         // Goma puts the properties in the Command.
         if platform_properties.is_empty() {
             let command =
-                get_and_decode_digest::<Command>(&self.cas_store, &command_digest).await?;
+                get_and_decode_digest::<Command>(&self.cas_store, command_digest.into()).await?;
             if let Some(platform) = &command.platform {
                 for property in &platform.properties {
                     let platform_property = self
@@ -209,7 +209,8 @@ impl ExecutionServer {
             .execution_policy
             .map_or(DEFAULT_EXECUTION_PRIORITY, |p| p.priority);
 
-        let action = get_and_decode_digest::<Action>(&instance_info.cas_store, &digest).await?;
+        let action =
+            get_and_decode_digest::<Action>(&instance_info.cas_store, digest.into()).await?;
         let action_info = instance_info
             .build_action_info(
                 instance_name,

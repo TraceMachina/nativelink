@@ -95,12 +95,15 @@ impl AcServer {
             .try_into()?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        if let Some(grpc_store) = store_info.store.downcast_ref::<GrpcStore>(Some(digest)) {
+        if let Some(grpc_store) = store_info
+            .store
+            .downcast_ref::<GrpcStore>(Some(digest.into()))
+        {
             return grpc_store.get_action_result(Request::new(request)).await;
         }
 
         Ok(Response::new(
-            get_and_decode_digest::<ActionResult>(&store_info.store, &digest).await?,
+            get_and_decode_digest::<ActionResult>(&store_info.store, digest.into()).await?,
         ))
     }
 
@@ -128,7 +131,10 @@ impl AcServer {
             .try_into()?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
-        if let Some(grpc_store) = store_info.store.downcast_ref::<GrpcStore>(Some(digest)) {
+        if let Some(grpc_store) = store_info
+            .store
+            .downcast_ref::<GrpcStore>(Some(digest.into()))
+        {
             return grpc_store.update_action_result(Request::new(request)).await;
         }
 

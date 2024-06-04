@@ -26,7 +26,7 @@ use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::store_trait::{StoreKey, StoreLike};
 use prometheus_client::registry::Registry;
 use tonic::Request;
 
@@ -309,7 +309,10 @@ mod batch_read_blobs {
                             data: vec![].into(),
                             status: Some(GrpcStatus {
                                 code: Code::NotFound as i32,
-                                message: format!("Hash {} not found", digest3.hash),
+                                message: format!(
+                                    "Key {:?} not found",
+                                    StoreKey::from(DigestInfo::try_from(digest3)?)
+                                ),
                                 details: vec![],
                             }),
                             compressor: compressor::Value::Identity.into(),

@@ -16,12 +16,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use tokio::join;
 
 pub struct SizePartitioningStore {
@@ -48,13 +47,23 @@ impl SizePartitioningStore {
 impl StoreDriver for SizePartitioningStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        let (lower_digests, upper_digests): (Vec<_>, Vec<_>) = digests
-            .iter()
-            .cloned()
-            .partition(|digest| digest.size_bytes < self.partition_size);
+        let mut non_digest_sample = None;
+        let (lower_digests, upper_digests): (Vec<_>, Vec<_>) =
+            keys.iter().map(|v| v.borrow()).partition(|k| {
+                let StoreKey::Digest(digest) = k else {
+                    non_digest_sample = Some(k.borrow().into_owned());
+                    return false;
+                };
+                digest.size_bytes < self.partition_size
+            });
+        if let Some(non_digest) = non_digest_sample {
+            return Err(make_input_err!(
+                "SizePartitioningStore only supports Digest keys, got {non_digest:?}"
+            ));
+        }
         let (lower_results, upper_results) = join!(
             self.lower_store.has_many(&lower_digests),
             self.upper_store.has_many(&upper_digests),
@@ -68,7 +77,7 @@ impl StoreDriver for SizePartitioningStore {
         };
         let mut upper_digests = upper_digests.into_iter().peekable();
         let mut upper_results = upper_results?.into_iter();
-        for (digest, result) in digests.iter().zip(results.iter_mut()) {
+        for (digest, result) in keys.iter().zip(results.iter_mut()) {
             if Some(digest) == upper_digests.peek() {
                 upper_digests.next();
                 *result = upper_results
@@ -85,10 +94,18 @@ impl StoreDriver for SizePartitioningStore {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
+        let digest = match key {
+            StoreKey::Digest(digest) => digest,
+            other => {
+                return Err(make_input_err!(
+                    "SizePartitioningStore only supports Digest keys, got {other:?}"
+                ))
+            }
+        };
         if digest.size_bytes < self.partition_size {
             return self.lower_store.update(digest, reader, size_info).await;
         }
@@ -97,11 +114,19 @@ impl StoreDriver for SizePartitioningStore {
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
+        let digest = match key {
+            StoreKey::Digest(digest) => digest,
+            other => {
+                return Err(make_input_err!(
+                    "SizePartitioningStore only supports Digest keys, got {other:?}"
+                ))
+            }
+        };
         if digest.size_bytes < self.partition_size {
             return self
                 .lower_store
@@ -113,9 +138,13 @@ impl StoreDriver for SizePartitioningStore {
             .await
     }
 
-    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn StoreDriver {
-        let Some(digest) = digest else {
+    fn inner_store(&self, key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        let Some(key) = key else {
             return self;
+        };
+        let digest = match key {
+            StoreKey::Digest(digest) => digest,
+            _ => return self,
         };
         if digest.size_bytes < self.partition_size {
             return self.lower_store.inner_store(Some(digest));

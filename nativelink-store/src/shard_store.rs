@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::hash::{DefaultHasher, Hasher};
 use std::ops::BitXor;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -20,14 +21,13 @@ use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, TryStreamExt};
 use nativelink_error::{error_if, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
-use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::metrics_utils::Registry;
-use nativelink_util::store_trait::{Store, StoreDriver, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
 pub struct ShardStore {
     // The weights will always be in ascending order a specific store is choosen based on the
-    // the hash of the digest hash that is nearest-binary searched using the u32 as the index.
+    // the hash of the key hash that is nearest-binary searched using the u32 as the index.
     weights_and_stores: Vec<(u32, Store)>,
 }
 
@@ -67,48 +67,57 @@ impl ShardStore {
         })
     }
 
-    fn get_store_index(&self, digest: &DigestInfo) -> usize {
-        // Quote from std primitive array documentation:
-        //     Array’s try_from(slice) implementations (and the corresponding slice.try_into()
-        //     array implementations) succeed if the input slice length is the same as the result
-        //     array length. They optimize especially well when the optimizer can easily determine
-        //     the slice length, e.g. <[u8; 4]>::try_from(&slice[4..8]).unwrap(). Array implements
-        //     TryFrom returning.
-        let size_bytes = digest.size_bytes.to_le_bytes();
-        let key: u32 = 0
-            .bitxor(u32::from_le_bytes(
-                digest.packed_hash[0..4].try_into().unwrap(),
-            ))
-            .bitxor(u32::from_le_bytes(
-                digest.packed_hash[4..8].try_into().unwrap(),
-            ))
-            .bitxor(u32::from_le_bytes(
-                digest.packed_hash[8..12].try_into().unwrap(),
-            ))
-            .bitxor(u32::from_le_bytes(
-                digest.packed_hash[12..16].try_into().unwrap(),
-            ))
-            .bitxor(u32::from_le_bytes(
-                digest.packed_hash[16..20].try_into().unwrap(),
-            ))
-            .bitxor(u32::from_le_bytes(
-                digest.packed_hash[20..24].try_into().unwrap(),
-            ))
-            .bitxor(u32::from_le_bytes(
-                digest.packed_hash[24..28].try_into().unwrap(),
-            ))
-            .bitxor(u32::from_le_bytes(
-                digest.packed_hash[28..32].try_into().unwrap(),
-            ))
-            .bitxor(u32::from_le_bytes(size_bytes[0..4].try_into().unwrap()))
-            .bitxor(u32::from_le_bytes(size_bytes[4..8].try_into().unwrap()));
+    fn get_store_index(&self, store_key: &StoreKey) -> usize {
+        let key = match store_key {
+            StoreKey::Digest(digest) => {
+                // Quote from std primitive array documentation:
+                //     Array’s try_from(slice) implementations (and the corresponding slice.try_into()
+                //     array implementations) succeed if the input slice length is the same as the result
+                //     array length. They optimize especially well when the optimizer can easily determine
+                //     the slice length, e.g. <[u8; 4]>::try_from(&slice[4..8]).unwrap(). Array implements
+                //     TryFrom returning.
+                let size_bytes = digest.size_bytes.to_le_bytes();
+                0.bitxor(u32::from_le_bytes(
+                    digest.packed_hash[0..4].try_into().unwrap(),
+                ))
+                .bitxor(u32::from_le_bytes(
+                    digest.packed_hash[4..8].try_into().unwrap(),
+                ))
+                .bitxor(u32::from_le_bytes(
+                    digest.packed_hash[8..12].try_into().unwrap(),
+                ))
+                .bitxor(u32::from_le_bytes(
+                    digest.packed_hash[12..16].try_into().unwrap(),
+                ))
+                .bitxor(u32::from_le_bytes(
+                    digest.packed_hash[16..20].try_into().unwrap(),
+                ))
+                .bitxor(u32::from_le_bytes(
+                    digest.packed_hash[20..24].try_into().unwrap(),
+                ))
+                .bitxor(u32::from_le_bytes(
+                    digest.packed_hash[24..28].try_into().unwrap(),
+                ))
+                .bitxor(u32::from_le_bytes(
+                    digest.packed_hash[28..32].try_into().unwrap(),
+                ))
+                .bitxor(u32::from_le_bytes(size_bytes[0..4].try_into().unwrap()))
+                .bitxor(u32::from_le_bytes(size_bytes[4..8].try_into().unwrap()))
+            }
+            StoreKey::Str(s) => {
+                let mut hasher = DefaultHasher::new();
+                hasher.write(s.as_bytes());
+                let key_u64 = hasher.finish();
+                (key_u64 >> 32) as u32 // We only need the top 32 bits.
+            }
+        };
         self.weights_and_stores
             .binary_search_by_key(&key, |(weight, _)| *weight)
             .unwrap_or_else(|index| index)
     }
 
-    fn get_store(&self, digest: &DigestInfo) -> &Store {
-        let index = self.get_store_index(digest);
+    fn get_store(&self, key: &StoreKey) -> &Store {
+        let index = self.get_store_index(key);
         &self.weights_and_stores[index].1
     }
 }
@@ -117,54 +126,53 @@ impl ShardStore {
 impl StoreDriver for ShardStore {
     async fn has_with_results(
         self: Pin<&Self>,
-        digests: &[DigestInfo],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        if digests.len() == 1 {
-            // Hot path: It is very common to lookup only one digest.
-            let store_idx = self.get_store_index(&digests[0]);
+        if keys.len() == 1 {
+            // Hot path: It is very common to lookup only one key.
+            let store_idx = self.get_store_index(&keys[0]);
             let store = &self.weights_and_stores[store_idx].1;
             return store
-                .has_with_results(digests, results)
+                .has_with_results(keys, results)
                 .await
                 .err_tip(|| "In ShardStore::has_with_results() for store {store_idx}}");
         }
-        type DigestIdxVec = Vec<usize>;
-        type DigestVec = Vec<DigestInfo>;
-        let mut digests_for_store: Vec<(DigestIdxVec, DigestVec)> = self
+        type KeyIdxVec = Vec<usize>;
+        type KeyVec<'a> = Vec<StoreKey<'a>>;
+        let mut keys_for_store: Vec<(KeyIdxVec, KeyVec)> = self
             .weights_and_stores
             .iter()
             .map(|_| (Vec::new(), Vec::new()))
             .collect();
-        // Bucket each digest into the store that it belongs to.
-        digests
-            .iter()
+        // Bucket each key into the store that it belongs to.
+        keys.iter()
             .enumerate()
-            .map(|(digest_idx, digest)| (digest, digest_idx, self.get_store_index(digest)))
-            .for_each(|(digest, digest_idx, store_idx)| {
-                digests_for_store[store_idx].0.push(digest_idx);
-                digests_for_store[store_idx].1.push(*digest);
+            .map(|(key_idx, key)| (key, key_idx, self.get_store_index(key)))
+            .for_each(|(key, key_idx, store_idx)| {
+                keys_for_store[store_idx].0.push(key_idx);
+                keys_for_store[store_idx].1.push(key.borrow());
             });
 
         // Build all our futures for each store.
-        let mut future_stream: FuturesUnordered<_> = digests_for_store
+        let mut future_stream: FuturesUnordered<_> = keys_for_store
             .into_iter()
             .enumerate()
-            .map(|(store_idx, (digest_idxs, digests))| async move {
+            .map(|(store_idx, (key_idxs, keys))| async move {
                 let store = &self.weights_and_stores[store_idx].1;
-                let mut inner_results = vec![None; digests.len()];
+                let mut inner_results = vec![None; keys.len()];
                 store
-                    .has_with_results(&digests, &mut inner_results)
+                    .has_with_results(&keys, &mut inner_results)
                     .await
                     .err_tip(|| "In ShardStore::has_with_results() for store {store_idx}")?;
-                Result::<_, Error>::Ok((digest_idxs, inner_results))
+                Result::<_, Error>::Ok((key_idxs, inner_results))
             })
             .collect();
 
         // Wait for all the stores to finish and populate our output results.
-        while let Some((digest_idxs, inner_results)) = future_stream.try_next().await? {
-            for (digest_idx, inner_result) in digest_idxs.into_iter().zip(inner_results) {
-                results[digest_idx] = inner_result;
+        while let Some((key_idxs, inner_results)) = future_stream.try_next().await? {
+            for (key_idx, inner_result) in key_idxs.into_iter().zip(inner_results) {
+                results[key_idx] = inner_result;
             }
         }
         Ok(())
@@ -172,37 +180,37 @@ impl StoreDriver for ShardStore {
 
     async fn update(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let store = self.get_store(&digest);
+        let store = self.get_store(&key);
         store
-            .update(digest, reader, size_info)
+            .update(key, reader, size_info)
             .await
             .err_tip(|| "In ShardStore::update()")
     }
 
     async fn get_part(
         self: Pin<&Self>,
-        digest: DigestInfo,
+        key: StoreKey<'_>,
         writer: &mut DropCloserWriteHalf,
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        let store = self.get_store(&digest);
+        let store = self.get_store(&key);
         store
-            .get_part(digest, writer, offset, length)
+            .get_part(key, writer, offset, length)
             .await
             .err_tip(|| "In ShardStore::get_part()")
     }
 
-    fn inner_store(&self, digest: Option<DigestInfo>) -> &'_ dyn StoreDriver {
-        let Some(digest) = digest else {
+    fn inner_store(&self, key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        let Some(key) = key else {
             return self;
         };
-        let index = self.get_store_index(&digest);
-        self.weights_and_stores[index].1.inner_store(Some(digest))
+        let index = self.get_store_index(&key);
+        self.weights_and_stores[index].1.inner_store(Some(key))
     }
 
     fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {

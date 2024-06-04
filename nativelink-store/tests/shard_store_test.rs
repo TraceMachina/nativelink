@@ -127,7 +127,7 @@ mod shard_store_tests {
 
         assert_eq!(
             shard_store
-                .has_many(&[missing_digest1, missing_digest2])
+                .has_many(&[missing_digest1.into(), missing_digest2.into()])
                 .await,
             Ok(vec![None, None])
         );
@@ -146,7 +146,9 @@ mod shard_store_tests {
             .await?;
 
         assert_eq!(
-            shard_store.has_many(&[digest1, missing_digest]).await,
+            shard_store
+                .has_many(&[digest1.into(), missing_digest.into()])
+                .await,
             Ok(vec![Some(MEGABYTE_SZ), None])
         );
         Ok(())
@@ -168,7 +170,9 @@ mod shard_store_tests {
             .await?;
 
         assert_eq!(
-            shard_store.has_many(&[digest1, digest2]).await,
+            shard_store
+                .has_many(&[digest1.into(), digest2.into()])
+                .await,
             Ok(vec![Some(original_data1.len()), Some(original_data2.len())])
         );
         Ok(())

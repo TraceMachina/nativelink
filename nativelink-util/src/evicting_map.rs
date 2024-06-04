@@ -250,9 +250,13 @@ where
     }
 
     /// Return the size of a `key`, if not found `None` is returned.
-    pub async fn size_for_key(&self, key: &impl Borrow<K>) -> Option<usize> {
+    pub async fn size_for_key<Q>(&self, key: &Q) -> Option<usize>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + Debug,
+    {
         let mut results = [None];
-        self.sizes_for_keys([key.borrow()], &mut results[..]).await;
+        self.sizes_for_keys([key], &mut results[..]).await;
         results[0]
     }
 
@@ -260,10 +264,17 @@ where
     /// to be provided for storing the resulting key sizes. Each index value in
     /// `keys` maps directly to the size value for the key in `results`.
     /// If no key is found in the internal map, `None` is filled in its place.
-    pub async fn sizes_for_keys<It, RefKey>(&self, keys: It, results: &mut [Option<usize>])
+    pub async fn sizes_for_keys<It, Q, R>(&self, keys: It, results: &mut [Option<usize>])
     where
-        It: IntoIterator<Item = RefKey>,
-        RefKey: Borrow<K>,
+        It: IntoIterator<Item = R>,
+        // This may look strange, but what we are doing is saying:
+        // * `K` must be able to borrow `Q`
+        // * `R` (the input stream item type) must also be able to borrow `Q`
+        // Note: That K and R do not need to be the same type, they just both need
+        // to be able to borrow a `Q`.
+        K: Borrow<Q>,
+        R: Borrow<Q>,
+        Q: Hash + Eq + Debug,
     {
         let mut state = self.state.lock().await;
 
@@ -296,7 +307,11 @@ where
         }
     }
 
-    pub async fn get(&self, key: &impl Borrow<K>) -> Option<T> {
+    pub async fn get<Q>(&self, key: &Q) -> Option<T>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + Debug,
+    {
         let mut state = self.state.lock().await;
         self.evict_items(state.deref_mut()).await;
 
@@ -365,12 +380,20 @@ where
         replaced_items
     }
 
-    pub async fn remove(&self, key: &impl Borrow<K>) -> bool {
+    pub async fn remove<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + Debug,
+    {
         let mut state = self.state.lock().await;
         self.inner_remove(&mut state, key).await
     }
 
-    async fn inner_remove(&self, mut state: &mut State<K, T>, key: &impl Borrow<K>) -> bool {
+    async fn inner_remove<Q>(&self, mut state: &mut State<K, T>, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + Debug,
+    {
         self.evict_items(state.deref_mut()).await;
         if let Some(entry) = state.lru.pop(key.borrow()) {
             state.remove(&entry, false).await;
@@ -381,7 +404,11 @@ where
 
     /// Same as remove(), but allows for a conditional to be applied to the entry before removal
     /// in an atomic fashion.
-    pub async fn remove_if<F: FnOnce(&T) -> bool>(&self, key: &impl Borrow<K>, cond: F) -> bool {
+    pub async fn remove_if<Q, F: FnOnce(&T) -> bool>(&self, key: &Q, cond: F) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + Debug,
+    {
         let mut state = self.state.lock().await;
         if let Some(entry) = state.lru.get(key.borrow()) {
             if !cond(&entry.data) {
