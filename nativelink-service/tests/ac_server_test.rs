@@ -27,7 +27,7 @@ use nativelink_service::ac_server::AcServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::StoreLike;
 use prometheus_client::registry::Registry;
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
@@ -37,7 +37,7 @@ const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789a
 const HASH1_SIZE: i64 = 147;
 
 async fn insert_into_store<T: Message>(
-    store: Pin<&dyn Store>,
+    store: Pin<&impl StoreLike>,
     hash: &str,
     action_size: i64,
     action_result: &T,
@@ -138,15 +138,14 @@ mod get_action_result {
     async fn has_single_item() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
-        let ac_store_owned = store_manager.get_store("main_ac").unwrap();
+        let ac_store = store_manager.get_store("main_ac").unwrap();
 
         let action_result = ActionResult {
             exit_code: 45,
             ..Default::default()
         };
 
-        let ac_store = Pin::new(ac_store_owned.as_ref());
-        insert_into_store(ac_store, HASH1, HASH1_SIZE, &action_result).await?;
+        insert_into_store(ac_store.as_pin(), HASH1, HASH1_SIZE, &action_result).await?;
         let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
 
         assert!(
@@ -161,15 +160,14 @@ mod get_action_result {
     async fn single_item_wrong_digest_size() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
-        let ac_store_owned = store_manager.get_store("main_ac").unwrap();
+        let ac_store = store_manager.get_store("main_ac").unwrap();
 
         let action_result = ActionResult {
             exit_code: 45,
             ..Default::default()
         };
 
-        let ac_store = Pin::new(ac_store_owned.as_ref());
-        insert_into_store(ac_store, HASH1, HASH1_SIZE, &action_result).await?;
+        insert_into_store(ac_store.as_pin(), HASH1, HASH1_SIZE, &action_result).await?;
         let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE - 1).await;
 
         let err = raw_response.unwrap_err();
@@ -215,7 +213,7 @@ mod update_action_result {
     async fn one_item_update_test() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let ac_server = make_ac_server(&store_manager)?;
-        let ac_store_owned = store_manager.get_store("main_ac").unwrap();
+        let ac_store = store_manager.get_store("main_ac").unwrap();
 
         let action_result = ActionResult {
             exit_code: 45,
@@ -241,7 +239,6 @@ mod update_action_result {
         assert_eq!(raw_response.unwrap().into_inner(), action_result);
 
         let digest = DigestInfo::try_new(HASH1, size_bytes)?;
-        let ac_store = Pin::new(ac_store_owned.as_ref());
         let raw_data = ac_store.get_part_unchunked(digest, 0, None).await?;
 
         let decoded_action_result = ActionResult::decode(raw_data)?;

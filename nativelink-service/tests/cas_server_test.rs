@@ -26,6 +26,7 @@ use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::store_trait::StoreLike;
 use prometheus_client::registry::Registry;
 use tonic::Request;
 
@@ -95,11 +96,10 @@ mod find_missing_blobs {
     async fn store_one_item_existence() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
+        let store = store_manager.get_store("main_cas").unwrap();
 
         const VALUE: &str = "1";
 
-        let store = Pin::new(store_owned.as_ref());
         store
             .update_oneshot(DigestInfo::try_new(HASH1, VALUE.len())?, VALUE.into())
             .await?;
@@ -123,11 +123,10 @@ mod find_missing_blobs {
     async fn has_three_requests_one_bad_hash() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
+        let store = store_manager.get_store("main_cas").unwrap();
 
         const VALUE: &str = "1";
 
-        let store = Pin::new(store_owned.as_ref());
         store
             .update_oneshot(DigestInfo::try_new(HASH1, VALUE.len())?, VALUE.into())
             .await?;
@@ -174,7 +173,7 @@ mod batch_update_blobs {
     async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
+        let store = store_manager.get_store("main_cas").unwrap();
 
         const VALUE1: &str = "1";
         const VALUE2: &str = "2";
@@ -184,7 +183,6 @@ mod batch_update_blobs {
             size_bytes: VALUE2.len() as i64,
         };
 
-        let store = Pin::new(store_owned.as_ref());
         store
             .update_oneshot(DigestInfo::try_new(HASH1, VALUE1.len())?, VALUE1.into())
             .await
@@ -243,7 +241,7 @@ mod batch_read_blobs {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
+        let store = store_manager.get_store("main_cas").unwrap();
 
         const VALUE1: &str = "1";
         const VALUE2: &str = "23";
@@ -258,7 +256,6 @@ mod batch_read_blobs {
         };
         {
             // Insert dummy data.
-            let store = Pin::new(store_owned.as_ref());
             store
                 .update_oneshot(DigestInfo::try_new(HASH1, VALUE1.len())?, VALUE1.into())
                 .await
@@ -331,7 +328,6 @@ mod get_tree {
         digest_function, Directory, DirectoryNode, GetTreeRequest, GetTreeResponse, NodeProperties,
     };
     use nativelink_util::digest_hasher::DigestHasherFunc;
-    use nativelink_util::store_trait::Store;
     use pretty_assertions::assert_eq; // Must be declared in every module.
     use prost_types::Timestamp;
 
@@ -344,7 +340,7 @@ mod get_tree {
         sub_directory_digest_infos: Vec<DigestInfo>,
     }
     async fn setup_directory_structure(
-        store_pinned: Pin<&dyn Store>,
+        store_pinned: Pin<&impl StoreLike>,
     ) -> Result<SetupDirectoryResult, Error> {
         // Set up 5 sub-directories.
         const SUB_DIRECTORIES_LENGTH: i32 = 5;
@@ -406,8 +402,7 @@ mod get_tree {
     async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-        let store_pinned = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         // Setup directory structure.
         let SetupDirectoryResult {
@@ -415,7 +410,7 @@ mod get_tree {
             root_directory_digest_info,
             sub_directories,
             sub_directory_digest_infos: _,
-        } = setup_directory_structure(store_pinned).await?;
+        } = setup_directory_structure(store.as_pin()).await?;
 
         // Must work when paging is disabled ( `page_size` is 0 ).
         // It reads all directories at once.
@@ -460,8 +455,7 @@ mod get_tree {
     async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn std::error::Error>> {
         let store_manager = make_store_manager().await?;
         let cas_server = make_cas_server(&store_manager)?;
-        let store_owned = store_manager.get_store("main_cas").unwrap();
-        let store_pinned = Pin::new(store_owned.as_ref());
+        let store = store_manager.get_store("main_cas").unwrap();
 
         // Setup directory structure.
         let SetupDirectoryResult {
@@ -469,7 +463,7 @@ mod get_tree {
             root_directory_digest_info,
             sub_directories,
             sub_directory_digest_infos,
-        } = setup_directory_structure(store_pinned).await?;
+        } = setup_directory_structure(store.as_pin()).await?;
 
         // Must work when paging is enabled ( `page_size` is 2 ).
         // First, it reads `root_directory` and `sub_directory[0]`.

@@ -380,14 +380,15 @@ pub struct LocalWorker<T: WorkerApiClientTrait, U: RunningActionsManager> {
 /// `FastSlowStore` and will be checked at runtime.
 pub async fn new_local_worker(
     config: Arc<LocalWorkerConfig>,
-    cas_store: Arc<dyn Store>,
-    ac_store: Option<Arc<dyn Store>>,
-    historical_store: Arc<dyn Store>,
+    cas_store: Store,
+    ac_store: Option<Store>,
+    historical_store: Store,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
-    let any_store = cas_store.inner_store_arc(None).as_any_arc();
-    let fast_slow_store = any_store.downcast::<FastSlowStore>().map_err(|_| {
-        make_input_err!("Expected store for LocalWorker's store to be a FastSlowStore")
-    })?;
+    let fast_slow_store = cas_store
+        .downcast_ref::<FastSlowStore>(None)
+        .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
+        .get_arc()
+        .err_tip(|| "FastSlowStore's Arc doesn't exist")?;
 
     if let Ok(path) = fs::canonicalize(&config.work_directory).await {
         fs::remove_dir_all(path)

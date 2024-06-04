@@ -23,7 +23,7 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::StoreLike;
 use sha2::{Digest, Sha256};
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
@@ -44,8 +44,7 @@ mod memory_store_tests {
     async fn insert_one_item_then_update() -> Result<(), Error> {
         const VALUE1: &str = "13";
         const VALUE2: &str = "23";
-        let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
-        let store = Pin::new(&store_owned);
+        let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
 
         // Insert dummy value into store.
         store
@@ -258,9 +257,9 @@ mod memory_store_tests {
 
         let _drop_guard = spawn!("get_part_is_zero_digest", async move {
             let _ = Pin::new(store_clone.as_ref())
-                .get_part_ref(digest, &mut writer, 0, None)
+                .get_part(digest, &mut writer, 0, None)
                 .await
-                .err_tip(|| "Failed to get_part_ref");
+                .err_tip(|| "Failed to get_part");
         });
 
         let file_data = reader
@@ -290,7 +289,7 @@ mod memory_store_tests {
             .as_ref()
             .has_with_results(&digests, &mut results)
             .await
-            .err_tip(|| "Failed to get_part_ref");
+            .err_tip(|| "Failed to get_part");
         assert_eq!(results, vec!(Some(0)));
 
         Ok(())

@@ -27,7 +27,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{Store, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, UploadSizeInfo};
 use redis::aio::{ConnectionLike, ConnectionManager};
 use redis::AsyncCommands;
 
@@ -112,7 +112,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync> RedisStore<T> {
 }
 
 #[async_trait]
-impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> Store for RedisStore<T> {
+impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for RedisStore<T> {
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[DigestInfo],
@@ -223,7 +223,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> Store for RedisS
         Ok(())
     }
 
-    async fn get_part_ref(
+    async fn get_part(
         self: Pin<&Self>,
         digest: DigestInfo,
         writer: &mut DropCloserWriteHalf,
@@ -235,7 +235,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> Store for RedisS
         if is_zero_digest(&digest) {
             writer
                 .send_eof()
-                .err_tip(|| "Failed to send zero EOF in redis store get_part_ref")?;
+                .err_tip(|| "Failed to send zero EOF in redis store get_part")?;
             return Ok(());
         }
 
@@ -245,7 +245,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> Store for RedisS
                 .exists::<_, bool>(digest_to_key(&digest))
                 .await
                 .map_err(from_redis_err)
-                .err_tip(|| "In RedisStore::get_part_ref::zero_exists")?;
+                .err_tip(|| "In RedisStore::get_part::zero_exists")?;
             if !exists {
                 return Err(make_err!(
                     Code::NotFound,
@@ -255,14 +255,14 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> Store for RedisS
             }
             writer
                 .send_eof()
-                .err_tip(|| "Failed to write EOF in redis store get_part_ref")?;
+                .err_tip(|| "Failed to write EOF in redis store get_part")?;
             return Ok(());
         }
 
         let mut current_start = isize::try_from(offset)
-            .err_tip(|| "Cannot convert offset to isize in RedisStore::get_part_ref()")?;
+            .err_tip(|| "Cannot convert offset to isize in RedisStore::get_part()")?;
         let max_length = isize::try_from(length.unwrap_or(isize::MAX as usize))
-            .err_tip(|| "Cannot convert length to isize in RedisStore::get_part_ref()")?;
+            .err_tip(|| "Cannot convert length to isize in RedisStore::get_part()")?;
         let end_position = current_start.saturating_add(max_length);
 
         loop {
@@ -273,7 +273,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> Store for RedisS
                 .getrange::<_, Bytes>(digest_to_key(&digest), current_start, current_end)
                 .await
                 .map_err(from_redis_err)
-                .err_tip(|| "In RedisStore::get_part_ref::getrange")?;
+                .err_tip(|| "In RedisStore::get_part::getrange")?;
 
             if chunk.is_empty() {
                 writer
@@ -308,11 +308,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> Store for RedisS
         Ok(())
     }
 
-    fn inner_store(&self, _digest: Option<DigestInfo>) -> &'_ dyn Store {
-        self
-    }
-
-    fn inner_store_arc(self: Arc<Self>, _digest: Option<DigestInfo>) -> Arc<dyn Store> {
+    fn inner_store(&self, _digest: Option<DigestInfo>) -> &dyn StoreDriver {
         self
     }
 
@@ -346,7 +342,7 @@ impl<T: ConnectionLike + ConnectionLike + Unpin + Clone + Send + Sync + 'static>
     }
 
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
-        Store::check_health(Pin::new(self), namespace).await
+        StoreDriver::check_health(Pin::new(self), namespace).await
     }
 }
 

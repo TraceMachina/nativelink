@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
 use std::sync::Arc;
 
 use nativelink_error::{Code, Error, ResultExt};
@@ -20,7 +19,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_store::dedup_store::DedupStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreLike};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
@@ -58,16 +57,15 @@ mod dedup_store_tests {
 
     #[nativelink_test]
     async fn simple_round_trip_test() -> Result<(), Error> {
-        let store_owned = DedupStore::new(
+        let store = DedupStore::new(
             &make_default_config(),
-            Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )), // Index store.
-            Arc::new(MemoryStore::new(
+            ))), // Index store.
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )), // Content store.
+            ))), // Content store.
         );
-        let store = Pin::new(&store_owned);
 
         let original_data = make_random_data(MEGABYTE_SZ);
         let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
@@ -91,14 +89,13 @@ mod dedup_store_tests {
         let content_store = Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
         ));
-        let store_owned = DedupStore::new(
+        let store = DedupStore::new(
             &make_default_config(),
-            Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )), // Index store.
-            content_store.clone(),
+            ))), // Index store.
+            Store::new(content_store.clone()),
         );
-        let store = Pin::new(&store_owned);
 
         let original_data = make_random_data(MEGABYTE_SZ);
         let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
@@ -134,16 +131,15 @@ mod dedup_store_tests {
     /// requested data; this test covers that use case.
     #[nativelink_test]
     async fn fetch_part_test() -> Result<(), Error> {
-        let store_owned = DedupStore::new(
+        let store = DedupStore::new(
             &make_default_config(),
-            Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )), // Index store.
-            Arc::new(MemoryStore::new(
+            ))), // Index store.
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )), // Content store.
+            ))), // Content store.
         );
-        let store = Pin::new(&store_owned);
 
         const DATA_SIZE: usize = MEGABYTE_SZ / 4;
         let original_data = make_random_data(DATA_SIZE);
@@ -176,7 +172,7 @@ mod dedup_store_tests {
     #[nativelink_test]
     async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test(
     ) -> Result<(), Error> {
-        let store_owned = DedupStore::new(
+        let store = DedupStore::new(
             &nativelink_config::stores::DedupStore {
                 index_store: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -189,14 +185,13 @@ mod dedup_store_tests {
                 max_size: 7,
                 max_concurrent_fetch_per_get: 10,
             },
-            Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )), // Index store.
-            Arc::new(MemoryStore::new(
+            ))), // Index store.
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )), // Content store.
+            ))), // Content store.
         );
-        let store = Pin::new(&store_owned);
 
         const DATA_SIZE: usize = 30;
         let original_data = make_random_data(DATA_SIZE);
@@ -229,7 +224,7 @@ mod dedup_store_tests {
 
     #[nativelink_test]
     async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
-        let store_owned = DedupStore::new(
+        let store = DedupStore::new(
             &nativelink_config::stores::DedupStore {
                 index_store: nativelink_config::stores::StoreConfig::memory(
                     nativelink_config::stores::MemoryStore::default(),
@@ -242,14 +237,13 @@ mod dedup_store_tests {
                 max_size: 7,
                 max_concurrent_fetch_per_get: 10,
             },
-            Arc::new(MemoryStore::new(
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )), // Index store.
-            Arc::new(MemoryStore::new(
+            ))), // Index store.
+            Store::new(Arc::new(MemoryStore::new(
                 &nativelink_config::stores::MemoryStore::default(),
-            )), // Content store.
+            ))), // Content store.
         );
-        let store = Pin::new(&store_owned);
 
         const DATA_SIZE: usize = 30;
         let original_data = make_random_data(DATA_SIZE);
@@ -320,26 +314,22 @@ mod dedup_store_tests {
 
         let store = DedupStore::new(
             &make_default_config(),
-            index_store.clone(),
-            content_store.clone(),
+            Store::new(index_store.clone()),
+            Store::new(content_store.clone()),
         );
-        let store_pin = Pin::new(&store);
 
         const DATA_SIZE: usize = MEGABYTE_SZ / 4;
         let original_data = make_random_data(DATA_SIZE);
         let digest1 = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
-        store_pin
+        store
             .update_oneshot(digest1, original_data.clone().into())
             .await
             .err_tip(|| "Failed to write data to dedup store")?;
 
         {
             // Check to ensure we our baseline `.has()` succeeds.
-            let size_info = store_pin
-                .has(digest1)
-                .await
-                .err_tip(|| "Failed to run .has")?;
+            let size_info = store.has(digest1).await.err_tip(|| "Failed to run .has")?;
             assert_eq!(size_info, Some(DATA_SIZE), "Expected sizes to match");
         }
         {
@@ -348,25 +338,19 @@ mod dedup_store_tests {
             // By doing this, we now check that it returns false when we call `.has()`.
             const DATA2: &str = "1234";
             let digest2 = DigestInfo::try_new(VALID_HASH2, DATA2.len()).unwrap();
-            store_pin
+            store
                 .update_oneshot(digest2, DATA2.into())
                 .await
                 .err_tip(|| "Failed to write data to dedup store")?;
 
             {
                 // Check our recently added entry is still valid.
-                let size_info = store_pin
-                    .has(digest2)
-                    .await
-                    .err_tip(|| "Failed to run .has")?;
+                let size_info = store.has(digest2).await.err_tip(|| "Failed to run .has")?;
                 assert_eq!(size_info, Some(DATA2.len()), "Expected sizes to match");
             }
             {
                 // Check our first added entry is now invalid (because part of it was evicted).
-                let size_info = store_pin
-                    .has(digest1)
-                    .await
-                    .err_tip(|| "Failed to run .has")?;
+                let size_info = store.has(digest1).await.err_tip(|| "Failed to run .has")?;
                 assert_eq!(
                     size_info, None,
                     "Expected .has() to return None (not found)"
@@ -393,19 +377,15 @@ mod dedup_store_tests {
 
         let store = DedupStore::new(
             &make_default_config(),
-            index_store.clone(),
-            content_store.clone(),
+            Store::new(index_store.clone()),
+            Store::new(content_store.clone()),
         );
-        let store_pin = Pin::new(&store);
 
         const DATA_SIZE: usize = 10;
         let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
 
         {
-            let size_info = store_pin
-                .has(digest)
-                .await
-                .err_tip(|| "Failed to run .has")?;
+            let size_info = store.has(digest).await.err_tip(|| "Failed to run .has")?;
             assert_eq!(
                 size_info, None,
                 "Expected None to be returned, got {:?}",
