@@ -48,6 +48,7 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/ac_server_test.rs",
+        "tests/bep_server_test.rs",
         "tests/bytestream_server_test.rs",
         "tests/cas_server_test.rs",
         "tests/worker_api_server_test.rs",
