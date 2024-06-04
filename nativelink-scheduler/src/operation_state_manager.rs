@@ -43,6 +43,9 @@ pub trait ActionStateResult: Send + Sync + 'static {
     async fn as_state(&self) -> Result<Arc<ActionState>, Error>;
     // Subscribes to the state of the action, receiving updates as they are published.
     async fn as_receiver(&self) -> Result<&'_ watch::Receiver<Arc<ActionState>>, Error>;
+    // Provide result as action info. This behavior will not be supported by all implementations.
+    // TODO(adams): Expectation is this to experimental and removed in the future.
+    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error>;
 }
 
 /// The filters used to query operations from the state manager.
@@ -70,8 +73,26 @@ pub struct OperationFilter {
     /// The operation must have it's last client update before this time.
     pub last_client_update_before: Option<SystemTime>,
 
-    /* Why is this now not optional?*/
+    /// The unique key for filtering specific action results.
     pub unique_qualifier: Option<ActionInfoHashKey>,
+
+    /// The order by in which results are returned by the filter operation.
+    pub order_by: Option<OrderBy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum OperationFields {
+    Priority,
+    Timestamp,
+}
+
+/// The order in which results are returned by the filter operation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OrderBy {
+    /// The fields to order by, each field is ordered in the order they are provided.
+    pub fields: Vec<OperationFields>,
+    /// The order of the fields, true for descending, false for ascending.
+    pub desc: bool,
 }
 
 pub type ActionStateResultStream = Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>;
