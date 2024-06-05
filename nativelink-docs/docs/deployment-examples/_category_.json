@@ -1,6 +1,8 @@
 {
   "label": "Deployment Examples",
-  "position": 2,
+  "position": 4,
+  "collapsible": true,
+  "collapsed": false,
   "link": {
     "type": "generated-index",
     "description": "See the capabilities of remote execution and cache."
