@@ -14,17 +14,39 @@
 
 use std::sync::Arc;
 
+use futures::StreamExt;
+use hyper::Body;
 use nativelink_config::cas_server::BepConfig;
-use nativelink_error::Error;
+use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
-use nativelink_service::bep_server::BepServer;
+use nativelink_proto::google::devtools::build::v1::build_event::console_output::Output;
+use nativelink_proto::google::devtools::build::v1::build_event::{
+    BuildEnqueued, BuildFinished, ConsoleOutput, Event, InvocationAttemptFinished,
+    InvocationAttemptStarted,
+};
+use nativelink_proto::google::devtools::build::v1::publish_build_event_server::PublishBuildEvent;
+use nativelink_proto::google::devtools::build::v1::publish_lifecycle_event_request::ServiceLevel;
+use nativelink_proto::google::devtools::build::v1::stream_id::BuildComponent;
+use nativelink_proto::google::devtools::build::v1::{
+    build_status, BuildEvent, BuildStatus, ConsoleOutputStream, OrderedBuildEvent,
+    PublishBuildToolEventStreamRequest, PublishLifecycleEventRequest, StreamId,
+};
+use nativelink_service::bep_server::{get_stream_digest, BepServer};
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::common::encode_stream_proto;
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
+use pretty_assertions::assert_eq;
 use prometheus_client::registry::Registry;
-use tonic::Request;
+use prost::Message;
+use prost_types::Timestamp;
+use tonic::codec::{Codec, ProstCodec};
+use tonic::{Request, Streaming};
 
 const BEP_STORE_NAME: &str = "main_bep";
 
+/// Utility function to construct a [`StoreManager`]
 async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     let store_manager = Arc::new(StoreManager::new());
     store_manager.add_store(
@@ -42,6 +64,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     Ok(store_manager)
 }
 
+/// Utility function to construct a [`BepServer`]
 fn make_bep_server(store_manager: &StoreManager) -> Result<BepServer, Error> {
     BepServer::new(
         &BepConfig {
@@ -51,167 +74,102 @@ fn make_bep_server(store_manager: &StoreManager) -> Result<BepServer, Error> {
     )
 }
 
-#[cfg(test)]
-mod event_request {
-    use nativelink_proto::google::devtools::build::v1::build_event::console_output::Output;
-    use nativelink_proto::google::devtools::build::v1::build_event::{ConsoleOutput, Event};
-    use nativelink_proto::google::devtools::build::v1::publish_build_event_server::PublishBuildEvent;
-    use nativelink_proto::google::devtools::build::v1::publish_lifecycle_event_request::ServiceLevel;
-    use nativelink_proto::google::devtools::build::v1::stream_id::BuildComponent;
-    use nativelink_proto::google::devtools::build::v1::{
-        BuildEvent, ConsoleOutputStream, OrderedBuildEvent, PublishLifecycleEventRequest, StreamId,
-    };
-    use nativelink_service::bep_server::get_stream_digest;
-    use nativelink_util::buf_channel::make_buf_channel_pair;
-    use pretty_assertions::assert_eq;
-    use prost::Message;
-    use prost_types::Timestamp;
-
-    use super::*;
-
-    /// Asserts that a gRPC request for a [`PublishLifecycleEventRequest`] is correctly dumped into a [`Store`]
-    #[nativelink_test]
-    async fn bep_server_emits_events() -> Result<(), Box<dyn std::error::Error>> {
-        let store_manager = make_store_manager().await?;
-        let bep_server = make_bep_server(&store_manager)?;
-        let bep_store = store_manager.get_store(BEP_STORE_NAME).unwrap();
-
-        let stream_id = StreamId {
-            build_id: "some-build-id".to_string(),
-            invocation_id: "some-invocation-id".to_string(),
-            component: BuildComponent::Controller as i32,
-        };
-        let digest = get_stream_digest(&stream_id).unwrap();
-
-        let request = PublishLifecycleEventRequest {
-            service_level: ServiceLevel::Interactive as i32,
-            build_event: Some(OrderedBuildEvent {
-                stream_id: Some(stream_id),
-                sequence_number: 1,
-                event: Some(BuildEvent {
-                    event_time: Some(Timestamp::date(1999, 1, 6).unwrap()),
-                    event: Some(Event::ConsoleOutput(ConsoleOutput {
-                        r#type: ConsoleOutputStream::Stdout as i32,
-                        output: Some(Output::TextOutput(
-                            "Here's some text that's been printed to stdout".to_string(),
-                        )),
-                    })),
-                }),
-            }),
-            stream_timeout: None,
-            notification_keywords: vec!["testing".to_string(), "console".to_string()],
-            project_id: "some-project-id".to_string(),
-            check_preceding_lifecycle_events_present: false,
-        };
-
-        let raw_response = bep_server
-            .publish_lifecycle_event(Request::new(request.clone()))
-            .await;
-
-        assert!(raw_response.is_ok());
-
-        let (writer, mut reader) = make_buf_channel_pair();
-
-        let part_result = bep_store.get_part_arc(digest, writer, 0, None).await;
-        assert!(part_result.is_ok());
-
-        let read_result = reader.recv().await;
-        assert!(read_result.is_ok());
-
-        let bytes = read_result.unwrap();
-        let decoded_request_result = PublishLifecycleEventRequest::decode(bytes);
-        assert!(decoded_request_result.is_ok());
-
-        let decoded_request = decoded_request_result.unwrap();
-        assert_eq!(request, decoded_request);
-
-        Ok(())
-    }
+fn get_bep_store(store_manager: &StoreManager) -> Result<Store, Error> {
+    store_manager
+        .get_store(BEP_STORE_NAME)
+        .err_tip(|| format!("While retrieving bep_store {BEP_STORE_NAME}"))
 }
 
-#[cfg(test)]
-mod event_request_stream {
-    use std::io;
-    use std::pin::Pin;
+/// Asserts that a gRPC request for a [`PublishLifecycleEventRequest`] is correctly dumped into a [`Store`]
+#[nativelink_test]
+async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let bep_server = make_bep_server(&store_manager)?;
+    let bep_store = get_bep_store(&store_manager)?;
 
-    use futures::{Future, Sink, SinkExt, Stream, StreamExt};
-    use hyper::Body;
-    use nativelink_proto::google::devtools::build::v1::build_event::console_output::Output;
-    use nativelink_proto::google::devtools::build::v1::build_event::{
-        BuildEnqueued, BuildFinished, ConsoleOutput, Event, InvocationAttemptFinished,
-        InvocationAttemptStarted,
+    let stream_id = StreamId {
+        build_id: "some-build-id".to_string(),
+        invocation_id: "some-invocation-id".to_string(),
+        component: BuildComponent::Controller as i32,
     };
-    use nativelink_proto::google::devtools::build::v1::publish_build_event_server::PublishBuildEvent;
-    use nativelink_proto::google::devtools::build::v1::stream_id::BuildComponent;
-    use nativelink_proto::google::devtools::build::v1::{
-        build_status, BuildEvent, BuildStatus, ConsoleOutputStream, OrderedBuildEvent,
-        PublishBuildToolEventStreamRequest, PublishBuildToolEventStreamResponse, StreamId,
+    let digest = get_stream_digest(&stream_id)?;
+
+    let request = PublishLifecycleEventRequest {
+        service_level: ServiceLevel::Interactive as i32,
+        build_event: Some(OrderedBuildEvent {
+            stream_id: Some(stream_id),
+            sequence_number: 1,
+            event: Some(BuildEvent {
+                event_time: Some(Timestamp::date(1999, 1, 6)?),
+                event: Some(Event::ConsoleOutput(ConsoleOutput {
+                    r#type: ConsoleOutputStream::Stdout as i32,
+                    output: Some(Output::TextOutput(
+                        "Here's some text that's been printed to stdout".to_string(),
+                    )),
+                })),
+            }),
+        }),
+        stream_timeout: None,
+        notification_keywords: vec!["testing".to_string(), "console".to_string()],
+        project_id: "some-project-id".to_string(),
+        check_preceding_lifecycle_events_present: false,
     };
-    use nativelink_service::bep_server::get_stream_digest;
-    use nativelink_util::buf_channel::make_buf_channel_pair;
-    use nativelink_util::common::encode_stream_proto;
-    use nativelink_util::spawn;
-    use pretty_assertions::assert_eq;
-    use prost::Message;
-    use prost_types::Timestamp;
-    use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
-    use tonic::{Status, Streaming};
 
-    use super::*;
+    bep_server
+        .publish_lifecycle_event(Request::new(request.clone()))
+        .await
+        .err_tip(|| "While invoking publish_lifecycle_event")?;
 
-    #[nativelink_test]
-    async fn bep_server_emits_events_and_responds() -> Result<(), Box<dyn std::error::Error>> {
-        let store_manager = make_store_manager().await?;
-        let bep_server = make_bep_server(&store_manager)?;
-        let bep_store = store_manager.get_store(BEP_STORE_NAME).unwrap();
+    let (mut writer, mut reader) = make_buf_channel_pair();
 
-        // Utility function to abstract over the underlying HTTP / gRPC stack to make tests more readable.
-        let make_request = {
-            let (mut tx, body) = Body::channel();
-            let mut codec = ProstCodec::<
-                PublishBuildToolEventStreamRequest,
-                PublishBuildToolEventStreamRequest,
-            >::default();
+    bep_store
+        .as_store_driver_pin()
+        .get_part(StoreKey::Digest(digest), &mut writer, 0, None)
+        .await
+        .err_tip(|| "While retrieving lifecycle_event_request from store")?;
 
-            // Note: This is an undocumented function.
-            let stream = Streaming::<PublishBuildToolEventStreamRequest>::new_request(
-                codec.decoder(),
-                body,
-                Some(CompressionEncoding::Gzip),
-                None,
-            );
+    let bytes = reader
+        .recv()
+        .await
+        .err_tip(|| "While receiving bytes from reader")?;
 
-            let join_handle = spawn!(
-                "bep_server_emits_events_and_responds_server_task",
-                async move {
-                    bep_server
-                        .publish_build_tool_event_stream(Request::new(stream))
-                        .await
-                },
-            );
+    let decoded_request = PublishLifecycleEventRequest::decode(bytes)
+        .err_tip(|| "While decoding request from bytes")?;
 
-            let mut response_stream = join_handle.await??.into_inner();
+    assert_eq!(request, decoded_request);
 
-            Ok::<_, Box<dyn std::error::Error>>(
-                move |request: &PublishBuildToolEventStreamRequest| async move {
-                    tx.send_data(encode_stream_proto(request)?).await?;
-                    response_stream.next().await.ok_or_else(|| {
-                        Box::new(io::Error::new(
-                            io::ErrorKind::ConnectionAborted,
-                            "Couldnt retrieve anything from response stream.",
-                        )) as Box<dyn std::error::Error>
-                    })
-                },
-            )
-        }?;
+    Ok(())
+}
 
-        // Construct requests to send to the server
+#[nativelink_test]
+async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let bep_server = make_bep_server(&store_manager)?;
+    let bep_store = get_bep_store(&store_manager)?;
+
+    let (mut request_tx, mut response_stream) = async {
+        // setup the request and response streams
+        let (tx, body) = Body::channel();
+        let mut codec = ProstCodec::<PublishBuildToolEventStreamRequest, _>::default();
+        let stream = Streaming::new_request(codec.decoder(), body, None, None);
+        let stream = bep_server
+            .publish_build_tool_event_stream(Request::new(stream))
+            .await
+            .err_tip(|| "While invoking publish_build_tool_event_stream")?
+            .into_inner();
+
+        Ok::<_, Box<dyn std::error::Error>>((tx, stream))
+    }
+    .await?;
+
+    let (requests, store_key) = {
+        // construct some requests to send off
         let stream_id = StreamId {
             build_id: "some-build-id".to_string(),
             invocation_id: "some-invocation-id".to_string(),
             component: BuildComponent::Controller as i32,
         };
-        let digest = get_stream_digest(&stream_id).unwrap();
+        let digest = get_stream_digest(&stream_id)?;
         let project_id = "some-project-id".to_string();
 
         let requests = [
@@ -220,7 +178,7 @@ mod event_request_stream {
                     stream_id: Some(stream_id.clone()),
                     sequence_number: 1,
                     event: Some(BuildEvent {
-                        event_time: Some(Timestamp::date(1999, 1, 4).unwrap()),
+                        event_time: Some(Timestamp::date(1999, 1, 4)?),
                         event: Some(Event::BuildEnqueued(BuildEnqueued { details: None })),
                     }),
                 }),
@@ -233,7 +191,7 @@ mod event_request_stream {
                     stream_id: Some(stream_id.clone()),
                     sequence_number: 2,
                     event: Some(BuildEvent {
-                        event_time: Some(Timestamp::date(1999, 1, 5).unwrap()),
+                        event_time: Some(Timestamp::date(1999, 1, 5)?),
                         event: Some(Event::InvocationAttemptStarted(InvocationAttemptStarted {
                             attempt_number: 1,
                             details: None,
@@ -249,7 +207,7 @@ mod event_request_stream {
                     stream_id: Some(stream_id.clone()),
                     sequence_number: 3,
                     event: Some(BuildEvent {
-                        event_time: Some(Timestamp::date(1999, 1, 6).unwrap()),
+                        event_time: Some(Timestamp::date(1999, 1, 6)?),
                         event: Some(Event::ConsoleOutput(ConsoleOutput {
                             r#type: ConsoleOutputStream::Stdout as i32,
                             output: Some(Output::TextOutput(
@@ -267,7 +225,7 @@ mod event_request_stream {
                     stream_id: Some(stream_id.clone()),
                     sequence_number: 4,
                     event: Some(BuildEvent {
-                        event_time: Some(Timestamp::date(1999, 1, 7).unwrap()),
+                        event_time: Some(Timestamp::date(1999, 1, 7)?),
                         event: Some(Event::InvocationAttemptFinished(
                             InvocationAttemptFinished {
                                 invocation_status: Some(BuildStatus {
@@ -291,7 +249,7 @@ mod event_request_stream {
                     stream_id: Some(stream_id.clone()),
                     sequence_number: 5,
                     event: Some(BuildEvent {
-                        event_time: Some(Timestamp::date(1999, 1, 8).unwrap()),
+                        event_time: Some(Timestamp::date(1999, 1, 8)?),
                         event: Some(Event::BuildFinished(BuildFinished {
                             status: Some(BuildStatus {
                                 result: build_status::Result::InvocationDeadlineExceeded as i32,
@@ -310,31 +268,35 @@ mod event_request_stream {
             },
         ];
 
-        // now we check the responses!
-        // there's two parts to this API:
-        // 1. The server responds to the client with confirmation of the sequence numbers
-        // 2. The server dumps the events into a [`Store`]
-        // we want to check both parts were executed correctly
+        (requests, StoreKey::Digest(digest))
+    };
 
+    {
+        // send off the requests and validate the responses
         for (i, req) in requests.iter().enumerate() {
-            let response = make_request(req).await??;
+            let encoded_request = encode_stream_proto(req)?;
+            request_tx.send_data(encoded_request).await?;
+
+            let response = response_stream
+                .next()
+                .await
+                .err_tip(|| "Response stream closed unexpectedly")?
+                .err_tip(|| "While awaiting next PublishBuildToolEventStreamResponse")?;
 
             // First, check if the response matches what we expect
-            assert_eq!(response.sequence_number, i as i64);
-            assert_eq!(response.stream_id, Some(stream_id.clone()));
+            assert_eq!(response.sequence_number, i as i64 + 1);
+            assert_eq!(
+                response.stream_id,
+                req.ordered_build_event
+                    .as_ref()
+                    .and_then(|evt| evt.stream_id.clone())
+            );
 
             // Second, check if the message was forwarded correctly
-            let (writer, mut reader) = make_buf_channel_pair();
-            let offset = requests
-                .iter()
-                .take(i)
-                .map(|request| request.encoded_len())
-                .sum();
-            let length = req.encoded_len();
-
+            let (mut writer, mut reader) = make_buf_channel_pair();
             bep_store
-                .clone()
-                .get_part_arc(digest, writer, offset, Some(length))
+                .as_store_driver_pin()
+                .get_part(store_key.borrow(), &mut writer, 0, None)
                 .await?;
             let encoded_request = reader.recv().await?;
 

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::pin::Pin;
-use std::sync::Arc;
 
 use bytes::BytesMut;
 use futures::stream::unfold;
@@ -29,13 +28,13 @@ use nativelink_proto::google::devtools::build::v1::{
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::store_trait::Store;
+use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike};
 use prost::Message;
 use tonic::{Request, Response, Result, Status, Streaming};
 use tracing::{instrument, Level};
 
 pub struct BepServer {
-    store: Arc<dyn Store>,
+    store: Store,
 }
 
 // TODO(caass): how are people expected to retrieve streams? if they need to access them via [`DigestInfo`]
@@ -84,8 +83,9 @@ impl BepServer {
             .encode(&mut buf)
             .err_tip(|| "Could not encode PublishLifecycleEventRequest proto")?;
 
-        Pin::new(self.store.as_ref())
-            .update_oneshot(digest_info, buf.freeze())
+        self.store
+            .as_store_driver_pin()
+            .update_oneshot(StoreKey::Digest(digest_info), buf.freeze())
             .await
             .err_tip(|| "Failed to store PublishLifecycleEventRequest")?;
 
@@ -97,7 +97,7 @@ impl BepServer {
         stream: Streaming<PublishBuildToolEventStreamRequest>,
     ) -> Result<Response<PublishBuildToolEventStreamStream>, Error> {
         async fn process_request(
-            store: Pin<&dyn Store>,
+            store: Pin<&dyn StoreDriver>,
             request: PublishBuildToolEventStreamRequest,
         ) -> Result<PublishBuildToolEventStreamResponse, Status> {
             let ordered_build_event = request
@@ -120,7 +120,7 @@ impl BepServer {
                 .err_tip(|| "Could not encode PublishBuildToolEventStreamRequest proto")?;
 
             store
-                .update_oneshot(digest_info, buf.freeze())
+                .update_oneshot(StoreKey::Digest(digest_info), buf.freeze())
                 .await
                 .err_tip(|| "Failed to store PublishBuildToolEventStreamRequest")?;
 
@@ -130,7 +130,7 @@ impl BepServer {
             })
         }
         struct State {
-            store: Arc<dyn Store>,
+            store: Store,
             stream: Streaming<PublishBuildToolEventStreamRequest>,
         }
         Ok(Response::new(Box::pin(unfold(
@@ -150,9 +150,12 @@ impl BepServer {
                     Ok(None) => return None,
                     Err(e) => return Some((Err(e.into()), None)),
                 };
-                process_request(Pin::new(state.store.as_ref()), request)
+                process_request(state.store.as_store_driver_pin(), request)
                     .await
-                    .map_or_else(|e| Some((Err(e), None)), |result| Some((Ok(result), None)))
+                    .map_or_else(
+                        |e| Some((Err(e), None)),
+                        |response| Some((Ok(response), Some(state))),
+                    )
             },
         ))))
     }
