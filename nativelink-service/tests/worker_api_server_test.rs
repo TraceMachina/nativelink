@@ -124,7 +124,8 @@ pub mod connect_worker_tests {
 
         let worker_exists = test_context
             .scheduler
-            .contains_worker_for_test(&test_context.worker_id);
+            .contains_worker_for_test(&test_context.worker_id)
+            .await;
         assert!(worker_exists, "Expected worker to exist in worker map");
 
         Ok(())
@@ -151,7 +152,8 @@ pub mod keep_alive_tests {
                 .await?;
             let worker_exists = test_context
                 .scheduler
-                .contains_worker_for_test(&test_context.worker_id);
+                .contains_worker_for_test(&test_context.worker_id)
+                .await;
             assert!(worker_exists, "Expected worker to exist in worker map");
         }
         {
@@ -163,7 +165,8 @@ pub mod keep_alive_tests {
                 .await?;
             let worker_exists = test_context
                 .scheduler
-                .contains_worker_for_test(&test_context.worker_id);
+                .contains_worker_for_test(&test_context.worker_id)
+                .await;
             assert!(!worker_exists, "Expected worker to not exist in map");
         }
 
@@ -195,7 +198,8 @@ pub mod keep_alive_tests {
                 .await?;
             let worker_exists = test_context
                 .scheduler
-                .contains_worker_for_test(&test_context.worker_id);
+                .contains_worker_for_test(&test_context.worker_id)
+                .await;
             assert!(worker_exists, "Expected worker to exist in worker map");
         }
         {
@@ -217,7 +221,8 @@ pub mod keep_alive_tests {
                 .await?;
             let worker_exists = test_context
                 .scheduler
-                .contains_worker_for_test(&test_context.worker_id);
+                .contains_worker_for_test(&test_context.worker_id)
+                .await;
             assert!(worker_exists, "Expected worker to exist in map");
         }
 
@@ -234,6 +239,7 @@ pub mod keep_alive_tests {
         test_context
             .scheduler
             .send_keep_alive_to_worker_for_test(&test_context.worker_id)
+            .await
             .err_tip(|| "Could not send keep alive to worker")?;
 
         {
@@ -269,7 +275,8 @@ pub mod going_away_tests {
 
         let worker_exists = test_context
             .scheduler
-            .contains_worker_for_test(&test_context.worker_id);
+            .contains_worker_for_test(&test_context.worker_id)
+            .await;
         assert!(worker_exists, "Expected worker to exist in worker map");
 
         test_context
@@ -279,7 +286,8 @@ pub mod going_away_tests {
 
         let worker_exists = test_context
             .scheduler
-            .contains_worker_for_test(&test_context.worker_id);
+            .contains_worker_for_test(&test_context.worker_id)
+            .await;
         assert!(
             !worker_exists,
             "Expected worker to be removed from worker map"
