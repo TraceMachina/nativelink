@@ -12,19 +12,99 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::BitXor;
 use std::sync::Arc;
 use std::time::SystemTime;
+use futures::StreamExt;
 use tonic::async_trait;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, OperationId, WorkerId};
 use redis::aio::{MultiplexedConnection, PubSub};
 use redis::{Client, Connection, JsonAsyncCommands, Pipeline};
 use nativelink_error::{make_input_err, Error};
 use tokio::sync::watch;
-use redis_macros::Json;
+use redis_macros::{FromRedisValue, Json, ToRedisArgs};
 use serde::{Serialize, Deserialize};
 use crate::operation_state_manager::{ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager, OperationFilter, OperationStageFlags, WorkerStateManager};
 
+pub struct RedisOperationState {
+    client: Client,
+    inner: RedisOperationImpl,
+}
+
+impl RedisOperationState {
+    fn new(con: Client, inner: RedisOperationImpl) -> Self {
+        Self {
+            client: con,
+            inner
+        }
+    }
+}
+
+impl TryFrom<RedisOperationImpl> for ActionState {
+    type Error = Error;
+    fn try_from(value: RedisOperationImpl) -> Result<Self, Self::Error> {
+        Ok(ActionState {
+            id: value.operation_id.clone(),
+            stage: value.action_stage()?
+        })
+    }
+}
+
+impl RedisOperationState {
+    async fn subscribe<'a>(
+        &'a self,
+        client: &'a Client
+    ) -> Result<watch::Receiver<Arc<ActionState>>, nativelink_error::Error> {
+        let mut sub = client.get_async_pubsub().await?;
+        let sub_channel = format!("{}:*", &self.inner.operation_id.unique_qualifier.action_name());
+        // Subscribe to action name: any completed operation can return status
+        sub.subscribe(sub_channel).await.unwrap();
+        let mut stream = sub.into_on_message();
+        let action_state: ActionState = self.inner.clone().try_into()?;
+        // let arc_action_state: Arc<ActionState> = Arc::new();
+        // This hangs forever atm
+        let (tx, rx) = tokio::sync::watch::channel(Arc::new(action_state));
+        // Hand tuple of rx and future to pump the rx
+        // Note: nativelink spawn macro name field doesn't accept variables so for now we have to use this to avoid conflicts.
+        #[allow(clippy::disallowed_methods)]
+        tokio::spawn(async move {
+            let closed_fut = tx.closed();
+            tokio::pin!(closed_fut);
+            loop {
+                tokio::select! {
+                    msg = stream.next() => {
+                        println!("got message");
+                        let state: RedisOperationImpl = msg.unwrap().get_payload().unwrap();
+                        let finished = state.stage == OperationStage::Completed;
+                        let value: Arc<ActionState> = Arc::new(state.try_into().unwrap());
+                        if tx.send(value).is_err() {
+                            println!("Error sending value");
+                            return;
+                        }
+                        if finished {
+                            return;
+                        }
+                    }
+                    _  = &mut closed_fut => {
+                        println!("Future closed");
+                        return
+                    }
+                }
+
+            }
+        });
+        Ok(rx)
+    }
+}
+
+#[async_trait]
+impl ActionStateResult for RedisOperationState {
+    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+        Ok(Arc::new(self.inner.clone().try_into()?))
+    }
+    async fn as_receiver(&self) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+        Ok(self.subscribe(&self.client).await?)
+    }
+}
 pub struct RedisStateManager  {
     client: Client,
 }
@@ -53,9 +133,10 @@ impl RedisStateManager {
         let operation_id = OperationId::new(action_info.unique_qualifier.clone());
         let key = format!("operations:{}", operation_id);
         let mut con = self.get_multiplex_connection().await?;
-        let operation = RedisOperation::new(action_info, operation_id);
+        let operation = RedisOperationImpl::new(action_info, operation_id);
         con.json_set(key, "$", &operation).await?;
-        Ok(Box::new(Arc::new(operation)))
+        let state = RedisOperationState::new(self.client.clone(), operation);
+        Ok(Box::new(Arc::new(state)))
     }
 
     async fn inner_filter_operations(
@@ -63,11 +144,16 @@ impl RedisStateManager {
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
         let mut con = self.get_multiplex_connection().await?;
-        let Json(operations): Json<Vec<RedisOperation>> = con.json_get("operations:", "$").await?;
+        let Json(operations): Json<Vec<RedisOperationImpl>> = con.json_get("operations:", "$").await?;
         let mut v: Vec<Arc<dyn ActionStateResult>> = Vec::new();
         for operation in operations {
             if matches_filter(&operation, &filter) {
-                v.push(Arc::new(operation));
+                v.push(Arc::new(
+                        RedisOperationState::new(
+                            self.client.clone(), operation
+                        )
+                    )
+                );
             }
         }
         Ok(Box::pin(futures::stream::iter(v)))
@@ -116,7 +202,7 @@ impl RedisStateManager {
     }
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, Clone)]
 enum OperationStage {
     CacheCheck,
     Queued,
@@ -124,7 +210,6 @@ enum OperationStage {
     Completed,
     Unknown,
 }
-
 
 fn parse_stage_flags(flags: &OperationStageFlags) -> Vec<OperationStage> {
     if flags.contains(OperationStageFlags::Any) {
@@ -153,8 +238,8 @@ fn parse_stage_flags(flags: &OperationStageFlags) -> Vec<OperationStage> {
 }
 
 
-#[derive(Serialize, Deserialize)]
-pub struct RedisOperation {
+#[derive(Serialize, Deserialize, Clone, ToRedisArgs, FromRedisValue)]
+pub struct RedisOperationImpl {
     operation_id: OperationId,
     info: ActionInfo,
     worker_id: Option<WorkerId>,
@@ -166,7 +251,7 @@ pub struct RedisOperation {
     completed_at: Option<SystemTime>
 }
 
-impl RedisOperation {
+impl RedisOperationImpl {
     pub fn new(info: ActionInfo, operation_id: OperationId) -> Self {
         Self {
             operation_id,
@@ -180,11 +265,8 @@ impl RedisOperation {
             completed_at: None
         }
     }
-}
 
-#[async_trait]
-impl ActionStateResult for RedisOperation {
-    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+    pub fn as_state(&self) -> Result<Arc<ActionState>, Error> {
         let action_state = ActionState {
             stage: self.action_stage()?,
             id: self.operation_id.clone()
@@ -192,12 +274,6 @@ impl ActionStateResult for RedisOperation {
         Ok(Arc::new(action_state))
     }
 
-    async fn as_receiver(&self) -> Result<&'_ watch::Receiver<Arc<ActionState>>, Error> {
-        todo!()
-    }
-}
-
-impl RedisOperation {
     pub fn action_stage(&self) -> Result<ActionStage, Error> {
         match self.stage {
             OperationStage::CacheCheck => Ok(ActionStage::CacheCheck),
@@ -228,7 +304,7 @@ fn match_optional_filter<T: PartialEq>(value_opt: Option<T>, filter_opt: Option<
     cond(filter, value)
 }
 
-pub fn matches_filter(operation: &RedisOperation, filter: &OperationFilter) -> bool {
+pub fn matches_filter(operation: &RedisOperationImpl, filter: &OperationFilter) -> bool {
     if !parse_stage_flags(&filter.stages).contains(&operation.stage) && !(filter.stages == OperationStageFlags::Any) {
         return false
     }

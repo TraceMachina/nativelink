@@ -1935,6 +1935,7 @@ dependencies = [
  "redis-macros",
  "scopeguard",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tonic 0.11.0",

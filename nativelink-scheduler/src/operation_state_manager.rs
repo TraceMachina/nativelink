@@ -42,7 +42,7 @@ pub trait ActionStateResult: Send + Sync + 'static {
     // Provides the current state of the action.
     async fn as_state(&self) -> Result<Arc<ActionState>, Error>;
     // Subscribes to the state of the action, receiving updates as they are published.
-    async fn as_receiver(&self) -> Result<&'_ watch::Receiver<Arc<ActionState>>, Error>;
+    async fn as_receiver(&self) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
 }
 
 /// The filters used to query operations from the state manager.
