@@ -103,6 +103,6 @@ jobs:
         uses: >- # v4
           DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
 
-      - name: Run build
-        run: >
-          nix build
+      - name: Test nix run
+        run: |
+           nix run -L .#nativelink-is-executable-test
