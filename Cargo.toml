@@ -5,7 +5,7 @@ resolver = "2"
 name = "nativelink"
 version = "0.4.0"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.78.0"
 
 [profile.release]
 lto = true

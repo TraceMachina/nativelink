@@ -37,6 +37,7 @@
       systems = [
         "x86_64-linux"
         "x86_64-darwin"
+        "aarch64-linux"
         "aarch64-darwin"
       ];
       imports = [
@@ -87,7 +88,10 @@
 
         craneLib =
           if pkgs.stdenv.isDarwin
-          then crane.lib.${system}
+          then
+            (crane.mkLib pkgs).overrideToolchain (stable-rust.default.override {
+              targets = ["aarch64-apple-darwin"];
+            })
           else
             (crane.mkLib pkgs).overrideToolchain (stable-rust.default.override {
               targets = ["x86_64-unknown-linux-musl"];
