@@ -15,6 +15,7 @@
 use nativelink_config::serde_utils::{
     convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
 };
+use pretty_assertions::assert_eq;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -29,43 +30,38 @@ struct DataSizeEntity {
     data_size: usize,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_duration_human_readable_deserialize() {
-        let example = r#"
+#[test]
+fn test_duration_human_readable_deserialize() {
+    let example = r#"
             {"duration": "1m 10s"}
         "#;
-        let deserialized: DurationEntity = serde_json5::from_str(example).unwrap();
-        assert_eq!(deserialized.duration, 70);
-    }
+    let deserialized: DurationEntity = serde_json5::from_str(example).unwrap();
+    assert_eq!(deserialized.duration, 70);
+}
 
-    #[test]
-    fn test_duration_usize_deserialize() {
-        let example = r#"
+#[test]
+fn test_duration_usize_deserialize() {
+    let example = r#"
             {"duration": 10}
         "#;
-        let deserialized: DurationEntity = serde_json5::from_str(example).unwrap();
-        assert_eq!(deserialized.duration, 10);
-    }
+    let deserialized: DurationEntity = serde_json5::from_str(example).unwrap();
+    assert_eq!(deserialized.duration, 10);
+}
 
-    #[test]
-    fn test_data_size_unit_deserialize() {
-        let example = r#"
+#[test]
+fn test_data_size_unit_deserialize() {
+    let example = r#"
             {"data_size": "1KiB"}
         "#;
-        let deserialized: DataSizeEntity = serde_json5::from_str(example).unwrap();
-        assert_eq!(deserialized.data_size, 1024);
-    }
+    let deserialized: DataSizeEntity = serde_json5::from_str(example).unwrap();
+    assert_eq!(deserialized.data_size, 1024);
+}
 
-    #[test]
-    fn test_data_size_usize_deserialize() {
-        let example = r#"
+#[test]
+fn test_data_size_usize_deserialize() {
+    let example = r#"
             {"data_size": 10}
         "#;
-        let deserialized: DataSizeEntity = serde_json5::from_str(example).unwrap();
-        assert_eq!(deserialized.data_size, 10);
-    }
+    let deserialized: DataSizeEntity = serde_json5::from_str(example).unwrap();
+    assert_eq!(deserialized.data_size, 10);
 }
