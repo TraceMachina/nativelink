@@ -1884,6 +1884,7 @@ dependencies = [
  "nativelink-proto",
  "prost",
  "prost-types",
+ "redis",
  "tokio",
  "tonic 0.11.0",
 ]

@@ -74,7 +74,7 @@ pub struct OperationFilter {
     pub unique_qualifier: Option<ActionInfoHashKey>,
 }
 
-type ActionStateResultStream = Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>;
+pub type ActionStateResultStream = Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>;
 
 #[async_trait]
 pub trait ClientStateManager {
@@ -108,7 +108,10 @@ pub trait WorkerStateManager {
 #[async_trait]
 pub trait MatchingEngineStateManager {
     /// Returns a stream of operations that match the filter.
-    fn filter_operations(&self, filter: OperationFilter) -> Result<ActionStateResultStream, Error>;
+    async fn filter_operations(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error>;
 
     /// Update that state of an operation.
     async fn update_operation(
