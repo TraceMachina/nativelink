@@ -35,6 +35,7 @@ rust_test_suite(
         "//nativelink-error",
         "@crates//:byte-unit",
         "@crates//:humantime",
+        "@crates//:pretty_assertions",
         "@crates//:serde",
         "@crates//:serde_json5",
     ],

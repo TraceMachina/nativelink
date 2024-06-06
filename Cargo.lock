@@ -1871,6 +1871,7 @@ version = "0.4.0"
 dependencies = [
  "byte-unit",
  "humantime",
+ "pretty_assertions",
  "serde",
  "serde_json5",
  "shellexpand",

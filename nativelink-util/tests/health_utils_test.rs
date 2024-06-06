@@ -23,207 +23,201 @@ use nativelink_util::health_utils::{
     HealthRegistryBuilder, HealthStatus, HealthStatusDescription, HealthStatusIndicator,
     HealthStatusReporter,
 };
+use pretty_assertions::assert_eq;
 
-#[cfg(test)]
-mod health_utils_tests {
-    use pretty_assertions::assert_eq;
+#[nativelink_test]
+async fn create_empty_indicator() -> Result<(), Error> {
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+    let health_registry = health_registry_builder.build();
+    let health_status: Vec<HealthStatusDescription> =
+        health_registry.health_status_report().collect().await;
+    assert_eq!(health_status.len(), 0);
+    Ok(())
+}
 
-    use super::*;
+#[nativelink_test]
+async fn create_register_indicator() -> Result<(), Error> {
+    generate_health_status_indicator!(MockComponentImpl, Ok, "ok");
 
-    #[nativelink_test]
-    async fn create_empty_indicator() -> Result<(), Error> {
-        let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
-        let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> =
-            health_registry.health_status_report().collect().await;
-        assert_eq!(health_status.len(), 0);
-        Ok(())
-    }
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
 
-    #[nativelink_test]
-    async fn create_register_indicator() -> Result<(), Error> {
-        generate_health_status_indicator!(MockComponentImpl, Ok, "ok");
+    health_registry_builder.register_indicator(Arc::new(MockComponentImpl {}));
 
-        let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+    let health_registry = health_registry_builder.build();
+    let health_status: Vec<HealthStatusDescription> =
+        health_registry.health_status_report().collect().await;
 
-        health_registry_builder.register_indicator(Arc::new(MockComponentImpl {}));
-
-        let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> =
-            health_registry.health_status_report().collect().await;
-
-        assert_eq!(health_status.len(), 1);
-        assert_eq!(
-            health_status,
-            vec![HealthStatusDescription {
-                namespace: "/nativelink/MockComponentImpl".into(),
-                status: HealthStatus::Ok {
-                    struct_name: "MockComponentImpl",
-                    message: "ok".into()
-                },
-            }]
-        );
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn create_sub_registry() -> Result<(), Error> {
-        generate_health_status_indicator!(MockComponentImpl, Ok, "ok");
-
-        let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
-
-        health_registry_builder.register_indicator(Arc::new(MockComponentImpl {}));
-
-        let mut namespace1_registry = health_registry_builder.sub_builder("namespace1".into());
-
-        namespace1_registry.register_indicator(Arc::new(MockComponentImpl {}));
-
-        let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> =
-            health_registry.health_status_report().collect().await;
-
-        assert_eq!(health_status.len(), 2);
-        let expected_health_status = vec_to_set(vec![
-            HealthStatusDescription {
-                namespace: "/nativelink/MockComponentImpl".into(),
-                status: HealthStatus::Ok {
-                    struct_name: "MockComponentImpl",
-                    message: "ok".into(),
-                },
+    assert_eq!(health_status.len(), 1);
+    assert_eq!(
+        health_status,
+        vec![HealthStatusDescription {
+            namespace: "/nativelink/MockComponentImpl".into(),
+            status: HealthStatus::Ok {
+                struct_name: "MockComponentImpl",
+                message: "ok".into()
             },
-            HealthStatusDescription {
-                namespace: "/nativelink/namespace1/MockComponentImpl".into(),
-                status: HealthStatus::Ok {
-                    struct_name: "MockComponentImpl",
-                    message: "ok".into(),
-                },
+        }]
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn create_sub_registry() -> Result<(), Error> {
+    generate_health_status_indicator!(MockComponentImpl, Ok, "ok");
+
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+
+    health_registry_builder.register_indicator(Arc::new(MockComponentImpl {}));
+
+    let mut namespace1_registry = health_registry_builder.sub_builder("namespace1".into());
+
+    namespace1_registry.register_indicator(Arc::new(MockComponentImpl {}));
+
+    let health_registry = health_registry_builder.build();
+    let health_status: Vec<HealthStatusDescription> =
+        health_registry.health_status_report().collect().await;
+
+    assert_eq!(health_status.len(), 2);
+    let expected_health_status = vec_to_set(vec![
+        HealthStatusDescription {
+            namespace: "/nativelink/MockComponentImpl".into(),
+            status: HealthStatus::Ok {
+                struct_name: "MockComponentImpl",
+                message: "ok".into(),
             },
-        ]);
-
-        assert_eq!(vec_to_set(health_status), expected_health_status);
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn create_multiple_indicators_same_registry() -> Result<(), Error> {
-        generate_health_status_indicator!(MockComponentImpl1, Ok, "ok");
-        generate_health_status_indicator!(MockComponentImpl2, Ok, "ok");
-        generate_health_status_indicator!(MockComponentImpl3, Ok, "ok");
-
-        let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
-
-        health_registry_builder.register_indicator(Arc::new(MockComponentImpl1 {}));
-        health_registry_builder.register_indicator(Arc::new(MockComponentImpl2 {}));
-        health_registry_builder.register_indicator(Arc::new(MockComponentImpl3 {}));
-
-        let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> =
-            health_registry.health_status_report().collect().await;
-
-        assert_eq!(health_status.len(), 3);
-        let expected_health_status = vec_to_set(vec![
-            HealthStatusDescription {
-                namespace: "/nativelink/MockComponentImpl1".into(),
-                status: HealthStatus::Ok {
-                    struct_name: "MockComponentImpl1",
-                    message: "ok".into(),
-                },
+        },
+        HealthStatusDescription {
+            namespace: "/nativelink/namespace1/MockComponentImpl".into(),
+            status: HealthStatus::Ok {
+                struct_name: "MockComponentImpl",
+                message: "ok".into(),
             },
-            HealthStatusDescription {
-                namespace: "/nativelink/MockComponentImpl2".into(),
-                status: HealthStatus::Ok {
-                    struct_name: "MockComponentImpl2",
-                    message: "ok".into(),
-                },
+        },
+    ]);
+
+    assert_eq!(vec_to_set(health_status), expected_health_status);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn create_multiple_indicators_same_registry() -> Result<(), Error> {
+    generate_health_status_indicator!(MockComponentImpl1, Ok, "ok");
+    generate_health_status_indicator!(MockComponentImpl2, Ok, "ok");
+    generate_health_status_indicator!(MockComponentImpl3, Ok, "ok");
+
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+
+    health_registry_builder.register_indicator(Arc::new(MockComponentImpl1 {}));
+    health_registry_builder.register_indicator(Arc::new(MockComponentImpl2 {}));
+    health_registry_builder.register_indicator(Arc::new(MockComponentImpl3 {}));
+
+    let health_registry = health_registry_builder.build();
+    let health_status: Vec<HealthStatusDescription> =
+        health_registry.health_status_report().collect().await;
+
+    assert_eq!(health_status.len(), 3);
+    let expected_health_status = vec_to_set(vec![
+        HealthStatusDescription {
+            namespace: "/nativelink/MockComponentImpl1".into(),
+            status: HealthStatus::Ok {
+                struct_name: "MockComponentImpl1",
+                message: "ok".into(),
             },
-            HealthStatusDescription {
-                namespace: "/nativelink/MockComponentImpl3".into(),
-                status: HealthStatus::Ok {
-                    struct_name: "MockComponentImpl3",
-                    message: "ok".into(),
-                },
+        },
+        HealthStatusDescription {
+            namespace: "/nativelink/MockComponentImpl2".into(),
+            status: HealthStatus::Ok {
+                struct_name: "MockComponentImpl2",
+                message: "ok".into(),
             },
-        ]);
-
-        assert_eq!(vec_to_set(health_status), expected_health_status);
-
-        Ok(())
-    }
-
-    #[nativelink_test]
-    async fn create_multiple_indicators_with_sub_registry() -> Result<(), Error> {
-        generate_health_status_indicator!(MockComponentImpl1, Ok, "ok");
-        generate_health_status_indicator!(MockComponentImpl2, Ok, "ok");
-        generate_health_status_indicator!(MockComponentImpl3, Ok, "ok");
-
-        let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
-
-        let mut sub_builder = health_registry_builder.sub_builder("namespace1".into());
-        sub_builder.register_indicator(Arc::new(MockComponentImpl1 {}));
-        let mut sub_builder = health_registry_builder.sub_builder("namespace2".into());
-        sub_builder.register_indicator(Arc::new(MockComponentImpl2 {}));
-
-        health_registry_builder
-            .sub_builder("namespace3".into())
-            .register_indicator(Arc::new(MockComponentImpl3 {}));
-
-        let health_registry = health_registry_builder.build();
-        let health_status: Vec<HealthStatusDescription> =
-            health_registry.health_status_report().collect().await;
-
-        assert_eq!(health_status.len(), 3);
-        let expected_health_status = vec_to_set(vec![
-            HealthStatusDescription {
-                namespace: "/nativelink/namespace1/MockComponentImpl1".into(),
-                status: HealthStatus::Ok {
-                    struct_name: "MockComponentImpl1",
-                    message: "ok".into(),
-                },
+        },
+        HealthStatusDescription {
+            namespace: "/nativelink/MockComponentImpl3".into(),
+            status: HealthStatus::Ok {
+                struct_name: "MockComponentImpl3",
+                message: "ok".into(),
             },
-            HealthStatusDescription {
-                namespace: "/nativelink/namespace2/MockComponentImpl2".into(),
-                status: HealthStatus::Ok {
-                    struct_name: "MockComponentImpl2",
-                    message: "ok".into(),
-                },
+        },
+    ]);
+
+    assert_eq!(vec_to_set(health_status), expected_health_status);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn create_multiple_indicators_with_sub_registry() -> Result<(), Error> {
+    generate_health_status_indicator!(MockComponentImpl1, Ok, "ok");
+    generate_health_status_indicator!(MockComponentImpl2, Ok, "ok");
+    generate_health_status_indicator!(MockComponentImpl3, Ok, "ok");
+
+    let mut health_registry_builder = HealthRegistryBuilder::new("nativelink".into());
+
+    let mut sub_builder = health_registry_builder.sub_builder("namespace1".into());
+    sub_builder.register_indicator(Arc::new(MockComponentImpl1 {}));
+    let mut sub_builder = health_registry_builder.sub_builder("namespace2".into());
+    sub_builder.register_indicator(Arc::new(MockComponentImpl2 {}));
+
+    health_registry_builder
+        .sub_builder("namespace3".into())
+        .register_indicator(Arc::new(MockComponentImpl3 {}));
+
+    let health_registry = health_registry_builder.build();
+    let health_status: Vec<HealthStatusDescription> =
+        health_registry.health_status_report().collect().await;
+
+    assert_eq!(health_status.len(), 3);
+    let expected_health_status = vec_to_set(vec![
+        HealthStatusDescription {
+            namespace: "/nativelink/namespace1/MockComponentImpl1".into(),
+            status: HealthStatus::Ok {
+                struct_name: "MockComponentImpl1",
+                message: "ok".into(),
             },
-            HealthStatusDescription {
-                namespace: "/nativelink/namespace3/MockComponentImpl3".into(),
-                status: HealthStatus::Ok {
-                    struct_name: "MockComponentImpl3",
-                    message: "ok".into(),
-                },
+        },
+        HealthStatusDescription {
+            namespace: "/nativelink/namespace2/MockComponentImpl2".into(),
+            status: HealthStatus::Ok {
+                struct_name: "MockComponentImpl2",
+                message: "ok".into(),
             },
-        ]);
+        },
+        HealthStatusDescription {
+            namespace: "/nativelink/namespace3/MockComponentImpl3".into(),
+            status: HealthStatus::Ok {
+                struct_name: "MockComponentImpl3",
+                message: "ok".into(),
+            },
+        },
+    ]);
 
-        assert_eq!(vec_to_set(health_status), expected_health_status);
+    assert_eq!(vec_to_set(health_status), expected_health_status);
 
-        Ok(())
-    }
+    Ok(())
+}
 
-    #[macro_export]
-    macro_rules! generate_health_status_indicator {
-        ($struct_name:ident, $health_status:ident, $status_msg:expr) => {
-            struct $struct_name;
+#[macro_export]
+macro_rules! generate_health_status_indicator {
+    ($struct_name:ident, $health_status:ident, $status_msg:expr) => {
+        struct $struct_name;
 
-            #[async_trait::async_trait]
-            impl HealthStatusIndicator for $struct_name {
-                fn get_name(&self) -> &'static str {
-                    stringify!($struct_name).into()
-                }
-                async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
-                    HealthStatus::$health_status {
-                        struct_name: stringify!($struct_name).into(),
-                        message: $status_msg.into(),
-                    }
+        #[async_trait::async_trait]
+        impl HealthStatusIndicator for $struct_name {
+            fn get_name(&self) -> &'static str {
+                stringify!($struct_name).into()
+            }
+            async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+                HealthStatus::$health_status {
+                    struct_name: stringify!($struct_name).into(),
+                    message: $status_msg.into(),
                 }
             }
-        };
-    }
+        }
+    };
+}
 
-    fn vec_to_set(vec: Vec<HealthStatusDescription>) -> HashSet<HealthStatusDescription> {
-        HashSet::from_iter(vec)
-    }
+fn vec_to_set(vec: Vec<HealthStatusDescription>) -> HashSet<HealthStatusDescription> {
+    HashSet::from_iter(vec)
 }
