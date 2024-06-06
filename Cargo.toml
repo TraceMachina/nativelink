@@ -11,13 +11,19 @@ rust-version = "1.77.2"
 lto = true
 opt-level = 3
 
+[profile.dev]
+lto = false
+opt-level = 0
+strip = false
+debug = true
+
 # Prefer this profile in CI, for instance via `cargo test --all --profile=smol`.
 # It reduces the size of the `target` directory from ~12GB to ~1GB.
 [profile.smol]
-inherits = "release"
-lto = "thin"
+inherits = "dev"
 opt-level = "z"
 strip = true
+debug = false
 
 [[bin]]
 name = "nativelink"
