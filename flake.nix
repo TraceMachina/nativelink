@@ -88,7 +88,7 @@
 
         craneLib =
           if pkgs.stdenv.isDarwin
-          then crane.lib.${system}
+          then (crane.mkLib pkgs).overrideToolchain stable-rust.default
           else
             (crane.mkLib pkgs).overrideToolchain (stable-rust.default.override {
               targets = ["x86_64-unknown-linux-musl"];
@@ -138,6 +138,8 @@
         publish-ghcr = import ./tools/publish-ghcr.nix {inherit pkgs;};
 
         local-image-test = import ./tools/local-image-test.nix {inherit pkgs;};
+
+        nativelink-is-executable-test = import ./tools/nativelink-is-executable-test.nix {inherit pkgs nativelink;};
 
         generate-toolchains = import ./tools/generate-toolchains.nix {inherit pkgs;};
 
@@ -201,7 +203,7 @@
           };
         };
         packages = rec {
-          inherit publish-ghcr local-image-test nativelink nativelink-debug native-cli lre-cc;
+          inherit publish-ghcr local-image-test nativelink-is-executable-test nativelink nativelink-debug native-cli lre-cc;
           default = nativelink;
 
           rbe-autogen-lre-cc = rbe-autogen lre-cc;
@@ -276,6 +278,7 @@
 
               # Additional tools from within our development environment.
               local-image-test
+              nativelink-is-executable-test
               generate-toolchains
               customClang
               native-cli
