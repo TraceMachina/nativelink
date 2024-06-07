@@ -106,6 +106,56 @@ async fn upload_and_get_data() -> Result<(), Error> {
     let store = RedisStore::new_with_conn_and_name_generator(
         LazyConnection::Connection(Ok(redis_connection)),
         mock_uuid_generator,
+        None,
+    );
+
+    store.update_oneshot(digest, data.clone()).await?;
+
+    let result = store.has(digest).await?;
+    assert!(
+        result.is_some(),
+        "Expected redis store to have hash: {VALID_HASH1}",
+    );
+
+    let result = store
+        .get_part_unchunked(digest, 0, Some(data.clone().len()))
+        .await?;
+
+    assert_eq!(result, data, "Expected redis store to have updated value",);
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let prefix = "TEST_PREFIX-";
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{prefix}{}-{}", digest.hash_str(), digest.size_bytes);
+
+    let chunk_data = "14";
+
+    let redis_connection = MockRedisConnectionBuilder::new()
+        .pipe(&[("APPEND", &[TEMP_UUID, chunk_data], Ok(&[redis::Value::Nil]))])
+        .cmd("APPEND", &[&packed_hash_hex, ""], Ok(""))
+        .pipe(&[(
+            "RENAME",
+            &[TEMP_UUID, &packed_hash_hex],
+            Ok(&[redis::Value::Nil]),
+        )])
+        .pipe(&[(
+            "STRLEN",
+            &[&packed_hash_hex],
+            Ok(&[redis::Value::Bulk(vec![redis::Value::Int(2)])]),
+        )])
+        .cmd("GETRANGE", &[&packed_hash_hex, "0", "1"], Ok("14"))
+        .build();
+
+    let store = RedisStore::new_with_conn_and_name_generator(
+        LazyConnection::Connection(Ok(redis_connection)),
+        mock_uuid_generator,
+        Some(prefix.to_string()),
     );
 
     store.update_oneshot(digest, data.clone()).await?;
@@ -136,6 +186,33 @@ async fn upload_empty_data() -> Result<(), Error> {
     let store = RedisStore::new_with_conn_and_name_generator(
         LazyConnection::Connection(Ok(redis_connection)),
         mock_uuid_generator,
+        None,
+    );
+
+    store.update_oneshot(digest, data).await?;
+
+    let result = store.has(digest).await?;
+    assert!(
+        result.is_some(),
+        "Expected redis store to have hash: {VALID_HASH1}",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn upload_empty_data_with_prefix() -> Result<(), Error> {
+    let data = Bytes::from_static(b"");
+    let prefix = "TEST_PREFIX-";
+
+    let digest = ZERO_BYTE_DIGESTS[0];
+
+    let redis_connection = MockRedisConnectionBuilder::new().build();
+
+    let store = RedisStore::new_with_conn_and_name_generator(
+        LazyConnection::Connection(Ok(redis_connection)),
+        mock_uuid_generator,
+        Some(prefix.to_string()),
     );
 
     store.update_oneshot(digest, data).await?;
@@ -195,6 +272,78 @@ async fn test_uploading_large_data() -> Result<(), Error> {
     let store = RedisStore::new_with_conn_and_name_generator(
         LazyConnection::Connection(Ok(redis_connection)),
         mock_uuid_generator,
+        None,
+    );
+
+    store.update_oneshot(digest, data.clone()).await?;
+
+    let result = store.has(digest).await?;
+    assert!(
+        result.is_some(),
+        "Expected redis store to have hash: {VALID_HASH1}",
+    );
+
+    let get_result: Bytes = store
+        .get_part_unchunked(digest, 0, Some(data.clone().len()))
+        .await?;
+
+    assert_eq!(
+        hex::encode(get_result).len(),
+        hex::encode(data.clone()).len(),
+        "Expected redis store to have updated value",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_uploading_large_data_with_prefix() -> Result<(), Error> {
+    // Requires multiple chunks as data is larger than 64K
+    let data: Bytes = Bytes::from(vec![0u8; 65 * 1024]);
+    let prefix = "TEST_PREFIX-";
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 1)?;
+    let packed_hash_hex = format!("{prefix}{}-{}", digest.hash_str(), digest.size_bytes);
+
+    let chunk_data = std::str::from_utf8(&data).unwrap().to_string();
+
+    let redis_connection = MockRedisConnectionBuilder::new()
+        .pipe(&[(
+            "APPEND",
+            &[TEMP_UUID, &chunk_data],
+            Ok(&[redis::Value::Nil]),
+        )])
+        .cmd(
+            "APPEND",
+            &[&packed_hash_hex, ""],
+            Ok(&hex::encode(&data[..])),
+        )
+        .pipe(&[(
+            "RENAME",
+            &[TEMP_UUID, &packed_hash_hex],
+            Ok(&[redis::Value::Nil]),
+        )])
+        .pipe(&[(
+            "STRLEN",
+            &[&packed_hash_hex],
+            Ok(&[redis::Value::Bulk(vec![redis::Value::Int(2)])]),
+        )])
+        .cmd(
+            "GETRANGE",
+            &[&packed_hash_hex, "0", "65535"],
+            Ok(&hex::encode(&data[..])),
+        )
+        .cmd(
+            "GETRANGE",
+            &[&packed_hash_hex, "65535", "65560"],
+            Ok(&hex::encode(&data[..])),
+        )
+        .build();
+
+    let store = RedisStore::new_with_conn_and_name_generator(
+        LazyConnection::Connection(Ok(redis_connection)),
+        mock_uuid_generator,
+        Some(prefix.to_string()),
     );
 
     store.update_oneshot(digest, data.clone()).await?;
@@ -261,6 +410,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     let store = RedisStore::new_with_conn_and_name_generator(
         LazyConnection::Connection(Ok(redis_connection)),
         mock_uuid_generator,
+        None,
     );
 
     let (mut tx, rx) = make_buf_channel_pair();
