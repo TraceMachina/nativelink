@@ -37,6 +37,7 @@
       systems = [
         "x86_64-linux"
         "x86_64-darwin"
+        "apps.aarch64-linux.native"
         "aarch64-darwin"
       ];
       imports = [
