@@ -879,6 +879,14 @@ pub struct RedisStore {
     /// Default: 10
     #[serde(default)]
     pub connection_timeout_s: u64,
+
+    /// An optional prefix to prepend to all keys in this store.
+    ///
+    /// Setting this value can make it convenient to query or
+    /// organize your data according to the shared prefix.
+    ///
+    /// Default: `""`
+    pub key_prefix: Option<String>,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration

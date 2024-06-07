@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use arc_cell::ArcCell;
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use futures::future::{BoxFuture, FutureExt, Shared};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_util::background_spawn;
@@ -28,11 +28,54 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use redis::aio::{ConnectionLike, ConnectionManager};
-use redis::AsyncCommands;
+use redis::{AsyncCommands, ToRedisArgs};
 
 use crate::cas_utils::is_zero_digest;
 
 const READ_CHUNK_SIZE: isize = 64 * 1024;
+
+/// A wrapper around [`StoreKey`] that can be sent across the [`pipe`](`redis::pipe`) to Redis.
+///
+/// Raw `StoreKey`s shouldn't be sent directly to Redis, since users can configure stores to
+/// e.g. attach a prefix to every key. Instead, you can use [`RedisStore::key`] to create a
+/// `RedisStoreKey`.
+struct RedisStoreKey<'a, 's> {
+    prefix: Option<&'a str>,
+    body: Cow<'s, str>,
+}
+
+impl<'a, 's> ToRedisArgs for RedisStoreKey<'a, 's> {
+    fn write_redis_args<W>(&self, out: &mut W)
+    where
+        W: ?Sized + redis::RedisWrite,
+    {
+        let body = self.body.as_bytes();
+
+        if let Some(prefix) = self.prefix {
+            // Unfortunately in this case we allocate and make two copies. This means that adding a prefix puts
+            // a tiny performance hit into every single query to Redis.
+            //
+            // This is because the API for `write_redis_args` is such that each chunk of contiguous
+            // data (i.e., the prefix XOR the key) will become its own arg.
+            //
+            // If you look at the implementations for `RedisWrite`, you'll see that in both cases the data is copied.
+            // This means that this code here is actually 3 copies: two explicit and one inside
+            // `out.write_arg`. Theoretically, the API in `redis-rs` could change so that we could push the two
+            // explicit copies down into the `RedisWrite` implementations and avoid extraneous allocations.
+            //
+            // This would be a fairly significant API change for `redis-rs`, so it's not such a trival fix. In either
+            // case, we would essentially go from three `memcpy`s to two.
+            let mut key_buf = BytesMut::with_capacity(prefix.len() + self.body.len());
+            key_buf.put(prefix.as_bytes());
+            key_buf.put(body);
+            let key = key_buf.freeze();
+
+            out.write_arg(key.as_ref());
+        } else {
+            out.write_arg(body)
+        }
+    }
+}
 
 /// Holds a connection result or a future that resolves to a connection.
 /// This is a utility to allow us to start a connection but not block on it.
@@ -44,6 +87,11 @@ pub enum LazyConnection<T: ConnectionLike + Unpin + Clone + Send + Sync> {
 pub struct RedisStore<T: ConnectionLike + Unpin + Clone + Send + Sync = ConnectionManager> {
     lazy_conn: ArcCell<LazyConnection<T>>,
     temp_name_generator_fn: fn() -> String,
+
+    /// A common prefix to append to all keys before they are sent to Redis.
+    ///
+    /// See [`RedisStore::key_prefix`](`nativelink_config::stores::RedisStore::key_prefix`).
+    key_prefix: Option<String>,
 }
 
 impl RedisStore {
@@ -80,6 +128,7 @@ impl RedisStore {
         Ok(RedisStore::new_with_conn_and_name_generator(
             lazy_conn,
             || uuid::Uuid::new_v4().to_string(),
+            config.key_prefix.clone(),
         ))
     }
 }
@@ -88,10 +137,12 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync> RedisStore<T> {
     pub fn new_with_conn_and_name_generator(
         lazy_conn: LazyConnection<T>,
         temp_name_generator_fn: fn() -> String,
+        key_prefix: Option<String>,
     ) -> RedisStore<T> {
         RedisStore {
             lazy_conn: ArcCell::new(Arc::new(lazy_conn)),
             temp_name_generator_fn,
+            key_prefix,
         }
     }
 
@@ -103,6 +154,14 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync> RedisStore<T> {
         self.lazy_conn
             .set(Arc::new(LazyConnection::Connection(result.clone())));
         result
+    }
+
+    /// Wrap a [`StoreKey`] in a [`RedisStoreKey`] which can be sent to Redis.
+    fn key<'a, 's, 'k: 's>(&'a self, key: &'k StoreKey<'s>) -> RedisStoreKey<'a, 's> {
+        RedisStoreKey {
+            prefix: self.key_prefix.as_deref(),
+            body: key.as_str(),
+        }
     }
 }
 
@@ -128,7 +187,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
                 zero_digest_indexes.push(index);
             }
 
-            pipe.strlen(key.as_str().as_ref());
+            pipe.strlen(self.key(key));
         });
 
         let digest_sizes = pipe
@@ -182,7 +241,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
                         return Ok(());
                     }
                     if force_recv {
-                        conn.append(key.as_str().as_ref(), &chunk[..])
+                        conn.append(self.key(&key), &chunk[..])
                             .await
                             .map_err(from_redis_err)
                             .err_tip(|| "In RedisStore::update() single chunk")?;
@@ -209,7 +268,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
 
         pipe.cmd("RENAME")
             .arg(temp_key.get_or_init(make_temp_name))
-            .arg(key.as_str().as_ref());
+            .arg(self.key(&key));
         pipe.query_async(&mut conn)
             .await
             .map_err(from_redis_err)
@@ -237,7 +296,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
         let mut conn = self.get_conn().await?;
         if length == Some(0) {
             let exists = conn
-                .exists::<_, bool>(key.as_str().as_ref())
+                .exists::<_, bool>(self.key(&key))
                 .await
                 .map_err(from_redis_err)
                 .err_tip(|| "In RedisStore::get_part::zero_exists")?;
@@ -264,7 +323,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
             let current_end =
                 std::cmp::min(current_start.saturating_add(READ_CHUNK_SIZE), end_position) - 1;
             let chunk = conn
-                .getrange::<_, Bytes>(key.as_str().as_ref(), current_start, current_end)
+                .getrange::<_, Bytes>(self.key(&key), current_start, current_end)
                 .await
                 .map_err(from_redis_err)
                 .err_tip(|| "In RedisStore::get_part::getrange")?;
