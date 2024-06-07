@@ -126,6 +126,55 @@ async fn upload_and_get_data() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let prefix = "TEST_PREFIX-";
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{prefix}{}-{}", digest.hash_str(), digest.size_bytes);
+
+    let chunk_data = "14";
+
+    let redis_connection = MockRedisConnectionBuilder::new()
+        .pipe(&[("APPEND", &[TEMP_UUID, chunk_data], Ok(&[redis::Value::Nil]))])
+        .cmd("APPEND", &[&packed_hash_hex, ""], Ok(""))
+        .pipe(&[(
+            "RENAME",
+            &[TEMP_UUID, &packed_hash_hex],
+            Ok(&[redis::Value::Nil]),
+        )])
+        .pipe(&[(
+            "STRLEN",
+            &[&packed_hash_hex],
+            Ok(&[redis::Value::Bulk(vec![redis::Value::Int(2)])]),
+        )])
+        .cmd("GETRANGE", &[&packed_hash_hex, "0", "1"], Ok("14"))
+        .build();
+
+    let store = RedisStore::new_with_conn_and_name_generator_and_prefix(
+        LazyConnection::Connection(Ok(redis_connection)),
+        mock_uuid_generator,
+        prefix.to_string(),
+    );
+
+    store.update_oneshot(digest, data.clone()).await?;
+
+    let result = store.has(digest).await?;
+    assert!(
+        result.is_some(),
+        "Expected redis store to have hash: {VALID_HASH1}",
+    );
+
+    let result = store
+        .get_part_unchunked(digest, 0, Some(data.clone().len()))
+        .await?;
+
+    assert_eq!(result, data, "Expected redis store to have updated value",);
+
+    Ok(())
+}
+
+#[nativelink_test]
 async fn upload_empty_data() -> Result<(), Error> {
     let data = Bytes::from_static(b"");
 
@@ -136,6 +185,32 @@ async fn upload_empty_data() -> Result<(), Error> {
     let store = RedisStore::new_with_conn_and_name_generator(
         LazyConnection::Connection(Ok(redis_connection)),
         mock_uuid_generator,
+    );
+
+    store.update_oneshot(digest, data).await?;
+
+    let result = store.has(digest).await?;
+    assert!(
+        result.is_some(),
+        "Expected redis store to have hash: {VALID_HASH1}",
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn upload_empty_data_with_prefix() -> Result<(), Error> {
+    let data = Bytes::from_static(b"");
+    let prefix = "TEST_PREFIX-";
+
+    let digest = ZERO_BYTE_DIGESTS[0];
+
+    let redis_connection = MockRedisConnectionBuilder::new().build();
+
+    let store = RedisStore::new_with_conn_and_name_generator_and_prefix(
+        LazyConnection::Connection(Ok(redis_connection)),
+        mock_uuid_generator,
+        prefix.to_string(),
     );
 
     store.update_oneshot(digest, data).await?;
