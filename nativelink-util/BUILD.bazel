@@ -13,6 +13,7 @@ rust_library(
         "src/buf_channel.rs",
         "src/common.rs",
         "src/connection_manager.rs",
+        "src/default_store_key_subscribe.rs",
         "src/digest_hasher.rs",
         "src/evicting_map.rs",
         "src/fastcdc.rs",
@@ -68,6 +69,7 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/buf_channel_test.rs",
+        "tests/default_store_key_subscribe_test.rs",
         "tests/evicting_map_test.rs",
         "tests/fastcdc_test.rs",
         "tests/fs_test.rs",
@@ -88,6 +90,7 @@ rust_test_suite(
         "//nativelink-config",
         "//nativelink-error",
         "//nativelink-proto",
+        "//nativelink-store",
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hex",

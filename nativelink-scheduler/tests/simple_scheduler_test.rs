@@ -46,7 +46,6 @@ async fn verify_initial_connection_message(
     worker_id: WorkerId,
     rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>,
 ) {
-    use pretty_assertions::assert_eq;
     // Worker should have been sent an execute command.
     let expected_msg_for_worker = UpdateForWorker {
         update: Some(update_for_worker::Update::ConnectionResult(
