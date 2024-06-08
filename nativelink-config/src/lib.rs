@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![doc = include_str!("../README.md")]
+
 pub mod cas_server;
 pub mod schedulers;
 pub mod serde_utils;

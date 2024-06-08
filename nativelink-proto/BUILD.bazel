@@ -1,4 +1,10 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_binary",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+)
 
 PROTO_NAMES = [
     "build.bazel.remote.execution.v2",
@@ -107,4 +113,16 @@ py_test(
         ":gen_rs_protos",
     ],
     main = "update_protos.py",
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-proto",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-proto",
 )

@@ -59,7 +59,7 @@ where
     deserializer.deserialize_any(USizeVisitor::<T>(PhantomData::<T> {}))
 }
 
-/// Same as convert_numeric_with_shellexpand, but supports Option<T>.
+/// Same as convert_numeric_with_shellexpand, but supports `Option<T>`.
 pub fn convert_optional_numeric_with_shellexpand<'de, D, T, E>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error>
@@ -113,7 +113,7 @@ pub fn convert_string_with_shellexpand<'de, D: Deserializer<'de>>(
     Ok((*(shellexpand::env(&value).map_err(de::Error::custom)?)).to_string())
 }
 
-/// Same as convert_string_with_shellexpand, but supports Vec<String>.
+/// Same as convert_string_with_shellexpand, but supports `Vec<String>`.
 pub fn convert_vec_string_with_shellexpand<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<String>, D::Error> {
@@ -127,7 +127,7 @@ pub fn convert_vec_string_with_shellexpand<'de, D: Deserializer<'de>>(
         .collect()
 }
 
-/// Same as convert_string_with_shellexpand, but supports Option<String>.
+/// Same as convert_string_with_shellexpand, but supports `Option<String>`.
 pub fn convert_optional_string_with_shellexpand<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {

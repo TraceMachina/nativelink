@@ -89,6 +89,7 @@ rust_test_suite(
 rust_doc(
     name = "docs",
     crate = ":nativelink-scheduler",
+    visibility = ["//visibility:public"],
 )
 
 rust_doc_test(
