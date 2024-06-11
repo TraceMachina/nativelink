@@ -34,6 +34,6 @@ monitor the PipelineRun logs.
 
 kubectl wait \
     --for=condition=Succeeded \
-    --timeout=30m \
+    --timeout=45m \
     pipelinerun \
         -l tekton.dev/pipeline=rebuild-nativelink
