@@ -67,7 +67,7 @@ pub struct GrpcStore {
 }
 
 impl GrpcStore {
-    pub async fn new(config: &nativelink_config::stores::GrpcStore) -> Result<Self, Error> {
+    pub async fn new(config: &nativelink_config::stores::GrpcStore) -> Result<Arc<Self>, Error> {
         let jitter_amt = config.retry.jitter;
         Self::new_with_jitter(
             config,
@@ -86,7 +86,7 @@ impl GrpcStore {
     pub async fn new_with_jitter(
         config: &nativelink_config::stores::GrpcStore,
         jitter_fn: Box<dyn Fn(Duration) -> Duration + Send + Sync>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Arc<Self>, Error> {
         error_if!(
             config.endpoints.is_empty(),
             "Expected at least 1 endpoint in GrpcStore"
@@ -99,7 +99,7 @@ impl GrpcStore {
         }
 
         let jitter_fn = Arc::new(jitter_fn);
-        Ok(GrpcStore {
+        Ok(Arc::new(GrpcStore {
             instance_name: config.instance_name.clone(),
             store_type: config.store_type,
             retrier: Retrier::new(
@@ -114,7 +114,7 @@ impl GrpcStore {
                 config.retry.to_owned(),
                 jitter_fn,
             ),
-        })
+        }))
     }
 
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
