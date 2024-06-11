@@ -25,8 +25,8 @@ use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, Up
 pub struct NoopStore;
 
 impl NoopStore {
-    pub fn new() -> Self {
-        NoopStore {}
+    pub fn new() -> Arc<Self> {
+        Arc::new(NoopStore {})
     }
 }
 

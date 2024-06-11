@@ -242,7 +242,7 @@ pub struct S3Store {
 }
 
 impl S3Store {
-    pub async fn new(config: &nativelink_config::stores::S3Store) -> Result<Self, Error> {
+    pub async fn new(config: &nativelink_config::stores::S3Store) -> Result<Arc<Self>, Error> {
         let jitter_amt = config.retry.jitter;
         let jitter_fn = Arc::new(move |delay: Duration| {
             if jitter_amt == 0. {
@@ -281,8 +281,8 @@ impl S3Store {
         config: &nativelink_config::stores::S3Store,
         s3_client: Client,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
-    ) -> Result<Self, Error> {
-        Ok(Self {
+    ) -> Result<Arc<Self>, Error> {
+        Ok(Arc::new(Self {
             s3_client: Arc::new(s3_client),
             bucket: config.bucket.to_string(),
             key_prefix: config.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
@@ -297,7 +297,7 @@ impl S3Store {
             multipart_max_concurrent_uploads: config
                 .multipart_max_concurrent_uploads
                 .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
-        })
+        }))
     }
 
     fn make_s3_path(&self, key: StoreKey<'_>) -> String {

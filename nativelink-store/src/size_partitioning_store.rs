@@ -34,12 +34,12 @@ impl SizePartitioningStore {
         config: &nativelink_config::stores::SizePartitioningStore,
         lower_store: Store,
         upper_store: Store,
-    ) -> Self {
-        SizePartitioningStore {
+    ) -> Arc<Self> {
+        Arc::new(SizePartitioningStore {
             partition_size: config.size as i64,
             lower_store,
             upper_store,
-        }
+        })
     }
 }
 

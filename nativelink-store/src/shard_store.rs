@@ -35,7 +35,7 @@ impl ShardStore {
     pub fn new(
         config: &nativelink_config::stores::ShardStore,
         stores: Vec<Store>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Arc<Self>, Error> {
         error_if!(
             config.stores.len() != stores.len(),
             "Config shards do not match stores length"
@@ -62,9 +62,9 @@ impl ShardStore {
             .collect();
         // Our last item should always be the max.
         *weights.last_mut().unwrap() = u32::MAX;
-        Ok(Self {
+        Ok(Arc::new(Self {
             weights_and_stores: weights.into_iter().zip(stores).collect(),
-        })
+        }))
     }
 
     fn get_store_index(&self, store_key: &StoreKey) -> usize {

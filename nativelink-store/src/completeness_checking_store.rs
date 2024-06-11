@@ -114,13 +114,13 @@ pub struct CompletenessCheckingStore {
 }
 
 impl CompletenessCheckingStore {
-    pub fn new(ac_store: Store, cas_store: Store) -> Self {
-        CompletenessCheckingStore {
+    pub fn new(ac_store: Store, cas_store: Store) -> Arc<Self> {
+        Arc::new(CompletenessCheckingStore {
             cas_store,
             ac_store,
             incomplete_entries_counter: CounterWithTime::default(),
             complete_entries_counter: CounterWithTime::default(),
-        }
+        })
     }
 
     /// Check that all files and directories in action results

@@ -413,7 +413,7 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
     let fast_store = Store::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
     ));
-    let slow_store = Store::new(Arc::new(NoopStore::new()));
+    let slow_store = Store::new(NoopStore::new());
     let fast_slow_store_config = nativelink_config::stores::FastSlowStore {
         fast: nativelink_config::stores::StoreConfig::memory(
             nativelink_config::stores::MemoryStore::default(),

@@ -56,7 +56,7 @@ impl DedupStore {
         config: &nativelink_config::stores::DedupStore,
         index_store: Store,
         content_store: Store,
-    ) -> Self {
+    ) -> Arc<Self> {
         let min_size = if config.min_size == 0 {
             DEFAULT_MIN_SIZE
         } else {
@@ -77,13 +77,13 @@ impl DedupStore {
         } else {
             config.max_concurrent_fetch_per_get as usize
         };
-        Self {
+        Arc::new(Self {
             index_store,
             content_store,
             fast_cdc_decoder: FastCDC::new(min_size, normal_size, max_size),
             max_concurrent_fetch_per_get,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
-        }
+        })
     }
 
     async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<usize>, Error> {

@@ -54,7 +54,7 @@ pub struct RedisStore<T: ConnectionLike + Unpin + Clone + Send + Sync = Connecti
 impl RedisStore {
     pub fn new(
         config: &nativelink_config::stores::RedisStore,
-    ) -> Result<RedisStore<ConnectionManager>, Error> {
+    ) -> Result<Arc<RedisStore<ConnectionManager>>, Error> {
         // Note: Currently only one connection is supported.
         error_if!(
             config.addresses.len() != 1,
@@ -82,10 +82,12 @@ impl RedisStore {
 
         let lazy_conn = LazyConnection::Future(conn_fut);
 
-        Ok(RedisStore::new_with_conn_and_name_generator_and_prefix(
-            lazy_conn,
-            || uuid::Uuid::new_v4().to_string(),
-            config.key_prefix.clone(),
+        Ok(Arc::new(
+            RedisStore::new_with_conn_and_name_generator_and_prefix(
+                lazy_conn,
+                || uuid::Uuid::new_v4().to_string(),
+                config.key_prefix.clone(),
+            ),
         ))
     }
 }

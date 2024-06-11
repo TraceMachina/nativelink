@@ -33,12 +33,12 @@ fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
     ));
     store_manager.add_store("foo", memory_store.clone());
 
-    let ref_store = Store::new(Arc::new(RefStore::new(
+    let ref_store = Store::new(RefStore::new(
         &nativelink_config::stores::RefStore {
             name: "foo".to_string(),
         },
         Arc::downgrade(&store_manager),
-    )));
+    ));
     store_manager.add_store("bar", ref_store.clone());
     (store_manager, memory_store, ref_store)
 }
@@ -141,20 +141,20 @@ async fn inner_store_test() -> Result<(), Error> {
     ));
     store_manager.add_store("mem_store", memory_store.clone());
 
-    let ref_store_inner = Store::new(Arc::new(RefStore::new(
+    let ref_store_inner = Store::new(RefStore::new(
         &nativelink_config::stores::RefStore {
             name: "mem_store".to_string(),
         },
         Arc::downgrade(&store_manager),
-    )));
+    ));
     store_manager.add_store("ref_store_inner", ref_store_inner.clone());
 
-    let ref_store_outer = Store::new(Arc::new(RefStore::new(
+    let ref_store_outer = Store::new(RefStore::new(
         &nativelink_config::stores::RefStore {
             name: "ref_store_inner".to_string(),
         },
         Arc::downgrade(&store_manager),
-    )));
+    ));
     store_manager.add_store("ref_store_outer", ref_store_outer.clone());
 
     // Ensure the result of inner_store() points to exact same memory store.
