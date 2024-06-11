@@ -50,7 +50,7 @@ pub fn store_factory<'a>(
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
         let store: Arc<dyn StoreDriver> = match backend {
-            StoreConfig::memory(config) => Arc::new(MemoryStore::new(config)),
+            StoreConfig::memory(config) => MemoryStore::new(config),
             StoreConfig::experimental_s3_store(config) => Arc::new(S3Store::new(config).await?),
             StoreConfig::redis_store(config) => Arc::new(RedisStore::new(config)?),
             StoreConfig::verify(config) => Arc::new(VerifyStore::new(
