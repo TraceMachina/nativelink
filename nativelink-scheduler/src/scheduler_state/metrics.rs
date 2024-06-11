@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub(crate) mod awaited_action;
-pub(crate) mod client_action_state_result;
-pub(crate) mod completed_action;
-pub(crate) mod metrics;
-pub(crate) mod state_manager;
-pub(crate) mod workers;
+use nativelink_util::metrics_utils::CounterWithTime;
+
+#[derive(Default)]
+pub(crate) struct Metrics {
+    pub(crate) add_action_joined_running_action: CounterWithTime,
+    pub(crate) add_action_joined_queued_action: CounterWithTime,
+    pub(crate) add_action_new_action_created: CounterWithTime,
+}

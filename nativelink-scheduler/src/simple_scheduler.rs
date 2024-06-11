@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -25,7 +24,6 @@ use hashbrown::{HashMap, HashSet};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
-    OperationId,
 };
 use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper,
@@ -36,12 +34,14 @@ use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::{watch, Notify};
 use tokio::time::Duration;
+use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
 use crate::action_scheduler::ActionScheduler;
+use crate::operation_state_manager::{ClientStateManager, OperationFilter, OperationStageFlags};
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::scheduler_state::completed_action::CompletedAction;
+use crate::scheduler_state::metrics::Metrics as SchedulerMetrics;
 use crate::scheduler_state::state_manager::StateManager;
 use crate::scheduler_state::workers::Workers;
 use crate::worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
@@ -74,16 +74,6 @@ struct SimpleSchedulerImpl {
 }
 
 impl SimpleSchedulerImpl {
-    fn subscribe_to_channel(awaited_action: &AwaitedAction) -> watch::Receiver<Arc<ActionState>> {
-        let rx = awaited_action.notify_channel.subscribe();
-        // TODO: Fix this when fixed upstream tokio-rs/tokio#5871
-        awaited_action
-            .notify_channel
-            .send(awaited_action.current_state.clone())
-            .unwrap();
-        rx
-    }
-
     /// Attempts to find a worker to execute an action and begins executing it.
     /// If an action is already running that is cacheable it may merge this action
     /// with the results and state changes of the already running action.
@@ -94,74 +84,9 @@ impl SimpleSchedulerImpl {
         &mut self,
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-        // Check to see if the action is running, if it is and cacheable, merge the actions.
-        if let Some(running_action) = self.state_manager.active_actions.get_mut(&action_info) {
-            self.metrics.add_action_joined_running_action.inc();
-            return Ok(Self::subscribe_to_channel(running_action));
-        }
-
-        // Check to see if the action is queued, if it is and cacheable, merge the actions.
-        if let Some(mut arc_action_info) = self.state_manager.queued_actions_set.take(&action_info)
-        {
-            let (original_action_info, queued_action) = self
-                .state_manager
-                .queued_actions
-                .remove_entry(&arc_action_info)
-                .err_tip(|| "Internal error queued_actions and queued_actions_set should match")?;
-            self.metrics.add_action_joined_queued_action.inc();
-
-            let new_priority = cmp::max(original_action_info.priority, action_info.priority);
-            drop(original_action_info); // This increases the chance Arc::make_mut won't copy.
-
-            // In the event our task is higher priority than the one already scheduled, increase
-            // the priority of the scheduled one.
-            Arc::make_mut(&mut arc_action_info).priority = new_priority;
-
-            let rx = queued_action.notify_channel.subscribe();
-            // TODO: Fix this when fixed upstream tokio-rs/tokio#5871
-            let _ = queued_action
-                .notify_channel
-                .send(queued_action.current_state.clone());
-
-            // Even if we fail to send our action to the client, we need to add this action back to the
-            // queue because it was remove earlier.
-            self.state_manager
-                .queued_actions
-                .insert(arc_action_info.clone(), queued_action);
-            self.state_manager
-                .queued_actions_set
-                .insert(arc_action_info);
-            return Ok(rx);
-        }
-
-        self.metrics.add_action_new_action_created.inc();
-        // Action needs to be added to queue or is not cacheable.
-        let action_info = Arc::new(action_info);
-        let id = OperationId::new(action_info.unique_qualifier.clone());
-
-        let current_state = Arc::new(ActionState {
-            id,
-            stage: ActionStage::Queued,
-        });
-
-        let (tx, rx) = watch::channel(current_state.clone());
-        self.state_manager
-            .queued_actions_set
-            .insert(action_info.clone());
-        self.state_manager.queued_actions.insert(
-            action_info.clone(),
-            AwaitedAction {
-                action_info,
-                current_state,
-                notify_channel: tx,
-                attempts: 0,
-                last_error: None,
-                worker_id: None,
-            },
-        );
-
+        let add_action_result = self.state_manager.add_action(action_info).await?;
         self.tasks_or_workers_change_notify.notify_one();
-        Ok(rx)
+        add_action_result.as_receiver().await.cloned()
     }
 
     fn clean_recently_completed_actions(&mut self) {
@@ -169,6 +94,7 @@ impl SimpleSchedulerImpl {
             .checked_sub(self.retain_completed_for)
             .unwrap();
         self.state_manager
+            .inner
             .recently_completed_actions
             .retain(|action| action.completed_time > expiry_time);
     }
@@ -178,6 +104,7 @@ impl SimpleSchedulerImpl {
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
         self.state_manager
+            .inner
             .recently_completed_actions
             .get(unique_qualifier)
             .map(|action| watch::channel(action.state.clone()).1)
@@ -187,16 +114,31 @@ impl SimpleSchedulerImpl {
         &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        self.state_manager
-            .queued_actions_set
-            .get(unique_qualifier)
-            .and_then(|action_info| self.state_manager.queued_actions.get(action_info))
-            .or_else(|| self.state_manager.active_actions.get(unique_qualifier))
-            .map(Self::subscribe_to_channel)
+        let filter_result = self
+            .state_manager
+            .filter_operations(OperationFilter {
+                stages: OperationStageFlags::Any,
+                operation_id: None,
+                worker_id: None,
+                action_digest: None,
+                worker_update_before: None,
+                completed_before: None,
+                last_client_update_before: None,
+                unique_qualifier: Some(unique_qualifier.clone()),
+                order_by: None,
+            })
+            .await;
+
+        let mut stream = filter_result.ok()?;
+        if let Some(result) = stream.next().await {
+            result.as_receiver().await.ok().cloned()
+        } else {
+            None
+        }
     }
 
     fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
-        match self.state_manager.active_actions.remove(action_info) {
+        match self.state_manager.inner.active_actions.remove(action_info) {
             Some(running_action) => {
                 let mut awaited_action = running_action;
                 let send_result = if awaited_action.attempts >= self.max_job_retries {
@@ -224,9 +166,11 @@ impl SimpleSchedulerImpl {
                         .notify_channel
                         .send(awaited_action.current_state.clone());
                     self.state_manager
+                        .inner
                         .queued_actions_set
                         .insert(action_info.clone());
                     self.state_manager
+                        .inner
                         .queued_actions
                         .insert(action_info.clone(), awaited_action);
                     send_result
@@ -259,7 +203,7 @@ impl SimpleSchedulerImpl {
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
     fn immediate_evict_worker(&mut self, worker_id: &WorkerId, err: Error) {
-        if let Some(mut worker) = self.state_manager.workers.remove_worker(worker_id) {
+        if let Some(mut worker) = self.state_manager.inner.workers.remove_worker(worker_id) {
             self.metrics.workers_evicted.inc();
             // We don't care if we fail to send message to worker, this is only a best attempt.
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
@@ -278,6 +222,7 @@ impl SimpleSchedulerImpl {
     fn set_drain_worker(&mut self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
         let worker = self
             .state_manager
+            .inner
             .workers
             .workers
             .get_mut(&worker_id)
@@ -299,13 +244,18 @@ impl SimpleSchedulerImpl {
         // unstable feature [see: https://github.com/rust-lang/rust/issues/70530]).
         let action_infos: Vec<Arc<ActionInfo>> = self
             .state_manager
+            .inner
             .queued_actions
             .keys()
             .rev()
             .cloned()
             .collect();
         for action_info in action_infos {
-            let Some(awaited_action) = self.state_manager.queued_actions.get(action_info.as_ref())
+            let Some(awaited_action) = self
+                .state_manager
+                .inner
+                .queued_actions
+                .get(action_info.as_ref())
             else {
                 event!(
                     Level::ERROR,
@@ -316,6 +266,7 @@ impl SimpleSchedulerImpl {
             };
             let Some(worker) = self
                 .state_manager
+                .inner
                 .workers
                 .find_worker_for_action_mut(awaited_action)
             else {
@@ -351,11 +302,15 @@ impl SimpleSchedulerImpl {
             // At this point everything looks good, so remove it from the queue and add it to active actions.
             let (action_info, mut awaited_action) = self
                 .state_manager
+                .inner
                 .queued_actions
                 .remove_entry(action_info.as_ref())
                 .unwrap();
             assert!(
-                self.state_manager.queued_actions_set.remove(&action_info),
+                self.state_manager
+                    .inner
+                    .queued_actions_set
+                    .remove(&action_info),
                 "queued_actions_set should always have same keys as queued_actions"
             );
             Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
@@ -376,6 +331,7 @@ impl SimpleSchedulerImpl {
             }
             awaited_action.attempts += 1;
             self.state_manager
+                .inner
                 .active_actions
                 .insert(action_info, awaited_action);
         }
@@ -390,6 +346,7 @@ impl SimpleSchedulerImpl {
         self.metrics.update_action_with_internal_error.inc();
         let Some((action_info, mut running_action)) = self
             .state_manager
+            .inner
             .active_actions
             .remove_entry(action_info_hash_key)
         else {
@@ -441,11 +398,12 @@ impl SimpleSchedulerImpl {
 
         // Now put it back. retry_action() needs it to be there to send errors properly.
         self.state_manager
+            .inner
             .active_actions
             .insert(action_info.clone(), running_action);
 
         // Clear this action from the current worker.
-        if let Some(worker) = self.state_manager.workers.workers.get_mut(worker_id) {
+        if let Some(worker) = self.state_manager.inner.workers.workers.get_mut(worker_id) {
             let was_paused = !worker.can_accept_work();
             // This unpauses, but since we're completing with an error, don't
             // unpause unless all actions have completed.
@@ -486,6 +444,7 @@ impl SimpleSchedulerImpl {
 
         let (action_info, mut running_action) = self
             .state_manager
+            .inner
             .active_actions
             .remove_entry(action_info_hash_key)
             .err_tip(|| {
@@ -515,6 +474,7 @@ impl SimpleSchedulerImpl {
             );
             // First put it back in our active_actions or we will drop the task.
             self.state_manager
+                .inner
                 .active_actions
                 .insert(action_info, running_action);
             self.immediate_evict_worker(worker_id, err.clone());
@@ -540,6 +500,7 @@ impl SimpleSchedulerImpl {
             // If the operation is not finished it means the worker is still working on it, so put it
             // back or else we will loose track of the task.
             self.state_manager
+                .inner
                 .active_actions
                 .insert(action_info, running_action);
             return Ok(());
@@ -547,6 +508,7 @@ impl SimpleSchedulerImpl {
 
         // Keep in case this is asked for soon.
         self.state_manager
+            .inner
             .recently_completed_actions
             .insert(CompletedAction {
                 completed_time: SystemTime::now(),
@@ -555,6 +517,7 @@ impl SimpleSchedulerImpl {
 
         let worker = self
             .state_manager
+            .inner
             .workers
             .workers
             .get_mut(worker_id)
@@ -625,13 +588,14 @@ impl SimpleScheduler {
         }
 
         let tasks_or_workers_change_notify = Arc::new(Notify::new());
-        let state_manager = StateManager {
-            queued_actions_set: HashSet::new(),
-            queued_actions: BTreeMap::new(),
-            workers: Workers::new(scheduler_cfg.allocation_strategy),
-            active_actions: HashMap::new(),
-            recently_completed_actions: HashSet::new(),
-        };
+        let state_manager = StateManager::new(
+            HashSet::new(),
+            BTreeMap::new(),
+            Workers::new(scheduler_cfg.allocation_strategy),
+            HashMap::new(),
+            HashSet::new(),
+            Arc::new(SchedulerMetrics::default()),
+        );
         let metrics = Arc::new(Metrics::default());
         let metrics_for_do_try_match = metrics.clone();
         let inner = Arc::new(Mutex::new(SimpleSchedulerImpl {
@@ -680,7 +644,12 @@ impl SimpleScheduler {
     #[must_use]
     pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
         let inner = self.get_inner_lock().await;
-        inner.state_manager.workers.workers.contains(worker_id)
+        inner
+            .state_manager
+            .inner
+            .workers
+            .workers
+            .contains(worker_id)
     }
 
     /// Checks to see if the worker can accept work. Should only be used in unit tests.
@@ -691,6 +660,7 @@ impl SimpleScheduler {
         let mut inner = self.get_inner_lock().await;
         let worker = inner
             .state_manager
+            .inner
             .workers
             .workers
             .get_mut(worker_id)
@@ -708,6 +678,7 @@ impl SimpleScheduler {
         let mut inner = self.get_inner_lock().await;
         let worker = inner
             .state_manager
+            .inner
             .workers
             .workers
             .get_mut(worker_id)
@@ -793,6 +764,7 @@ impl WorkerScheduler for SimpleScheduler {
         self.metrics.add_worker.wrap(move || {
             let res = inner
                 .state_manager
+                .inner
                 .workers
                 .add_worker(worker)
                 .err_tip(|| "Error while adding worker, removing from pool");
@@ -835,6 +807,7 @@ impl WorkerScheduler for SimpleScheduler {
         let mut inner = self.get_inner_lock().await;
         inner
             .state_manager
+            .inner
             .workers
             .refresh_lifetime(worker_id, timestamp)
             .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
@@ -855,6 +828,7 @@ impl WorkerScheduler for SimpleScheduler {
             // map most of the time.
             let worker_ids_to_remove: Vec<WorkerId> = inner
                 .state_manager
+                .inner
                 .workers
                 .workers
                 .iter()
@@ -905,22 +879,22 @@ impl MetricsComponent for SimpleScheduler {
             let inner = self.inner.lock_blocking();
             c.publish(
                 "queued_actions_total",
-                &inner.state_manager.queued_actions.len(),
+                &inner.state_manager.inner.queued_actions.len(),
                 "The number actions in the queue.",
             );
             c.publish(
                 "workers_total",
-                &inner.state_manager.workers.workers.len(),
+                &inner.state_manager.inner.workers.workers.len(),
                 "The number workers active.",
             );
             c.publish(
                 "active_actions_total",
-                &inner.state_manager.active_actions.len(),
+                &inner.state_manager.inner.active_actions.len(),
                 "The number of running actions.",
             );
             c.publish(
                 "recently_completed_actions_total",
-                &inner.state_manager.recently_completed_actions.len(),
+                &inner.state_manager.inner.recently_completed_actions.len(),
                 "The number of recently completed actions in the buffer.",
             );
             c.publish(
@@ -939,7 +913,7 @@ impl MetricsComponent for SimpleScheduler {
                 "The amount of times a job is allowed to retry from an internal error before it is dropped.",
             );
             let mut props = HashMap::<&String, u64>::new();
-            for (_worker_id, worker) in inner.state_manager.workers.workers.iter() {
+            for (_worker_id, worker) in inner.state_manager.inner.workers.workers.iter() {
                 c.publish_with_labels(
                     "workers",
                     worker,
@@ -960,7 +934,7 @@ impl MetricsComponent for SimpleScheduler {
                     format!("Total sum of available properties for {property}"),
                 );
             }
-            for (_, active_action) in inner.state_manager.active_actions.iter() {
+            for (_, active_action) in inner.state_manager.inner.active_actions.iter() {
                 let action_name = active_action
                     .action_info
                     .unique_qualifier
