@@ -101,7 +101,7 @@ pub type ActionStateResultStream = Pin<Box<dyn Stream<Item = Arc<dyn ActionState
 pub trait ClientStateManager {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
-        &self,
+        &mut self,
         action_info: ActionInfo,
     ) -> Result<Arc<dyn ActionStateResult>, Error>;
 
