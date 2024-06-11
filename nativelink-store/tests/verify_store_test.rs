@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::pin::Pin;
-use std::sync::Arc;
 
 use futures::try_join;
 use nativelink_error::{Error, ResultExt};
@@ -32,9 +31,7 @@ const VALID_HASH1: &str = "0123456789abcdef0000000000000000000100000000000001234
 
 #[nativelink_test]
 async fn verify_size_false_passes_on_update() -> Result<(), Error> {
-    let inner_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
             backend: nativelink_config::stores::StoreConfig::memory(
@@ -65,9 +62,7 @@ async fn verify_size_false_passes_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_size_true_fails_on_update() -> Result<(), Error> {
-    let inner_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
             backend: nativelink_config::stores::StoreConfig::memory(
@@ -107,9 +102,7 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
-    let inner_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
             backend: nativelink_config::stores::StoreConfig::memory(
@@ -135,9 +128,7 @@ async fn verify_size_true_suceeds_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), Error> {
-    let inner_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
             backend: nativelink_config::stores::StoreConfig::memory(
@@ -176,9 +167,7 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
 
 #[nativelink_test]
 async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
-    let inner_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
             backend: nativelink_config::stores::StoreConfig::memory(
@@ -206,9 +195,7 @@ async fn verify_sha256_hash_true_suceeds_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
-    let inner_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
             backend: nativelink_config::stores::StoreConfig::memory(
@@ -243,9 +230,7 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
-    let inner_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
             backend: nativelink_config::stores::StoreConfig::memory(
@@ -279,9 +264,7 @@ async fn verify_blake3_hash_true_suceeds_on_update() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
-    let inner_store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store = VerifyStore::new(
         &nativelink_config::stores::VerifyStore {
             backend: nativelink_config::stores::StoreConfig::memory(

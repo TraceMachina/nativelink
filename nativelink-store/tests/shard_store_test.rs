@@ -32,7 +32,7 @@ fn make_stores(weights: &[u32]) -> (Arc<ShardStore>, Vec<Arc<MemoryStore>>) {
     let store_config = nativelink_config::stores::StoreConfig::memory(memory_store_config.clone());
     let stores: Vec<_> = weights
         .iter()
-        .map(|_| Arc::new(MemoryStore::new(&memory_store_config)))
+        .map(|_| MemoryStore::new(&memory_store_config))
         .collect();
 
     let shard_store = Arc::new(

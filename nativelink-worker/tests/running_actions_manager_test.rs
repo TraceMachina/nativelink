@@ -95,8 +95,8 @@ async fn setup_stores() -> Result<
     };
     let slow_config = nativelink_config::stores::MemoryStore::default();
     let fast_store = FilesystemStore::new(&fast_config).await?;
-    let slow_store = Arc::new(MemoryStore::new(&slow_config));
-    let ac_store = Arc::new(MemoryStore::new(&slow_config));
+    let slow_store = MemoryStore::new(&slow_config);
+    let ac_store = MemoryStore::new(&slow_config);
     let cas_store = FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
             fast: nativelink_config::stores::StoreConfig::filesystem(fast_config),

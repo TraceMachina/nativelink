@@ -432,13 +432,13 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn st
             })
             .await?,
         ),
-        Store::new(Arc::new(MemoryStore::new(
+        Store::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        ))),
+        )),
     ));
-    let ac_store = Store::new(Arc::new(MemoryStore::new(
+    let ac_store = Store::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    )));
+    ));
     let work_directory = make_temp_path("foo");
     new_local_worker(
         Arc::new(LocalWorkerConfig {
@@ -480,13 +480,13 @@ async fn new_local_worker_removes_work_directory_before_start_test(
             })
             .await?,
         ),
-        Store::new(Arc::new(MemoryStore::new(
+        Store::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        ))),
+        )),
     ));
-    let ac_store = Store::new(Arc::new(MemoryStore::new(
+    let ac_store = Store::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    )));
+    ));
     let work_directory = make_temp_path("foo");
     fs::create_dir_all(format!("{}/{}", work_directory, "another_dir")).await?;
     let mut file =
