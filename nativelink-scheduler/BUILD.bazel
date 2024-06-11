@@ -63,6 +63,7 @@ rust_test_suite(
         "tests/action_messages_test.rs",
         "tests/cache_lookup_scheduler_test.rs",
         "tests/property_modifier_scheduler_test.rs",
+        "tests/redis_operation_manager_test.rs",
         "tests/simple_scheduler_test.rs",
     ],
     compile_data = [
