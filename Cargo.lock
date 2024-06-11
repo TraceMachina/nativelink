@@ -1886,6 +1886,7 @@ dependencies = [
  "prost",
  "prost-types",
  "redis",
+ "serde",
  "tokio",
  "tonic 0.11.0",
 ]

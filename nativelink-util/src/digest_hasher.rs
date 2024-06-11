@@ -20,6 +20,7 @@ use futures::Future;
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -61,7 +62,7 @@ pub fn set_default_digest_hasher_func(hasher: DigestHasherFunc) -> Result<(), Er
 }
 
 /// Supported digest hash functions.
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum DigestHasherFunc {
     Sha256,
     Blake3,
