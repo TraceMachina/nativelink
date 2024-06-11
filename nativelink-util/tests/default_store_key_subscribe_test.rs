@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
 use std::task::Poll;
 
 use futures::poll;
@@ -28,9 +27,7 @@ use tokio::task::yield_now;
 #[nativelink_test]
 async fn subscribe_get_key_test() -> Result<(), Box<dyn std::error::Error>> {
     const KEY: &str = "foo";
-    let store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     store.update_oneshot(KEY, "bar".into()).await?;
     let subscribe_receiver =
         default_store_key_subscribe_with_time(store, KEY.into(), yield_now).await;
@@ -44,9 +41,7 @@ async fn subscribe_get_new_versions_test() -> Result<(), Box<dyn std::error::Err
     const KEY: &str = "foo";
     const DATA1: &str = "bar";
     const DATA2: &str = "baz";
-    let store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     store.update_oneshot(KEY, DATA1.into()).await?;
     let mut subscribe_receiver =
         default_store_key_subscribe_with_time(store.clone(), KEY.into(), yield_now).await;
@@ -83,9 +78,7 @@ async fn subscribe_get_new_versions_test() -> Result<(), Box<dyn std::error::Err
 
 #[nativelink_test]
 async fn subscribe_not_found_key_test() -> Result<(), Box<dyn std::error::Error>> {
-    let store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let data = default_store_key_subscribe_with_time(store, "foo".into(), yield_now).await;
     {
         let subscription_err = data.peek().err().unwrap();

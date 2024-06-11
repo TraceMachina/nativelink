@@ -34,12 +34,12 @@ use rand::{Rng, SeedableRng};
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
 fn make_stores() -> (Store, Store, Store) {
-    let fast_store = Store::new(Arc::new(MemoryStore::new(
+    let fast_store = Store::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    )));
-    let slow_store = Store::new(Arc::new(MemoryStore::new(
+    ));
+    let slow_store = Store::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    )));
+    ));
     let fast_slow_store = Store::new(FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
             fast: nativelink_config::stores::StoreConfig::memory(
@@ -378,12 +378,12 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn ignore_value_in_fast_store() -> Result<(), Error> {
-    let fast_store = Store::new(Arc::new(MemoryStore::new(
+    let fast_store = Store::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    )));
-    let slow_store = Store::new(Arc::new(MemoryStore::new(
+    ));
+    let slow_store = Store::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    )));
+    ));
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &nativelink_config::stores::FastSlowStore {
             fast: nativelink_config::stores::StoreConfig::memory(
@@ -410,9 +410,9 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
 // Regression test for https://github.com/TraceMachina/nativelink/issues/665
 #[nativelink_test]
 async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
-    let fast_store = Store::new(Arc::new(MemoryStore::new(
+    let fast_store = Store::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    )));
+    ));
     let slow_store = Store::new(Arc::new(NoopStore::new()));
     let fast_slow_store_config = nativelink_config::stores::FastSlowStore {
         fast: nativelink_config::stores::StoreConfig::memory(
