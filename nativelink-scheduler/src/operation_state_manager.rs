@@ -119,7 +119,7 @@ pub trait WorkerStateManager {
     /// did not change with a modified timestamp in order to prevent
     /// the operation from being considered stale and being rescheduled.
     async fn update_operation(
-        &self,
+        &mut self,
         operation_id: OperationId,
         worker_id: WorkerId,
         action_stage: Result<ActionStage, Error>,

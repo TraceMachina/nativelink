@@ -14,5 +14,6 @@
 
 pub(crate) mod awaited_action;
 pub(crate) mod completed_action;
+pub(crate) mod metrics;
 pub(crate) mod state_manager;
 pub(crate) mod workers;

@@ -19,6 +19,7 @@ rust_library(
         "src/property_modifier_scheduler.rs",
         "src/scheduler_state/awaited_action.rs",
         "src/scheduler_state/completed_action.rs",
+        "src/scheduler_state/metrics.rs",
         "src/scheduler_state/mod.rs",
         "src/scheduler_state/state_manager.rs",
         "src/scheduler_state/workers.rs",
