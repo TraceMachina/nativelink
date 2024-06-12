@@ -15,11 +15,11 @@
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
-use nativelink_util::action_messages::ActionStage;
+use nativelink_util::action_messages::{ActionStage, WorkerId};
 use tracing::{event, Level};
 
 use crate::scheduler_state::awaited_action::AwaitedAction;
-use crate::worker::{Worker, WorkerId, WorkerTimestamp};
+use crate::worker::{Worker, WorkerTimestamp};
 
 /// A collection of workers that are available to run tasks.
 pub struct Workers {
