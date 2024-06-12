@@ -14,6 +14,7 @@
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
+use std::fmt::Display;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -21,6 +22,8 @@ use arc_cell::ArcCell;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt, Shared};
+use futures::stream::FuturesOrdered;
+use futures::TryStreamExt;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -28,6 +31,7 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use redis::aio::{ConnectionLike, ConnectionManager};
+use redis::cluster_async::ClusterConnection;
 use redis::{AsyncCommands, ToRedisArgs};
 
 use crate::cas_utils::is_zero_digest;
@@ -41,7 +45,7 @@ pub enum LazyConnection<T: ConnectionLike + Unpin + Clone + Send + Sync> {
     Future(Shared<BoxFuture<'static, Result<T, Error>>>),
 }
 
-pub struct RedisStore<T: ConnectionLike + Unpin + Clone + Send + Sync = ConnectionManager> {
+pub struct RedisStore<T: ConnectionLike + Unpin + Clone + Send + Sync> {
     lazy_conn: ArcCell<LazyConnection<T>>,
     temp_name_generator_fn: fn() -> String,
 
@@ -51,26 +55,91 @@ pub struct RedisStore<T: ConnectionLike + Unpin + Clone + Send + Sync = Connecti
     key_prefix: String,
 }
 
-impl RedisStore {
-    pub fn new(
-        config: &nativelink_config::stores::RedisStore,
-    ) -> Result<RedisStore<ConnectionManager>, Error> {
-        // Note: Currently only one connection is supported.
-        error_if!(
-            config.addresses.len() != 1,
-            "Only one address is supported for Redis store"
-        );
+/// A container enum for the different redis connection modes supported by NativeLink (currently, singleton
+/// and [cluster](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/) modes.)
+//
+// Theoretically, we shouldn't need this as [`RedisStore`] uses an [`ArcCell`] internally to hold its connection.
+// This means the connection itself doesn't need to be [`Sized`] and can be `dyn ConnectionLike`. Unfortunately,
+// the way we initialize the connection at the moment requires the connection to have a known size since it's
+// always inside a [`Result`] enum, whose arguments must be sized.
+//
+// I (@caass) tried a little to make this work but lost a couple days on it and decided to timebox.
+#[derive(Clone)]
+pub enum NativelinkRedisConnection {
+    Single(ConnectionManager),
+    Cluster(ClusterConnection),
+}
 
-        let address = config.addresses[0].clone();
-        let conn_fut = async move {
-            redis::Client::open(address)
-                .map_err(from_redis_err)?
-                .get_connection_manager()
-                .await
-                .map_err(from_redis_err)
+impl ConnectionLike for NativelinkRedisConnection {
+    fn req_packed_command<'a>(
+        &'a mut self,
+        cmd: &'a redis::Cmd,
+    ) -> redis::RedisFuture<'a, redis::Value> {
+        match self {
+            NativelinkRedisConnection::Single(inner) => inner.req_packed_command(cmd),
+            NativelinkRedisConnection::Cluster(inner) => inner.req_packed_command(cmd),
         }
-        .boxed()
-        .shared();
+    }
+
+    fn req_packed_commands<'a>(
+        &'a mut self,
+        cmd: &'a redis::Pipeline,
+        offset: usize,
+        count: usize,
+    ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
+        match self {
+            NativelinkRedisConnection::Single(inner) => {
+                inner.req_packed_commands(cmd, offset, count)
+            }
+            NativelinkRedisConnection::Cluster(inner) => {
+                inner.req_packed_commands(cmd, offset, count)
+            }
+        }
+    }
+
+    fn get_db(&self) -> i64 {
+        match self {
+            NativelinkRedisConnection::Single(inner) => inner.get_db(),
+            NativelinkRedisConnection::Cluster(inner) => inner.get_db(),
+        }
+    }
+}
+
+impl NativelinkRedisConnection {
+    /// Create a new connection to a single redis instance
+    pub async fn single<T: redis::IntoConnectionInfo>(params: T) -> Result<Self, Error> {
+        let client = redis::Client::open(params).map_err(from_redis_err)?;
+        let connection = client
+            .get_connection_manager()
+            .await
+            .map_err(from_redis_err)?;
+
+        Ok(Self::Single(connection))
+    }
+
+    /// Create a connection to a redis cluster
+    pub async fn cluster<T: redis::IntoConnectionInfo>(
+        params: impl IntoIterator<Item = T>,
+    ) -> Result<Self, Error> {
+        let client = redis::cluster::ClusterClient::new(params).map_err(from_redis_err)?;
+        let connection = client
+            .get_async_connection()
+            .await
+            .map_err(from_redis_err)?;
+
+        Ok(Self::Cluster(connection))
+    }
+}
+
+impl RedisStore<NativelinkRedisConnection> {
+    pub fn new(config: &nativelink_config::stores::RedisStore) -> Result<Self, Error> {
+        let conn_fut = if config.addresses.len() == 1 {
+            let addr = config.addresses[0].clone();
+            NativelinkRedisConnection::single(addr).boxed().shared()
+        } else {
+            let addrs = config.addresses.clone();
+            NativelinkRedisConnection::cluster(addrs).boxed().shared()
+        };
 
         let conn_fut_clone = conn_fut.clone();
         // Start connecting to redis, but don't block our construction on it.
@@ -125,7 +194,10 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync> RedisStore<T> {
     }
 
     /// Encode a [`StoreKey`] so it can be sent to Redis.
-    fn encode_key(&self, key: StoreKey) -> impl ToRedisArgs {
+    // This doesn't really need to return an `impl`, but I want to avoid relying specifically on
+    // the behavior of returning a [`String`] when we're planning on returning a `Cow<'a, str>` soon.
+    // Once we swap, we can just -> Cow<'a, str>
+    fn encode_key<'a>(&self, key: StoreKey<'a>) -> impl ToRedisArgs + Display + Send + Sync + 'a {
         // TODO(caass): Once https://github.com/redis-rs/redis-rs/pull/1219 makes it into a release,
         // this can be changed to
         // ```rust
@@ -160,25 +232,32 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
             results[0] = Some(0);
             return Ok(());
         }
-        let mut conn = self.get_conn().await?;
-
-        let mut pipe = redis::pipe();
-        pipe.atomic();
 
         let mut zero_digest_indexes = Vec::new();
-        keys.iter().enumerate().for_each(|(index, key)| {
-            if is_zero_digest(key.borrow()) {
-                zero_digest_indexes.push(index);
-            }
 
-            pipe.strlen(self.encode_key(key.borrow()));
-        });
+        let queries =
+            keys.iter()
+                .enumerate()
+                .map(|(index, key)| {
+                    if is_zero_digest(key.borrow()) {
+                        zero_digest_indexes.push(index);
+                    }
+                    let encoded_key = self.encode_key(key.borrow());
 
-        let digest_sizes = pipe
-            .query_async::<_, Vec<usize>>(&mut conn)
-            .await
-            .map_err(from_redis_err)
-            .err_tip(|| "Error: Could not call pipeline in has_with_results")?;
+                    async {
+                        let mut conn = self.get_conn().await.err_tip(|| {
+                            "Error: Could not get connection handle in has_with_results"
+                        })?;
+
+                        conn.strlen::<_, usize>(encoded_key)
+                            .await
+                            .map_err(from_redis_err)
+                            .err_tip(|| "Error: Could not call strlen in has_with_results")
+                    }
+                })
+                .collect::<FuturesOrdered<_>>();
+
+        let digest_sizes = queries.try_collect::<Vec<_>>().await?;
 
         error_if!(
             digest_sizes.len() != results.len(),
@@ -206,7 +285,27 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
         let temp_key = OnceCell::new();
-        let make_temp_name = || format!("temp-{}", (self.temp_name_generator_fn)());
+        let final_key = self.encode_key(key.borrow());
+
+        // While the name generation function can be supplied by the user, we need to have the curly
+        // braces in place in order to manage redis' hashing behavior and make sure that the temporary
+        // key name and the final key name are directed to the same cluster node. See
+        // https://redis.io/blog/redis-clustering-best-practices-with-keys/
+        //
+        // The TL;DR is that if we're in cluster mode and the names hash differently, we can't use request
+        // pipelining. By using these braces, we tell redis to only hash the part of the temporary key that's
+        // identical to the final key -- so they will always hash to the same node.
+        //
+        // TODO(caass): the stabilization PR for [`LazyCell`](`std::cell::LazyCell`) has been merged into rust-lang,
+        // so in the next stable release we can use LazyCell::new(|| { ... }) instead.
+        let make_temp_name = || {
+            format!(
+                "temp-{}-{{{}}}",
+                (self.temp_name_generator_fn)(),
+                &final_key
+            )
+        };
+
         let mut conn = self.get_conn().await?;
         let mut pipe = redis::pipe();
         pipe.atomic();
@@ -225,7 +324,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
                         return Ok(());
                     }
                     if force_recv {
-                        conn.append(self.encode_key(key.borrow()), &chunk[..])
+                        conn.append(&final_key, &chunk[..])
                             .await
                             .map_err(from_redis_err)
                             .err_tip(|| "In RedisStore::update() single chunk")?;
@@ -252,7 +351,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> StoreDriver for 
 
         pipe.cmd("RENAME")
             .arg(temp_key.get_or_init(make_temp_name))
-            .arg(self.encode_key(key));
+            .arg(final_key);
         pipe.query_async(&mut conn)
             .await
             .map_err(from_redis_err)
