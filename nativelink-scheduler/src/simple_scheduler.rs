@@ -25,7 +25,7 @@ use hashbrown::{HashMap, HashSet};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
-    OperationId,
+    OperationId, WorkerId,
 };
 use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper,
@@ -44,7 +44,7 @@ use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::scheduler_state::completed_action::CompletedAction;
 use crate::scheduler_state::state_manager::StateManager;
 use crate::scheduler_state::workers::Workers;
-use crate::worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
+use crate::worker::{Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for workers in seconds.

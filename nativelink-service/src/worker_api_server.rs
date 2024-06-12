@@ -27,10 +27,10 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     execute_result, ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
-use nativelink_scheduler::worker::{Worker, WorkerId};
+use nativelink_scheduler::worker::{Worker};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::background_spawn;
-use nativelink_util::action_messages::ActionInfoHashKey;
+use nativelink_util::action_messages::{ActionInfoHashKey, WorkerId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::mpsc;
@@ -139,7 +139,7 @@ impl WorkerApiServer {
 
         // Now register the worker with the scheduler.
         let worker_id = {
-            let worker_id = Uuid::new_v4().as_u128();
+            let worker_id = Uuid::new_v4();
             let worker = Worker::new(
                 WorkerId(worker_id),
                 platform_properties,

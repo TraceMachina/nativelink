@@ -15,11 +15,9 @@
 use std::sync::Arc;
 
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfo, ActionState};
+use nativelink_util::action_messages::{ActionInfo, ActionState, WorkerId};
 use nativelink_util::metrics_utils::{CollectorState, MetricsComponent};
 use tokio::sync::watch;
-
-use crate::worker::WorkerId;
 
 /// An action that is being awaited on and last known state.
 pub struct AwaitedAction {
