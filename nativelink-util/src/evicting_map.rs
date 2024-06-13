@@ -14,9 +14,10 @@
 
 use std::borrow::Borrow;
 use std::cmp::Eq;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::ops::DerefMut;
+use std::ops::{DerefMut, RangeBounds};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -119,8 +120,9 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
-struct State<K: Hash + Eq + Debug, T: LenEntry + Debug> {
+struct State<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug> {
     lru: LruCache<K, EvictionItem<T>>,
+    btree: Option<BTreeSet<K>>,
     sum_store_size: u64,
 
     // Metrics.
@@ -133,8 +135,16 @@ struct State<K: Hash + Eq + Debug, T: LenEntry + Debug> {
     lifetime_inserted_bytes: Counter,
 }
 
-impl<K: Hash + Eq + Debug, T: LenEntry + Debug + Sync> State<K, T> {
-    async fn remove(&mut self, eviction_item: &EvictionItem<T>, replaced: bool) {
+impl<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug + Sync> State<K, T> {
+    /// Removes an item from the cache.
+    async fn remove<Q>(&mut self, key: &Q, eviction_item: &EvictionItem<T>, replaced: bool)
+    where
+        K: Borrow<Q>,
+        Q: Ord + Hash + Eq + Debug,
+    {
+        if let Some(btree) = &mut self.btree {
+            btree.remove(key.borrow());
+        }
         self.sum_store_size -= eviction_item.data.len() as u64;
         if replaced {
             self.replaced_items.inc();
@@ -146,9 +156,22 @@ impl<K: Hash + Eq + Debug, T: LenEntry + Debug + Sync> State<K, T> {
         // Note: See comment in `unref()` requring global lock of insert/remove.
         eviction_item.data.unref().await;
     }
+
+    /// Inserts a new item into the cache. If the key already exists, the old item is returned.
+    async fn put(&mut self, key: K, eviction_item: EvictionItem<T>) -> Option<T> {
+        // If we are maintaining a btree index, we need to update it.
+        if let Some(btree) = &mut self.btree {
+            btree.insert(key.clone());
+        }
+        if let Some(old_item) = self.lru.put(key.clone(), eviction_item) {
+            self.remove(&key, &old_item, true).await;
+            return Some(old_item.data);
+        }
+        None
+    }
 }
 
-pub struct EvictingMap<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrapper> {
+pub struct EvictingMap<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug, I: InstantWrapper> {
     state: Mutex<State<K, T>>,
     anchor_time: I,
     max_bytes: u64,
@@ -159,7 +182,7 @@ pub struct EvictingMap<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrap
 
 impl<K, T, I> EvictingMap<K, T, I>
 where
-    K: Hash + Eq + Debug,
+    K: Ord + Hash + Eq + Clone + Debug,
     T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
 {
@@ -169,6 +192,7 @@ where
             // function on the LenEntry properly.
             state: Mutex::new(State {
                 lru: LruCache::unbounded(),
+                btree: None,
                 sum_store_size: 0,
                 evicted_bytes: Counter::default(),
                 evicted_items: CounterWithTime::default(),
@@ -184,6 +208,43 @@ where
             max_seconds: config.max_seconds as i32,
             max_count: config.max_count,
         }
+    }
+
+    pub async fn enable_filtering(&self) {
+        let mut state = self.state.lock().await;
+        if state.btree.is_none() {
+            Self::rebuild_btree_index(&mut state);
+        }
+    }
+
+    fn rebuild_btree_index(state: &mut State<K, T>) {
+        state.btree = Some(state.lru.iter().map(|(k, _)| k).cloned().collect());
+    }
+
+    pub async fn range<F, Q>(&self, prefix_range: impl RangeBounds<Q>, mut handler: F) -> usize
+    where
+        F: FnMut(&K, &T) -> bool,
+        K: Borrow<Q> + Ord,
+        Q: Ord + Hash + Eq + Debug,
+    {
+        let mut state = self.state.lock().await;
+        let btree = match state.btree {
+            Some(ref btree) => btree,
+            None => {
+                Self::rebuild_btree_index(&mut state);
+                state.btree.as_ref().unwrap()
+            }
+        };
+        let mut continue_count = 0;
+        for key in btree.range(prefix_range) {
+            let value = &state.lru.peek(key.borrow()).unwrap().data;
+            let should_continue = handler(key, value);
+            if !should_continue {
+                break;
+            }
+            continue_count += 1;
+        }
+        continue_count
     }
 
     /// Returns the number of key-value pairs that are currently in the the cache.
@@ -239,7 +300,7 @@ where
                 .pop_lru()
                 .expect("Tried to peek() then pop() but failed");
             event!(Level::INFO, ?key, "Evicting",);
-            state.remove(&eviction_item, false).await;
+            state.remove(&key, &eviction_item, false).await;
 
             peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
                 entry
@@ -253,7 +314,7 @@ where
     pub async fn size_for_key<Q>(&self, key: &Q) -> Option<usize>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Debug,
     {
         let mut results = [None];
         self.sizes_for_keys([key], &mut results[..]).await;
@@ -274,7 +335,7 @@ where
         // to be able to borrow a `Q`.
         K: Borrow<Q>,
         R: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Debug,
     {
         let mut state = self.state.lock().await;
 
@@ -298,7 +359,7 @@ where
                             } else {
                                 event!(Level::INFO, ?key, "Touch failed, evicting");
                             }
-                            state.remove(&eviction_item, false).await;
+                            state.remove(key.borrow(), &eviction_item, false).await;
                         }
                     }
                 }
@@ -310,7 +371,7 @@ where
     pub async fn get<Q>(&self, key: &Q) -> Option<T>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Debug,
     {
         let mut state = self.state.lock().await;
         self.evict_items(state.deref_mut()).await;
@@ -323,7 +384,7 @@ where
 
         let (key, eviction_item) = state.lru.pop_entry(key.borrow())?;
         event!(Level::INFO, ?key, "Touch failed, evicting");
-        state.remove(&eviction_item, false).await;
+        state.remove(key.borrow(), &eviction_item, false).await;
         None
     }
 
@@ -369,9 +430,8 @@ where
                 data,
             };
 
-            if let Some(old_item) = state.lru.put(key, eviction_item) {
-                state.remove(&old_item, true).await;
-                replaced_items.push(old_item.data);
+            if let Some(old_item) = state.put(key, eviction_item).await {
+                replaced_items.push(old_item);
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
@@ -383,7 +443,7 @@ where
     pub async fn remove<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Debug,
     {
         let mut state = self.state.lock().await;
         self.inner_remove(&mut state, key).await
@@ -392,11 +452,11 @@ where
     async fn inner_remove<Q>(&self, mut state: &mut State<K, T>, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Debug,
     {
         self.evict_items(state.deref_mut()).await;
         if let Some(entry) = state.lru.pop(key.borrow()) {
-            state.remove(&entry, false).await;
+            state.remove(key, &entry, false).await;
             return true;
         }
         false
@@ -407,7 +467,7 @@ where
     pub async fn remove_if<Q, F: FnOnce(&T) -> bool>(&self, key: &Q, cond: F) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Debug,
     {
         let mut state = self.state.lock().await;
         if let Some(entry) = state.lru.get(key.borrow()) {
@@ -420,7 +480,7 @@ where
     }
 }
 
-impl<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrapper> MetricsComponent
+impl<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug, I: InstantWrapper> MetricsComponent
     for EvictingMap<K, T, I>
 {
     fn gather_metrics(&self, c: &mut CollectorState) {
