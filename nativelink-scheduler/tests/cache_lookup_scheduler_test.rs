@@ -50,9 +50,9 @@ struct TestContext {
 
 fn make_cache_scheduler() -> Result<TestContext, Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
-    let ac_store = Store::new(MemoryStore::new(
+    let ac_store = Store::new(Arc::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    ));
+    )));
     let cache_scheduler = CacheLookupScheduler::new(ac_store.clone(), mock_scheduler.clone())?;
     Ok(TestContext {
         mock_scheduler,

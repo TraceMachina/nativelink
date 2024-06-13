@@ -1886,7 +1886,6 @@ dependencies = [
  "prost",
  "prost-types",
  "redis",
- "serde",
  "tokio",
  "tonic 0.11.0",
 ]
@@ -2038,7 +2037,6 @@ dependencies = [
  "nativelink-error",
  "nativelink-macro",
  "nativelink-proto",
- "nativelink-store",
  "parking_lot",
  "pin-project-lite",
  "pretty_assertions",

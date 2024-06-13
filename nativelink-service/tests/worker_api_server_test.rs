@@ -30,9 +30,10 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
+use nativelink_scheduler::worker::WorkerId;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, WorkerId};
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;

@@ -83,7 +83,6 @@ rust_test_suite(
         "@crates//:prost",
         "@crates//:tokio",
         "@crates//:tokio-stream",
-        "@crates//:uuid",
     ],
 )
 

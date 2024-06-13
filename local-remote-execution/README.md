@@ -231,7 +231,7 @@ curl -v \
 # Wait for the pipelines to finish.
 sleep 1 && kubectl wait \
     --for=condition=Succeeded \
-    --timeout=45m \
+    --timeout=30m \
     pipelinerun \
         -l tekton.dev/pipeline=rebuild-nativelink
 

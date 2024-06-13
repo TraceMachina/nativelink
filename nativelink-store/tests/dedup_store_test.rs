@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::dedup_store::DedupStore;
@@ -52,12 +54,12 @@ const MEGABYTE_SZ: usize = 1024 * 1024;
 async fn simple_round_trip_test() -> Result<(), Error> {
     let store = DedupStore::new(
         &make_default_config(),
-        Store::new(MemoryStore::new(
+        Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        )), // Index store.
-        Store::new(MemoryStore::new(
+        ))), // Index store.
+        Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        )), // Content store.
+        ))), // Content store.
     );
 
     let original_data = make_random_data(MEGABYTE_SZ);
@@ -79,12 +81,14 @@ async fn simple_round_trip_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn check_missing_last_chunk_test() -> Result<(), Error> {
-    let content_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let content_store = Arc::new(MemoryStore::new(
+        &nativelink_config::stores::MemoryStore::default(),
+    ));
     let store = DedupStore::new(
         &make_default_config(),
-        Store::new(MemoryStore::new(
+        Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        )), // Index store.
+        ))), // Index store.
         Store::new(content_store.clone()),
     );
 
@@ -128,12 +132,12 @@ async fn check_missing_last_chunk_test() -> Result<(), Error> {
 async fn fetch_part_test() -> Result<(), Error> {
     let store = DedupStore::new(
         &make_default_config(),
-        Store::new(MemoryStore::new(
+        Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        )), // Index store.
-        Store::new(MemoryStore::new(
+        ))), // Index store.
+        Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        )), // Content store.
+        ))), // Content store.
     );
 
     const DATA_SIZE: usize = MEGABYTE_SZ / 4;
@@ -180,12 +184,12 @@ async fn check_length_not_set_with_chunk_read_beyond_first_chunk_regression_test
             max_size: 7,
             max_concurrent_fetch_per_get: 10,
         },
-        Store::new(MemoryStore::new(
+        Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        )), // Index store.
-        Store::new(MemoryStore::new(
+        ))), // Index store.
+        Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        )), // Content store.
+        ))), // Content store.
     );
 
     const DATA_SIZE: usize = 30;
@@ -232,12 +236,12 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
             max_size: 7,
             max_concurrent_fetch_per_get: 10,
         },
-        Store::new(MemoryStore::new(
+        Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        )), // Index store.
-        Store::new(MemoryStore::new(
+        ))), // Index store.
+        Store::new(Arc::new(MemoryStore::new(
             &nativelink_config::stores::MemoryStore::default(),
-        )), // Content store.
+        ))), // Content store.
     );
 
     const DATA_SIZE: usize = 30;
@@ -297,13 +301,15 @@ async fn check_chunk_boundary_reads_test() -> Result<(), Error> {
 /// content items exist instead of just checking the entry in the index store.
 #[nativelink_test]
 async fn has_checks_content_store() -> Result<(), Error> {
-    let index_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
-    let content_store = MemoryStore::new(&nativelink_config::stores::MemoryStore {
+    let index_store = Arc::new(MemoryStore::new(
+        &nativelink_config::stores::MemoryStore::default(),
+    ));
+    let content_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore {
         eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
             max_count: 10,
             ..Default::default()
         }),
-    });
+    }));
 
     let store = DedupStore::new(
         &make_default_config(),
@@ -358,13 +364,15 @@ async fn has_checks_content_store() -> Result<(), Error> {
 /// properly return None.
 #[nativelink_test]
 async fn has_with_no_existing_index_returns_none_test() -> Result<(), Error> {
-    let index_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
-    let content_store = MemoryStore::new(&nativelink_config::stores::MemoryStore {
+    let index_store = Arc::new(MemoryStore::new(
+        &nativelink_config::stores::MemoryStore::default(),
+    ));
+    let content_store = Arc::new(MemoryStore::new(&nativelink_config::stores::MemoryStore {
         eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
             max_count: 10,
             ..Default::default()
         }),
-    });
+    }));
 
     let store = DedupStore::new(
         &make_default_config(),

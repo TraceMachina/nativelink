@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage, WorkerId};
+use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage};
 use nativelink_util::metrics_utils::Registry;
 
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::worker::{Worker, WorkerTimestamp};
+use crate::worker::{Worker, WorkerId, WorkerTimestamp};
 
 /// WorkerScheduler interface is responsible for interactions between the scheduler
 /// and worker related operations.

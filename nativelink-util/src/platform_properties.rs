@@ -16,7 +16,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
-use serde::{Deserialize, Serialize};
 
 /// `PlatformProperties` helps manage the configuration of platform properties to
 /// keys and types. The scheduler uses these properties to decide what jobs
@@ -25,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// all the platform property keys configured on the worker.
 ///
 /// Additional rules may be applied based on `PlatfromPropertyValue`.
-#[derive(Eq, PartialEq, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Clone, Debug, Default)]
 pub struct PlatformProperties {
     pub properties: HashMap<String, PlatformPropertyValue>,
 }
@@ -77,7 +76,7 @@ impl From<ProtoPlatform> for PlatformProperties {
 ///            TODO(allada) In the future this will be used by the scheduler and
 ///            worker to cause the scheduler to prefer certain workers over others,
 ///            but not restrict them based on these values.
-#[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug)]
 pub enum PlatformPropertyValue {
     Exact(String),
     Minimum(u64),

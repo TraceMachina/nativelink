@@ -32,6 +32,7 @@ use nativelink_config::cas_server::{
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
+use nativelink_scheduler::worker::WorkerId;
 use nativelink_service::ac_server::AcServer;
 use nativelink_service::bep_server::BepServer;
 use nativelink_service::bytestream_server::ByteStreamServer;
@@ -42,7 +43,6 @@ use nativelink_service::health_server::HealthServer;
 use nativelink_service::worker_api_server::WorkerApiServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::action_messages::WorkerId;
 use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_file_limit};
 use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
 use nativelink_util::health_utils::HealthRegistryBuilder;

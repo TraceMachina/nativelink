@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
 use nativelink_config::stores::{ExistenceCacheStore as ExistenceCacheStoreConfig, StoreConfig};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
@@ -30,9 +32,9 @@ async fn simple_exist_cache_test() -> Result<(), Error> {
         backend: StoreConfig::noop, // Note: Not used.
         eviction_policy: Default::default(),
     };
-    let inner_store = Store::new(MemoryStore::new(
+    let inner_store = Store::new(Arc::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    ));
+    )));
     let store = ExistenceCacheStore::new(&config, inner_store.clone());
 
     let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
@@ -70,9 +72,9 @@ async fn update_flags_existance_cache_test() -> Result<(), Error> {
         backend: StoreConfig::noop,
         eviction_policy: Default::default(),
     };
-    let inner_store = Store::new(MemoryStore::new(
+    let inner_store = Store::new(Arc::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    ));
+    )));
     let store = ExistenceCacheStore::new(&config, inner_store.clone());
 
     let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
@@ -95,9 +97,9 @@ async fn get_part_caches_if_exact_size_set() -> Result<(), Error> {
         backend: StoreConfig::noop,
         eviction_policy: Default::default(),
     };
-    let inner_store = Store::new(MemoryStore::new(
+    let inner_store = Store::new(Arc::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    ));
+    )));
     let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
     inner_store
         .update_oneshot(digest, VALUE.into())

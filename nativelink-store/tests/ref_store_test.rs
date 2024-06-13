@@ -28,9 +28,9 @@ const VALID_HASH1: &str = "0123456789abcdef0000000000000000000100000000000001234
 fn setup_stores() -> (Arc<StoreManager>, Store, Store) {
     let store_manager = Arc::new(StoreManager::new());
 
-    let memory_store = Store::new(MemoryStore::new(
+    let memory_store = Store::new(Arc::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    ));
+    )));
     store_manager.add_store("foo", memory_store.clone());
 
     let ref_store = Store::new(Arc::new(RefStore::new(
@@ -136,9 +136,9 @@ async fn update_test() -> Result<(), Error> {
 async fn inner_store_test() -> Result<(), Error> {
     let store_manager = Arc::new(StoreManager::new());
 
-    let memory_store = Store::new(MemoryStore::new(
+    let memory_store = Store::new(Arc::new(MemoryStore::new(
         &nativelink_config::stores::MemoryStore::default(),
-    ));
+    )));
     store_manager.add_store("mem_store", memory_store.clone());
 
     let ref_store_inner = Store::new(Arc::new(RefStore::new(
