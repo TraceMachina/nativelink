@@ -84,9 +84,11 @@ impl TryFrom<&str> for OperationId {
     fn try_from(value: &str) -> Result<Self, Error> {
         let (unique_qualifier, id) = value
             .split_once(':')
-            .err_tip(|| "Invalid Id string - {value}")?;
+            .err_tip(|| format!("Invalid OperationId unique_qualifier / id fragment - {value}"))?;
+        let unique_qualifier = ActionInfoHashKey::try_from(unique_qualifier)
+            .err_tip(|| format!("Invalid ActionInfoHashKey - {value}"))?;
         Ok(Self {
-            unique_qualifier: ActionInfoHashKey::try_from(unique_qualifier)?,
+            unique_qualifier,
             id: Uuid::parse_str(id).map_err(|e| make_input_err!("Failed to parse {e} as uuid"))?,
         })
     }
@@ -195,25 +197,27 @@ impl TryFrom<&str> for ActionInfoHashKey {
     type Error = Error;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let (instance_name, other) = value
+        let (instance_name, rest) = value
             .split_once('/')
-            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
-        let (digest_function, other) = other
+            .err_tip(|| format!("Invalid ActionInfoHashKey instance name fragment - {value}"))?;
+        let (digest_function, rest) = rest
             .split_once('/')
-            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
-        let (digest_hash, other) = other
+            .err_tip(|| format!("Invalid ActionInfoHashKey digest function fragment - {value}"))?;
+        let (digest_hash, rest) = rest
             .split_once('-')
-            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
-        let (digest_size, salt) = other
+            .err_tip(|| format!("Invalid ActionInfoHashKey digest hash fragment - {value}"))?;
+        let (digest_size, salt) = rest
             .split_once('/')
-            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
+            .err_tip(|| format!("Invalid ActionInfoHashKey digest size fragment - {value}"))?;
         let digest = DigestInfo::try_new(
             digest_hash,
             digest_size
                 .parse::<u64>()
-                .err_tip(|| "Expected digest size to be a number for ActionInfoHashKey")?,
-        )?;
-        let salt = u64::from_str_radix(salt, 16).err_tip(|| "Expected salt to be a hex string")?;
+                .err_tip(|| format!("Invalid ActionInfoHashKey size value fragment - {value}"))?,
+        )
+        .err_tip(|| format!("Invalid DigestInfo digest hash - {value}"))?;
+        let salt = u64::from_str_radix(salt, 16)
+            .err_tip(|| format!("Invalid ActionInfoHashKey salt hex conversion - {value}"))?;
         Ok(Self {
             instance_name: instance_name.to_string(),
             digest_function: digest_function.try_into()?,
