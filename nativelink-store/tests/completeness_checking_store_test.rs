@@ -36,8 +36,8 @@ const STDOUT: DigestInfo = DigestInfo::new([5u8; 32], 0);
 const STDERR: DigestInfo = DigestInfo::new([6u8; 32], 0);
 
 async fn setup() -> Result<(Arc<CompletenessCheckingStore>, Arc<MemoryStore>, DigestInfo), Error> {
-    let backend_store = Store::new(Arc::new(MemoryStore::new(&MemoryStoreConfig::default())));
-    let cas_store = Arc::new(MemoryStore::new(&MemoryStoreConfig::default()));
+    let backend_store = Store::new(MemoryStore::new(&MemoryStoreConfig::default()));
+    let cas_store = MemoryStore::new(&MemoryStoreConfig::default());
     let ac_store = Arc::new(CompletenessCheckingStore::new(
         backend_store.clone(),
         Store::new(cas_store.clone()),

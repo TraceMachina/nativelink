@@ -13,17 +13,17 @@
 // limitations under the License.
 
 use std::pin::Pin;
-use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
+use futures::poll;
 use memory_stats::memory_stats;
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::store_trait::{Store, StoreLike};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
@@ -174,7 +174,7 @@ async fn read_zero_size_item_test() -> Result<(), Error> {
 async fn errors_with_invalid_inputs() -> Result<(), Error> {
     const VALUE1: &str = "123";
     let store_owned = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
-    let store = Pin::new(&store_owned);
+    let store = Pin::new(store_owned.as_ref());
     {
         // .has() tests.
         async fn has_should_fail(store: Pin<&MemoryStore>, hash: &str, expected_size: usize) {
@@ -244,9 +244,7 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
         size_bytes: 0,
     };
 
-    let store = Arc::new(MemoryStore::new(
-        &nativelink_config::stores::MemoryStore::default(),
-    ));
+    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let store_clone = store.clone();
     let (mut writer, mut reader) = make_buf_channel_pair();
 
@@ -286,6 +284,116 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         .await
         .err_tip(|| "Failed to get_part");
     assert_eq!(results, vec!(Some(0)));
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn memory_store_subscribe_not_present_test() -> Result<(), Error> {
+    let store = Store::new(MemoryStore::new(
+        &nativelink_config::stores::MemoryStore::default(),
+    ));
+
+    const STORE_KEY: &str = "foo";
+    let mut subscription = store.subscribe(STORE_KEY).await;
+    {
+        let item = subscription.peek().unwrap();
+        {
+            // Check that `.get_key()` returns the correct key.
+            assert_eq!(item.get_key().await, Ok(STORE_KEY.into()));
+        }
+        {
+            // Check that `.get()` returns `NotFound`, since we didn't set it.
+            let (mut tx, _rx) = make_buf_channel_pair();
+            assert_eq!(item.get(&mut tx).await.unwrap_err().code, Code::NotFound);
+        }
+    }
+    {
+        // Waiting for a change should return `NotFound`, since we didn't set it.
+        let item = subscription.changed().await.unwrap();
+        let (mut tx, _rx) = make_buf_channel_pair();
+        assert_eq!(item.get(&mut tx).await.unwrap_err().code, Code::NotFound);
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn memory_store_subscribe_key_present_test() -> Result<(), Error> {
+    let store = Store::new(MemoryStore::new(
+        &nativelink_config::stores::MemoryStore::default(),
+    ));
+    const STORE_KEY: &str = "foo";
+    const STORE_VALUE: &str = "bar";
+
+    store
+        .update_oneshot(STORE_KEY, STORE_VALUE.into())
+        .await
+        .unwrap();
+
+    let mut subscription = store.subscribe(STORE_KEY).await;
+    {
+        // Check that `.get()` returns a real value.
+        let item = subscription.peek().unwrap();
+
+        let (mut tx, mut rx) = make_buf_channel_pair();
+
+        let (get_res, consume_res) = tokio::join!(item.get(&mut tx), rx.consume(None));
+
+        assert_eq!(get_res, Ok(()));
+        assert_eq!(consume_res.unwrap(), STORE_VALUE);
+    }
+    {
+        // Value should be set to `changed` on first call.
+        let item = subscription.changed().await.unwrap();
+        let (mut tx, mut rx) = make_buf_channel_pair();
+
+        let (get_res, consume_res) = tokio::join!(item.get(&mut tx), rx.consume(None));
+
+        assert_eq!(get_res, Ok(()));
+        assert_eq!(consume_res.unwrap(), STORE_VALUE);
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn memory_store_subscribe_key_change_test() -> Result<(), Error> {
+    let store = Store::new(MemoryStore::new(
+        &nativelink_config::stores::MemoryStore::default(),
+    ));
+    const STORE_KEY: &str = "foo";
+    const STORE_VALUE1: &str = "bar";
+    const STORE_VALUE2: &str = "baz";
+
+    store
+        .update_oneshot(STORE_KEY, STORE_VALUE1.into())
+        .await
+        .unwrap();
+
+    let mut subscription = store.subscribe(STORE_KEY).await;
+    // First call will always have item marked changed.
+    subscription.changed().await.unwrap();
+    {
+        let mut changed_fut = subscription.changed();
+        // Future should not be ready yet.
+        assert!(poll!(&mut changed_fut).is_pending());
+
+        // Update the value.
+        store
+            .update_oneshot(STORE_KEY, STORE_VALUE2.into())
+            .await
+            .unwrap();
+
+        // Future should be ready now.
+        let item = changed_fut.await.unwrap();
+
+        let (mut tx, mut rx) = make_buf_channel_pair();
+        let (get_res, consume_res) = tokio::join!(item.get(&mut tx), rx.consume(None));
+
+        assert_eq!(get_res, Ok(()));
+        assert_eq!(consume_res.unwrap(), STORE_VALUE2);
+    }
 
     Ok(())
 }
