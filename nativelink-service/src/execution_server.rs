@@ -31,7 +31,7 @@ use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionInfoHashKey, ActionState, OperationId, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
@@ -238,17 +238,20 @@ impl ExecutionServer {
         &self,
         request: Request<WaitExecutionRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
-        let unique_qualifier = ActionInfoHashKey::try_from(request.into_inner().name.as_str())
-            .err_tip(|| "Decoding operation name into ActionInfoHashKey")?;
-        let Some(instance_info) = self.instance_infos.get(&unique_qualifier.instance_name) else {
+        let operation_id = OperationId::try_from(request.into_inner().name.as_str())
+            .err_tip(|| "Decoding operation name into OperationId")?;
+        let Some(instance_info) = self
+            .instance_infos
+            .get(&operation_id.unique_qualifier.instance_name)
+        else {
             return Err(Status::not_found(format!(
                 "No scheduler with the instance name {}",
-                unique_qualifier.instance_name
+                operation_id.unique_qualifier.instance_name
             )));
         };
         let Some(rx) = instance_info
             .scheduler
-            .find_existing_action(&unique_qualifier)
+            .find_existing_action(&operation_id.unique_qualifier)
             .await
         else {
             return Err(Status::not_found("Failed to find existing task"));
