@@ -13,6 +13,8 @@
 // limitations under the License.
 
 pub(crate) mod awaited_action;
+pub(crate) mod client_action_state_result;
 pub(crate) mod completed_action;
+pub(crate) mod metrics;
 pub(crate) mod state_manager;
 pub(crate) mod workers;
