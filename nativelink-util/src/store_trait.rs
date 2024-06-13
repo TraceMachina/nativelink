@@ -245,6 +245,32 @@ impl<'a> StoreKey<'a> {
     }
 }
 
+impl Clone for StoreKey<'static> {
+    fn clone(&self) -> Self {
+        match self {
+            StoreKey::Str(s) => StoreKey::Str(s.clone()),
+            StoreKey::Digest(d) => StoreKey::Digest(*d),
+        }
+    }
+}
+
+impl PartialOrd for StoreKey<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for StoreKey<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (StoreKey::Str(a), StoreKey::Str(b)) => a.cmp(b),
+            (StoreKey::Digest(a), StoreKey::Digest(b)) => a.cmp(b),
+            (StoreKey::Str(_), StoreKey::Digest(_)) => std::cmp::Ordering::Less,
+            (StoreKey::Digest(_), StoreKey::Str(_)) => std::cmp::Ordering::Greater,
+        }
+    }
+}
+
 impl PartialEq for StoreKey<'_> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
