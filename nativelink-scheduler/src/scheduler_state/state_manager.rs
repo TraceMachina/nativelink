@@ -12,20 +12,57 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cmp;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use futures::stream;
 use hashbrown::{HashMap, HashSet};
-use nativelink_util::action_messages::ActionInfo;
+use nativelink_error::{Error, ResultExt};
+use nativelink_util::action_messages::{ActionInfo, ActionStage, ActionState, OperationId};
+use tokio::sync::watch;
 
+use crate::operation_state_manager::{
+    ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
+};
 use crate::scheduler_state::awaited_action::AwaitedAction;
+use crate::scheduler_state::client_action_state_result::ClientActionStateResult;
 use crate::scheduler_state::completed_action::CompletedAction;
+use crate::scheduler_state::metrics::Metrics;
 use crate::scheduler_state::workers::Workers;
+
+#[repr(transparent)]
+pub(crate) struct StateManager {
+    pub inner: StateManagerImpl,
+}
+
+impl StateManager {
+    pub(crate) fn new(
+        queued_actions_set: HashSet<Arc<ActionInfo>>,
+        queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction>,
+        workers: Workers,
+        active_actions: HashMap<Arc<ActionInfo>, AwaitedAction>,
+        recently_completed_actions: HashSet<CompletedAction>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
+        Self {
+            inner: StateManagerImpl {
+                queued_actions_set,
+                queued_actions,
+                workers,
+                active_actions,
+                recently_completed_actions,
+                metrics,
+            },
+        }
+    }
+}
 
 /// StateManager is responsible for maintaining the state of the scheduler. Scheduler state
 /// includes the actions that are queued, active, and recently completed. It also includes the
 /// workers that are available to execute actions based on allocation strategy.
-pub(crate) struct StateManager {
+pub(crate) struct StateManagerImpl {
     // TODO(adams): Move `queued_actions_set` and `queued_actions` into a single struct that
     //  provides a unified interface for interacting with the two containers.
 
@@ -63,4 +100,104 @@ pub(crate) struct StateManager {
     /// keep their completion state around for a while to send back.
     /// TODO(#192) Revisit if this is the best way to handle recently completed actions.
     pub(crate) recently_completed_actions: HashSet<CompletedAction>,
+
+    pub(crate) metrics: Arc<Metrics>,
+}
+
+#[async_trait]
+impl ClientStateManager for StateManager {
+    async fn add_action(
+        &mut self,
+        action_info: ActionInfo,
+    ) -> Result<Arc<dyn ActionStateResult>, Error> {
+        // Check to see if the action is running, if it is and cacheable, merge the actions.
+        if let Some(running_action) = self.inner.active_actions.get_mut(&action_info) {
+            self.inner.metrics.add_action_joined_running_action.inc();
+            return Ok(Arc::new(ClientActionStateResult::new(
+                running_action.notify_channel.subscribe(),
+            )));
+        }
+
+        // Check to see if the action is queued, if it is and cacheable, merge the actions.
+        if let Some(mut arc_action_info) = self.inner.queued_actions_set.take(&action_info) {
+            let (original_action_info, queued_action) = self
+                .inner
+                .queued_actions
+                .remove_entry(&arc_action_info)
+                .err_tip(|| "Internal error queued_actions and queued_actions_set should match")?;
+            self.inner.metrics.add_action_joined_queued_action.inc();
+
+            let new_priority = cmp::max(original_action_info.priority, action_info.priority);
+            drop(original_action_info); // This increases the chance Arc::make_mut won't copy.
+
+            // In the event our task is higher priority than the one already scheduled, increase
+            // the priority of the scheduled one.
+            Arc::make_mut(&mut arc_action_info).priority = new_priority;
+
+            let result = Arc::new(ClientActionStateResult::new(
+                queued_action.notify_channel.subscribe(),
+            ));
+
+            // Even if we fail to send our action to the client, we need to add this action back to the
+            // queue because it was remove earlier.
+            self.inner
+                .queued_actions
+                .insert(arc_action_info.clone(), queued_action);
+            self.inner.queued_actions_set.insert(arc_action_info);
+            return Ok(result);
+        }
+
+        self.inner.metrics.add_action_new_action_created.inc();
+        // Action needs to be added to queue or is not cacheable.
+        let action_info = Arc::new(action_info);
+
+        let operation_id = OperationId::new(action_info.unique_qualifier.clone());
+        let current_state = Arc::new(ActionState {
+            stage: ActionStage::Queued,
+            id: operation_id,
+        });
+
+        let (tx, rx) = watch::channel(current_state.clone());
+
+        self.inner.queued_actions_set.insert(action_info.clone());
+        self.inner.queued_actions.insert(
+            action_info.clone(),
+            AwaitedAction {
+                action_info,
+                current_state,
+                notify_channel: tx,
+                attempts: 0,
+                last_error: None,
+                worker_id: None,
+            },
+        );
+
+        return Ok(Arc::new(ClientActionStateResult::new(rx)));
+    }
+
+    async fn filter_operations(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        // TODO(adams): Build out a proper filter for other fields for state, at the moment
+        //  this only supports the unique qualifier.
+        let unique_qualifier = &filter
+            .unique_qualifier
+            .err_tip(|| "No unique qualifier provided")?;
+        let maybe_awaited_action = self
+            .inner
+            .queued_actions_set
+            .get(unique_qualifier)
+            .and_then(|action_info| self.inner.queued_actions.get(action_info))
+            .or_else(|| self.inner.active_actions.get(unique_qualifier));
+
+        let Some(awaited_action) = maybe_awaited_action else {
+            return Ok(Box::pin(stream::empty()));
+        };
+
+        let rx = awaited_action.notify_channel.subscribe();
+        let action_result: [Arc<dyn ActionStateResult>; 1] =
+            [Arc::new(ClientActionStateResult::new(rx))];
+        Ok(Box::pin(stream::iter(action_result)))
+    }
 }
