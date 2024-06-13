@@ -77,6 +77,7 @@ rust_test_suite(
         "tests/proto_stream_utils_test.rs",
         "tests/resource_info_test.rs",
         "tests/retry_test.rs",
+        "tests/operation_id_tests.rs",
     ],
     compile_data = [
         "tests/data/SekienAkashita.jpg",
