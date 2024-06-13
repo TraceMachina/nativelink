@@ -1718,6 +1718,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lrumap"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1251ce8e8f9909600e127dcbe74ac50d8464e6685cf5953d37df7a741dbf9e9d"
+
+[[package]]
 name = "lz4_flex"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2032,7 +2038,7 @@ dependencies = [
  "futures",
  "hex",
  "hyper",
- "lru",
+ "lrumap",
  "mock_instant",
  "nativelink-config",
  "nativelink-error",

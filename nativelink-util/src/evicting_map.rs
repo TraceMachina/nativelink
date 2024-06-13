@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use async_trait::async_trait;
-use lru::LruCache;
+use lrumap::{LruBTreeMap, LruMap, Removed};
 use nativelink_config::stores::EvictionPolicy;
 use serde::{Deserialize, Serialize};
 use tracing::{event, Level};
@@ -119,8 +119,8 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     }
 }
 
-struct State<K: Hash + Eq + Debug, T: LenEntry + Debug> {
-    lru: LruCache<K, EvictionItem<T>>,
+struct State<K: Hash + Eq + Clone + Debug, T: LenEntry + Debug> {
+    lru: LruBTreeMap<K, EvictionItem<T>>,
     sum_store_size: u64,
 
     // Metrics.
@@ -133,7 +133,7 @@ struct State<K: Hash + Eq + Debug, T: LenEntry + Debug> {
     lifetime_inserted_bytes: Counter,
 }
 
-impl<K: Hash + Eq + Debug, T: LenEntry + Debug + Sync> State<K, T> {
+impl<K: Hash + Eq + Clone + Debug, T: LenEntry + Debug + Sync> State<K, T> {
     async fn remove(&mut self, eviction_item: &EvictionItem<T>, replaced: bool) {
         self.sum_store_size -= eviction_item.data.len() as u64;
         if replaced {
@@ -148,7 +148,7 @@ impl<K: Hash + Eq + Debug, T: LenEntry + Debug + Sync> State<K, T> {
     }
 }
 
-pub struct EvictingMap<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrapper> {
+pub struct EvictingMap<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug, I: InstantWrapper> {
     state: Mutex<State<K, T>>,
     anchor_time: I,
     max_bytes: u64,
@@ -159,7 +159,7 @@ pub struct EvictingMap<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrap
 
 impl<K, T, I> EvictingMap<K, T, I>
 where
-    K: Hash + Eq + Debug,
+    K: Ord + Hash + Eq + Clone + Debug,
     T: LenEntry + Debug + Clone + Send + Sync,
     I: InstantWrapper,
 {
@@ -168,7 +168,7 @@ where
             // We use unbounded because if we use the bounded version we can't call the delete
             // function on the LenEntry properly.
             state: Mutex::new(State {
-                lru: LruCache::unbounded(),
+                lru: LruBTreeMap::new(u32::MAX as usize),
                 sum_store_size: 0,
                 evicted_bytes: Counter::default(),
                 evicted_items: CounterWithTime::default(),
@@ -212,15 +212,16 @@ where
     }
 
     async fn evict_items(&self, state: &mut State<K, T>) {
-        let Some((_, mut peek_entry)) = state.lru.peek_lru() else {
+        let mut len = state.lru.len();
+        let Some(mut entry) = state.lru.tail() else {
             return;
         };
 
         let max_bytes = if self.max_bytes != 0
             && self.evict_bytes != 0
             && self.should_evict(
-                state.lru.len(),
-                peek_entry,
+                len,
+                entry.peek_value(),
                 state.sum_store_size,
                 self.max_bytes,
             ) {
@@ -233,15 +234,13 @@ where
             self.max_bytes
         };
 
-        while self.should_evict(state.lru.len(), peek_entry, state.sum_store_size, max_bytes) {
-            let (key, eviction_item) = state
-                .lru
-                .pop_lru()
-                .expect("Tried to peek() then pop() but failed");
+        while self.should_evict(len, entry.peek_value(), state.sum_store_size, max_bytes) {
+            let (key, value) = entry.take();
+            len = state.lru.len();
             event!(Level::INFO, ?key, "Evicting",);
-            state.remove(&eviction_item, false).await;
+            state.remove(&value, false).await;
 
-            peek_entry = if let Some((_, entry)) = state.lru.peek_lru() {
+            entry = if let Some(entry) = state.lru.tail() {
                 entry
             } else {
                 return;
@@ -253,7 +252,7 @@ where
     pub async fn size_for_key<Q>(&self, key: &Q) -> Option<usize>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Clone + Debug,
     {
         let mut results = [None];
         self.sizes_for_keys([key], &mut results[..]).await;
@@ -274,7 +273,7 @@ where
         // to be able to borrow a `Q`.
         K: Borrow<Q>,
         R: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Clone + Debug,
     {
         let mut state = self.state.lock().await;
 
@@ -292,7 +291,8 @@ where
                         *result = Some(entry.data.len());
                     } else {
                         *result = None;
-                        if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
+                        if let Some(entry) = state.lru.entry(key.borrow()) {
+                            let (key, eviction_item) = entry.take();
                             if should_evict {
                                 event!(Level::INFO, ?key, "Item expired, evicting");
                             } else {
@@ -310,18 +310,18 @@ where
     pub async fn get<Q>(&self, key: &Q) -> Option<T>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Clone + Debug,
     {
         let mut state = self.state.lock().await;
         self.evict_items(state.deref_mut()).await;
 
-        let entry = state.lru.get_mut(key.borrow())?;
+        let mut entry = state.lru.entry(key.borrow())?;
 
-        if entry.data.touch().await {
-            return Some(entry.data.clone());
+        if entry.value().data.touch().await {
+            return Some(entry.value().data.clone());
         }
 
-        let (key, eviction_item) = state.lru.pop_entry(key.borrow())?;
+        let (key, eviction_item) = entry.take();
         event!(Level::INFO, ?key, "Touch failed, evicting");
         state.remove(&eviction_item, false).await;
         None
@@ -369,9 +369,12 @@ where
                 data,
             };
 
-            if let Some(old_item) = state.lru.put(key, eviction_item) {
-                state.remove(&old_item, true).await;
-                replaced_items.push(old_item.data);
+            match state.lru.push(key, eviction_item) {
+                Some(Removed::PreviousValue(old_item)) | Some(Removed::Evicted(_, old_item)) => {
+                    state.remove(&old_item, true).await;
+                    replaced_items.push(old_item.data);
+                }
+                None => {}
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
@@ -383,7 +386,7 @@ where
     pub async fn remove<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Clone + Debug,
     {
         let mut state = self.state.lock().await;
         self.inner_remove(&mut state, key).await
@@ -392,10 +395,11 @@ where
     async fn inner_remove<Q>(&self, mut state: &mut State<K, T>, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Clone + Debug,
     {
         self.evict_items(state.deref_mut()).await;
-        if let Some(entry) = state.lru.pop(key.borrow()) {
+        if let Some(entry) = state.lru.entry(key.borrow()) {
+            let (_, entry) = entry.take();
             state.remove(&entry, false).await;
             return true;
         }
@@ -407,7 +411,7 @@ where
     pub async fn remove_if<Q, F: FnOnce(&T) -> bool>(&self, key: &Q, cond: F) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq + Debug,
+        Q: Ord + Hash + Eq + Clone + Debug,
     {
         let mut state = self.state.lock().await;
         if let Some(entry) = state.lru.get(key.borrow()) {
@@ -420,7 +424,7 @@ where
     }
 }
 
-impl<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrapper> MetricsComponent
+impl<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug, I: InstantWrapper> MetricsComponent
     for EvictingMap<K, T, I>
 {
     fn gather_metrics(&self, c: &mut CollectorState) {
@@ -450,7 +454,7 @@ impl<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrapper> MetricsCompon
             "Maximum number of items to keep in the store",
         );
         futures::executor::block_on(async move {
-            let state = self.state.lock().await;
+            let mut state = self.state.lock().await;
             c.publish(
                 "sum_store_size_bytes",
                 &state.sum_store_size,
@@ -465,9 +469,10 @@ impl<K: Hash + Eq + Debug, T: LenEntry + Debug, I: InstantWrapper> MetricsCompon
                 "oldest_item_timestamp",
                 &state
                     .lru
-                    .peek_lru()
-                    .map(|(_, v)| {
-                        self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64
+                    .tail()
+                    .map(|entry| {
+                        self.anchor_time.unix_timestamp() as i64
+                            - entry.peek_value().seconds_since_anchor as i64
                     })
                     .unwrap_or(-1),
                 "Timestamp of the oldest item in the store",

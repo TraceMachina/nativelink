@@ -46,7 +46,7 @@ rust_library(
         "@crates//:futures",
         "@crates//:hex",
         "@crates//:hyper",
-        "@crates//:lru",
+        "@crates//:lrumap",
         "@crates//:parking_lot",
         "@crates//:pin-project-lite",
         "@crates//:prometheus-client",
