@@ -116,7 +116,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync> RedisStore<T> {
         }
     }
 
-    async fn get_conn(&self) -> Result<T, Error> {
+    pub async fn get_conn(&self) -> Result<T, Error> {
         let result = match self.lazy_conn.get().as_ref() {
             LazyConnection::Connection(conn_result) => return conn_result.clone(),
             LazyConnection::Future(fut) => fut.clone().await,
