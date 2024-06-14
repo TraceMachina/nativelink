@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::ops::Bound;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
@@ -189,6 +190,22 @@ impl StoreDriver for MemoryStore {
                 }
             });
         Ok(())
+    }
+
+    async fn list(
+        self: Pin<&Self>,
+        range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
+        handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
+    ) -> Result<usize, Error> {
+        let range = (
+            range.0.map(|v| v.into_owned()),
+            range.1.map(|v| v.into_owned()),
+        );
+        let iterations = self
+            .evicting_map
+            .range(range, move |key, _value| handler(key))
+            .await;
+        Ok(iterations)
     }
 
     async fn update(

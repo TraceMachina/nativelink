@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::ops::RangeBounds;
 use std::pin::Pin;
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -23,7 +24,7 @@ use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
@@ -393,6 +394,70 @@ async fn memory_store_subscribe_key_change_test() -> Result<(), Error> {
 
         assert_eq!(get_res, Ok(()));
         assert_eq!(consume_res.unwrap(), STORE_VALUE2);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn list_test() -> Result<(), Error> {
+    let store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+
+    const KEY1: StoreKey = StoreKey::new_str("key1");
+    const KEY2: StoreKey = StoreKey::new_str("key2");
+    const KEY3: StoreKey = StoreKey::new_str("key3");
+    const VALUE: &str = "value1";
+    store.update_oneshot(KEY1, VALUE.into()).await?;
+    store.update_oneshot(KEY2, VALUE.into()).await?;
+    store.update_oneshot(KEY3, VALUE.into()).await?;
+
+    async fn get_list(
+        store: &MemoryStore,
+        range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
+    ) -> Vec<StoreKey<'static>> {
+        let mut found_keys = vec![];
+        store
+            .list(range, |key| {
+                found_keys.push(key.borrow().into_owned());
+                true
+            })
+            .await
+            .unwrap();
+        found_keys
+    }
+    {
+        // Test listing all keys.
+        let keys = get_list(&store, ..).await;
+        assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+    }
+    {
+        // Test listing from key1 to all.
+        let keys = get_list(&store, KEY1..).await;
+        assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+    }
+    {
+        // Test listing from key1 to key2.
+        let keys = get_list(&store, KEY1..KEY2).await;
+        assert_eq!(keys, vec![KEY1]);
+    }
+    {
+        // Test listing from key1 including key2.
+        let keys = get_list(&store, KEY1..=KEY2).await;
+        assert_eq!(keys, vec![KEY1, KEY2]);
+    }
+    {
+        // Test listing from key1 to key3.
+        let keys = get_list(&store, KEY1..KEY3).await;
+        assert_eq!(keys, vec![KEY1, KEY2]);
+    }
+    {
+        // Test listing from all to key2.
+        let keys = get_list(&store, ..KEY2).await;
+        assert_eq!(keys, vec![KEY1]);
+    }
+    {
+        // Test listing from key2 to key3.
+        let keys = get_list(&store, KEY2..KEY3).await;
+        assert_eq!(keys, vec![KEY2]);
     }
 
     Ok(())
