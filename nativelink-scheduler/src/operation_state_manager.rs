@@ -42,7 +42,7 @@ pub trait ActionStateResult: Send + Sync + 'static {
     // Provides the current state of the action.
     async fn as_state(&self) -> Result<Arc<ActionState>, Error>;
     // Subscribes to the state of the action, receiving updates as they are published.
-    async fn as_receiver(&self) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
+    async fn as_receiver(&self) -> Result<&'_ watch::Receiver<Arc<ActionState>>, Error>;
     // Provide result as action info. This behavior will not be supported by all implementations.
     // TODO(adams): Expectation is this to experimental and removed in the future.
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error>;
@@ -103,7 +103,7 @@ pub trait ClientStateManager {
     async fn add_action(
         &mut self,
         action_info: ActionInfo,
-    ) -> Result<Box<Arc<dyn ActionStateResult>>, Error>;
+    ) -> Result<Arc<dyn ActionStateResult>, Error>;
 
     /// Returns a stream of operations that match the filter.
     async fn filter_operations(
