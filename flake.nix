@@ -182,6 +182,7 @@
             patches = [
               ./tools/nixpkgs_link_libunwind_and_libcxx.diff
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
+              ./tools/nixpkgs_trivy_0_52_2.diff
             ];
           };
         in
