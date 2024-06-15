@@ -1,19 +1,19 @@
-# This script configures a cluster with a few standard deployments.
+#!/usr/bin/env bash
 
-# TODO(aaronmondal): Add Grafana, OpenTelemetry and the various other standard
-#                    deployments one would expect in a cluster.
+# Trigger cluster-internal pipelines to build or fetch necessary images.
 
 set -xeuo pipefail
 
-SRC_ROOT=$(git rev-parse --show-toplevel)
-
-# The image for the scheduler and CAS.
 curl -v \
     -H 'content-Type: application/json' \
     -d '{"flakeOutput": "./src_root#image"}' \
     localhost:8082/eventlistener
 
-# Wrap it nativelink to turn it into a worker.
+curl -v \
+    -H 'content-Type: application/json' \
+    -d '{"flakeOutput": "./src_root#nativelink-worker-init"}' \
+    localhost:8082/eventlistener
+
 curl -v \
     -H 'content-Type: application/json' \
     -d '{"flakeOutput": "./src_root#nativelink-worker-siso-chromium"}' \
@@ -25,12 +25,12 @@ until kubectl get pipelinerun \
     sleep 0.1
 done
 
-printf 'Waiting for PipelineRuns to finish...
+printf "Waiting for PipelineRuns to finish...
 
-You may cancel this script now and use `tkn pr ls` and `tkn pr logs -f` to
+You may cancel this script now and use 'tkn pr ls' and 'tkn pr logs -f' to
 monitor the PipelineRun logs.
 
-'
+"
 
 kubectl wait \
     --for=condition=Succeeded \

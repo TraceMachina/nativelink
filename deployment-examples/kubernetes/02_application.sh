@@ -1,6 +1,6 @@
-# Get the nix derivation hash from the toolchain container, change the
-# `TOOLCHAIN_TAG` variable in the `worker.json.template` to that hash and apply
-# the configuration.
+#!/usr/bin/env bash
+
+# Prepare the Kustomization and apply it to the cluster.
 
 KUSTOMIZE_DIR=$(git rev-parse --show-toplevel)/deployment-examples/kubernetes
 
@@ -18,10 +18,12 @@ resources:
 EOF
 
 cd "$KUSTOMIZE_DIR" && kustomize edit set image \
-    nativelink=localhost:5001/nativelink:$(\
-        nix eval .#image.imageTag --raw) \
-    nativelink-worker-lre-cc=localhost:5001/nativelink-worker-lre-cc:$(\
-        nix eval .#nativelink-worker-lre-cc.imageTag --raw) \
+    nativelink=localhost:5001/nativelink:"$(\
+        nix eval .#image.imageTag --raw)" \
+    nativelink-worker-init=localhost:5001/nativelink-worker-init:"$(\
+        nix eval .#nativelink-worker-init.imageTag --raw)" \
+    nativelink-worker-lre-cc=localhost:5001/nativelink-worker-lre-cc:"$(\
+        nix eval .#nativelink-worker-lre-cc.imageTag --raw)"
 
 # TODO(aaronmondal): Fix java and add this:
 #   nativelink-worker-lre-java=localhost:5001/nativelink-worker-lre-java:$(\

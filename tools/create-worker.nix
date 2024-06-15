@@ -1,6 +1,5 @@
 {
   pkgs,
-  nativelink,
   buildImage,
   self,
   ...
@@ -82,7 +81,7 @@ in
         mkEnvSymlink
         (pkgs.buildEnv {
           name = "${image.imageName}-buildEnv";
-          paths = [nativelink pkgs.coreutils pkgs.bash];
+          paths = [pkgs.coreutils pkgs.bash];
           pathsToLink = ["/bin"];
         })
       ];
@@ -92,10 +91,10 @@ in
         mkTmpPerms
       ];
 
-      # Override the final image tag with the one from the base image. This way
-      # the nativelink executable doesn't influence this tag and and changes to
-      # its codebase don't invalidate existing toolchain containers.
-      tag = null;
+      # Override the final image tag with the one from the base image to make
+      # the relationship between the toolchain and the worker extension more
+      # obvious.
+      tag = image.imageTag;
 
       config = {
         User = user;

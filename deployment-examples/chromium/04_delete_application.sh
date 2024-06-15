@@ -1,7 +1,6 @@
-# Get the nix derivation hash from the toolchain container, change the
-# `TOOLCHAIN_TAG` variable in the `worker.json.template` to that hash and delete
-# the configuration.
+#!/usr/bin/env bash
 
-KUSTOMIZE_DIR=$(git rev-parse --show-toplevel)/deployment-examples/chromium
+# Delete the Kustomization but leave the rest of the cluster intact.
 
-kubectl delete -k "$KUSTOMIZE_DIR"
+kubectl delete -k \
+    "$(git rev-parse --show-toplevel)/deployment-examples/chromium"
