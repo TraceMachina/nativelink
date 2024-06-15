@@ -10,6 +10,28 @@ on:
 permissions: read-all
 
 jobs:
+  nativelink-dot-com-build-on-main-test:
+    runs-on: ubuntu-22.04
+    environment: production
+    # Only run on main branch.
+    if: github.ref == 'refs/heads/master'
+    steps:
+    - name: Checkout
+      uses: >- # v4.1.1
+        actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+    - name: Setup Bazelisk
+      uses: >- # v0.8.1
+        bazel-contrib/setup-bazel@b388b84bb637e50cdae241d0f255670d4bd79f29
+      with:
+        bazelisk-cache: true
+    - name: Run Bazel tests
+      shell: bash
+      run: |
+        bazel test \
+          --remote_cache=${{ secrets.NATIVELINK_COM_REMOTE_CACHE_URL }} \
+          --remote_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+          //...
+
   docker-compose-compiles-nativelink:
     # The type of runner that the job will run on.
     runs-on: large-ubuntu-22.04
