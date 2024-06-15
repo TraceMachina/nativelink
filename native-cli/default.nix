@@ -1,10 +1,11 @@
 {pkgs, ...}:
 pkgs.buildGoModule {
   pname = "native-cli";
-  version = "0.3.0";
+  version = "0.4.0";
   src = ./.;
-  vendorHash = "sha256-PseP9FP0PhHVGr86QYJwGrbbC172SgBTPcfy/1y392o=";
+  vendorHash = "sha256-zB+gaJB+5KEnkPHX2BY8nbO/oOmPk4lfmGzdPBMOSxE=";
   buildInputs = [pkgs.makeWrapper];
+  ldflags = ["-s -w"];
   installPhase = ''
     runHook preInstall
     install -D $GOPATH/bin/native-cli $out/bin/native
