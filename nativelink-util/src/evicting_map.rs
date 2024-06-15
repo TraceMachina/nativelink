@@ -221,6 +221,10 @@ where
         state.btree = Some(state.lru.iter().map(|(k, _)| k).cloned().collect());
     }
 
+    /// Run the `handler` function on each key-value pair that matches the `prefix_range`
+    /// and return the number of items that were processed.
+    /// The `handler` function should return `true` to continue processing the next item
+    /// or `false` to stop processing.
     pub async fn range<F, Q>(&self, prefix_range: impl RangeBounds<Q>, mut handler: F) -> usize
     where
         F: FnMut(&K, &T) -> bool,

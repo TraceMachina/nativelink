@@ -15,7 +15,7 @@
 use std::borrow::{BorrowMut, Cow};
 use std::collections::hash_map::DefaultHasher as StdHasher;
 use std::hash::{Hash, Hasher};
-use std::ops::Deref;
+use std::ops::{Bound, Deref, RangeBounds};
 use std::pin::Pin;
 use std::ptr::addr_eq;
 use std::sync::{Arc, OnceLock};
@@ -198,6 +198,11 @@ pub enum StoreKey<'a> {
 }
 
 impl<'a> StoreKey<'a> {
+    /// Creates a new store key from a string.
+    pub const fn new_str(s: &'a str) -> Self {
+        StoreKey::Str(Cow::Borrowed(s))
+    }
+
     /// Returns a shallow clone of the key.
     /// This is extremely cheap and should be used when clone
     /// is needed but the key is not going to be modified.
@@ -464,6 +469,36 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
             .has_with_results(digests, results)
     }
 
+    /// List all the keys in the store that are within the given range.
+    /// `handler` is called for each key in the range. If `handler` returns
+    /// false, the listing is stopped.
+    ///
+    /// The number of keys passed through the handler is the return value.
+    #[inline]
+    fn list<'a, 'b>(
+        &'a self,
+        range: impl RangeBounds<StoreKey<'b>> + Send + 'b,
+        mut handler: impl for<'c> FnMut(&'c StoreKey) -> bool + Send + Sync + 'a,
+    ) -> impl Future<Output = Result<usize, Error>> + Send + 'a
+    where
+        'b: 'a,
+    {
+        // Note: We use a manual async move, so the future can own the `range` and `handler`,
+        // otherwise we'd require the caller to pass them in by reference making more borrow
+        // checker noise.
+        async move {
+            self.as_store_driver_pin()
+                .list(
+                    (
+                        range.start_bound().map(|v| v.borrow()),
+                        range.end_bound().map(|v| v.borrow()),
+                    ),
+                    &mut handler,
+                )
+                .await
+        }
+    }
+
     /// Sends the data to the store.
     #[inline]
     fn update<'a>(
@@ -589,6 +624,20 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
         digests: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error>;
+
+    /// See: [`StoreLike::list`] for details.
+    async fn list(
+        self: Pin<&Self>,
+        _range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
+        _handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
+    ) -> Result<usize, Error> {
+        // TODO(allada) We should force all stores to implement this function instead of
+        // providing a default implementation.
+        Err(make_err!(
+            Code::Unimplemented,
+            "Store::list() not implemented for this store"
+        ))
+    }
 
     /// See: [`StoreLike::update`] for details.
     async fn update(
