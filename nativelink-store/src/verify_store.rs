@@ -41,14 +41,14 @@ pub struct VerifyStore {
 }
 
 impl VerifyStore {
-    pub fn new(config: &nativelink_config::stores::VerifyStore, inner_store: Store) -> Self {
-        VerifyStore {
+    pub fn new(config: &nativelink_config::stores::VerifyStore, inner_store: Store) -> Arc<Self> {
+        Arc::new(VerifyStore {
             inner_store,
             verify_size: config.verify_size,
             verify_hash: config.verify_hash,
             size_verification_failures: CounterWithTime::default(),
             hash_verification_failures: CounterWithTime::default(),
-        }
+        })
     }
 
     async fn inner_check_update<D: DigestHasher>(

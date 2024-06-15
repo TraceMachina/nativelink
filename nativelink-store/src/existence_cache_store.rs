@@ -47,13 +47,13 @@ pub struct ExistenceCacheStore {
 }
 
 impl ExistenceCacheStore {
-    pub fn new(config: &ExistenceCacheStoreConfig, inner_store: Store) -> Self {
+    pub fn new(config: &ExistenceCacheStoreConfig, inner_store: Store) -> Arc<Self> {
         let empty_policy = EvictionPolicy::default();
         let eviction_policy = config.eviction_policy.as_ref().unwrap_or(&empty_policy);
-        Self {
+        Arc::new(Self {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, SystemTime::now()),
-        }
+        })
     }
 
     pub async fn exists_in_cache(&self, digest: &DigestInfo) -> bool {

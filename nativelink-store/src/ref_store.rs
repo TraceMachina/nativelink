@@ -45,15 +45,15 @@ impl RefStore {
     pub fn new(
         config: &nativelink_config::stores::RefStore,
         store_manager: Weak<StoreManager>,
-    ) -> Self {
-        RefStore {
+    ) -> Arc<Self> {
+        Arc::new(RefStore {
             ref_store_name: config.name.clone(),
             store_manager,
             ref_store: StoreReference {
                 mux: Mutex::new(()),
                 cell: AlignedStoreCell(UnsafeCell::new(None)),
             },
-        }
+        })
     }
 
     // This will get the store or populate it if needed. It is designed to be quite fast on the

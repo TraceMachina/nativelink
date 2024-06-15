@@ -30,7 +30,13 @@ const SMALL_VALUE: &str = "99";
 const BIG_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 const BIG_VALUE: &str = "123456789";
 
-fn setup_stores(size: u64) -> (SizePartitioningStore, Arc<MemoryStore>, Arc<MemoryStore>) {
+fn setup_stores(
+    size: u64,
+) -> (
+    Arc<SizePartitioningStore>,
+    Arc<MemoryStore>,
+    Arc<MemoryStore>,
+) {
     let lower_memory_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
     let upper_memory_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
 

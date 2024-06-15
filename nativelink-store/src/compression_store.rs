@@ -219,7 +219,7 @@ impl CompressionStore {
     pub fn new(
         compression_config: nativelink_config::stores::CompressionStore,
         inner_store: Store,
-    ) -> Result<Self, Error> {
+    ) -> Result<Arc<Self>, Error> {
         let lz4_config = match compression_config.compression_algorithm {
             nativelink_config::stores::CompressionAlgorithm::lz4(mut lz4_config) => {
                 if lz4_config.block_size == 0 {
@@ -231,11 +231,11 @@ impl CompressionStore {
                 lz4_config
             }
         };
-        Ok(CompressionStore {
+        Ok(Arc::new(CompressionStore {
             inner_store,
             config: lz4_config,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
-        })
+        }))
     }
 }
 
