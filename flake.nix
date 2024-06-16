@@ -278,7 +278,6 @@
 
               # Additional tools from within our development environment.
               local-image-test
-              nativelink-is-executable-test
               generate-toolchains
               customClang
               native-cli
