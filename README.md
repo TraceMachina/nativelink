@@ -196,9 +196,6 @@ cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.j
 
 You can find a few example deployments in the [deployment-examples directory](./deployment-examples).
 
-See the [terraform deployments](./deployment-examples/terraform) for example
-deployments that show off remote execution and cache capabilities.
-
 ## 🏺 History
 
 This project was first created due to frustration with similar projects not
