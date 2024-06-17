@@ -81,13 +81,73 @@ impl OperationId {
 impl TryFrom<&str> for OperationId {
     type Error = Error;
 
+    /// Attempts to convert a string slice into an `OperationId`.
+    ///
+    /// The input string `value` is expected to be in the format:
+    /// `<instance_name>/<digest_function>/<digest_hash>-<digest_size>/<salt>/<id>`.
+    ///
+    /// # Parameters
+    ///
+    /// - `value`: A `&str` representing the `OperationId` to be converted.
+    ///
+    /// # Returns
+    ///
+    /// - `Result<OperationId, Error>`: Returns `Ok(OperationId)` if the conversion is
+    /// successful, or an `Err(Error)` if it fails.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the input string is not in the expected format or if
+    /// any of the components cannot be parsed correctly. The detailed error messages provide
+    /// insight into which part of the input string caused the failure.
+    ///
+    /// ## Example Usage
+    ///
+    /// ```no_run
+    /// use nativelink_util::action_messages::OperationId;
+    /// let operation_id_str = "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52";
+    /// let operation_id = OperationId::try_from(operation_id_str);
+    /// ```
+    ///
+    /// In this example, `operation_id_str` is a string representing an `OperationId`.
+    /// The `try_from` method is used to convert it into an `OperationId` instance.
+    /// If any part of the string is incorrectly formatted, an error will be returned with a
+    /// descriptive message.
     fn try_from(value: &str) -> Result<Self, Error> {
         let (unique_qualifier, id) = value
-            .split_once(':')
-            .err_tip(|| "Invalid Id string - {value}")?;
+            .rsplit_once('/')
+            .err_tip(|| format!("Invalid OperationId unique_qualifier / id fragment - {value}"))?;
+        let (instance_name, rest) = unique_qualifier
+            .split_once('/')
+            .err_tip(|| format!("Invalid ActionInfoHashKey instance name fragment - {value}"))?;
+        let (digest_function, rest) = rest
+            .split_once('/')
+            .err_tip(|| format!("Invalid ActionInfoHashKey digest function fragment - {value}"))?;
+        let (digest_hash, rest) = rest
+            .split_once('-')
+            .err_tip(|| format!("Invalid ActionInfoHashKey digest hash fragment - {value}"))?;
+        let (digest_size, salt) = rest
+            .split_once('/')
+            .err_tip(|| format!("Invalid ActionInfoHashKey digest size fragment - {value}"))?;
+        let digest = DigestInfo::try_new(
+            digest_hash,
+            digest_size
+                .parse::<u64>()
+                .err_tip(|| format!("Invalid ActionInfoHashKey size value fragment - {value}"))?,
+        )
+        .err_tip(|| format!("Invalid DigestInfo digest hash - {value}"))?;
+        let salt = u64::from_str_radix(salt, 16)
+            .err_tip(|| format!("Invalid ActionInfoHashKey salt hex conversion - {value}"))?;
+        let unique_qualifier = ActionInfoHashKey {
+            instance_name: instance_name.to_string(),
+            digest_function: digest_function.try_into()?,
+            digest,
+            salt,
+        };
+        let id = Uuid::parse_str(id).map_err(|e| make_input_err!("Failed to parse {e} as uuid"))?;
         Ok(Self {
-            unique_qualifier: ActionInfoHashKey::try_from(unique_qualifier)?,
-            id: Uuid::parse_str(id).map_err(|e| make_input_err!("Failed to parse {e} as uuid"))?,
+            unique_qualifier,
+            id,
         })
     }
 }
@@ -95,7 +155,7 @@ impl TryFrom<&str> for OperationId {
 impl std::fmt::Display for OperationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
-            "{}:{}",
+            "{}/{}",
             self.unique_qualifier.action_name(),
             self.id
         ))
@@ -188,38 +248,6 @@ impl ActionInfoHashKey {
             self.digest.size_bytes,
             self.salt
         )
-    }
-}
-
-impl TryFrom<&str> for ActionInfoHashKey {
-    type Error = Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let (instance_name, other) = value
-            .split_once('/')
-            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
-        let (digest_function, other) = other
-            .split_once('/')
-            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
-        let (digest_hash, other) = other
-            .split_once('-')
-            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
-        let (digest_size, salt) = other
-            .split_once('/')
-            .err_tip(|| "Invalid ActionInfoHashKey string - {value}")?;
-        let digest = DigestInfo::try_new(
-            digest_hash,
-            digest_size
-                .parse::<u64>()
-                .err_tip(|| "Expected digest size to be a number for ActionInfoHashKey")?,
-        )?;
-        let salt = u64::from_str_radix(salt, 16).err_tip(|| "Expected salt to be a hex string")?;
-        Ok(Self {
-            instance_name: instance_name.to_string(),
-            digest_function: digest_function.try_into()?,
-            digest,
-            salt,
-        })
     }
 }
 

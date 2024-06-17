@@ -74,6 +74,7 @@ rust_test_suite(
         "tests/fastcdc_test.rs",
         "tests/fs_test.rs",
         "tests/health_utils_test.rs",
+        "tests/operation_id_tests.rs",
         "tests/proto_stream_utils_test.rs",
         "tests/resource_info_test.rs",
         "tests/retry_test.rs",
