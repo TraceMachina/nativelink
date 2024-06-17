@@ -387,6 +387,17 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
         // Ensure our client thinks we are executing.
         client_action_state_receiver.changed().await?;
         let action_state = client_action_state_receiver.borrow();
+        let action_state = match action_state.stage {
+            ActionStage::Queued => {
+                drop(action_state);
+                // Note: `.changed()` might be triggered twice, since the first trigger
+                // might be Queued and the second will always be Executing, but there's no
+                // guarantee that the first trigger will be Queued.
+                client_action_state_receiver.changed().await?;
+                client_action_state_receiver.borrow()
+            }
+            _ => client_action_state_receiver.borrow(),
+        };
         assert_eq!(action_state.stage, ActionStage::Executing);
     }
 
