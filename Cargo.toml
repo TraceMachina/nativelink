@@ -1,5 +1,16 @@
 [workspace]
 resolver = "2"
+members = [
+  "nativelink-config",
+  "nativelink-error",
+  "nativelink-macro",
+  "nativelink-proto",
+  "nativelink-scheduler",
+  "nativelink-service",
+  "nativelink-store",
+  "nativelink-util",
+  "nativelink-worker",
+]
 
 [package]
 name = "nativelink"
