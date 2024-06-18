@@ -320,7 +320,7 @@ impl<C: ConnectionLike + Clone + Send + 'static> RedisStore<C> {
     }
 
     #[inline]
-    async fn get_conn(&self) -> Result<C, Error> {
+    pub async fn get_conn(&self) -> Result<C, Error> {
         self.connection.get().await
     }
 
