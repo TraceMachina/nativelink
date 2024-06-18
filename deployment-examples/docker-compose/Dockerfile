@@ -38,7 +38,7 @@ RUN apt-get update \
         DEBIAN_FRONTEND=noninteractive \
         apt-get install --no-install-recommends -y \
             npm=6.14.4+ds-1ubuntu2 \
-            git=1:2.25.1-1ubuntu3.12 \
+            git=1:2.25.1-1ubuntu3.13 \
             gcc=4:9.3.0-1ubuntu2 \
             g++=4:9.3.0-1ubuntu2 \
             python3=3.8.2-0ubuntu2 \
