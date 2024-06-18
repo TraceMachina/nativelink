@@ -24,7 +24,7 @@ use hashbrown::{HashMap, HashSet};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
-    WorkerId,
+    OperationId, WorkerId,
 };
 use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper,
@@ -39,9 +39,10 @@ use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
 use crate::action_scheduler::ActionScheduler;
-use crate::operation_state_manager::{ClientStateManager, OperationFilter, OperationStageFlags};
+use crate::operation_state_manager::{
+    ClientStateManager, OperationFilter, OperationStageFlags, WorkerStateManager,
+};
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::scheduler_state::completed_action::CompletedAction;
 use crate::scheduler_state::metrics::Metrics as SchedulerMetrics;
 use crate::scheduler_state::state_manager::StateManager;
 use crate::scheduler_state::workers::Workers;
@@ -341,7 +342,7 @@ impl SimpleSchedulerImpl {
     fn update_action_with_internal_error(
         &mut self,
         worker_id: &WorkerId,
-        action_info_hash_key: &ActionInfoHashKey,
+        action_info_hash_key: ActionInfoHashKey,
         err: Error,
     ) {
         self.metrics.update_action_with_internal_error.inc();
@@ -349,7 +350,7 @@ impl SimpleSchedulerImpl {
             .state_manager
             .inner
             .active_actions
-            .remove_entry(action_info_hash_key)
+            .remove_entry(&action_info_hash_key)
         else {
             self.metrics
                 .update_action_with_internal_error_no_action
@@ -423,112 +424,35 @@ impl SimpleSchedulerImpl {
     async fn update_action(
         &mut self,
         worker_id: &WorkerId,
-        action_info_hash_key: &ActionInfoHashKey,
+        action_info_hash_key: ActionInfoHashKey,
         action_stage: ActionStage,
     ) -> Result<(), Error> {
-        if !action_stage.has_action_result() {
-            self.metrics.update_action_missing_action_result.inc();
-            event!(
-                Level::ERROR,
-                ?action_info_hash_key,
-                ?worker_id,
-                ?action_stage,
-                "Worker sent error while updating action. Removing worker"
-            );
-            let err = make_err!(
-                Code::Internal,
-                "Worker '{worker_id}' set the action_stage of running action {action_info_hash_key:?} to {action_stage:?}. Removing worker.",
-            );
-            self.immediate_evict_worker(worker_id, err.clone());
-            return Err(err);
-        }
-
-        let (action_info, mut running_action) = self
+        let update_operation_result = self
             .state_manager
-            .inner
-            .active_actions
-            .remove_entry(action_info_hash_key)
-            .err_tip(|| {
-                format!("Could not find action info in active actions : {action_info_hash_key:?}")
-            })?;
-
-        if running_action.worker_id != Some(*worker_id) {
-            self.metrics.update_action_from_wrong_worker.inc();
-            let err = match running_action.worker_id {
-
-                Some(running_action_worker_id) => make_err!(
-                    Code::Internal,
-                    "Got a result from a worker that should not be running the action, Removing worker. Expected worker {running_action_worker_id} got worker {worker_id}",
-                ),
-                None => make_err!(
-                    Code::Internal,
-                    "Got a result from a worker that should not be running the action, Removing worker. Expected action to be unassigned got worker {worker_id}",
-                ),
-            };
-            event!(
-                Level::ERROR,
-                ?action_info,
-                ?worker_id,
-                ?running_action.worker_id,
-                ?err,
-                "Got a result from a worker that should not be running the action, Removing worker"
-            );
-            // First put it back in our active_actions or we will drop the task.
-            self.state_manager
-                .inner
-                .active_actions
-                .insert(action_info, running_action);
-            self.immediate_evict_worker(worker_id, err.clone());
-            return Err(err);
-        }
-
-        Arc::make_mut(&mut running_action.current_state).stage = action_stage;
-
-        let send_result = running_action
-            .notify_channel
-            .send(running_action.current_state.clone());
-
-        if !running_action.current_state.stage.is_finished() {
-            if send_result.is_err() {
-                self.metrics.update_action_no_more_listeners.inc();
-                event!(
-                    Level::WARN,
-                    ?action_info,
-                    ?worker_id,
-                    "Action has no more listeners during update_action()"
-                );
+            .update_operation(
+                OperationId::new(action_info_hash_key.clone()),
+                *worker_id,
+                Ok(action_stage),
+            )
+            .await;
+        // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
+        match update_operation_result {
+            Ok(_) => {
+                self.tasks_or_workers_change_notify.notify_one();
+                Ok(())
             }
-            // If the operation is not finished it means the worker is still working on it, so put it
-            // back or else we will loose track of the task.
-            self.state_manager
-                .inner
-                .active_actions
-                .insert(action_info, running_action);
-            return Ok(());
+            Err(e) => {
+                event!(
+                    Level::ERROR,
+                    ?action_info_hash_key,
+                    ?worker_id,
+                    ?e,
+                    "Failed to update_operation on update_action"
+                );
+                self.tasks_or_workers_change_notify.notify_one();
+                Err(e)
+            }
         }
-
-        // Keep in case this is asked for soon.
-        self.state_manager
-            .inner
-            .recently_completed_actions
-            .insert(CompletedAction {
-                completed_time: SystemTime::now(),
-                state: running_action.current_state,
-            });
-
-        let worker = self
-            .state_manager
-            .inner
-            .workers
-            .workers
-            .get_mut(worker_id)
-            .ok_or_else(|| {
-                make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
-            })?;
-        worker.complete_action(&action_info);
-        self.tasks_or_workers_change_notify.notify_one();
-
-        Ok(())
     }
 }
 
@@ -596,6 +520,7 @@ impl SimpleScheduler {
             HashMap::new(),
             HashSet::new(),
             Arc::new(SchedulerMetrics::default()),
+            max_job_retries,
         );
         let metrics = Arc::new(Metrics::default());
         let metrics_for_do_try_match = metrics.clone();
@@ -780,7 +705,7 @@ impl WorkerScheduler for SimpleScheduler {
     async fn update_action_with_internal_error(
         &self,
         worker_id: &WorkerId,
-        action_info_hash_key: &ActionInfoHashKey,
+        action_info_hash_key: ActionInfoHashKey,
         err: Error,
     ) {
         let mut inner = self.get_inner_lock().await;
@@ -790,7 +715,7 @@ impl WorkerScheduler for SimpleScheduler {
     async fn update_action(
         &self,
         worker_id: &WorkerId,
-        action_info_hash_key: &ActionInfoHashKey,
+        action_info_hash_key: ActionInfoHashKey,
         action_stage: ActionStage,
     ) -> Result<(), Error> {
         let mut inner = self.get_inner_lock().await;
@@ -970,9 +895,6 @@ struct Metrics {
     clean_recently_completed_actions: CounterWithTime,
     remove_timedout_workers: FuncCounterWrapper,
     update_action: AsyncCounterWrapper,
-    update_action_missing_action_result: CounterWithTime,
-    update_action_from_wrong_worker: CounterWithTime,
-    update_action_no_more_listeners: CounterWithTime,
     update_action_with_internal_error: CounterWithTime,
     update_action_with_internal_error_no_action: CounterWithTime,
     update_action_with_internal_error_backpressure: CounterWithTime,
@@ -1026,24 +948,6 @@ impl Metrics {
                 &self.update_action,
                 "Stats about errors when worker sends update_action() to scheduler.",
                 vec![("result".into(), "missing_action_result".into())],
-            );
-            c.publish_with_labels(
-                "update_action_errors",
-                &self.update_action_missing_action_result,
-                "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
-                vec![("result".into(), "missing_action_result".into())],
-            );
-            c.publish_with_labels(
-                "update_action_errors",
-                &self.update_action_from_wrong_worker,
-                "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
-                vec![("result".into(), "from_wrong_worker".into())],
-            );
-            c.publish_with_labels(
-                "update_action_errors",
-                &self.update_action_no_more_listeners,
-                "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
-                vec![("result".into(), "no_more_listeners".into())],
             );
         }
         c.publish(
