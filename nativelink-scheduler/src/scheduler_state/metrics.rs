@@ -19,27 +19,58 @@ pub(crate) struct Metrics {
     pub(crate) add_action_joined_running_action: CounterWithTime,
     pub(crate) add_action_joined_queued_action: CounterWithTime,
     pub(crate) add_action_new_action_created: CounterWithTime,
+    pub(crate) update_action_missing_action_result: CounterWithTime,
+    pub(crate) update_action_from_wrong_worker: CounterWithTime,
+    pub(crate) update_action_no_more_listeners: CounterWithTime,
+    pub(crate) workers_evicted: CounterWithTime,
+    pub(crate) workers_evicted_with_running_action: CounterWithTime,
+    pub(crate) retry_action: CounterWithTime,
+    pub(crate) retry_action_max_attempts_reached: CounterWithTime,
+    pub(crate) retry_action_no_more_listeners: CounterWithTime,
+    pub(crate) retry_action_but_action_missing: CounterWithTime,
 }
 
 impl Metrics {
     pub fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish_with_labels(
-            "add_action",
-            &self.add_action_joined_running_action,
-            "Stats about add_action().",
-            vec![("result".into(), "joined_running_action".into())],
-        );
-        c.publish_with_labels(
-            "add_action",
-            &self.add_action_joined_queued_action,
-            "Stats about add_action().",
-            vec![("result".into(), "joined_queued_action".into())],
-        );
-        c.publish_with_labels(
-            "add_action",
-            &self.add_action_new_action_created,
-            "Stats about add_action().",
-            vec![("result".into(), "new_action_created".into())],
-        );
+        {
+            c.publish_with_labels(
+                "add_action",
+                &self.add_action_joined_running_action,
+                "Stats about add_action().",
+                vec![("result".into(), "joined_running_action".into())],
+            );
+            c.publish_with_labels(
+                "add_action",
+                &self.add_action_joined_queued_action,
+                "Stats about add_action().",
+                vec![("result".into(), "joined_queued_action".into())],
+            );
+            c.publish_with_labels(
+                "add_action",
+                &self.add_action_new_action_created,
+                "Stats about add_action().",
+                vec![("result".into(), "new_action_created".into())],
+            );
+        }
+        {
+            c.publish_with_labels(
+                "update_action_errors",
+                &self.update_action_missing_action_result,
+                "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
+                vec![("result".into(), "missing_action_result".into())],
+            );
+            c.publish_with_labels(
+                "update_action_errors",
+                &self.update_action_from_wrong_worker,
+                "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
+                vec![("result".into(), "from_wrong_worker".into())],
+            );
+            c.publish_with_labels(
+                "update_action_errors",
+                &self.update_action_no_more_listeners,
+                "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
+                vec![("result".into(), "no_more_listeners".into())],
+            );
+        }
     }
 }

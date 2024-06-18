@@ -840,7 +840,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
     scheduler
         .update_action(
             &worker_id,
-            &action_info_hash_key,
+            action_info_hash_key,
             ActionStage::Completed(action_result.clone()),
         )
         .await?;
@@ -946,7 +946,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
     scheduler
         .update_action(
             &worker_id,
-            &action_info_hash_key,
+            action_info_hash_key,
             ActionStage::Completed(action_result.clone()),
         )
         .await?;
@@ -1035,7 +1035,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let update_action_result = scheduler
         .update_action(
             &rogue_worker_id,
-            &action_info_hash_key,
+            action_info_hash_key,
             ActionStage::Completed(action_result.clone()),
         )
         .await;
@@ -1155,7 +1155,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     scheduler
         .update_action(
             &worker_id,
-            &ActionInfoHashKey {
+            ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
                 digest_function: DigestHasherFunc::Sha256,
                 digest: action_digest,
@@ -1272,7 +1272,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     scheduler
         .update_action(
             &worker_id,
-            &ActionInfoHashKey {
+            ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
                 digest_function: DigestHasherFunc::Sha256,
                 digest: action_digest1,
@@ -1318,7 +1318,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     scheduler
         .update_action(
             &worker_id,
-            &ActionInfoHashKey {
+            ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
                 digest_function: DigestHasherFunc::Sha256,
                 digest: action_digest2,
@@ -1439,7 +1439,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     scheduler
         .update_action_with_internal_error(
             &worker_id,
-            &action_info_hash_key,
+            action_info_hash_key.clone(),
             make_err!(Code::Internal, "Some error"),
         )
         .await;
@@ -1471,7 +1471,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     let err = make_err!(Code::Internal, "Some error");
     // Send internal error from worker again.
     scheduler
-        .update_action_with_internal_error(&worker_id, &action_info_hash_key, err.clone())
+        .update_action_with_internal_error(&worker_id, action_info_hash_key, err.clone())
         .await;
 
     {
@@ -1590,7 +1590,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
     scheduler
         .update_action_with_internal_error(
             &worker_id1,
-            &ActionInfoHashKey {
+            ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
                 digest_function: DigestHasherFunc::Sha256,
                 digest: action_digest,
