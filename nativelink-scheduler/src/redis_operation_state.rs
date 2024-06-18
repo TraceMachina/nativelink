@@ -36,7 +36,7 @@ use tonic::async_trait;
 
 use crate::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
-    OperationStageFlags,
+    OperationStageFlags, WorkerStateManager,
 };
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -361,6 +361,47 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
         }
         Ok(Box::pin(futures::stream::iter(v)))
     }
+
+    async fn inner_update_operation(
+        &self,
+        operation_id: OperationId,
+        worker_id: Option<WorkerId>,
+        action_stage: Result<ActionStage, Error>,
+    ) -> Result<(), Error> {
+        let store = self.store.as_store_driver_pin();
+        let key = format!("operations:{operation_id}");
+        let operation_bytes_res = &store.get_part_unchunked(key.clone().into(), 0, None).await;
+        let Ok(operation_bytes) = operation_bytes_res else {
+            return Err(make_input_err!("Received request to update operation {operation_id}, but operation does not exist."));
+        };
+        let mut operation: RedisOperation = RedisOperation::from_slice(&operation_bytes[..]);
+
+        match action_stage {
+            Ok(stage) => {
+                let (maybe_operation_stage, maybe_result) = match stage {
+                    ActionStage::CompletedFromCache(_) => (None, None),
+                    ActionStage::Completed(result) => {
+                        (Some(OperationStage::Completed), Some(result))
+                    }
+                    ActionStage::Queued => (Some(OperationStage::Completed), None),
+                    ActionStage::Unknown => (Some(OperationStage::Unknown), None),
+                    ActionStage::Executing => (Some(OperationStage::Executing), None),
+                    ActionStage::CacheCheck => (Some(OperationStage::CacheCheck), None),
+                };
+                if let Some(operation_stage) = maybe_operation_stage {
+                    operation.stage = operation_stage;
+                }
+                operation.result = maybe_result;
+                operation.worker_id = worker_id;
+            }
+            Err(e) => {
+                operation.last_error = Some(e);
+            }
+        }
+        store
+            .update_oneshot(key.into(), operation.as_json().into())
+            .await
+    }
 }
 
 #[async_trait]
@@ -377,5 +418,18 @@ impl ClientStateManager for RedisStateManager {
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
         self.inner_filter_operations(filter).await
+    }
+}
+
+#[async_trait]
+impl WorkerStateManager for RedisStateManager {
+    async fn update_operation(
+        &self,
+        operation_id: OperationId,
+        worker_id: WorkerId,
+        action_stage: Result<ActionStage, Error>,
+    ) -> Result<(), Error> {
+        self.inner_update_operation(operation_id, Some(worker_id), action_stage)
+            .await
     }
 }
