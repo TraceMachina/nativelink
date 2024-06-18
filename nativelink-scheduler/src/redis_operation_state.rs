@@ -16,20 +16,36 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use futures::join;
+use futures::{join, StreamExt};
 use nativelink_error::{make_input_err, Error};
+use nativelink_store::redis_store::RedisStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, OperationId, WorkerId,
 };
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::store_trait::StoreSubscription;
+use nativelink_util::store_trait::{StoreDriver, StoreLike, StoreSubscription};
+use redis::aio::{ConnectionLike, ConnectionManager};
+use redis::AsyncCommands;
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tonic::async_trait;
 
-use crate::operation_state_manager::{ActionStateResult, OperationStageFlags};
+use crate::operation_state_manager::{
+    ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
+    OperationStageFlags,
+};
+
+#[inline]
+fn build_action_key(action_name: &str) -> String {
+    format!("actions:{action_name}")
+}
+
+#[inline]
+fn build_operations_key(operation_id_str: &str) -> String {
+    format!("operations:{operation_id_str}")
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 enum OperationStage {
@@ -40,7 +56,7 @@ enum OperationStage {
     Unknown,
 }
 
-fn _parse_stage_flags(flags: &OperationStageFlags) -> Vec<OperationStage> {
+fn parse_stage_flags(flags: &OperationStageFlags) -> Vec<OperationStage> {
     if flags.contains(OperationStageFlags::Any) {
         return Vec::from([
             OperationStage::CacheCheck,
@@ -72,7 +88,7 @@ pub struct RedisOperationState {
 }
 
 impl RedisOperationState {
-    fn _new(inner: RedisOperation, mut subscription: Box<dyn StoreSubscription>) -> Self {
+    fn new(inner: RedisOperation, mut subscription: Box<dyn StoreSubscription>) -> Self {
         let (tx, rx) = watch::channel(inner.as_state().unwrap());
 
         let _join_handle = background_spawn!("redis_subscription_watcher", async move {
@@ -86,6 +102,10 @@ impl RedisOperationState {
                     async move { item.get(&mut data_tx).await },
                     data_rx.consume(None)
                 );
+                // The error handling here gets really complicated.
+                // They definitely need to be propogated to an outside reciever
+                // but it isn't clear where that outside reciever should live or how
+                // these errors should be handled from the outside.
                 if let Err(_e) = res {
                     todo!()
                 }
@@ -186,7 +206,7 @@ impl RedisOperation {
             }
         }
     }
-    fn _unique_qualifier(&self) -> &ActionInfoHashKey {
+    fn unique_qualifier(&self) -> &ActionInfoHashKey {
         &self.operation_id.unique_qualifier
     }
 }
@@ -196,7 +216,7 @@ impl FromStr for RedisOperation {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         serde_json::from_str(s).map_err(|e| {
             make_input_err!(
-                "Decode string to RedisOperation failed with error: {}",
+                "Decode string {s} to RedisOperation failed with error: {}",
                 e.to_string()
             )
         })
@@ -210,5 +230,162 @@ impl TryFrom<RedisOperation> for ActionState {
             id: value.operation_id.clone(),
             stage: value.action_stage()?,
         })
+    }
+}
+
+// If the filter value is None, we can match anything and return true.
+// If the filter value is Some and the value opt is None, it can't be a match so we return false.
+// If both values are Some, we run the predicate fn provided to determine if there is a match.
+fn match_optional_filter<T: PartialEq>(
+    value_opt: Option<T>,
+    filter_opt: Option<T>,
+    cond: impl Fn(T, T) -> bool,
+) -> bool {
+    let Some(filter) = filter_opt else {
+        return true;
+    };
+    let Some(value) = value_opt else {
+        return false;
+    };
+    cond(filter, value)
+}
+
+pub fn matches_filter(operation: &RedisOperation, filter: &OperationFilter) -> bool {
+    // It would be nice if we could just check to see if the operation stage is contained in the bits, but there are a few issues:
+    // 1. Can we add a flag for Unknown?
+    //    currently the only way to query for it is through `Any`.
+    // 2. Technically, Unknown should be any bit which does not have a formal definition
+    //    which could possibly be handled through a macro, but `Any` makes that a bit more compilcated.
+    // 3. Even with a flag for unknown We still need a
+    //   `OperationStage` enum which would implement `Into<OperationStageFlags>.`
+    if !parse_stage_flags(&filter.stages).contains(&operation.stage)
+        && !(filter.stages == OperationStageFlags::Any)
+    {
+        return false;
+    }
+    match_optional_filter(
+        Some(&operation.operation_id),
+        filter.operation_id.as_ref(),
+        |a, b| a == b,
+    ) && match_optional_filter(operation.worker_id, filter.worker_id, |a, b| a == b)
+        && match_optional_filter(
+            Some(operation.unique_qualifier().digest),
+            filter.action_digest,
+            |a, b| a == b,
+        )
+        && match_optional_filter(operation.completed_at, filter.completed_before, |a, b| {
+            a < b
+        })
+        && match_optional_filter(
+            operation.last_client_update,
+            filter.last_client_update_before,
+            |a, b| a < b,
+        )
+}
+pub struct RedisStateManager<
+    T: ConnectionLike + Unpin + Clone + Send + Sync + 'static = ConnectionManager,
+> {
+    pub store: Arc<RedisStore<T>>,
+}
+
+impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManager<T> {
+    pub fn new(store: Arc<RedisStore<T>>) -> Self {
+        Self { store }
+    }
+
+    pub async fn get_conn(&self) -> Result<T, Error> {
+        self.store.get_conn().await
+    }
+
+    async fn list<'a, V>(
+        &self,
+        prefix: &str,
+        handler: impl Fn(String, String) -> Result<V, Error>,
+    ) -> Result<Vec<V>, Error>
+    where
+        V: Send + Sync,
+    {
+        let mut con = self.get_conn().await?;
+        let ids_iter = con.scan_match::<&str, String>(prefix).await?;
+        let keys = ids_iter.collect::<Vec<String>>().await;
+        let raw_values: Vec<String> = con.get(&keys).await?;
+        keys.into_iter()
+            .zip(raw_values.into_iter())
+            .map(|(k, v)| handler(k, v))
+            .collect()
+    }
+
+    async fn inner_add_action(
+        &self,
+        action_info: ActionInfo,
+    ) -> Result<Arc<dyn ActionStateResult>, Error> {
+        let operation_id = OperationId::new(action_info.unique_qualifier.clone());
+        let mut con = self.get_conn().await?;
+        let action_key = build_action_key(&operation_id.unique_qualifier.action_name());
+        // TODO: List API call to find existing actions.
+        let mut existing_operations: Vec<String> = Vec::new();
+        let operation = match existing_operations.pop() {
+            Some(existing_operation) => {
+                let operations_key = build_operations_key(&existing_operation);
+                let operation: RedisOperation = con.get(operations_key).await?;
+                RedisOperation::from_existing(operation.clone(), operation_id.clone())
+            }
+            None => RedisOperation::new(action_info, operation_id.clone()),
+        };
+
+        let operation_key = build_operations_key(&operation_id.to_string());
+
+        // The values being stored in redis are pretty small
+        // so we can do our uploads as oneshots.
+        let store = self.store.as_store_driver_pin();
+        store
+            .update_oneshot(operation_key.clone().into(), operation.as_json().into())
+            .await?;
+        store
+            .update_oneshot(action_key.into(), operation_id.to_string().into())
+            .await?;
+
+        let store_subscription = self.store.clone().subscribe(operation_key.into()).await;
+        let state = RedisOperationState::new(operation, store_subscription);
+        Ok(Arc::new(state))
+    }
+
+    async fn inner_filter_operations(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        let handler = &|k: String, v: String| -> Result<(String, RedisOperation), Error> {
+            let operation = RedisOperation::from_str(&v)?;
+            Ok((k, operation))
+        };
+        let existing_operations = self.list("operations:*", &handler).await?;
+        let mut v: Vec<Arc<dyn ActionStateResult>> = Vec::new();
+        for (key, operation) in existing_operations.into_iter() {
+            if matches_filter(&operation, &filter) {
+                let store_subscription = self.store.clone().subscribe(key.into()).await;
+                v.push(Arc::new(RedisOperationState::new(
+                    operation.clone(),
+                    store_subscription,
+                )));
+            }
+        }
+        Ok(Box::pin(futures::stream::iter(v)))
+    }
+}
+
+#[async_trait]
+impl ClientStateManager for RedisStateManager {
+    async fn add_action(
+        &mut self,
+        action_info: ActionInfo,
+    ) -> Result<Arc<dyn ActionStateResult>, Error> {
+        self.inner_add_action(action_info).await
+    }
+
+    async fn filter_operations(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        self.inner_filter_operations(filter).await
     }
 }
