@@ -28,15 +28,15 @@ use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::store_trait::{StoreDriver, StoreLike, StoreSubscription};
 use redis::aio::{ConnectionLike, ConnectionManager};
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Pipeline};
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tonic::async_trait;
 
 use crate::operation_state_manager::{
-    ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
-    OperationStageFlags, WorkerStateManager,
+    ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
+    OperationFilter, OperationStageFlags, WorkerStateManager,
 };
 
 #[inline]
@@ -405,6 +405,16 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
             .update_oneshot(key.into(), operation.as_json().into())
             .await
     }
+
+    // TODO: This should be done through store but API endpoint does not exist yet.
+    async fn inner_remove_operation(&self, operation_id: OperationId) -> Result<(), Error> {
+        let mut con = self.get_conn().await?;
+        let mut pipe = Pipeline::new();
+        Ok(pipe
+            .del(format!("operations:{operation_id}"))
+            .query_async(&mut con)
+            .await?)
+    }
 }
 
 #[async_trait]
@@ -434,5 +444,29 @@ impl WorkerStateManager for RedisStateManager {
     ) -> Result<(), Error> {
         self.inner_update_operation(operation_id, Some(worker_id), action_stage)
             .await
+    }
+}
+
+#[async_trait]
+impl MatchingEngineStateManager for RedisStateManager {
+    async fn filter_operations(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        self.inner_filter_operations(filter).await
+    }
+
+    async fn update_operation(
+        &self,
+        operation_id: OperationId,
+        worker_id: Option<WorkerId>,
+        action_stage: Result<ActionStage, Error>,
+    ) -> Result<(), Error> {
+        self.inner_update_operation(operation_id, worker_id, action_stage)
+            .await
+    }
+
+    async fn remove_operation(&self, operation_id: OperationId) -> Result<(), Error> {
+        self.inner_remove_operation(operation_id).await
     }
 }
