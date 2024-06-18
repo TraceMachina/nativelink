@@ -23,6 +23,8 @@ bazel_dep(name = "rules_rust", version = "0.45.1")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
+    rust_analyzer_version = "nightly/2024-05-10",
+    rustfmt_version = "nightly/2024-05-10",
     sha256s = {
         "2024-05-10/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "34c251c59c99d68d13144ca00f7dd1af47227640ffdd00c6966342535a6c6f6b",
         "2024-05-10/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "cf705952dd0f4e8d9f6fd69bb3810370e7d8ac78cb96419a2883eee8f182c7fb",
@@ -34,6 +36,12 @@ rust.toolchain(
         "2024-05-10/cargo-nightly-x86_64-apple-darwin.tar.xz": "7390b4d229d9d3a8108c632939426021c12d63ae2681554386a344dd44c50e83",
         "2024-05-10/llvm-tools-nightly-x86_64-apple-darwin.tar.xz": "b69cd7d16d6fcd78c26a5e78fb9a56fa4116f49d4ece7282253dd9b8fc276b04",
         "2024-05-10/rust-std-nightly-x86_64-apple-darwin.tar.xz": "0e5f07efa6660c48ceaff776aa4616992a985b5d41247f79304fdaec231e63d2",
+        "2024-05-10/rustc-nightly-aarch64-apple-darwin.tar.xz": "9979984e5f0aa6797ecdc7e414eefe5a0b604b94e8c35e4caa04f9ecfc496e72",
+        "2024-05-10/clippy-nightly-aarch64-apple-darwin.tar.xz": "8915c30cf77cc8a418c42c8a6a8e355b9e3e9ea1278667467af68a779fcf7799",
+        "2024-05-10/cargo-nightly-aarch64-apple-darwin.tar.xz": "12a68a5fec1616d5c7d78cd202b04a12cf21018b688116aed002b2c1b77f54f1",
+        "2024-05-10/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "4055cac34969da2dc652f8070508de73cc03ac578dd6d57e42303dae0a1a9c56",
+        "2024-05-10/llvm-tools-nightly-aarch64-apple-darwin.tar.xz": "e28f47ee89e195bde588fb1a8a799ade56264c7dfc676455596814642c3ed9f5",
+        "2024-05-10/rust-std-nightly-aarch64-apple-darwin.tar.xz": "60447211f476992fb3fd53f08ab11966fa6f4aca4afa218787b5f425a49af3dc",
     },
     versions = [
         "1.78.0",
@@ -68,6 +76,9 @@ crate.from_cargo(
     ],
 )
 use_repo(crate, "crates")
+
+rust_analyzer = use_extension("@rules_rust//tools/rust_analyzer:extension.bzl", "rust_analyzer_dependencies")
+rust_analyzer.rust_analyzer_dependencies()
 
 bazel_dep(name = "protobuf", version = "27.0")
 
