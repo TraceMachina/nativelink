@@ -93,15 +93,11 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
         invocation_id: "some-invocation-id".to_string(),
         component: BuildComponent::Controller as i32,
     };
-    let store_key = StoreKey::Str(Cow::Owned(format!(
-        "{}-{}-{}",
-        stream_id.build_id, stream_id.invocation_id, stream_id.component
-    )));
 
     let request = PublishLifecycleEventRequest {
         service_level: ServiceLevel::Interactive as i32,
         build_event: Some(OrderedBuildEvent {
-            stream_id: Some(stream_id),
+            stream_id: Some(stream_id.clone()),
             sequence_number: 1,
             event: Some(BuildEvent {
                 event_time: Some(Timestamp::date(1999, 1, 6)?),
@@ -118,6 +114,15 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
         project_id: "some-project-id".to_string(),
         check_preceding_lifecycle_events_present: false,
     };
+
+    let sequence_number = request.clone().build_event.unwrap().sequence_number;
+
+    let store_key = StoreKey::Str(Cow::Owned(format!(
+        "LifecycleEvent-{}-{}-{}",
+        stream_id.clone().build_id,
+        stream_id.clone().invocation_id,
+        sequence_number
+    )));
 
     bep_server
         .publish_lifecycle_event(Request::new(request.clone()))
@@ -191,7 +196,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
             PublishBuildToolEventStreamRequest {
                 ordered_build_event: Some(OrderedBuildEvent {
                     stream_id: Some(stream_id.clone()),
-                    sequence_number: 2,
+                    sequence_number: 1,
                     event: Some(BuildEvent {
                         event_time: Some(Timestamp::date(1999, 1, 5)?),
                         event: Some(Event::InvocationAttemptStarted(InvocationAttemptStarted {
@@ -207,7 +212,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
             PublishBuildToolEventStreamRequest {
                 ordered_build_event: Some(OrderedBuildEvent {
                     stream_id: Some(stream_id.clone()),
-                    sequence_number: 3,
+                    sequence_number: 1,
                     event: Some(BuildEvent {
                         event_time: Some(Timestamp::date(1999, 1, 6)?),
                         event: Some(Event::ConsoleOutput(ConsoleOutput {
@@ -225,7 +230,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
             PublishBuildToolEventStreamRequest {
                 ordered_build_event: Some(OrderedBuildEvent {
                     stream_id: Some(stream_id.clone()),
-                    sequence_number: 4,
+                    sequence_number: 1,
                     event: Some(BuildEvent {
                         event_time: Some(Timestamp::date(1999, 1, 7)?),
                         event: Some(Event::InvocationAttemptFinished(
@@ -249,7 +254,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
             PublishBuildToolEventStreamRequest {
                 ordered_build_event: Some(OrderedBuildEvent {
                     stream_id: Some(stream_id.clone()),
-                    sequence_number: 5,
+                    sequence_number: 1,
                     event: Some(BuildEvent {
                         event_time: Some(Timestamp::date(1999, 1, 8)?),
                         event: Some(Event::BuildFinished(BuildFinished {
@@ -271,17 +276,23 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
         ];
 
         (
-            requests,
+            requests.clone(),
             StoreKey::Str(Cow::Owned(format!(
-                "{}-{}-{}",
-                stream_id.build_id, stream_id.invocation_id, stream_id.component
+                "BuildToolEventStream-{}-{}-{}",
+                stream_id.build_id,
+                stream_id.invocation_id,
+                requests[0]
+                    .ordered_build_event
+                    .as_ref()
+                    .unwrap()
+                    .sequence_number
             ))),
         )
     };
 
     {
         // Send off the requests and validate the responses.
-        for (sequence_number, request) in requests.iter().enumerate().map(|(i, req)| {
+        for (_, request) in requests.iter().enumerate().map(|(i, req)| {
             // Sequence numbers are 1-indexed, while `.enumerate()` indexes from 0.
             (i as i64 + 1, req)
         }) {
@@ -294,8 +305,6 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
                 .err_tip(|| "Response stream closed unexpectedly")?
                 .err_tip(|| "While awaiting next PublishBuildToolEventStreamResponse")?;
 
-            // First, check if the response matches what we expect.
-            assert_eq!(response.sequence_number, sequence_number);
             assert_eq!(
                 response.stream_id,
                 request

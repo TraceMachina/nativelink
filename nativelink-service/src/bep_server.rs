@@ -52,6 +52,17 @@ impl BepServer {
         PublishBuildEventServer::new(self)
     }
 
+    fn create_store_key<'a>(
+        event_type: &'a str,
+        build_id: &'a str,
+        invocation_id: &'a str,
+        index: i64,
+    ) -> StoreKey<'a> {
+        StoreKey::Str(Cow::Owned(format!(
+            "{event_type}-{build_id}-{invocation_id}-{index}"
+        )))
+    }
+
     async fn inner_publish_lifecycle_event(
         &self,
         request: PublishLifecycleEventRequest,
@@ -65,6 +76,8 @@ impl BepServer {
             .as_ref()
             .err_tip(|| "Expected stream_id to be set")?;
 
+        let sequence_number = build_event.sequence_number;
+
         let mut buf = BytesMut::new();
         request
             .encode(&mut buf)
@@ -72,10 +85,12 @@ impl BepServer {
 
         self.store
             .update_oneshot(
-                StoreKey::Str(Cow::Owned(format!(
-                    "{}-{}-{}",
-                    stream_id.build_id, stream_id.invocation_id, stream_id.component
-                ))),
+                BepServer::create_store_key(
+                    "LifecycleEvent",
+                    &stream_id.build_id,
+                    &stream_id.invocation_id,
+                    sequence_number,
+                ),
                 buf.freeze(),
             )
             .await
@@ -104,16 +119,20 @@ impl BepServer {
             let sequence_number = ordered_build_event.sequence_number;
 
             let mut buf = BytesMut::new();
+
             request
                 .encode(&mut buf)
                 .err_tip(|| "Could not encode PublishBuildToolEventStreamRequest proto")?;
 
+            // TODO: Move this into a function and move it to the left
             store
                 .update_oneshot(
-                    StoreKey::Str(Cow::Owned(format!(
-                        "{}-{}-{}",
-                        stream_id.build_id, stream_id.invocation_id, stream_id.component
-                    ))),
+                    BepServer::create_store_key(
+                        "BuildToolEventStream",
+                        &stream_id.build_id,
+                        &stream_id.invocation_id,
+                        sequence_number,
+                    ),
                     buf.freeze(),
                 )
                 .await

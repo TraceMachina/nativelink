@@ -879,6 +879,17 @@ pub struct RedisStore {
     #[serde(default)]
     pub connection_timeout_s: u64,
 
+    /// An optional and experimental Redis channel to publish write events to.
+    ///
+    /// If set, every time a write operation is made to a Redis node
+    /// then an event will be published to a Redis channel with the given name.
+    /// If unset, the writes will still be made,
+    /// but the write events will not be published.
+    ///
+    /// Default: (Empty String / No Channel)
+    #[serde(default)]
+    pub experimental_pub_sub_channel: Option<String>,
+
     /// An optional prefix to prepend to all keys in this store.
     ///
     /// Setting this value can make it convenient to query or
