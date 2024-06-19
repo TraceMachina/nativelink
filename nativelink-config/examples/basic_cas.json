@@ -33,6 +33,14 @@
           "noop": {}
         }
       }
+    },
+    "BEP_STORE": {
+      "redis_store": {
+        "addresses": [
+          "redis://:admin123@localhost:6379"
+        ],
+        "pub_sub_channel": "BEP"
+      }
     }
   },
   "schedulers": {
@@ -155,6 +163,9 @@
         "scheduler": "MAIN_SCHEDULER",
       },
       "admin": {},
+      "experimental_bep": {
+        "store": "BEP_STORE"
+      },
       "health": {},
     }
   }],
