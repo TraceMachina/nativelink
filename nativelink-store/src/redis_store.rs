@@ -245,6 +245,7 @@ pub struct RedisStore<C: ConnectionLike + Clone = ConnectionKind> {
 
     /// A function used to generate names for temporary keys.
     temp_name_generator_fn: fn() -> String,
+    pub_sub_channel: Option<String>,
 
     /// A common prefix to append to all keys before they are sent to Redis.
     ///
@@ -287,6 +288,7 @@ impl RedisStore<ConnectionKind> {
             RedisStore::new_with_conn_and_name_generator_and_prefix(
                 connection,
                 || uuid::Uuid::new_v4().to_string(),
+                config.pub_sub_channel.clone(),
                 config.key_prefix.clone(),
             ),
         ))
@@ -302,6 +304,7 @@ impl<C: ConnectionLike + Clone + Send + 'static> RedisStore<C> {
         RedisStore::new_with_conn_and_name_generator_and_prefix(
             connection,
             temp_name_generator_fn,
+            None,
             String::new(),
         )
     }
@@ -310,11 +313,13 @@ impl<C: ConnectionLike + Clone + Send + 'static> RedisStore<C> {
     pub fn new_with_conn_and_name_generator_and_prefix(
         connection: BackgroundConnection<C>,
         temp_name_generator_fn: fn() -> String,
+        pub_sub_channel: Option<String>,
         key_prefix: String,
     ) -> Self {
         RedisStore {
             connection,
             temp_name_generator_fn,
+            pub_sub_channel,
             key_prefix,
         }
     }
@@ -460,6 +465,7 @@ where
                             .map_err(from_redis_err)
                             .err_tip(|| "In RedisStore::update() single chunk")?;
                     }
+
                     break 'outer;
                 }
 
@@ -467,6 +473,10 @@ where
                     .arg(temp_key.get_or_init(make_temp_name))
                     .arg(&chunk[..]);
                 force_recv = false;
+
+                if self.pub_sub_channel.is_some() {
+                    pipe.publish(&self.pub_sub_channel, format!("{:?} {:?}", key, &chunk[..]));
+                }
 
                 // Give other tasks a chance to run to populate the reader's
                 // buffer if possible.

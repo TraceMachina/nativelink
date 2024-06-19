@@ -94,7 +94,7 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
         component: BuildComponent::Controller as i32,
     };
     let store_key = StoreKey::Str(Cow::Owned(format!(
-        "{}-{}-{}",
+        "{}-{}-{}-L",
         stream_id.build_id, stream_id.invocation_id, stream_id.component
     )));
 
@@ -273,7 +273,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
         (
             requests,
             StoreKey::Str(Cow::Owned(format!(
-                "{}-{}-{}",
+                "{}-{}-{}-B",
                 stream_id.build_id, stream_id.invocation_id, stream_id.component
             ))),
         )
