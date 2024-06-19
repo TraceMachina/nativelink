@@ -73,7 +73,7 @@ impl BepServer {
         self.store
             .update_oneshot(
                 StoreKey::Str(Cow::Owned(format!(
-                    "{}-{}-{}",
+                    "{}-{}-{}-L",
                     stream_id.build_id, stream_id.invocation_id, stream_id.component
                 ))),
                 buf.freeze(),
@@ -104,20 +104,23 @@ impl BepServer {
             let sequence_number = ordered_build_event.sequence_number;
 
             let mut buf = BytesMut::new();
+
             request
                 .encode(&mut buf)
                 .err_tip(|| "Could not encode PublishBuildToolEventStreamRequest proto")?;
 
-            store
-                .update_oneshot(
-                    StoreKey::Str(Cow::Owned(format!(
-                        "{}-{}-{}",
-                        stream_id.build_id, stream_id.invocation_id, stream_id.component
-                    ))),
-                    buf.freeze(),
-                )
-                .await
-                .err_tip(|| "Failed to store PublishBuildToolEventStreamRequest")?;
+            if !buf.is_empty() {
+                store
+                    .update_oneshot(
+                        StoreKey::Str(Cow::Owned(format!(
+                            "{}-{}-{}-B",
+                            stream_id.build_id, stream_id.invocation_id, stream_id.component
+                        ))),
+                        buf.freeze(),
+                    )
+                    .await
+                    .err_tip(|| "Failed to store PublishBuildToolEventStreamRequest")?;
+            }
 
             Ok(PublishBuildToolEventStreamResponse {
                 stream_id: Some(stream_id.clone()),
