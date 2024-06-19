@@ -83,7 +83,7 @@ rust_analyzer = use_extension(
 )
 rust_analyzer.rust_analyzer_dependencies()
 
-bazel_dep(name = "protobuf", version = "27.0")
+bazel_dep(name = "protobuf", version = "27.1.bcr.1")
 
 # Local remote execution.
 bazel_dep(name = "local-remote-execution", version = "0.0.0")
