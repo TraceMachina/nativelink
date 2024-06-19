@@ -137,7 +137,7 @@
 
         publish-ghcr = import ./tools/publish-ghcr.nix {inherit pkgs;};
 
-        local-image-test = import ./tools/local-image-test.nix {inherit pkgs;};
+        local-image-test = import ./tools/local-image-test.nix {inherit pkgs nativelink;};
 
         nativelink-is-executable-test = import ./tools/nativelink-is-executable-test.nix {inherit pkgs nativelink;};
 
@@ -150,8 +150,33 @@
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
+        nativelink-image = buildImage {
+          name = "nativelink";
+          copyToRoot = [
+            (pkgs.buildEnv {
+              name = "nativelink-buildEnv";
+              paths = [nativelink];
+              pathsToLink = ["/bin"];
+            })
+          ];
+          config = {
+            Entrypoint = [(pkgs.lib.getExe' nativelink "nativelink")];
+            Labels = {
+              "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
+              "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
+              "org.opencontainers.image.licenses" = "Apache-2.0";
+              "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
+              "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
+              "org.opencontainers.image.title" = "NativeLink";
+              "org.opencontainers.image.vendor" = "Trace Machina, Inc.";
+            };
+          };
+        };
+
+        nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
+
         rbe-autogen = import ./local-remote-execution/rbe-autogen.nix {inherit pkgs nativelink buildImage llvmPackages;};
-        createWorker = import ./tools/create-worker.nix {inherit pkgs nativelink buildImage self;};
+        createWorker = import ./tools/create-worker.nix {inherit pkgs buildImage self;};
         siso-chromium = buildImage {
           name = "siso-chromium";
           fromImage = pullImage {
@@ -203,7 +228,7 @@
           };
         };
         packages = rec {
-          inherit publish-ghcr local-image-test nativelink-is-executable-test nativelink nativelink-debug native-cli lre-cc;
+          inherit publish-ghcr local-image-test nativelink-is-executable-test nativelink nativelink-debug native-cli lre-cc nativelink-worker-init;
           default = nativelink;
 
           rbe-autogen-lre-cc = rbe-autogen lre-cc;
@@ -213,21 +238,7 @@
           nativelink-worker-lre-java = createWorker lre-java;
           nativelink-worker-siso-chromium = createWorker siso-chromium;
           nativelink-worker-toolchain-drake = createWorker toolchain-drake;
-          image = buildImage {
-            name = "nativelink";
-            config = {
-              Entrypoint = [(pkgs.lib.getExe' nativelink "nativelink")];
-              Labels = {
-                "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
-                "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
-                "org.opencontainers.image.licenses" = "Apache-2.0";
-                "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
-                "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
-                "org.opencontainers.image.title" = "NativeLink";
-                "org.opencontainers.image.vendor" = "Trace Machina, Inc.";
-              };
-            };
-          };
+          image = nativelink-image;
         };
         checks = {
           # TODO(aaronmondal): Fix the tests.
