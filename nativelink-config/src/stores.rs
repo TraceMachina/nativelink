@@ -864,7 +864,6 @@ pub struct RedisStore {
     /// The hostname or IP address of the Redis server.
     /// Ex: ["redis://username:password@redis-server-url:6380/99"]
     /// 99 Represents database ID, 6380 represents the port.
-    // Note: This is currently one address but supports multile for clusters.
     #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
     pub addresses: Vec<String>,
 
@@ -888,6 +887,26 @@ pub struct RedisStore {
     /// Default: (Empty String / No Prefix)
     #[serde(default)]
     pub key_prefix: String,
+
+    /// Set the mode Redis is operating in.
+    ///
+    /// Available options are "cluster" for
+    /// [cluster mode](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/),
+    /// "sentinel" for [sentinel mode](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/),
+    /// or "standard" if Redis is operating in neither cluster nor sentinel mode.
+    ///
+    /// Default: standard,
+    #[serde(default)]
+    pub mode: RedisMode,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RedisMode {
+    Cluster,
+    Sentinel,
+    #[default]
+    Standard,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
