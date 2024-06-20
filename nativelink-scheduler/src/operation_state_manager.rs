@@ -136,7 +136,7 @@ pub trait MatchingEngineStateManager {
 
     /// Update that state of an operation.
     async fn update_operation(
-        &self,
+        &mut self,
         operation_id: OperationId,
         worker_id: Option<WorkerId>,
         action_stage: Result<ActionStage, Error>,

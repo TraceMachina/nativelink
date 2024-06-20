@@ -20,6 +20,7 @@ rust_library(
         "src/scheduler_state/awaited_action.rs",
         "src/scheduler_state/client_action_state_result.rs",
         "src/scheduler_state/completed_action.rs",
+        "src/scheduler_state/matching_engine_action_state_result.rs",
         "src/scheduler_state/metrics.rs",
         "src/scheduler_state/mod.rs",
         "src/scheduler_state/state_manager.rs",
