@@ -37,7 +37,7 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     async fn update_action_with_internal_error(
         &self,
         worker_id: &WorkerId,
-        action_info_hash_key: &ActionInfoHashKey,
+        action_info_hash_key: ActionInfoHashKey,
         err: Error,
     );
 
@@ -45,7 +45,7 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     async fn update_action(
         &self,
         worker_id: &WorkerId,
-        action_info_hash_key: &ActionInfoHashKey,
+        action_info_hash_key: ActionInfoHashKey,
         action_stage: ActionStage,
     ) -> Result<(), Error>;
 
