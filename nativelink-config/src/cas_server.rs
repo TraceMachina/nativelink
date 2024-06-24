@@ -34,7 +34,7 @@ pub type InstanceName = String;
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug, Default, Clone, Copy)]
-pub enum CompressionAlgorithm {
+pub enum HttpCompressionAlgorithm {
     /// No compression.
     #[default]
     none,
@@ -54,15 +54,15 @@ pub enum CompressionAlgorithm {
 /// and cloud-clients to use another.
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
-pub struct CompressionConfig {
+pub struct HttpCompressionConfig {
     /// The compression algorithm that the server will use when sending
     /// responses to clients. Enabling this will likely save a lot of
     /// data transfer, but will consume a lot of CPU and add a lot of
     /// latency.
     /// see: <https://github.com/tracemachina/nativelink/issues/109>
     ///
-    /// Default: CompressionAlgorithm::None
-    pub send_compression_algorithm: Option<CompressionAlgorithm>,
+    /// Default: `HttpCompressionAlgorithm::none`
+    pub send_compression_algorithm: Option<HttpCompressionAlgorithm>,
 
     /// The compression algorithm that the server will accept from clients.
     /// The server will broadcast the supported compression algorithms to
@@ -72,7 +72,7 @@ pub struct CompressionConfig {
     /// see: <https://github.com/tracemachina/nativelink/issues/109>
     ///
     /// Defaults: {no supported compression}
-    pub accepted_compression_algorithms: Vec<CompressionAlgorithm>,
+    pub accepted_compression_algorithms: Vec<HttpCompressionAlgorithm>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -371,7 +371,7 @@ pub struct HttpListener {
 
     /// Data transport compression configuration to use for this service.
     #[serde(default)]
-    pub compression: CompressionConfig,
+    pub compression: HttpCompressionConfig,
 
     /// Advanced Http server configuration.
     #[serde(default)]
