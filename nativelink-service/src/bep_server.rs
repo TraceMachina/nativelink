@@ -65,6 +65,8 @@ impl BepServer {
             .as_ref()
             .err_tip(|| "Expected stream_id to be set")?;
 
+        let sequence_number = build_event.sequence_number;
+
         let mut buf = BytesMut::new();
         request
             .encode(&mut buf)
@@ -73,8 +75,8 @@ impl BepServer {
         self.store
             .update_oneshot(
                 StoreKey::Str(Cow::Owned(format!(
-                    "{}-{}-{}",
-                    stream_id.build_id, stream_id.invocation_id, stream_id.component
+                    "LifecycleEvent-{}-{}-{}",
+                    &stream_id.build_id, &stream_id.invocation_id, sequence_number,
                 ))),
                 buf.freeze(),
             )
@@ -104,6 +106,7 @@ impl BepServer {
             let sequence_number = ordered_build_event.sequence_number;
 
             let mut buf = BytesMut::new();
+
             request
                 .encode(&mut buf)
                 .err_tip(|| "Could not encode PublishBuildToolEventStreamRequest proto")?;
@@ -111,8 +114,8 @@ impl BepServer {
             store
                 .update_oneshot(
                     StoreKey::Str(Cow::Owned(format!(
-                        "{}-{}-{}",
-                        stream_id.build_id, stream_id.invocation_id, stream_id.component
+                        "BuildToolEventStream-{}-{}-{}",
+                        &stream_id.build_id, &stream_id.invocation_id, sequence_number,
                     ))),
                     buf.freeze(),
                 )

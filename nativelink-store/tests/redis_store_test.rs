@@ -157,6 +157,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
     let store = MockRedisStore::new_with_conn_and_name_generator_and_prefix(
         BackgroundConnection::with_initializer(async move { Ok::<_, Error>(redis_connection) }),
         mock_uuid_generator,
+        None,
         prefix.to_string(),
     );
 
@@ -213,6 +214,7 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
     let store = MockRedisStore::new_with_conn_and_name_generator_and_prefix(
         BackgroundConnection::with_initializer(async move { Ok::<_, Error>(redis_connection) }),
         mock_uuid_generator,
+        None,
         prefix.to_string(),
     );
 

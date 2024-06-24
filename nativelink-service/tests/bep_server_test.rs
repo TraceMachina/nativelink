@@ -93,15 +93,11 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
         invocation_id: "some-invocation-id".to_string(),
         component: BuildComponent::Controller as i32,
     };
-    let store_key = StoreKey::Str(Cow::Owned(format!(
-        "{}-{}-{}",
-        stream_id.build_id, stream_id.invocation_id, stream_id.component
-    )));
 
     let request = PublishLifecycleEventRequest {
         service_level: ServiceLevel::Interactive as i32,
         build_event: Some(OrderedBuildEvent {
-            stream_id: Some(stream_id),
+            stream_id: Some(stream_id.clone()),
             sequence_number: 1,
             event: Some(BuildEvent {
                 event_time: Some(Timestamp::date(1999, 1, 6)?),
@@ -118,6 +114,15 @@ async fn publish_lifecycle_event_test() -> Result<(), Box<dyn std::error::Error>
         project_id: "some-project-id".to_string(),
         check_preceding_lifecycle_events_present: false,
     };
+
+    let sequence_number = request.clone().build_event.unwrap().sequence_number;
+
+    let store_key = StoreKey::Str(Cow::Owned(format!(
+        "LifecycleEvent-{}-{}-{}",
+        stream_id.clone().build_id,
+        stream_id.clone().invocation_id,
+        sequence_number
+    )));
 
     bep_server
         .publish_lifecycle_event(Request::new(request.clone()))
@@ -165,7 +170,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
     }
     .await?;
 
-    let (requests, store_key) = {
+    let (requests, store_keys) = {
         // Construct some requests to send off and a store key to retrieve them with.
         let stream_id = StreamId {
             build_id: "some-build-id".to_string(),
@@ -271,11 +276,22 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
         ];
 
         (
-            requests,
-            StoreKey::Str(Cow::Owned(format!(
-                "{}-{}-{}",
-                stream_id.build_id, stream_id.invocation_id, stream_id.component
-            ))),
+            requests.clone(),
+            requests
+                .iter()
+                .map(|request| {
+                    StoreKey::Str(Cow::Owned(format!(
+                        "BuildToolEventStream-{}-{}-{}",
+                        stream_id.build_id,
+                        stream_id.invocation_id,
+                        request
+                            .ordered_build_event
+                            .as_ref()
+                            .unwrap()
+                            .sequence_number
+                    )))
+                })
+                .collect::<Vec<_>>(),
         )
     };
 
@@ -296,6 +312,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
 
             // First, check if the response matches what we expect.
             assert_eq!(response.sequence_number, sequence_number);
+
             assert_eq!(
                 response.stream_id,
                 request
@@ -307,7 +324,12 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
             // Second, check if the message was forwarded correctly.
             let (mut writer, mut reader) = make_buf_channel_pair();
             bep_store
-                .get_part(store_key.borrow(), &mut writer, 0, None)
+                .get_part(
+                    store_keys[sequence_number as usize - 1].clone(),
+                    &mut writer,
+                    0,
+                    None,
+                )
                 .await?;
             let encoded_request = reader.recv().await?;
 
