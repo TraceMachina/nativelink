@@ -36,6 +36,10 @@ in
       's|rbe-autogen-lre-cc|lre-cc|g' \
       ''${SRC_ROOT}/generated-cc/config/BUILD
 
+    chmod 644 \
+      ''${SRC_ROOT}/generated-cc/LICENSE \
+      ''${SRC_ROOT}/generated-cc/config/BUILD \
+
     LRE_JAVA_IMAGE_TAG=$(nix eval .#lre-java.imageTag --raw)
 
     nix run .#rbe-autogen-lre-java.copyTo \
@@ -57,6 +61,11 @@ in
     sed -i \
       's|rbe-autogen-lre-java|lre-java|g' \
       ''${SRC_ROOT}/generated-java/config/BUILD
+
+    chmod 644 \
+      ''${SRC_ROOT}/generated-java/LICENSE \
+      ''${SRC_ROOT}/generated-java/config/BUILD \
+      ''${SRC_ROOT}/generated-java/java/BUILD
 
     pre-commit run -a
   ''
