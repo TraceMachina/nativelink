@@ -90,20 +90,20 @@ impl Workers {
         self.workers.pop(worker_id)
     }
 
-    /// Attempts to find a worker that is capable of running this action.
+    // Attempts to find a worker that is capable of running this action.
     // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
     // simulation of worst cases in a single threaded environment.
-    pub(crate) fn find_worker_for_action_mut<'a>(
-        &'a mut self,
+    pub(crate) fn find_worker_for_action(
+        &self,
         awaited_action: &AwaitedAction,
-    ) -> Option<&'a mut Worker> {
+    ) -> Option<WorkerId> {
         assert!(matches!(
             awaited_action.current_state.stage,
             ActionStage::Queued
         ));
         let action_properties = &awaited_action.action_info.platform_properties;
-        let mut workers_iter = self.workers.iter_mut();
+        let mut workers_iter = self.workers.iter();
         let workers_iter = match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
             WorkerAllocationStrategy::least_recently_used => workers_iter.rfind(|(_, w)| {
@@ -114,12 +114,6 @@ impl Workers {
                 w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
             }),
         };
-        let worker_id = workers_iter.map(|(_, w)| &w.id);
-        // We need to "touch" the worker to ensure it gets re-ordered in the LRUCache, since it was selected.
-        if let Some(&worker_id) = worker_id {
-            self.workers.get_mut(&worker_id)
-        } else {
-            None
-        }
+        workers_iter.map(|(_, w)| &w.id).copied()
     }
 }
