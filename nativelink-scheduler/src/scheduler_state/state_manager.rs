@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use std::cmp;
+use std::collections::btree_map::Keys;
 use std::collections::BTreeMap;
+use std::iter::{Cloned, Map, Rev};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -30,12 +32,13 @@ use tokio::sync::{watch, Notify};
 use tracing::{event, Level};
 
 use crate::operation_state_manager::{
-    ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
-    WorkerStateManager,
+    ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
+    OperationFilter, WorkerStateManager,
 };
 use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::scheduler_state::client_action_state_result::ClientActionStateResult;
 use crate::scheduler_state::completed_action::CompletedAction;
+use crate::scheduler_state::matching_engine_action_state_result::MatchingEngineActionStateResult;
 use crate::scheduler_state::metrics::Metrics;
 use crate::scheduler_state::workers::Workers;
 use crate::worker::WorkerUpdate;
@@ -68,6 +71,82 @@ impl StateManager {
                 max_job_retries,
                 tasks_or_workers_change_notify,
             },
+        }
+    }
+
+    fn immediate_evict_worker(&mut self, worker_id: &WorkerId, err: Error) {
+        if let Some(mut worker) = self.inner.workers.remove_worker(worker_id) {
+            self.inner.metrics.workers_evicted.inc();
+            // We don't care if we fail to send message to worker, this is only a best attempt.
+            let _ = worker.notify_update(WorkerUpdate::Disconnect);
+            // We create a temporary Vec to avoid doubt about a possible code
+            // path touching the worker.running_action_infos elsewhere.
+            for action_info in worker.running_action_infos.drain() {
+                self.inner.metrics.workers_evicted_with_running_action.inc();
+                self.retry_action(&action_info, worker_id, err.clone());
+            }
+            // Note: Calling this multiple times is very cheap, it'll only trigger `do_try_match` once.
+            self.inner.tasks_or_workers_change_notify.notify_one();
+        }
+    }
+
+    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
+        match self.inner.active_actions.remove(action_info) {
+            Some(running_action) => {
+                let mut awaited_action = running_action;
+                let send_result = if awaited_action.attempts >= self.inner.max_job_retries {
+                    self.inner.metrics.retry_action_max_attempts_reached.inc();
+                    Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Completed(ActionResult {
+                        execution_metadata: ExecutionMetadata {
+                            worker: format!("{worker_id}"),
+                            ..ExecutionMetadata::default()
+                        },
+                        error: Some(err.merge(make_err!(
+                            Code::Internal,
+                            "Job cancelled because it attempted to execute too many times and failed"
+                        ))),
+                        ..ActionResult::default()
+                    });
+                    awaited_action
+                        .notify_channel
+                        .send(awaited_action.current_state.clone())
+                    // Do not put the action back in the queue here, as this action attempted to run too many
+                    // times.
+                } else {
+                    self.inner.metrics.retry_action.inc();
+                    Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Queued;
+                    let send_result = awaited_action
+                        .notify_channel
+                        .send(awaited_action.current_state.clone());
+                    self.inner.queued_actions_set.insert(action_info.clone());
+                    self.inner
+                        .queued_actions
+                        .insert(action_info.clone(), awaited_action);
+                    send_result
+                };
+
+                if send_result.is_err() {
+                    self.inner.metrics.retry_action_no_more_listeners.inc();
+                    // Don't remove this task, instead we keep them around for a bit just in case
+                    // the client disconnected and will reconnect and ask for same job to be executed
+                    // again.
+                    event!(
+                        Level::WARN,
+                        ?action_info,
+                        ?worker_id,
+                        "Action has no more listeners during evict_worker()"
+                    );
+                }
+            }
+            None => {
+                self.inner.metrics.retry_action_but_action_missing.inc();
+                event!(
+                    Level::ERROR,
+                    ?action_info,
+                    ?worker_id,
+                    "Worker stated it was running an action, but it was not in the active_actions"
+                );
+            }
         }
     }
 }
@@ -138,7 +217,7 @@ impl StateManager {
     /// while another thread is operating on the data, it is acceptable, since the other thread
     /// will receive another update with the new version.
     ///
-    fn mutate_stage(
+    pub(crate) fn mutate_stage(
         awaited_action: &mut AwaitedAction,
         action_stage: ActionStage,
     ) -> Result<(), SendError<Arc<ActionState>>> {
@@ -154,72 +233,143 @@ impl StateManager {
         Arc::make_mut(action_info).priority = priority;
     }
 
-    /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
-    fn immediate_evict_worker(&mut self, worker_id: &WorkerId, err: Error) {
-        if let Some(mut worker) = self.inner.workers.remove_worker(worker_id) {
-            self.inner.metrics.workers_evicted.inc();
-            // We don't care if we fail to send message to worker, this is only a best attempt.
-            let _ = worker.notify_update(WorkerUpdate::Disconnect);
-            for action_info in worker.running_action_infos.drain() {
-                self.inner.metrics.workers_evicted_with_running_action.inc();
-                self.retry_action(&action_info, worker_id, err.clone());
+    /// Updates the `last_error` field of the provided `AwaitedAction` and sends the current state
+    /// to the notify channel.
+    ///
+    fn mutate_last_error(
+        awaited_action: &mut AwaitedAction,
+        last_error: Error,
+    ) -> Result<(), SendError<Arc<ActionState>>> {
+        awaited_action.last_error = Some(last_error);
+        awaited_action
+            .notify_channel
+            .send(awaited_action.current_state.clone())
+    }
+
+    /// Notifies the specified worker to run the given action and handles errors by evicting
+    /// the worker if the notification fails.
+    ///
+    /// # Note
+    ///
+    /// Intended utility function for matching engine.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the notification to the worker fails, and in that case,
+    /// the worker will be immediately evicted from the system.
+    ///
+    async fn worker_notify_run_action(
+        &mut self,
+        worker_id: WorkerId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<(), Error> {
+        if let Some(worker) = self.inner.workers.workers.get_mut(&worker_id) {
+            let notify_worker_result =
+                worker.notify_update(WorkerUpdate::RunAction(action_info.clone()));
+
+            if notify_worker_result.is_err() {
+                event!(
+                    Level::WARN,
+                    ?worker_id,
+                    ?action_info,
+                    ?notify_worker_result,
+                    "Worker command failed, removing worker",
+                );
+
+                let err = make_err!(
+                Code::Internal,
+                "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
+            );
+
+                self.immediate_evict_worker(&worker_id, err.clone());
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets the action stage for the given `AwaitedAction` based on the result of the provided
+    /// `action_stage`. If the `action_stage` is an error, it updates the `last_error` field
+    /// and logs a warning.
+    ///
+    /// # Note
+    ///
+    /// Intended utility function for matching engine.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if updating the state of the `awaited_action` fails.
+    ///
+    async fn worker_set_action_stage(
+        awaited_action: &mut AwaitedAction,
+        action_stage: Result<ActionStage, Error>,
+        worker_id: WorkerId,
+    ) -> Result<(), SendError<Arc<ActionState>>> {
+        match action_stage {
+            Ok(action_stage) => StateManager::mutate_stage(awaited_action, action_stage),
+            Err(e) => {
+                event!(
+                    Level::WARN,
+                    ?worker_id,
+                    "Action stage setting error during do_try_match()"
+                );
+                StateManager::mutate_last_error(awaited_action, e)
             }
         }
     }
 
-    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
-        match self.inner.active_actions.remove(action_info) {
-            Some(running_action) => {
-                let mut awaited_action: AwaitedAction = running_action;
-                let send_result = if awaited_action.attempts >= self.inner.max_job_retries {
-                    self.inner.metrics.retry_action_max_attempts_reached.inc();
-                    let action_stage_completed = ActionStage::Completed(ActionResult {
-                        execution_metadata: ExecutionMetadata {
-                            worker: format!("{worker_id}"),
-                            ..ExecutionMetadata::default()
-                        },
-                        error: Some(err.merge(make_err!(
-                            Code::Internal,
-                            "Job cancelled because it attempted to execute too many times and failed"
-                        ))),
-                        ..ActionResult::default()
-                    });
-                    StateManager::mutate_stage(&mut awaited_action, action_stage_completed)
-                    // Do not put the action back in the queue here, as this action attempted to run too many
-                    // times.
-                } else {
-                    self.inner.metrics.retry_action.inc();
-                    let send_result =
-                        StateManager::mutate_stage(&mut awaited_action, ActionStage::Queued);
-                    self.inner.queued_actions_set.insert(action_info.clone());
-                    self.inner
-                        .queued_actions
-                        .insert(action_info.clone(), awaited_action);
-                    send_result
-                };
+    /// Marks the specified action as active, assigns it to the given worker, and updates the
+    /// action stage. This function removes the action from the queue, updates the action's state
+    /// or error, and inserts it into the set of active actions.
+    ///
+    /// # Note
+    ///
+    /// Intended utility function for matching engine.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if it fails to update the action's state or if any other
+    /// error occurs during the process.
+    ///
+    async fn worker_set_as_active(
+        &mut self,
+        action_info: Arc<ActionInfo>,
+        worker_id: WorkerId,
+        action_stage: Result<ActionStage, Error>,
+    ) -> Result<(), Error> {
+        if let Some((action_info, mut awaited_action)) =
+            self.inner.queued_actions.remove_entry(action_info.as_ref())
+        {
+            assert!(
+                self.inner.queued_actions_set.remove(&action_info),
+                "queued_actions_set should always have same keys as queued_actions"
+            );
 
-                if send_result.is_err() {
-                    self.inner.metrics.retry_action_no_more_listeners.inc();
-                    // Don't remove this task, instead we keep them around for a bit just in case
-                    // the client disconnected and will reconnect and ask for same job to be executed
-                    // again.
-                    event!(
-                        Level::WARN,
-                        ?action_info,
-                        ?worker_id,
-                        "Action has no more listeners during evict_worker()"
-                    );
-                }
-            }
-            None => {
-                self.inner.metrics.retry_action_but_action_missing.inc();
+            awaited_action.worker_id = Some(worker_id);
+
+            let send_result =
+                StateManager::worker_set_action_stage(&mut awaited_action, action_stage, worker_id)
+                    .await;
+
+            if send_result.is_err() {
                 event!(
-                    Level::ERROR,
+                    Level::WARN,
                     ?action_info,
                     ?worker_id,
-                    "Worker stated it was running an action, but it was not in the active_actions"
+                    "Action has no more listeners during do_try_match()"
                 );
             }
+
+            awaited_action.attempts += 1;
+            self.inner
+                .active_actions
+                .insert(action_info, awaited_action);
+            Ok(())
+        } else {
+            Err(make_err!(
+                Code::Internal,
+                "Action not found in queued_actions_set or queued_actions"
+            ))
         }
     }
 
@@ -355,6 +505,7 @@ impl ClientStateManager for StateManager {
         let action_info = Arc::new(action_info);
 
         let operation_id = OperationId::new(action_info.unique_qualifier.clone());
+
         let current_state = Arc::new(ActionState {
             stage: ActionStage::Queued,
             id: operation_id,
@@ -487,6 +638,8 @@ impl WorkerStateManager for StateManager {
                     self.inner
                         .active_actions
                         .insert(action_info, running_action);
+
+                    self.inner.tasks_or_workers_change_notify.notify_one();
                     return Ok(());
                 }
 
@@ -507,7 +660,7 @@ impl WorkerStateManager for StateManager {
                         make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
                     })?;
                 worker.complete_action(&action_info);
-
+                self.inner.tasks_or_workers_change_notify.notify_one();
                 Ok(())
             }
             Err(e) => {
@@ -519,5 +672,74 @@ impl WorkerStateManager for StateManager {
                 return Err(e);
             }
         }
+    }
+}
+
+#[async_trait]
+impl MatchingEngineStateManager for StateManager {
+    async fn filter_operations(
+        &self,
+        _filter: OperationFilter, // TODO(adam): reference filter
+    ) -> Result<ActionStateResultStream, Error> {
+        // TODO(adams): use OperationFilter vs directly encoding it.
+        let action_infos: Map<
+            Cloned<Rev<Keys<Arc<ActionInfo>, AwaitedAction>>>,
+            fn(Arc<ActionInfo>) -> Arc<dyn ActionStateResult>,
+        > = self
+            .inner
+            .queued_actions
+            .keys()
+            .rev()
+            .cloned()
+            .map(|action_info| {
+                // TODO(adam): ActionState is always available and can be returned from here.
+                //   later we might want to rewrite this to return ActionState.
+                let cloned_action_info = action_info.clone();
+                Arc::new(MatchingEngineActionStateResult::new(cloned_action_info))
+            });
+
+        let action_infos: Vec<Arc<dyn ActionStateResult>> = action_infos.collect();
+        Ok(Box::pin(stream::iter(action_infos)))
+    }
+
+    async fn update_operation(
+        &mut self,
+        operation_id: OperationId,
+        worker_id: Option<WorkerId>,
+        action_stage: Result<ActionStage, Error>,
+    ) -> Result<(), Error> {
+        if let Some(action_info) = self
+            .inner
+            .queued_actions_set
+            .get(&operation_id.unique_qualifier)
+        {
+            if let Some(worker_id) = worker_id {
+                let action_info = action_info.clone();
+                self.worker_notify_run_action(worker_id, action_info.clone())
+                    .await?;
+                self.worker_set_as_active(action_info, worker_id, action_stage)
+                    .await?;
+            } else {
+                event!(
+                    Level::WARN,
+                    ?operation_id,
+                    ?worker_id,
+                    "No worker found in do_try_match()"
+                );
+            }
+        } else {
+            event!(
+                Level::WARN,
+                ?operation_id,
+                ?worker_id,
+                "No action info found in do_try_match()"
+            );
+        }
+
+        Ok(())
+    }
+
+    async fn remove_operation(&self, _operation_id: OperationId) -> Result<(), Error> {
+        todo!()
     }
 }
