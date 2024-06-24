@@ -72,5 +72,43 @@ impl Metrics {
                 vec![("result".into(), "no_more_listeners".into())],
             );
         }
+        {
+            c.publish(
+                "workers_evicted_total",
+                &self.workers_evicted,
+                "The number of workers evicted from scheduler.",
+            );
+            c.publish(
+                "workers_evicted_with_running_action",
+                &self.workers_evicted_with_running_action,
+                "The number of jobs cancelled because worker was evicted from scheduler.",
+            );
+        }
+        {
+            c.publish_with_labels(
+                "retry_action",
+                &self.retry_action,
+                "Stats about retry_action().",
+                vec![("result".into(), "success".into())],
+            );
+            c.publish_with_labels(
+                "retry_action",
+                &self.retry_action_max_attempts_reached,
+                "Stats about retry_action().",
+                vec![("result".into(), "max_attempts_reached".into())],
+            );
+            c.publish_with_labels(
+                "retry_action",
+                &self.retry_action_no_more_listeners,
+                "Stats about retry_action().",
+                vec![("result".into(), "no_more_listeners".into())],
+            );
+            c.publish_with_labels(
+                "retry_action",
+                &self.retry_action_but_action_missing,
+                "Stats about retry_action().",
+                vec![("result".into(), "action_missing".into())],
+            );
+        }
     }
 }
