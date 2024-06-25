@@ -27,7 +27,7 @@ use hyper::server::conn::Http;
 use hyper::{Response, StatusCode};
 use mimalloc::MiMalloc;
 use nativelink_config::cas_server::{
-    CasConfig, CompressionAlgorithm, GlobalConfig, ListenerConfig, ServerConfig, WorkerConfig,
+    CasConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig, ServerConfig, WorkerConfig,
 };
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_err, Code, Error, ResultExt};
@@ -152,10 +152,10 @@ async fn inner_main(
         }
     }
 
-    fn into_encoding(from: &CompressionAlgorithm) -> Option<CompressionEncoding> {
+    fn into_encoding(from: &HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
         match from {
-            CompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
-            CompressionAlgorithm::none => None,
+            HttpCompressionAlgorithm::gzip => Some(CompressionEncoding::Gzip),
+            HttpCompressionAlgorithm::none => None,
         }
     }
 
@@ -237,7 +237,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -263,7 +263,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -289,7 +289,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -315,7 +315,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -355,7 +355,7 @@ async fn inner_main(
                     let mut service = v.into_service();
                     let send_algo = &http_config.compression.send_compression_algorithm;
                     if let Some(encoding) =
-                        into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                        into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                     {
                         service = service.send_compressed(encoding);
                     }
@@ -379,7 +379,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
@@ -405,7 +405,7 @@ async fn inner_main(
                             let mut service = v.into_service();
                             let send_algo = &http_config.compression.send_compression_algorithm;
                             if let Some(encoding) =
-                                into_encoding(&send_algo.unwrap_or(CompressionAlgorithm::none))
+                                into_encoding(&send_algo.unwrap_or(HttpCompressionAlgorithm::none))
                             {
                                 service = service.send_compressed(encoding);
                             }
