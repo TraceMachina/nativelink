@@ -32,21 +32,12 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
     async fn add_worker(&self, worker: Worker) -> Result<(), Error>;
 
-    /// Similar to `update_action()`, but called when there was an error that is not
-    /// related to the task, but rather the worker itself.
-    async fn update_action_with_internal_error(
-        &self,
-        worker_id: &WorkerId,
-        action_info_hash_key: ActionInfoHashKey,
-        err: Error,
-    );
-
     /// Updates the status of an action to the scheduler from the worker.
     async fn update_action(
         &self,
         worker_id: &WorkerId,
         action_info_hash_key: ActionInfoHashKey,
-        action_stage: ActionStage,
+        action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error>;
 
     /// Event for when the keep alive message was received from the worker.

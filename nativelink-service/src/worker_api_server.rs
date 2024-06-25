@@ -221,14 +221,15 @@ impl WorkerApiServer {
                     .try_into()
                     .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
                 self.scheduler
-                    .update_action(&worker_id, action_info_hash_key, action_stage)
+                    .update_action(&worker_id, action_info_hash_key, Ok(action_stage))
                     .await
                     .err_tip(|| format!("Failed to update_action {action_digest:?}"))?;
             }
             execute_result::Result::InternalError(e) => {
                 self.scheduler
-                    .update_action_with_internal_error(&worker_id, action_info_hash_key, e.into())
-                    .await;
+                    .update_action(&worker_id, action_info_hash_key, Err(e.into()))
+                    .await
+                    .err_tip(|| format!("Failed to update_action {action_digest:?}"))?;
             }
         }
         Ok(Response::new(()))
