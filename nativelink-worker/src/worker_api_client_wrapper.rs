@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use async_trait::async_trait;
+use std::future::Future;
+
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
@@ -23,18 +24,26 @@ use tonic::{Response, Status};
 
 /// This is used in order to allow unit tests to intercept these calls. This should always match
 /// the API of WorkerApiClient defined in the worker_api.proto file.
-#[async_trait]
 pub trait WorkerApiClientTrait: Clone + Sync + Send + Sized + Unpin {
-    async fn connect_worker(
+    fn connect_worker(
         &mut self,
         request: SupportedProperties,
-    ) -> Result<Response<Streaming<UpdateForWorker>>, Status>;
+    ) -> impl Future<Output = Result<Response<Streaming<UpdateForWorker>>, Status>> + Send;
 
-    async fn keep_alive(&mut self, request: KeepAliveRequest) -> Result<Response<()>, Status>;
+    fn keep_alive(
+        &mut self,
+        request: KeepAliveRequest,
+    ) -> impl Future<Output = Result<Response<()>, Status>> + Send;
 
-    async fn going_away(&mut self, request: GoingAwayRequest) -> Result<Response<()>, Status>;
+    fn going_away(
+        &mut self,
+        request: GoingAwayRequest,
+    ) -> impl Future<Output = Result<Response<()>, Status>> + Send;
 
-    async fn execution_response(&mut self, request: ExecuteResult) -> Result<Response<()>, Status>;
+    fn execution_response(
+        &mut self,
+        request: ExecuteResult,
+    ) -> impl Future<Output = Result<Response<()>, Status>> + Send;
 }
 
 #[derive(Clone)]
@@ -48,7 +57,6 @@ impl From<WorkerApiClient<Channel>> for WorkerApiClientWrapper {
     }
 }
 
-#[async_trait]
 impl WorkerApiClientTrait for WorkerApiClientWrapper {
     async fn connect_worker(
         &mut self,
