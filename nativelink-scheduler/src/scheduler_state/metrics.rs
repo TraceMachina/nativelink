@@ -28,6 +28,11 @@ pub(crate) struct Metrics {
     pub(crate) retry_action_max_attempts_reached: CounterWithTime,
     pub(crate) retry_action_no_more_listeners: CounterWithTime,
     pub(crate) retry_action_but_action_missing: CounterWithTime,
+
+    pub(crate) update_action_with_internal_error: CounterWithTime,
+    pub(crate) update_action_with_internal_error_no_action: CounterWithTime,
+    pub(crate) update_action_with_internal_error_backpressure: CounterWithTime,
+    pub(crate) update_action_with_internal_error_from_wrong_worker: CounterWithTime,
 }
 
 impl Metrics {
@@ -70,6 +75,31 @@ impl Metrics {
                 &self.update_action_no_more_listeners,
                 "Stats about errors when worker sends update_action() to scheduler. These errors are not complete, just the most common.",
                 vec![("result".into(), "no_more_listeners".into())],
+            );
+        }
+        {
+            c.publish(
+                "update_action_with_internal_error",
+                &self.update_action_with_internal_error,
+                "The number of times update_action_with_internal_error was triggered.",
+            );
+            c.publish_with_labels(
+                "update_action_with_internal_error_errors",
+                &self.update_action_with_internal_error_no_action,
+                "Stats about what errors caused update_action_with_internal_error() in scheduler.",
+                vec![("result".into(), "no_action".into())],
+            );
+            c.publish_with_labels(
+                "update_action_with_internal_error_errors",
+                &self.update_action_with_internal_error_backpressure,
+                "Stats about what errors caused update_action_with_internal_error() in scheduler.",
+                vec![("result".into(), "backpressure".into())],
+            );
+            c.publish_with_labels(
+                "update_action_with_internal_error_errors",
+                &self.update_action_with_internal_error_from_wrong_worker,
+                "Stats about what errors caused update_action_with_internal_error() in scheduler.",
+                vec![("result".into(), "from_wrong_worker".into())],
             );
         }
     }

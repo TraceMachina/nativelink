@@ -70,8 +70,6 @@ struct SimpleSchedulerImpl {
     worker_timeout_s: u64,
     /// Default times a job can retry before failing.
     max_job_retries: usize,
-    /// Notify task<->worker matching engine that work needs to be done.
-    tasks_or_workers_change_notify: Arc<Notify>,
     metrics: Arc<Metrics>,
 }
 
@@ -87,7 +85,10 @@ impl SimpleSchedulerImpl {
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let add_action_result = self.state_manager.add_action(action_info).await?;
-        self.tasks_or_workers_change_notify.notify_one();
+        self.state_manager
+            .inner
+            .tasks_or_workers_change_notify
+            .notify_one();
         add_action_result.as_receiver().await.cloned()
     }
 
@@ -217,7 +218,10 @@ impl SimpleSchedulerImpl {
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
-        self.tasks_or_workers_change_notify.notify_one();
+        self.state_manager
+            .inner
+            .tasks_or_workers_change_notify
+            .notify_one();
     }
 
     /// Sets if the worker is draining or not.
@@ -231,7 +235,10 @@ impl SimpleSchedulerImpl {
             .err_tip(|| format!("Worker {worker_id} doesn't exist in the pool"))?;
         self.metrics.workers_drained.inc();
         worker.is_draining = is_draining;
-        self.tasks_or_workers_change_notify.notify_one();
+        self.state_manager
+            .inner
+            .tasks_or_workers_change_notify
+            .notify_one();
         Ok(())
     }
 
@@ -339,106 +346,27 @@ impl SimpleSchedulerImpl {
         }
     }
 
-    fn update_action_with_internal_error(
-        &mut self,
-        worker_id: &WorkerId,
-        action_info_hash_key: ActionInfoHashKey,
-        err: Error,
-    ) {
-        self.metrics.update_action_with_internal_error.inc();
-        let Some((action_info, mut running_action)) = self
-            .state_manager
-            .inner
-            .active_actions
-            .remove_entry(&action_info_hash_key)
-        else {
-            self.metrics
-                .update_action_with_internal_error_no_action
-                .inc();
-            event!(
-                Level::ERROR,
-                ?action_info_hash_key,
-                ?worker_id,
-                "Could not find action info in active actions"
-            );
-            return;
-        };
-
-        let due_to_backpressure = err.code == Code::ResourceExhausted;
-        // Don't count a backpressure failure as an attempt for an action.
-        if due_to_backpressure {
-            self.metrics
-                .update_action_with_internal_error_backpressure
-                .inc();
-            running_action.attempts -= 1;
-        }
-        let Some(running_action_worker_id) = running_action.worker_id else {
-            event!(
-                Level::ERROR,
-                ?action_info_hash_key,
-                ?worker_id,
-                "Got a result from a worker that should not be running the action, Removing worker. Expected action to be unassigned got worker",
-          );
-            return;
-        };
-        if running_action_worker_id == *worker_id {
-            // Don't set the error on an action that's running somewhere else.
-            event!(
-                Level::WARN,
-                ?action_info_hash_key,
-                ?worker_id,
-                ?running_action_worker_id,
-                ?err,
-                "Internal worker error",
-            );
-            running_action.last_error = Some(err.clone());
-        } else {
-            self.metrics
-                .update_action_with_internal_error_from_wrong_worker
-                .inc();
-        }
-
-        // Now put it back. retry_action() needs it to be there to send errors properly.
-        self.state_manager
-            .inner
-            .active_actions
-            .insert(action_info.clone(), running_action);
-
-        // Clear this action from the current worker.
-        if let Some(worker) = self.state_manager.inner.workers.workers.get_mut(worker_id) {
-            let was_paused = !worker.can_accept_work();
-            // This unpauses, but since we're completing with an error, don't
-            // unpause unless all actions have completed.
-            worker.complete_action(&action_info);
-            // Only pause if there's an action still waiting that will unpause.
-            if (was_paused || due_to_backpressure) && worker.has_actions() {
-                worker.is_paused = true;
-            }
-        }
-
-        // Re-queue the action or fail on max attempts.
-        self.retry_action(&action_info, worker_id, err);
-        self.tasks_or_workers_change_notify.notify_one();
-    }
-
     async fn update_action(
         &mut self,
         worker_id: &WorkerId,
         action_info_hash_key: ActionInfoHashKey,
-        action_stage: ActionStage,
+        action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
         let update_operation_result = self
             .state_manager
             .update_operation(
                 OperationId::new(action_info_hash_key.clone()),
                 *worker_id,
-                Ok(action_stage),
+                action_stage,
             )
             .await;
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
         match update_operation_result {
             Ok(_) => {
-                self.tasks_or_workers_change_notify.notify_one();
+                self.state_manager
+                    .inner
+                    .tasks_or_workers_change_notify
+                    .notify_one();
                 Ok(())
             }
             Err(e) => {
@@ -449,7 +377,10 @@ impl SimpleSchedulerImpl {
                     ?e,
                     "Failed to update_operation on update_action"
                 );
-                self.tasks_or_workers_change_notify.notify_one();
+                self.state_manager
+                    .inner
+                    .tasks_or_workers_change_notify
+                    .notify_one();
                 Err(e)
             }
         }
@@ -521,6 +452,7 @@ impl SimpleScheduler {
             HashSet::new(),
             Arc::new(SchedulerMetrics::default()),
             max_job_retries,
+            tasks_or_workers_change_notify.clone(),
         );
         let metrics = Arc::new(Metrics::default());
         let metrics_for_do_try_match = metrics.clone();
@@ -529,7 +461,6 @@ impl SimpleScheduler {
             retain_completed_for: Duration::new(retain_completed_for_s, 0),
             worker_timeout_s,
             max_job_retries,
-            tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
             metrics: metrics.clone(),
         }));
         let weak_inner = Arc::downgrade(&inner);
@@ -697,26 +628,20 @@ impl WorkerScheduler for SimpleScheduler {
             if let Err(err) = &res {
                 inner.immediate_evict_worker(&worker_id, err.clone());
             }
-            inner.tasks_or_workers_change_notify.notify_one();
+            inner
+                .state_manager
+                .inner
+                .tasks_or_workers_change_notify
+                .notify_one();
             res
         })
-    }
-
-    async fn update_action_with_internal_error(
-        &self,
-        worker_id: &WorkerId,
-        action_info_hash_key: ActionInfoHashKey,
-        err: Error,
-    ) {
-        let mut inner = self.get_inner_lock().await;
-        inner.update_action_with_internal_error(worker_id, action_info_hash_key, err);
     }
 
     async fn update_action(
         &self,
         worker_id: &WorkerId,
         action_info_hash_key: ActionInfoHashKey,
-        action_stage: ActionStage,
+        action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
         let mut inner = self.get_inner_lock().await;
         self.metrics
