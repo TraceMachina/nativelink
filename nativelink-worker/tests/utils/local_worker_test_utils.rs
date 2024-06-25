@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_lock::Mutex;
-use async_trait::async_trait;
 use hyper::body::Sender as HyperSender;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use nativelink_error::Error;
@@ -123,7 +122,6 @@ impl MockWorkerApiClient {
     }
 }
 
-#[async_trait]
 impl WorkerApiClientTrait for MockWorkerApiClient {
     async fn connect_worker(
         &mut self,
