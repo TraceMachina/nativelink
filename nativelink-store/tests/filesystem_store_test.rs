@@ -23,7 +23,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use async_lock::RwLock;
-use async_trait::async_trait;
 use bytes::Bytes;
 use filetime::{set_file_atime, FileTime};
 use futures::executor::block_on;
@@ -72,7 +71,6 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hook
     }
 }
 
-#[async_trait]
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<Hooks> {
     fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
         Self {
@@ -141,7 +139,6 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
     }
 }
 
-#[async_trait]
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<Hooks> {
     fn len(&self) -> usize {
         self.inner.as_ref().unwrap().len()

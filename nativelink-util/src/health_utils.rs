@@ -101,7 +101,7 @@ pub struct HealthStatusDescription {
 /// a health status indicator by implementing the `check_health` function.
 /// A default implementation is provided for the `check_health` function
 /// that returns healthy component.
-#[async_trait]
+#[async_trait] // FIXME remove this if/when traits containing async fn can be used as trait objects
 pub trait HealthStatusIndicator: Sync + Send + Unpin {
     fn get_name(&self) -> &'static str;
 
