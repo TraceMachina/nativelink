@@ -22,10 +22,11 @@ use futures::stream;
 use hashbrown::{HashMap, HashSet};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionResult, ActionStage, ActionState, ExecutionMetadata, OperationId, WorkerId,
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
+    OperationId, WorkerId,
 };
-use tokio::sync::watch;
 use tokio::sync::watch::error::SendError;
+use tokio::sync::{watch, Notify};
 use tracing::{event, Level};
 
 use crate::operation_state_manager::{
@@ -45,6 +46,7 @@ pub(crate) struct StateManager {
 }
 
 impl StateManager {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         queued_actions_set: HashSet<Arc<ActionInfo>>,
         queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction>,
@@ -53,6 +55,7 @@ impl StateManager {
         recently_completed_actions: HashSet<CompletedAction>,
         metrics: Arc<Metrics>,
         max_job_retries: usize,
+        tasks_or_workers_change_notify: Arc<Notify>,
     ) -> Self {
         Self {
             inner: StateManagerImpl {
@@ -63,6 +66,7 @@ impl StateManager {
                 recently_completed_actions,
                 metrics,
                 max_job_retries,
+                tasks_or_workers_change_notify,
             },
         }
     }
@@ -114,6 +118,9 @@ pub(crate) struct StateManagerImpl {
 
     /// Default times a job can retry before failing.
     pub(crate) max_job_retries: usize,
+
+    /// Notify task<->worker matching engine that work needs to be done.
+    pub(crate) tasks_or_workers_change_notify: Arc<Notify>,
 }
 
 impl StateManager {
@@ -214,6 +221,89 @@ impl StateManager {
                 );
             }
         }
+    }
+
+    fn update_action_with_internal_error(
+        &mut self,
+        worker_id: &WorkerId,
+        action_info_hash_key: ActionInfoHashKey,
+        err: Error,
+    ) {
+        self.inner.metrics.update_action_with_internal_error.inc();
+        let Some((action_info, mut running_action)) = self
+            .inner
+            .active_actions
+            .remove_entry(&action_info_hash_key)
+        else {
+            self.inner
+                .metrics
+                .update_action_with_internal_error_no_action
+                .inc();
+            event!(
+                Level::ERROR,
+                ?action_info_hash_key,
+                ?worker_id,
+                "Could not find action info in active actions"
+            );
+            return;
+        };
+
+        let due_to_backpressure = err.code == Code::ResourceExhausted;
+        // Don't count a backpressure failure as an attempt for an action.
+        if due_to_backpressure {
+            self.inner
+                .metrics
+                .update_action_with_internal_error_backpressure
+                .inc();
+            running_action.attempts -= 1;
+        }
+        let Some(running_action_worker_id) = running_action.worker_id else {
+            event!(
+                Level::ERROR,
+                ?action_info_hash_key,
+                ?worker_id,
+                "Got a result from a worker that should not be running the action, Removing worker. Expected action to be unassigned got worker",
+          );
+            return;
+        };
+        if running_action_worker_id == *worker_id {
+            // Don't set the error on an action that's running somewhere else.
+            event!(
+                Level::WARN,
+                ?action_info_hash_key,
+                ?worker_id,
+                ?running_action_worker_id,
+                ?err,
+                "Internal worker error",
+            );
+            running_action.last_error = Some(err.clone());
+        } else {
+            self.inner
+                .metrics
+                .update_action_with_internal_error_from_wrong_worker
+                .inc();
+        }
+
+        // Now put it back. retry_action() needs it to be there to send errors properly.
+        self.inner
+            .active_actions
+            .insert(action_info.clone(), running_action);
+
+        // Clear this action from the current worker.
+        if let Some(worker) = self.inner.workers.workers.get_mut(worker_id) {
+            let was_paused = !worker.can_accept_work();
+            // This unpauses, but since we're completing with an error, don't
+            // unpause unless all actions have completed.
+            worker.complete_action(&action_info);
+            // Only pause if there's an action still waiting that will unpause.
+            if (was_paused || due_to_backpressure) && worker.has_actions() {
+                worker.is_paused = true;
+            }
+        }
+
+        // Re-queue the action or fail on max attempts.
+        self.retry_action(&action_info, worker_id, err);
+        self.inner.tasks_or_workers_change_notify.notify_one();
     }
 }
 
@@ -323,104 +413,111 @@ impl WorkerStateManager for StateManager {
         worker_id: WorkerId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
-        // TODO(adams): action_stage can be sent a error along the worker_api_server code path of
-        //  inner_execution_response. update_operation which is indirectly called by update_action
-        //  needs to support the code/logic that is implemented by update_action_with_internal_error
-        //  here when action_stage is an error.
-        let action_stage = action_stage.expect("Unimplemented error in update_operation()");
-        let action_info_hash_key = operation_id.unique_qualifier;
-        if !action_stage.has_action_result() {
-            self.inner.metrics.update_action_missing_action_result.inc();
-            event!(
-                Level::ERROR,
-                ?action_info_hash_key,
-                ?worker_id,
-                ?action_stage,
-                "Worker sent error while updating action. Removing worker"
-            );
-            let err = make_err!(
+        match action_stage {
+            Ok(action_stage) => {
+                let action_info_hash_key = operation_id.unique_qualifier;
+                if !action_stage.has_action_result() {
+                    self.inner.metrics.update_action_missing_action_result.inc();
+                    event!(
+                        Level::ERROR,
+                        ?action_info_hash_key,
+                        ?worker_id,
+                        ?action_stage,
+                        "Worker sent error while updating action. Removing worker"
+                    );
+                    let err = make_err!(
                 Code::Internal,
                 "Worker '{worker_id}' set the action_stage of running action {action_info_hash_key:?} to {action_stage:?}. Removing worker.",
             );
-            self.immediate_evict_worker(&worker_id, err.clone());
-            return Err(err);
-        }
+                    self.immediate_evict_worker(&worker_id, err.clone());
+                    return Err(err);
+                }
 
-        let (action_info, mut running_action) = self
-            .inner
-            .active_actions
-            .remove_entry(&action_info_hash_key)
-            .err_tip(|| {
-                format!("Could not find action info in active actions : {action_info_hash_key:?}")
-            })?;
+                let (action_info, mut running_action) = self
+                    .inner
+                    .active_actions
+                    .remove_entry(&action_info_hash_key)
+                    .err_tip(|| {
+                        format!("Could not find action info in active actions : {action_info_hash_key:?}")
+                    })?;
 
-        if running_action.worker_id != Some(worker_id) {
-            self.inner.metrics.update_action_from_wrong_worker.inc();
-            let err = match running_action.worker_id {
+                if running_action.worker_id != Some(worker_id) {
+                    self.inner.metrics.update_action_from_wrong_worker.inc();
+                    let err = match running_action.worker_id {
 
-                Some(running_action_worker_id) => make_err!(
+                        Some(running_action_worker_id) => make_err!(
                     Code::Internal,
                     "Got a result from a worker that should not be running the action, Removing worker. Expected worker {running_action_worker_id} got worker {worker_id}",
                 ),
-                None => make_err!(
+                        None => make_err!(
                     Code::Internal,
                     "Got a result from a worker that should not be running the action, Removing worker. Expected action to be unassigned got worker {worker_id}",
                 ),
-            };
-            event!(
-                Level::ERROR,
-                ?action_info,
-                ?worker_id,
-                ?running_action.worker_id,
-                ?err,
-                "Got a result from a worker that should not be running the action, Removing worker"
-            );
-            // First put it back in our active_actions or we will drop the task.
-            self.inner
-                .active_actions
-                .insert(action_info, running_action);
-            self.immediate_evict_worker(&worker_id, err.clone());
-            return Err(err);
-        }
+                    };
+                    event!(
+                        Level::ERROR,
+                        ?action_info,
+                        ?worker_id,
+                        ?running_action.worker_id,
+                        ?err,
+                        "Got a result from a worker that should not be running the action, Removing worker"
+                    );
+                    // First put it back in our active_actions or we will drop the task.
+                    self.inner
+                        .active_actions
+                        .insert(action_info, running_action);
+                    self.immediate_evict_worker(&worker_id, err.clone());
+                    return Err(err);
+                }
 
-        let send_result = StateManager::mutate_stage(&mut running_action, action_stage);
+                let send_result = StateManager::mutate_stage(&mut running_action, action_stage);
 
-        if !running_action.current_state.stage.is_finished() {
-            if send_result.is_err() {
-                self.inner.metrics.update_action_no_more_listeners.inc();
-                event!(
-                    Level::WARN,
-                    ?action_info,
-                    ?worker_id,
-                    "Action has no more listeners during update_action()"
-                );
+                if !running_action.current_state.stage.is_finished() {
+                    if send_result.is_err() {
+                        self.inner.metrics.update_action_no_more_listeners.inc();
+                        event!(
+                            Level::WARN,
+                            ?action_info,
+                            ?worker_id,
+                            "Action has no more listeners during update_action()"
+                        );
+                    }
+                    // If the operation is not finished it means the worker is still working on it, so put it
+                    // back or else we will lose track of the task.
+                    self.inner
+                        .active_actions
+                        .insert(action_info, running_action);
+                    return Ok(());
+                }
+
+                // Keep in case this is asked for soon.
+                self.inner
+                    .recently_completed_actions
+                    .insert(CompletedAction {
+                        completed_time: SystemTime::now(),
+                        state: running_action.current_state,
+                    });
+
+                let worker = self
+                    .inner
+                    .workers
+                    .workers
+                    .get_mut(&worker_id)
+                    .ok_or_else(|| {
+                        make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
+                    })?;
+                worker.complete_action(&action_info);
+
+                Ok(())
             }
-            // If the operation is not finished it means the worker is still working on it, so put it
-            // back or else we will lose track of the task.
-            self.inner
-                .active_actions
-                .insert(action_info, running_action);
-            return Ok(());
+            Err(e) => {
+                self.update_action_with_internal_error(
+                    &worker_id,
+                    operation_id.unique_qualifier,
+                    e.clone(),
+                );
+                return Err(e);
+            }
         }
-
-        // Keep in case this is asked for soon.
-        self.inner
-            .recently_completed_actions
-            .insert(CompletedAction {
-                completed_time: SystemTime::now(),
-                state: running_action.current_state,
-            });
-
-        let worker = self
-            .inner
-            .workers
-            .workers
-            .get_mut(&worker_id)
-            .ok_or_else(|| {
-                make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
-            })?;
-        worker.complete_action(&action_info);
-
-        Ok(())
     }
 }

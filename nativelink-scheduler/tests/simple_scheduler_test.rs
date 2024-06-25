@@ -841,7 +841,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         .update_action(
             &worker_id,
             action_info_hash_key,
-            ActionStage::Completed(action_result.clone()),
+            Ok(ActionStage::Completed(action_result.clone())),
         )
         .await?;
 
@@ -947,7 +947,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .update_action(
             &worker_id,
             action_info_hash_key,
-            ActionStage::Completed(action_result.clone()),
+            Ok(ActionStage::Completed(action_result.clone())),
         )
         .await?;
 
@@ -1036,7 +1036,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         .update_action(
             &rogue_worker_id,
             action_info_hash_key,
-            ActionStage::Completed(action_result.clone()),
+            Ok(ActionStage::Completed(action_result.clone())),
         )
         .await;
 
@@ -1161,7 +1161,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
                 digest: action_digest,
                 salt: 0,
             },
-            ActionStage::Completed(action_result.clone()),
+            Ok(ActionStage::Completed(action_result.clone())),
         )
         .await?;
 
@@ -1278,7 +1278,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
                 digest: action_digest1,
                 salt: 0,
             },
-            ActionStage::Completed(action_result.clone()),
+            Ok(ActionStage::Completed(action_result.clone())),
         )
         .await?;
 
@@ -1324,7 +1324,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
                 digest: action_digest2,
                 salt: 0,
             },
-            ActionStage::Completed(action_result.clone()),
+            Ok(ActionStage::Completed(action_result.clone())),
         )
         .await?;
 
@@ -1436,11 +1436,11 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         digest: action_digest,
         salt: 0,
     };
-    scheduler
-        .update_action_with_internal_error(
+    let _ = scheduler
+        .update_action(
             &worker_id,
             action_info_hash_key.clone(),
-            make_err!(Code::Internal, "Some error"),
+            Err(make_err!(Code::Internal, "Some error")),
         )
         .await;
 
@@ -1470,8 +1470,8 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
 
     let err = make_err!(Code::Internal, "Some error");
     // Send internal error from worker again.
-    scheduler
-        .update_action_with_internal_error(&worker_id, action_info_hash_key, err.clone())
+    let _ = scheduler
+        .update_action(&worker_id, action_info_hash_key, Err(err.clone()))
         .await;
 
     {
@@ -1587,8 +1587,8 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
         assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
     }
 
-    scheduler
-        .update_action_with_internal_error(
+    let _ = scheduler
+        .update_action(
             &worker_id1,
             ActionInfoHashKey {
                 instance_name: INSTANCE_NAME.to_string(),
@@ -1596,7 +1596,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
                 digest: action_digest,
                 salt: 0,
             },
-            make_err!(Code::NotFound, "Some error"),
+            Err(make_err!(Code::NotFound, "Some error")),
         )
         .await;
 
