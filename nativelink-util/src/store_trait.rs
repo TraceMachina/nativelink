@@ -151,7 +151,7 @@ pub enum StoreOptimizations {
 /// A key that has been subscribed to in the store. This can be used
 /// to wait for changes to the data for the key.
 #[async_trait]
-pub trait StoreSubscription {
+pub trait StoreSubscription: Send + Sync + Unpin {
     /// Get the current store subscription item.
     fn peek(&self) -> Result<Arc<dyn StoreSubscriptionItem>, Error>;
 
