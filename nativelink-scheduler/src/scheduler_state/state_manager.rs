@@ -466,6 +466,7 @@ impl ClientStateManager for StateManager {
         // Check to see if the action is running, if it is and cacheable, merge the actions.
         if let Some(running_action) = self.inner.active_actions.get_mut(&action_info) {
             self.inner.metrics.add_action_joined_running_action.inc();
+            self.inner.tasks_or_workers_change_notify.notify_one();
             return Ok(Arc::new(ClientActionStateResult::new(
                 running_action.notify_channel.subscribe(),
             )));
@@ -497,6 +498,7 @@ impl ClientStateManager for StateManager {
                 .queued_actions
                 .insert(arc_action_info.clone(), queued_action);
             self.inner.queued_actions_set.insert(arc_action_info);
+            self.inner.tasks_or_workers_change_notify.notify_one();
             return Ok(result);
         }
 
@@ -525,7 +527,7 @@ impl ClientStateManager for StateManager {
                 worker_id: None,
             },
         );
-
+        self.inner.tasks_or_workers_change_notify.notify_one();
         return Ok(Arc::new(ClientActionStateResult::new(rx)));
     }
 
