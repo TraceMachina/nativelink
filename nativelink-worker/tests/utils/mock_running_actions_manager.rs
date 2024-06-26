@@ -15,7 +15,6 @@
 use std::sync::Arc;
 
 use async_lock::Mutex;
-use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_util::action_messages::ActionResult;
@@ -126,7 +125,6 @@ impl MockRunningActionsManager {
     }
 }
 
-#[async_trait]
 impl RunningActionsManager for MockRunningActionsManager {
     type RunningAction = MockRunningAction;
 
@@ -345,7 +343,6 @@ impl MockRunningAction {
     }
 }
 
-#[async_trait]
 impl RunningAction for MockRunningAction {
     fn get_action_id(&self) -> &ActionId {
         unreachable!("not implemented for tests");

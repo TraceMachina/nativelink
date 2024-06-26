@@ -132,16 +132,15 @@ fn to_full_path_from_digest(folder: &str, digest: &DigestInfo) -> OsString {
     format!("{}/{}-{}", folder, digest.hash_str(), digest.size_bytes).into()
 }
 
-#[async_trait]
 pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     /// Responsible for creating the underlying FileEntry.
     fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self;
 
     /// Creates a (usually) temp file, opens it and returns the path to the temp file.
-    async fn make_and_open_file(
+    fn make_and_open_file(
         block_size: u64,
         encoded_file_path: EncodedFilePath,
-    ) -> Result<(Self, fs::ResumeableFileSlot, OsString), Error>
+    ) -> impl Future<Output = Result<(Self, fs::ResumeableFileSlot, OsString), Error>> + Send
     where
         Self: Sized;
 
@@ -155,11 +154,11 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     fn get_encoded_file_path(&self) -> &RwLock<EncodedFilePath>;
 
     /// Returns a reader that will read part of the underlying file.
-    async fn read_file_part(
+    fn read_file_part(
         &self,
         offset: u64,
         length: u64,
-    ) -> Result<fs::ResumeableFileSlot, Error>;
+    ) -> impl Future<Output = Result<fs::ResumeableFileSlot, Error>> + Send;
 
     /// This function is a safe way to extract the file name of the underlying file. To protect users from
     /// accidentally creating undefined behavior we encourage users to do the logic they need to do with
@@ -167,14 +166,14 @@ pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     /// This is because the filename is not guaranteed to exist after this function returns, however inside
     /// the callback the file is always guaranteed to exist and immutable.
     /// DO NOT USE THIS FUNCTION TO EXTRACT THE FILENAME AND STORE IT FOR LATER USE.
-    async fn get_file_path_locked<
+    fn get_file_path_locked<
         T,
         Fut: Future<Output = Result<T, Error>> + Send,
         F: FnOnce(OsString) -> Fut + Send,
     >(
         &self,
         handler: F,
-    ) -> Result<T, Error>;
+    ) -> impl Future<Output = Result<T, Error>> + Send;
 }
 
 pub struct FileEntryImpl {
@@ -189,7 +188,6 @@ impl FileEntryImpl {
     }
 }
 
-#[async_trait]
 impl FileEntry for FileEntryImpl {
     fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
         Self {
@@ -307,7 +305,6 @@ fn make_temp_digest(digest: &mut DigestInfo) {
     );
 }
 
-#[async_trait]
 impl LenEntry for FileEntryImpl {
     #[inline]
     fn len(&self) -> usize {

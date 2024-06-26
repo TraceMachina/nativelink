@@ -16,7 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use mock_instant::{Instant as MockInstant, MockClock};
 use nativelink_config::stores::EvictionPolicy;
@@ -361,7 +360,6 @@ async fn unref_called_on_replace() -> Result<(), Error> {
         unref_called: AtomicBool,
     }
 
-    #[async_trait]
     impl LenEntry for MockEntry {
         fn len(&self) -> usize {
             // Note: We are not testing this functionality.

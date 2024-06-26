@@ -16,13 +16,13 @@ use std::borrow::Borrow;
 use std::cmp::Eq;
 use std::collections::BTreeSet;
 use std::fmt::Debug;
+use std::future::Future;
 use std::hash::Hash;
 use std::ops::{DerefMut, RangeBounds};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
-use async_trait::async_trait;
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,6 @@ struct EvictionItem<T: LenEntry + Debug> {
     data: T,
 }
 
-#[async_trait]
 pub trait LenEntry: 'static {
     /// Length of referenced data.
     fn len(&self) -> usize;
@@ -77,8 +76,8 @@ pub trait LenEntry: 'static {
     /// Called when an entry is touched.  On failure, will remove the entry
     /// from the map.
     #[inline]
-    async fn touch(&self) -> bool {
-        true
+    fn touch(&self) -> impl Future<Output = bool> + Send {
+        std::future::ready(true)
     }
 
     /// This will be called when object is removed from map.
@@ -94,10 +93,11 @@ pub trait LenEntry: 'static {
     /// During the execution of `unref()` no items can be added or removed to/from
     /// the EvictionMap globally (including inside `unref()`).
     #[inline]
-    async fn unref(&self) {}
+    fn unref(&self) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
 }
 
-#[async_trait]
 impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     #[inline]
     fn len(&self) -> usize {

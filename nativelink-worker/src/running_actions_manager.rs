@@ -29,7 +29,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
-use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use filetime::{set_file_mtime, FileTime};
 use formatx::Template;
@@ -561,27 +560,28 @@ async fn do_cleanup(
     Ok(())
 }
 
-#[async_trait]
 pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     /// Returns the action id of the action.
     fn get_action_id(&self) -> &ActionId;
 
     /// Anything that needs to execute before the actions is actually executed should happen here.
-    async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error>;
+    fn prepare_action(self: Arc<Self>) -> impl Future<Output = Result<Arc<Self>, Error>> + Send;
 
     /// Actually perform the execution of the action.
-    async fn execute(self: Arc<Self>) -> Result<Arc<Self>, Error>;
+    fn execute(self: Arc<Self>) -> impl Future<Output = Result<Arc<Self>, Error>> + Send;
 
     /// Any uploading, processing or analyzing of the results should happen here.
-    async fn upload_results(self: Arc<Self>) -> Result<Arc<Self>, Error>;
+    fn upload_results(self: Arc<Self>) -> impl Future<Output = Result<Arc<Self>, Error>> + Send;
 
     /// Cleanup any residual files, handles or other junk resulting from running the action.
-    async fn cleanup(self: Arc<Self>) -> Result<Arc<Self>, Error>;
+    fn cleanup(self: Arc<Self>) -> impl Future<Output = Result<Arc<Self>, Error>> + Send;
 
     /// Returns the final result. As a general rule this action should be thought of as
     /// a consumption of `self`, meaning once a return happens here the lifetime of `Self`
     /// is over and any action performed on it after this call is undefined behavior.
-    async fn get_finished_result(self: Arc<Self>) -> Result<ActionResult, Error>;
+    fn get_finished_result(
+        self: Arc<Self>,
+    ) -> impl Future<Output = Result<ActionResult, Error>> + Send;
 
     /// Returns the work directory of the action.
     fn get_work_directory(&self) -> &String;
@@ -1275,7 +1275,6 @@ impl Drop for RunningActionImpl {
     }
 }
 
-#[async_trait]
 impl RunningAction for RunningActionImpl {
     fn get_action_id(&self) -> &ActionId {
         &self.action_id
@@ -1335,26 +1334,25 @@ impl RunningAction for RunningActionImpl {
     }
 }
 
-#[async_trait]
 pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     type RunningAction: RunningAction;
 
-    async fn create_and_add_action(
+    fn create_and_add_action(
         self: &Arc<Self>,
         worker_id: String,
         start_execute: StartExecute,
-    ) -> Result<Arc<Self::RunningAction>, Error>;
+    ) -> impl Future<Output = Result<Arc<Self::RunningAction>, Error>> + Send;
 
-    async fn cache_action_result(
+    fn cache_action_result(
         &self,
         action_digest: DigestInfo,
         action_result: &mut ActionResult,
         hasher: DigestHasherFunc,
-    ) -> Result<(), Error>;
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 
-    async fn kill_all(&self);
+    fn kill_all(&self) -> impl Future<Output = ()> + Send;
 
-    async fn kill_action(&self, action_id: ActionId) -> Result<(), Error>;
+    fn kill_action(&self, action_id: ActionId) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn metrics(&self) -> &Arc<Metrics>;
 }
@@ -1778,7 +1776,6 @@ impl RunningActionsManagerImpl {
     }
 }
 
-#[async_trait]
 impl RunningActionsManager for RunningActionsManagerImpl {
     type RunningAction = RunningActionImpl;
 

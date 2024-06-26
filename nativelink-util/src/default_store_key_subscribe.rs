@@ -16,11 +16,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures::Future;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use tokio::sync::watch;
 use tokio::time::sleep;
-use tonic::async_trait;
 
 use crate::background_spawn;
 use crate::buf_channel::{make_buf_channel_pair, DropCloserWriteHalf};
