@@ -39,9 +39,24 @@ use crate::cas_utils::is_zero_digest;
 #[derive(Clone)]
 pub struct BytesWrapper(Bytes);
 
+impl BytesWrapper {
+    pub fn from_string(s: &str) -> Self {
+        BytesWrapper(Bytes::copy_from_slice(s.as_bytes()))
+    }
+}
+
 impl Debug for BytesWrapper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("BytesWrapper { -- Binary data -- }")
+    }
+}
+
+impl Drop for BytesWrapper {
+    fn drop(&mut self) {
+        print!(
+            "BytesWrapper dropped {}\n",
+            std::str::from_utf8(&self.0).unwrap()
+        );
     }
 }
 
@@ -152,6 +167,10 @@ impl MemoryStore {
 
     pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
         self.evicting_map.remove(&key.into_owned()).await
+    }
+
+    pub async fn insert(&self, key: StoreKey<'static>, data: BytesWrapper) -> Option<BytesWrapper> {
+        return self.evicting_map.insert(key, data).await;
     }
 
     /// Tells the store that a subscription has been dropped and gives an opportunity to clean up.
