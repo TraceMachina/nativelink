@@ -30,6 +30,7 @@ spec:
         # completely separate extension of the `lre-java` base image.
         args:
           - |
+            git config --global --add safe.directory "*"
             NATIVELINK_WORKER_PLATFORM=docker://lre-java:$(nix eval /mnt/src_root#lre-java.imageTag --raw) &&
             printf '#!/bin/sh\nexport NATIVELINK_WORKER_PLATFORM=%s\nexec "$@"' "$NATIVELINK_WORKER_PLATFORM" > /entrypoint/entrypoint.sh &&
             chmod +x /entrypoint/entrypoint.sh

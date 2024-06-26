@@ -67,6 +67,10 @@ spec:
 
         echo "NIX_STORE_OPTS: '$NIX_STORE_OPTS'"
 
+        # Not ideal, but will have to do until we implement more elaborate git
+        # repo syncing schemes.
+        git config --global --add safe.directory "*"
+
         IMAGE_NAME=$(nix eval $NIX_STORE_OPTS "${FLAKE_OUTPUT}".imageName --raw)
         IMAGE_TAG=$(nix eval $NIX_STORE_OPTS "${FLAKE_OUTPUT}".imageTag --raw)
 
