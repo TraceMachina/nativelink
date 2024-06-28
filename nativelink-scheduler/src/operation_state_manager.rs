@@ -98,7 +98,7 @@ pub struct OrderBy {
 pub type ActionStateResultStream = Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>;
 
 #[async_trait]
-pub trait ClientStateManager {
+pub trait ClientStateManager: Sync + Send + 'static {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
         &self,
@@ -113,7 +113,7 @@ pub trait ClientStateManager {
 }
 
 #[async_trait]
-pub trait WorkerStateManager {
+pub trait WorkerStateManager: Sync + Send + 'static {
     /// Update that state of an operation.
     /// The worker must also send periodic updates even if the state
     /// did not change with a modified timestamp in order to prevent
@@ -127,7 +127,7 @@ pub trait WorkerStateManager {
 }
 
 #[async_trait]
-pub trait MatchingEngineStateManager {
+pub trait MatchingEngineStateManager: Sync + Send + 'static {
     /// Returns a stream of operations that match the filter.
     async fn filter_operations(
         &self,
