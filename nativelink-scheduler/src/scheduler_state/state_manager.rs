@@ -13,9 +13,7 @@
 // limitations under the License.
 
 use std::cmp;
-use std::collections::btree_map::Keys;
 use std::collections::BTreeMap;
-use std::iter::{Cloned, Map, Rev};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -684,21 +682,18 @@ impl MatchingEngineStateManager for StateManager {
         _filter: OperationFilter, // TODO(adam): reference filter
     ) -> Result<ActionStateResultStream, Error> {
         // TODO(adams): use OperationFilter vs directly encoding it.
-        let action_infos: Map<
-            Cloned<Rev<Keys<Arc<ActionInfo>, AwaitedAction>>>,
-            fn(Arc<ActionInfo>) -> Arc<dyn ActionStateResult>,
-        > = self
-            .inner
-            .queued_actions
-            .keys()
-            .rev()
-            .cloned()
-            .map(|action_info| {
-                // TODO(adam): ActionState is always available and can be returned from here.
-                //   later we might want to rewrite this to return ActionState.
-                let cloned_action_info = action_info.clone();
-                Arc::new(MatchingEngineActionStateResult::new(cloned_action_info))
-            });
+        let action_infos =
+            self.inner
+                .queued_actions
+                .iter()
+                .rev()
+                .map(|(action_info, awaited_action)| {
+                    let cloned_action_info = action_info.clone();
+                    Arc::new(MatchingEngineActionStateResult::new(
+                        cloned_action_info,
+                        awaited_action.notify_channel.subscribe(),
+                    )) as Arc<dyn ActionStateResult>
+                });
 
         let action_infos: Vec<Arc<dyn ActionStateResult>> = action_infos.collect();
         Ok(Box::pin(stream::iter(action_infos)))
