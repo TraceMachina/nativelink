@@ -1003,6 +1003,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
     }
+    let _ = setup_new_worker(&scheduler, rogue_worker_id, PlatformProperties::default()).await?;
 
     let action_info_hash_key = ActionInfoHashKey {
         instance_name: INSTANCE_NAME.to_string(),
@@ -1043,8 +1044,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         .await;
 
     {
-        const EXPECTED_ERR: &str =
-            "Got a result from a worker that should not be running the action";
+        const EXPECTED_ERR: &str = "should not be running on worker";
         // Our request should have sent an error back.
         assert!(
             update_action_result.is_err(),
@@ -1503,10 +1503,13 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
                     output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
                 },
                 server_logs: HashMap::default(),
-                error: Some(err.merge(make_err!(
-                    Code::Internal,
-                    "Job cancelled because it attempted to execute too many times and failed"
-                ))),
+                error: Some(
+                    err.append("in update_operation on SimpleSchedulerImpl::update_action")
+                        .merge(make_err!(
+                        Code::Internal,
+                        "Job cancelled because it attempted to execute too many times and failed"
+                    )),
+                ),
                 message: String::new(),
             }),
         };
