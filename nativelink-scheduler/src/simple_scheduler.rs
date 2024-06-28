@@ -88,10 +88,6 @@ impl SimpleSchedulerImpl {
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let add_action_result = self.state_manager.add_action(action_info).await?;
-        self.state_manager
-            .inner
-            .tasks_or_workers_change_notify
-            .notify_one();
         add_action_result.as_receiver().await.cloned()
     }
 
@@ -482,24 +478,6 @@ impl SimpleScheduler {
             .workers
             .workers
             .contains(worker_id)
-    }
-
-    /// Checks to see if the worker can accept work. Should only be used in unit tests.
-    pub async fn can_worker_accept_work_for_test(
-        &self,
-        worker_id: &WorkerId,
-    ) -> Result<bool, Error> {
-        let mut inner = self.get_inner_lock().await;
-        let worker = inner
-            .state_manager
-            .inner
-            .workers
-            .workers
-            .get_mut(worker_id)
-            .ok_or_else(|| {
-                make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
-            })?;
-        Ok(worker.can_accept_work())
     }
 
     /// A unit test function used to send the keep alive message to the worker from the server.
