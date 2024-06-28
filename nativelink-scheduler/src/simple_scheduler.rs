@@ -66,13 +66,16 @@ const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
 struct SimpleSchedulerImpl {
     /// The manager responsible for holding the state of actions and workers.
-    state_manager: StateManager,
+    state_manager: Arc<StateManager>,
     /// The duration that actions are kept in recently_completed_actions for.
     retain_completed_for: Duration,
     /// Timeout of how long to evict workers if no response in this given amount of time in seconds.
     worker_timeout_s: u64,
     /// Default times a job can retry before failing.
     max_job_retries: usize,
+    /// A `Workers` pool that contains all workers that are available to execute actions in a priority
+    /// order based on the allocation strategy.
+    workers: Workers,
     metrics: Arc<Metrics>,
 }
 
@@ -214,15 +217,15 @@ impl SimpleSchedulerImpl {
         }
     }
 
-    /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
     fn immediate_evict_worker(
         inner_state: &mut MutexGuard<'_, StateManagerImpl>,
+        workers: &mut Workers,
         max_job_retries: usize,
         metrics: &Metrics,
         worker_id: &WorkerId,
         err: Error,
     ) {
-        if let Some(mut worker) = inner_state.workers.remove_worker(worker_id) {
+        if let Some(mut worker) = workers.remove_worker(worker_id) {
             metrics.workers_evicted.inc();
             // We don't care if we fail to send message to worker, this is only a best attempt.
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
@@ -250,15 +253,75 @@ impl SimpleSchedulerImpl {
         worker_id: WorkerId,
         is_draining: bool,
     ) -> Result<(), Error> {
-        let mut inner_state = self.state_manager.inner.lock().await;
-        let worker = inner_state
+        let worker = self
             .workers
             .workers
             .get_mut(&worker_id)
             .err_tip(|| format!("Worker {worker_id} doesn't exist in the pool"))?;
         self.metrics.workers_drained.inc();
         worker.is_draining = is_draining;
-        inner_state.tasks_change_notify.notify_one();
+        self.state_manager
+            .inner
+            .lock()
+            .await
+            .tasks_change_notify
+            .notify_one();
+        Ok(())
+    }
+
+    /// Notifies the specified worker to run the given action and handles errors by evicting
+    /// the worker if the notification fails.
+    ///
+    /// # Note
+    ///
+    /// Intended utility function for matching engine.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the notification to the worker fails, and in that case,
+    /// the worker will be immediately evicted from the system.
+    ///
+    async fn worker_notify_run_action(
+        &mut self,
+        worker_id: WorkerId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<(), Error> {
+        if let Some(worker) = self.workers.workers.get_mut(&worker_id) {
+            let notify_worker_result =
+                worker.notify_update(WorkerUpdate::RunAction(action_info.clone()));
+
+            if notify_worker_result.is_err() {
+                event!(
+                    Level::WARN,
+                    ?worker_id,
+                    ?action_info,
+                    ?notify_worker_result,
+                    "Worker command failed, removing worker",
+                );
+
+                let err = make_err!(
+                    Code::Internal,
+                    "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
+                );
+
+                let max_job_retries = self.max_job_retries;
+                let metrics = self.metrics.clone();
+                // TODO(allada) This is to get around rust borrow checker with double mut borrows
+                // of a mutex lock. Once the scheduler is fully moved to state manager this can be
+                // removed.
+                let state_manager = self.state_manager.clone();
+                let mut inner_state = state_manager.inner.lock().await;
+                SimpleSchedulerImpl::immediate_evict_worker(
+                    &mut inner_state,
+                    &mut self.workers,
+                    max_job_retries,
+                    &metrics,
+                    &worker_id,
+                    err.clone(),
+                );
+                return Err(err);
+            }
+        }
         Ok(())
     }
 
@@ -325,7 +388,7 @@ impl SimpleSchedulerImpl {
 
                         (
                             awaited_action.current_state.id.clone(),
-                            inner_state.workers.find_worker_for_action(awaited_action),
+                            self.workers.find_worker_for_action(awaited_action),
                         )
                     };
 
@@ -338,12 +401,43 @@ impl SimpleSchedulerImpl {
                     .await;
 
                     if let Err(e) = ret {
+                        if let Some(worker_id) = maybe_worker_id {
+                            let max_job_retries = self.max_job_retries;
+                            let metrics = self.metrics.clone();
+                            // TODO(allada) This is to get around rust borrow checker with double mut borrows
+                            // of a mutex lock. Once the scheduler is fully moved to state manager this can be
+                            // removed.
+                            let state_manager = self.state_manager.clone();
+                            let mut inner_state = state_manager.inner.lock().await;
+                            SimpleSchedulerImpl::immediate_evict_worker(
+                                &mut inner_state,
+                                &mut self.workers,
+                                max_job_retries,
+                                &metrics,
+                                &worker_id,
+                                e.clone(),
+                            );
+                        }
+
                         event!(
                             Level::ERROR,
                             ?e,
                             "update operation failed for {}",
                             operation_id
                         );
+                    } else if let Some(worker_id) = maybe_worker_id {
+                        if let Err(err) = self
+                            .worker_notify_run_action(worker_id, action_info.clone())
+                            .await
+                        {
+                            event!(
+                                Level::ERROR,
+                                ?err,
+                                ?worker_id,
+                                ?action_info,
+                                "failed to run worker_notify_run_action in SimpleSchedulerImpl::do_try_match"
+                            );
+                        }
                     }
                 }
             }
@@ -359,14 +453,63 @@ impl SimpleSchedulerImpl {
         action_info_hash_key: ActionInfoHashKey,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
+        let worker = self.workers.workers.get_mut(worker_id).err_tip(|| {
+            format!("Worker {worker_id} does not exist in SimpleSchedulerImpl::update_action")
+        })?;
+        let action_info_res = worker
+            .running_action_infos
+            .get(&action_info_hash_key)
+            .err_tip(|| format!("Action {action_info_hash_key:?} should not be running on worker {worker_id} in SimpleSchedulerImpl::update_action"));
+        let action_info = match action_info_res {
+            Ok(action_info) => action_info.clone(),
+            Err(err) => {
+                let max_job_retries = self.max_job_retries;
+                let metrics = self.metrics.clone();
+                // TODO(allada) This is to get around rust borrow checker with double mut borrows
+                // of a mutex lock. Once the scheduler is fully moved to state manager this can be
+                // removed.
+                let state_manager = self.state_manager.clone();
+                let mut inner_state = state_manager.inner.lock().await;
+                SimpleSchedulerImpl::immediate_evict_worker(
+                    &mut inner_state,
+                    &mut self.workers,
+                    max_job_retries,
+                    &metrics,
+                    worker_id,
+                    err.clone(),
+                );
+                return Err(err);
+            }
+        };
+        let operation_id = OperationId::new(action_info_hash_key.clone());
+        let due_to_backpressure = action_stage
+            .as_ref()
+            .map_or_else(|e| e.code == Code::ResourceExhausted, |_| false);
         let update_operation_result = <StateManager as WorkerStateManager>::update_operation(
             &self.state_manager,
-            OperationId::new(action_info_hash_key.clone()),
+            operation_id.clone(),
             *worker_id,
-            action_stage,
+            action_stage.clone(),
         )
-        .await;
-        if let Err(e) = &update_operation_result {
+        .await
+        .err_tip(|| "in update_operation on SimpleSchedulerImpl::update_action");
+        if let Err(e) = update_operation_result {
+            let max_job_retries = self.max_job_retries;
+            let metrics = self.metrics.clone();
+            // TODO(allada) This is to get around rust borrow checker with double mut borrows
+            // of a mutex lock. Once the scheduler is fully moved to state manager this can be
+            // removed.
+            let state_manager = self.state_manager.clone();
+            let mut inner_state = state_manager.inner.lock().await;
+            SimpleSchedulerImpl::immediate_evict_worker(
+                &mut inner_state,
+                &mut self.workers,
+                max_job_retries,
+                &metrics,
+                worker_id,
+                e.clone(),
+            );
+
             event!(
                 Level::ERROR,
                 ?action_info_hash_key,
@@ -374,8 +517,43 @@ impl SimpleSchedulerImpl {
                 ?e,
                 "Failed to update_operation on update_action"
             );
+            return Err(e);
         }
-        update_operation_result
+
+        match action_stage {
+            Ok(_) => worker.complete_action(&action_info),
+            Err(err) => {
+                // Clear this action from the current worker.
+                let was_paused = !worker.can_accept_work();
+                // This unpauses, but since we're completing with an error, don't
+                // unpause unless all actions have completed.
+                // Note: We need to run this before dealing with backpressure logic.
+                worker.complete_action(&action_info);
+                // Only pause if there's an action still waiting that will unpause.
+                if (was_paused || due_to_backpressure) && worker.has_actions() {
+                    worker.is_paused = true;
+                }
+
+                let max_job_retries = self.max_job_retries;
+                let metrics = self.metrics.clone();
+                // TODO(allada) This is to get around rust borrow checker with double mut borrows
+                // of a mutex lock. Once the scheduler is fully moved to state manager this can be
+                // removed.
+                let state_manager = self.state_manager.clone();
+                let mut inner_state = state_manager.inner.lock().await;
+                // Re-queue the action or fail on max attempts.
+                SimpleSchedulerImpl::retry_action(
+                    &mut inner_state,
+                    max_job_retries,
+                    &metrics,
+                    &action_info,
+                    worker_id,
+                    err,
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -436,16 +614,14 @@ impl SimpleScheduler {
         }
 
         let tasks_change_notify = Arc::new(Notify::new());
-        let state_manager = StateManager::new(
+        let state_manager = Arc::new(StateManager::new(
             HashSet::new(),
             BTreeMap::new(),
-            Workers::new(scheduler_cfg.allocation_strategy),
             HashMap::new(),
             HashSet::new(),
             Arc::new(SchedulerMetrics::default()),
-            max_job_retries,
             tasks_change_notify.clone(),
-        );
+        ));
         let metrics = Arc::new(Metrics::default());
         let metrics_for_do_try_match = metrics.clone();
         let inner = Arc::new(Mutex::new(SimpleSchedulerImpl {
@@ -454,6 +630,7 @@ impl SimpleScheduler {
             worker_timeout_s,
             max_job_retries,
             metrics: metrics.clone(),
+            workers: Workers::new(scheduler_cfg.allocation_strategy),
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
@@ -493,8 +670,7 @@ impl SimpleScheduler {
     #[must_use]
     pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
         let inner_scheduler = self.get_inner_lock().await;
-        let inner_state = inner_scheduler.state_manager.inner.lock().await;
-        inner_state.workers.workers.contains(worker_id)
+        inner_scheduler.workers.workers.contains(worker_id)
     }
 
     /// A unit test function used to send the keep alive message to the worker from the server.
@@ -502,9 +678,8 @@ impl SimpleScheduler {
         &self,
         worker_id: &WorkerId,
     ) -> Result<(), Error> {
-        let inner_scheduler = self.get_inner_lock().await;
-        let mut inner_state = inner_scheduler.state_manager.inner.lock().await;
-        let worker = inner_state
+        let mut inner_scheduler = self.get_inner_lock().await;
+        let worker = inner_scheduler
             .workers
             .workers
             .get_mut(worker_id)
@@ -594,17 +769,22 @@ impl WorkerScheduler for SimpleScheduler {
 
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id;
-        let inner_scheduler = self.get_inner_lock().await;
+        let mut inner_scheduler = self.get_inner_lock().await;
         let max_job_retries = inner_scheduler.max_job_retries;
-        let mut inner_state = inner_scheduler.state_manager.inner.lock().await;
+        // TODO(allada) This is to get around rust borrow checker with double mut borrows
+        // of a mutex lock. Once the scheduler is fully moved to state manager this can be
+        // removed.
+        let state_manager = inner_scheduler.state_manager.clone();
+        let mut inner_state = state_manager.inner.lock().await;
         self.metrics.add_worker.wrap(move || {
-            let res = inner_state
+            let res = inner_scheduler
                 .workers
                 .add_worker(worker)
                 .err_tip(|| "Error while adding worker, removing from pool");
             if let Err(err) = &res {
                 SimpleSchedulerImpl::immediate_evict_worker(
                     &mut inner_state,
+                    &mut inner_scheduler.workers,
                     max_job_retries,
                     &self.metrics,
                     &worker_id,
@@ -634,68 +814,82 @@ impl WorkerScheduler for SimpleScheduler {
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        let inner_scheduler = self.get_inner_lock().await;
-        let mut inner_state = inner_scheduler.state_manager.inner.lock().await;
-        inner_state
+        let mut inner_scheduler = self.get_inner_lock().await;
+        inner_scheduler
             .workers
             .refresh_lifetime(worker_id, timestamp)
             .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
     }
 
     async fn remove_worker(&self, worker_id: WorkerId) {
-        let inner_scheduler = self.get_inner_lock().await;
-        let mut inner_state = inner_scheduler.state_manager.inner.lock().await;
+        let mut inner_scheduler = self.get_inner_lock().await;
+        let max_job_retries = inner_scheduler.max_job_retries;
+        let metrics = inner_scheduler.metrics.clone();
+        // TODO(allada) This is to get around rust borrow checker with double mut borrows
+        // of a mutex lock. Once the scheduler is fully moved to state manager this can be
+        // removed.
+        let state_manager = inner_scheduler.state_manager.clone();
+        let mut inner_state = state_manager.inner.lock().await;
         SimpleSchedulerImpl::immediate_evict_worker(
             &mut inner_state,
-            inner_scheduler.max_job_retries,
-            &inner_scheduler.metrics,
+            &mut inner_scheduler.workers,
+            max_job_retries,
+            &metrics,
             &worker_id,
             make_err!(Code::Internal, "Received request to remove worker"),
         );
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        let inner_scheduler = self.get_inner_lock().await;
+        let mut inner_scheduler = self.get_inner_lock().await;
         let worker_timeout_s = inner_scheduler.worker_timeout_s;
         let max_job_retries = inner_scheduler.max_job_retries;
         let metrics = inner_scheduler.metrics.clone();
-        let mut inner_state = inner_scheduler.state_manager.inner.lock().await;
-        self.metrics.remove_timedout_workers.wrap(move || {
-            // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
-            // map most of the time.
-            let worker_ids_to_remove: Vec<WorkerId> = inner_state
-                .workers
-                .workers
-                .iter()
-                .rev()
-                .map_while(|(worker_id, worker)| {
-                    if worker.last_update_timestamp <= now_timestamp - worker_timeout_s {
-                        Some(*worker_id)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            for worker_id in &worker_ids_to_remove {
-                event!(
-                    Level::WARN,
-                    ?worker_id,
-                    "Worker timed out, removing from pool"
-                );
-                SimpleSchedulerImpl::immediate_evict_worker(
-                    &mut inner_state,
-                    max_job_retries,
-                    &metrics,
-                    worker_id,
-                    make_err!(
-                        Code::Internal,
-                        "Worker {worker_id} timed out, removing from pool"
-                    ),
-                );
-            }
+        self.metrics
+            .remove_timedout_workers
+            .wrap(async move {
+                // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
+                // map most of the time.
+                let worker_ids_to_remove: Vec<WorkerId> = inner_scheduler
+                    .workers
+                    .workers
+                    .iter()
+                    .rev()
+                    .map_while(|(worker_id, worker)| {
+                        if worker.last_update_timestamp <= now_timestamp - worker_timeout_s {
+                            Some(*worker_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                // TODO(allada) This is to get around rust borrow checker with double mut borrows
+                // of a mutex lock. Once the scheduler is fully moved to state manager this can be
+                // removed.
+                let state_manager = inner_scheduler.state_manager.clone();
+                let mut inner_state = state_manager.inner.lock().await;
+                for worker_id in &worker_ids_to_remove {
+                    event!(
+                        Level::WARN,
+                        ?worker_id,
+                        "Worker timed out, removing from pool"
+                    );
+                    SimpleSchedulerImpl::immediate_evict_worker(
+                        &mut inner_state,
+                        &mut inner_scheduler.workers,
+                        max_job_retries,
+                        &metrics,
+                        worker_id,
+                        make_err!(
+                            Code::Internal,
+                            "Worker {worker_id} timed out, removing from pool"
+                        ),
+                    );
+                }
 
-            Ok(())
-        })
+                Ok(())
+            })
+            .await
     }
 
     async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
@@ -724,7 +918,7 @@ impl MetricsComponent for SimpleScheduler {
             );
             c.publish(
                 "workers_total",
-                &inner_state.workers.workers.len(),
+                &inner_scheduler.workers.workers.len(),
                 "The number workers active.",
             );
             c.publish(
@@ -753,7 +947,7 @@ impl MetricsComponent for SimpleScheduler {
                 "The amount of times a job is allowed to retry from an internal error before it is dropped.",
             );
             let mut props = HashMap::<&String, u64>::new();
-            for (_worker_id, worker) in inner_state.workers.workers.iter() {
+            for (_worker_id, worker) in inner_scheduler.workers.workers.iter() {
                 c.publish_with_labels(
                     "workers",
                     worker,
@@ -806,7 +1000,7 @@ struct Metrics {
     existing_actions_found: CounterWithTime,
     existing_actions_not_found: CounterWithTime,
     clean_recently_completed_actions: CounterWithTime,
-    remove_timedout_workers: FuncCounterWrapper,
+    remove_timedout_workers: AsyncCounterWrapper,
     update_action: AsyncCounterWrapper,
     update_action_with_internal_error: CounterWithTime,
     update_action_with_internal_error_no_action: CounterWithTime,
