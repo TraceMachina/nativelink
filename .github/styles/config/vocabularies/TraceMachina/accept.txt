@@ -1,5 +1,7 @@
 AMI
+Astro
 Bazel
+Cloudflare
 ELB
 GPUs
 Goma
@@ -18,11 +20,14 @@ TIP
 Tokio
 TraceMachina
 [Tt]oolchain
+Qwik
 alex
 autoscaling
 blazingly
+bundler
 mutex
 parsable
+[Pp]npm
 rebase
 remoteable
 Chromium

@@ -210,6 +210,7 @@
               ./tools/nixpkgs_link_libunwind_and_libcxx.diff
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
               ./tools/nixpkgs_trivy_0_52_2.diff
+              ./tools/nixpkgs_playwright.diff
             ];
           };
         in
@@ -277,7 +278,6 @@
               pkgs.kubectl
               pkgs.kubernetes-helm
               pkgs.cilium-cli
-              pkgs.yarn
               pkgs.vale
               pkgs.trivy
               pkgs.docker-client
@@ -286,6 +286,7 @@
               (pkgs.pulumi.withPackages (ps: [ps.pulumi-language-go]))
               pkgs.go
               pkgs.kustomize
+              pkgs.nodePackages.pnpm
 
               # Additional tools from within our development environment.
               local-image-test
@@ -294,23 +295,32 @@
               native-cli
               docs
             ]
+            ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [
+              # The docs on Mac require a manual setup outside the flake.
+              pkgs.playwright-driver.browsers
+            ]
             ++ maybeDarwinDeps;
-          shellHook = ''
-            # Generate the .pre-commit-config.yaml symlink when entering the
-            # development shell.
-            ${config.pre-commit.installationScript}
+          shellHook =
+            ''
+              # Generate the .pre-commit-config.yaml symlink when entering the
+              # development shell.
+              ${config.pre-commit.installationScript}
 
-            # Generate .bazelrc.lre which configures LRE toolchains when running
-            # in the nix environment.
-            ${config.local-remote-execution.installationScript}
+              # Generate .bazelrc.lre which configures LRE toolchains when running
+              # in the nix environment.
+              ${config.local-remote-execution.installationScript}
 
-            # The Bazel and Cargo builds in nix require a Clang toolchain.
-            # TODO(aaronmondal): The Bazel build currently uses the
-            #                    irreproducible host C++ toolchain. Provide
-            #                    this toolchain via nix for bitwise identical
-            #                    binaries across machines.
-            export CC=clang
-          '';
+              # The Bazel and Cargo builds in nix require a Clang toolchain.
+              # TODO(aaronmondal): The Bazel build currently uses the
+              #                    irreproducible host C++ toolchain. Provide
+              #                    this toolchain via nix for bitwise identical
+              #                    binaries across machines.
+              export CC=clang
+            ''
+            + pkgs.lib.optionalString (!pkgs.stdenv.isDarwin) ''
+              export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+              export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodePackages_latest.nodejs}
+            '';
         };
       };
     }

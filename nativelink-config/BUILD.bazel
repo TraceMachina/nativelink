@@ -50,6 +50,15 @@ rust_doc(
     visibility = ["//visibility:public"],
 )
 
+rust_doc(
+    name = "docs_json",
+    crate = ":nativelink-config",
+    rustdoc_flags = [
+        "--output-format=json",
+        "-Zunstable-options",
+    ],
+)
+
 rust_doc_test(
     name = "doc_test",
     timeout = "short",

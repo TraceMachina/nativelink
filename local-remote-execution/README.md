@@ -13,7 +13,7 @@ perfect cache hit rate across different repositories, developers, and CI.
 > projects. Please reach out on the [NativeLink](https://join.slack.com/t/nativelink/shared_invite/zt-2forhp5n9-L7dTD21nCSY9_IRteQvZmw)
 > Slack if you have any questions or ideas for improvement.
 
-> [!Note]
+> [!NOTE]
 > At the moment LRE only works on `x86_64-linux`.
 
 ##  Pre-Requisites
