@@ -15,10 +15,10 @@
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
-use nativelink_util::action_messages::{ActionStage, WorkerId};
+use nativelink_util::action_messages::WorkerId;
+use nativelink_util::platform_properties::PlatformProperties;
 use tracing::{event, Level};
 
-use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::worker::{Worker, WorkerTimestamp};
 
 /// A collection of workers that are available to run tasks.
@@ -96,22 +96,17 @@ impl Workers {
     // simulation of worst cases in a single threaded environment.
     pub(crate) fn find_worker_for_action(
         &self,
-        awaited_action: &AwaitedAction,
+        platform_properties: &PlatformProperties,
     ) -> Option<WorkerId> {
-        assert!(matches!(
-            awaited_action.current_state.stage,
-            ActionStage::Queued
-        ));
-        let action_properties = &awaited_action.action_info.platform_properties;
         let mut workers_iter = self.workers.iter();
         let workers_iter = match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
             WorkerAllocationStrategy::least_recently_used => workers_iter.rfind(|(_, w)| {
-                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
+                w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
             }),
             // Use find to get the most recently used that satisfies the properties.
             WorkerAllocationStrategy::most_recently_used => workers_iter.find(|(_, w)| {
-                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
+                w.can_accept_work() && platform_properties.is_satisfied_by(&w.platform_properties)
             }),
         };
         workers_iter.map(|(_, w)| &w.id).copied()

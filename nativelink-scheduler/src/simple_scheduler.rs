@@ -45,7 +45,6 @@ use crate::operation_state_manager::{
     OperationStageFlags, WorkerStateManager,
 };
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::scheduler_state::metrics::Metrics as SchedulerMetrics;
 use crate::scheduler_state::state_manager::StateManager;
 use crate::scheduler_state::workers::Workers;
@@ -274,6 +273,17 @@ impl SimpleSchedulerImpl {
         match action_state_results {
             Ok(mut stream) => {
                 while let Some(action_state_result) = stream.next().await {
+                    let as_state_result = action_state_result.as_state().await;
+                    let Ok(state) = as_state_result else {
+                        let _ = as_state_result.inspect_err(|err| {
+                            event!(
+                                Level::ERROR,
+                                ?err,
+                                "Failed to get action_info from as_state_result stream"
+                            );
+                        });
+                        continue;
+                    };
                     let action_state_result = action_state_result.as_action_info().await;
                     let Ok(action_info) = action_state_result else {
                         let _ = action_state_result.inspect_err(|err| {
@@ -286,28 +296,14 @@ impl SimpleSchedulerImpl {
                         continue;
                     };
 
-                    let Some(awaited_action): Option<&AwaitedAction> = self
-                        .state_manager
-                        .inner
-                        .queued_actions
-                        .get(action_info.as_ref())
-                    else {
-                        event!(
-                            Level::ERROR,
-                            ?action_info,
-                            "queued_actions out of sync with itself"
-                        );
-                        continue;
-                    };
-
                     let maybe_worker_id: Option<WorkerId> = {
                         self.state_manager
                             .inner
                             .workers
-                            .find_worker_for_action(awaited_action)
+                            .find_worker_for_action(&action_info.platform_properties)
                     };
 
-                    let operation_id = awaited_action.current_state.id.clone();
+                    let operation_id = state.id.clone();
                     let ret = <StateManager as MatchingEngineStateManager>::update_operation(
                         &mut self.state_manager,
                         operation_id.clone(),
