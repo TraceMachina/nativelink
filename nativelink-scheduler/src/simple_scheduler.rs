@@ -244,7 +244,8 @@ impl SimpleSchedulerImpl {
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
-        inner_state.tasks_change_notify.notify_one();
+        // TODO(allada) This should be moved to inside the Workers struct.
+        workers.worker_change_notify.notify_one();
     }
 
     /// Sets if the worker is draining or not.
@@ -260,12 +261,8 @@ impl SimpleSchedulerImpl {
             .err_tip(|| format!("Worker {worker_id} doesn't exist in the pool"))?;
         self.metrics.workers_drained.inc();
         worker.is_draining = is_draining;
-        self.state_manager
-            .inner
-            .lock()
-            .await
-            .tasks_change_notify
-            .notify_one();
+        // TODO(allada) This should move to inside the Workers struct.
+        self.workers.worker_change_notify.notify_one();
         Ok(())
     }
 
@@ -550,6 +547,9 @@ impl SimpleSchedulerImpl {
             }
         }
 
+        // TODO(allada) This should move to inside the Workers struct.
+        self.workers.worker_change_notify.notify_one();
+
         Ok(())
     }
 }
@@ -610,14 +610,14 @@ impl SimpleScheduler {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
 
-        let tasks_change_notify = Arc::new(Notify::new());
+        let tasks_or_worker_change_notify = Arc::new(Notify::new());
         let state_manager = Arc::new(StateManager::new(
             HashSet::new(),
             BTreeMap::new(),
             HashMap::new(),
             HashSet::new(),
             Arc::new(SchedulerMetrics::default()),
-            tasks_change_notify.clone(),
+            tasks_or_worker_change_notify.clone(),
         ));
         let metrics = Arc::new(Metrics::default());
         let metrics_for_do_try_match = metrics.clone();
@@ -626,8 +626,11 @@ impl SimpleScheduler {
             retain_completed_for: Duration::new(retain_completed_for_s, 0),
             worker_timeout_s,
             max_job_retries,
+            workers: Workers::new(
+                scheduler_cfg.allocation_strategy,
+                tasks_or_worker_change_notify.clone(),
+            ),
             metrics: metrics.clone(),
-            workers: Workers::new(scheduler_cfg.allocation_strategy),
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
@@ -638,7 +641,7 @@ impl SimpleScheduler {
                 async move {
                     // Break out of the loop only when the inner is dropped.
                     loop {
-                        tasks_change_notify.notified().await;
+                        tasks_or_worker_change_notify.notified().await;
                         match weak_inner.upgrade() {
                             // Note: According to `parking_lot` documentation, the default
                             // `Mutex` implementation is eventual fairness, so we don't
@@ -774,22 +777,20 @@ impl WorkerScheduler for SimpleScheduler {
         let state_manager = inner_scheduler.state_manager.clone();
         let mut inner_state = state_manager.inner.lock().await;
         self.metrics.add_worker.wrap(move || {
-            let res = inner_scheduler
+            inner_scheduler
                 .workers
                 .add_worker(worker)
-                .err_tip(|| "Error while adding worker, removing from pool");
-            if let Err(err) = &res {
-                SimpleSchedulerImpl::immediate_evict_worker(
-                    &mut inner_state,
-                    &mut inner_scheduler.workers,
-                    max_job_retries,
-                    &self.metrics,
-                    &worker_id,
-                    err.clone(),
-                );
-            }
-            inner_state.tasks_change_notify.notify_one();
-            res
+                .err_tip(|| "Error while adding worker, removing from pool")
+                .inspect_err(|err| {
+                    SimpleSchedulerImpl::immediate_evict_worker(
+                        &mut inner_state,
+                        &mut inner_scheduler.workers,
+                        max_job_retries,
+                        &self.metrics,
+                        &worker_id,
+                        err.clone(),
+                    );
+                })
         })
     }
 
