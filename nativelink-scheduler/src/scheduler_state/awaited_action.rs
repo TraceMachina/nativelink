@@ -20,6 +20,7 @@ use nativelink_util::metrics_utils::{CollectorState, MetricsComponent};
 use tokio::sync::watch;
 
 /// An action that is being awaited on and last known state.
+#[derive(Debug)]
 pub struct AwaitedAction {
     /// The action that is being awaited on.
     pub(crate) action_info: Arc<ActionInfo>,

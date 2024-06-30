@@ -32,6 +32,10 @@ pub(crate) struct Metrics {
     pub(crate) retry_action_max_attempts_reached: CounterWithTime,
     pub(crate) retry_action_no_more_listeners: CounterWithTime,
     pub(crate) retry_action_but_action_missing: CounterWithTime,
+    pub(crate) update_operation_with_internal_error: CounterWithTime,
+    pub(crate) update_operation_with_internal_error_no_action: CounterWithTime,
+    pub(crate) update_operation_with_internal_error_backpressure: CounterWithTime,
+    pub(crate) update_operation_with_internal_error_from_wrong_worker: CounterWithTime,
 }
 
 impl Metrics {

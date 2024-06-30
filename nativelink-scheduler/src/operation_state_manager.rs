@@ -108,7 +108,7 @@ pub trait ClientStateManager: Sync + Send + 'static {
     /// Returns a stream of operations that match the filter.
     async fn filter_operations(
         &self,
-        filter: OperationFilter,
+        filter: &OperationFilter,
     ) -> Result<ActionStateResultStream, Error>;
 }
 
@@ -120,8 +120,8 @@ pub trait WorkerStateManager: Sync + Send + 'static {
     /// the operation from being considered stale and being rescheduled.
     async fn update_operation(
         &self,
-        operation_id: OperationId,
-        worker_id: WorkerId,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error>;
 }
@@ -131,15 +131,14 @@ pub trait MatchingEngineStateManager: Sync + Send + 'static {
     /// Returns a stream of operations that match the filter.
     async fn filter_operations(
         &self,
-        filter: OperationFilter,
+        filter: &OperationFilter,
     ) -> Result<ActionStateResultStream, Error>;
 
-    /// Update that state of an operation.
-    async fn update_operation(
+    /// Assign an operation to a worker or unassign it.
+    async fn assign_operation(
         &self,
-        operation_id: OperationId,
-        worker_id: Option<WorkerId>,
-        action_stage: Result<ActionStage, Error>,
+        operation_id: &OperationId,
+        worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error>;
 
     /// Remove an operation from the state manager.

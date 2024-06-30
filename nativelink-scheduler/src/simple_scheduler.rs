@@ -381,37 +381,37 @@ impl SimpleSchedulerImpl {
                         continue;
                     };
 
-                    let maybe_worker_id = self
-                        .workers
-                        .find_worker_for_action(&action_info.platform_properties);
-
+                    let Some(worker_id) = self
+                            .workers
+                            .find_worker_for_action(&action_info.platform_properties) else {
+                        // If we could not find a woker for the action,
+                        // we have nothing to do.
+                        continue;
+                    };
                     let operation_id = state.id.clone();
-                    let ret = <StateManager as MatchingEngineStateManager>::update_operation(
+                    let ret = <StateManager as MatchingEngineStateManager>::assign_operation(
                         &self.state_manager,
                         operation_id.clone(),
-                        maybe_worker_id,
-                        Ok(ActionStage::Executing),
+                        Ok(worker_id),
                     )
                     .await;
 
                     if let Err(e) = ret {
-                        if let Some(worker_id) = maybe_worker_id {
-                            let max_job_retries = self.max_job_retries;
-                            let metrics = self.metrics.clone();
-                            // TODO(allada) This is to get around rust borrow checker with double mut borrows
-                            // of a mutex lock. Once the scheduler is fully moved to state manager this can be
-                            // removed.
-                            let state_manager = self.state_manager.clone();
-                            let mut inner_state = state_manager.inner.lock().await;
-                            SimpleSchedulerImpl::immediate_evict_worker(
-                                &mut inner_state,
-                                &mut self.workers,
-                                max_job_retries,
-                                &metrics,
-                                &worker_id,
-                                e.clone(),
-                            );
-                        }
+                        let max_job_retries = self.max_job_retries;
+                        let metrics = self.metrics.clone();
+                        // TODO(allada) This is to get around rust borrow checker with double mut borrows
+                        // of a mutex lock. Once the scheduler is fully moved to state manager this can be
+                        // removed.
+                        let state_manager = self.state_manager.clone();
+                        let mut inner_state = state_manager.inner.lock().await;
+                        SimpleSchedulerImpl::immediate_evict_worker(
+                            &mut inner_state,
+                            &mut self.workers,
+                            max_job_retries,
+                            &metrics,
+                            &worker_id,
+                            e.clone(),
+                        );
 
                         event!(
                             Level::ERROR,
@@ -419,19 +419,19 @@ impl SimpleSchedulerImpl {
                             "update operation failed for {}",
                             operation_id
                         );
-                    } else if let Some(worker_id) = maybe_worker_id {
-                        if let Err(err) = self
-                            .worker_notify_run_action(worker_id, action_info.clone())
-                            .await
-                        {
-                            event!(
-                                Level::ERROR,
-                                ?err,
-                                ?worker_id,
-                                ?action_info,
-                                "failed to run worker_notify_run_action in SimpleSchedulerImpl::do_try_match"
-                            );
-                        }
+                        continue;
+                    }
+                    let notify_worker_run_action_result = self
+                        .worker_notify_run_action(worker_id, action_info.clone())
+                        .await;
+                    if let Err(err) = notify_worker_run_action_result {
+                        event!(
+                            Level::ERROR,
+                            ?err,
+                            ?worker_id,
+                            ?action_info,
+                            "failed to run worker_notify_run_action in SimpleSchedulerImpl::do_try_match"
+                        );
                     }
                 }
             }
@@ -1000,10 +1000,6 @@ struct Metrics {
     clean_recently_completed_actions: CounterWithTime,
     remove_timedout_workers: AsyncCounterWrapper,
     update_action: AsyncCounterWrapper,
-    update_action_with_internal_error: CounterWithTime,
-    update_action_with_internal_error_no_action: CounterWithTime,
-    update_action_with_internal_error_backpressure: CounterWithTime,
-    update_action_with_internal_error_from_wrong_worker: CounterWithTime,
     workers_evicted: CounterWithTime,
     workers_evicted_with_running_action: CounterWithTime,
     workers_drained: CounterWithTime,
@@ -1056,27 +1052,27 @@ impl Metrics {
             );
         }
         c.publish(
-            "update_action_with_internal_error",
-            &self.update_action_with_internal_error,
-            "The number of times update_action_with_internal_error was triggered.",
+            "update_operation_with_internal_error",
+            &self.update_operation_with_internal_error,
+            "The number of times update_operation_with_internal_error was triggered.",
         );
         {
             c.publish_with_labels(
-                "update_action_with_internal_error_errors",
-                &self.update_action_with_internal_error_no_action,
-                "Stats about what errors caused update_action_with_internal_error() in scheduler.",
+                "update_operation_with_internal_error_errors",
+                &self.update_operation_with_internal_error_no_action,
+                "Stats about what errors caused update_operation_with_internal_error() in scheduler.",
                 vec![("result".into(), "no_action".into())],
             );
             c.publish_with_labels(
-                "update_action_with_internal_error_errors",
-                &self.update_action_with_internal_error_backpressure,
-                "Stats about what errors caused update_action_with_internal_error() in scheduler.",
+                "update_operation_with_internal_error_errors",
+                &self.update_operation_with_internal_error_backpressure,
+                "Stats about what errors caused update_operation_with_internal_error() in scheduler.",
                 vec![("result".into(), "backpressure".into())],
             );
             c.publish_with_labels(
-                "update_action_with_internal_error_errors",
-                &self.update_action_with_internal_error_from_wrong_worker,
-                "Stats about what errors caused update_action_with_internal_error() in scheduler.",
+                "update_operation_with_internal_error_errors",
+                &self.update_operation_with_internal_error_from_wrong_worker,
+                "Stats about what errors caused update_operation_with_internal_error() in scheduler.",
                 vec![("result".into(), "from_wrong_worker".into())],
             );
         }
