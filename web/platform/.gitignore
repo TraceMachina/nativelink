@@ -39,9 +39,7 @@ utils/deno.d.ts
 src/content/docs/docs/contribute/docs.mdx
 src/content/docs/docs/contribute/guidelines.mdx
 src/content/docs/docs/explanations/lre.mdx
-src/content/docs/docs/deployment-examples/chromium.mdx
 src/content/docs/docs/config/configuration-intro.mdx
-src/content/docs/docs/deployment-examples/kubernetes.mdx
 src/content/docs/docs/introduction/setup.mdx
 src/content/docs/docs/reference/changelog.mdx
 src/content/docs/docs/reference/nativelink-config.mdx

@@ -244,7 +244,10 @@ export const starlightConfig = {
       items: [
         { label: "Docs", link: `${docsRoot}/introduction/setup` },
         { label: "NativeLink Cloud", link: "https://app.nativelink.com/" },
-        { label: "Coverage", link: "https://tracemachina.github.io/nativelink" },
+        {
+          label: "Coverage",
+          link: "https://tracemachina.github.io/nativelink",
+        },
       ],
     },
   ],
