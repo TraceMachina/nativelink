@@ -33,6 +33,16 @@ use tracing::{event, Level};
 
 use crate::operation_state_manager::{ActionStateResult, OperationFilter, OperationStageFlags};
 
+#[inline]
+pub fn build_action_key(unique_qualifier: &ActionInfoHashKey) -> String {
+    format!("actions:{}", unique_qualifier.action_name())
+}
+
+#[inline]
+pub fn build_operation_key(operation_id: &OperationId) -> String {
+    format!("operations:{operation_id}")
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, ToRedisArgs, FromRedisValue)]
 pub struct OperationStateInfo {
     pub operation_id: OperationId,

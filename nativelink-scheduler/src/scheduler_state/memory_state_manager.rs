@@ -16,11 +16,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use nativelink_error::{make_input_err, Error, ResultExt};
-use nativelink_store::redis_store::RedisStore;
-use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId, WorkerId};
-use nativelink_util::store_trait::{StoreDriver, StoreLike};
-use redis::aio::{ConnectionLike, ConnectionManager};
-use redis::Pipeline;
+use nativelink_store::memory_store::MemoryStore;
+use nativelink_util::action_messages::{
+    ActionInfo, ActionStage, OperationId, WorkerId,
+};
+use nativelink_util::store_trait::StoreLike;
 use tonic::async_trait;
 
 use crate::operation_state_manager::{
@@ -31,19 +31,13 @@ use crate::scheduler_state::operation_state::{
     build_action_key, build_operation_key, OperationState, OperationStateInfo,
 };
 
-pub struct RedisStateManager<
-    T: ConnectionLike + Unpin + Clone + Send + Sync + 'static = ConnectionManager,
-> {
-    store: Arc<RedisStore<T>>,
+pub struct MemoryStateManager {
+    store: Arc<MemoryStore>,
 }
 
-impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManager<T> {
-    pub fn _new(store: Arc<RedisStore<T>>) -> Self {
+impl MemoryStateManager {
+    pub fn _new(store: Arc<MemoryStore>) -> Self {
         Self { store }
-    }
-
-    pub async fn get_conn(&self) -> Result<T, Error> {
-        self.store.get_conn().await
     }
 
     async fn list<'a, V>(
@@ -63,18 +57,19 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
     ) -> Result<Arc<dyn ActionStateResult>, Error> {
         let operation_id = OperationId::new(action_info.unique_qualifier.clone());
         let action_key = build_action_key(&operation_id.unique_qualifier);
-        let store = self.store.as_store_driver_pin();
         // TODO: List API call to find existing actions.
         let mut existing_operations: Vec<OperationId> = Vec::new();
+        let store = self.store.as_store_driver_pin();
+
         let operation = match existing_operations.pop() {
             Some(existing_operation) => {
                 let key = build_operation_key(&existing_operation);
                 let bytes = store
                     .get_part_unchunked(key.clone().into(), 0, None)
                     .await
-                    .err_tip(|| "In RedisStateManager::inner_add_action:")?;
+                    .err_tip(|| "In MemoryStateManager::inner_add_action:")?;
                 let operation = OperationStateInfo::from_slice(&bytes)
-                    .err_tip(|| "In RedisStateManager::inner_add_action:")?;
+                    .err_tip(|| "In MemoryStateManager::inner_add_action:")?;
 
                 OperationStateInfo::from_existing(operation.clone(), operation_id.clone())
             }
@@ -88,15 +83,18 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
         store
             .update_oneshot(operation_key.clone().into(), operation.as_json().into())
             .await
-            .err_tip(|| "In RedisStateManager::inner_add_action")?;
+            .err_tip(|| "In MemoryStateManager::inner_add_action")?;
         store
             .update_oneshot(action_key.into(), operation_id.to_string().into())
             .await
-            .err_tip(|| "In RedisStateManager::inner_add_action")?;
+            .err_tip(|| "In MemoryStateManager::inner_add_action")?;
 
-        let store_subscription = self.store.clone().subscribe(operation_key.into()).await;
-        let state = OperationState::new(Arc::new(operation), store_subscription);
-        Ok(Arc::new(state))
+        // TODO: Requires subscription api on MemoryStore.
+        // Not sure why StoreDriver default subscription isn't accessible from here.
+        todo!()
+        // let store_subscription = store.subscribe(operation_key.into()).await;
+        // let state = OperationState::new(Arc::new(operation), store_subscription);
+        // Ok(Arc::new(state))
     }
 
     async fn inner_filter_operations(
@@ -106,19 +104,23 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
         let handler = &|k: String, v: String| -> Result<(String, Arc<OperationStateInfo>), Error> {
             let operation = Arc::new(
                 OperationStateInfo::from_str(&v)
-                    .err_tip(|| "In RedisStateManager::inner_filter_operations")?,
+                    .err_tip(|| "In MemoryStateManager::inner_filter_operations")?,
             );
             Ok((k, operation))
         };
         let existing_operations: Vec<(String, Arc<OperationStateInfo>)> = self
             .list("operations:*", &handler)
             .await
-            .err_tip(|| "In RedisStateManager::inner_filter_operations")?;
+            .err_tip(|| "In MemoryStateManager::inner_filter_operations")?;
         let mut v: Vec<Arc<dyn ActionStateResult>> = Vec::new();
-        for (key, operation) in existing_operations.into_iter() {
+        for (_key, operation) in existing_operations.into_iter() {
             if operation.matches_filter(&filter) {
-                let store_subscription = self.store.clone().subscribe(key.into()).await;
-                v.push(Arc::new(OperationState::new(operation, store_subscription)));
+
+                // TODO: Requires subscription api on MemoryStore.
+                // Not sure why StoreDriver default subscription isn't accessible from here.
+                todo!();
+                // let store_subscription = self.store.clone().subscribe(key.into()).await;
+                // v.push(Arc::new(OperationState::new(operation, store_subscription)));
             }
         }
         Ok(Box::pin(futures::stream::iter(v)))
@@ -138,12 +140,12 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
         };
 
         let mut operation = OperationStateInfo::from_slice(&operation_bytes[..])
-            .err_tip(|| "In RedisStateManager::inner_update_operation")?;
+            .err_tip(|| "In MemoryStateManager::inner_update_operation")?;
         match action_stage {
             Ok(stage) => {
                 operation.stage = stage
                     .try_into()
-                    .err_tip(|| "In RedisStateManager::inner_update_operation")?;
+                    .err_tip(|| "In MemoryStateManager::inner_update_operation")?;
             }
             Err(e) => operation.last_error = Some(e),
         }
@@ -155,21 +157,13 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
     }
 
     // TODO: This should be done through store but API endpoint does not exist yet.
-    async fn inner_remove_operation(&self, operation_id: OperationId) -> Result<(), Error> {
-        let mut con = self
-            .get_conn()
-            .await
-            .err_tip(|| "In RedisStateManager::inner_remove_operation")?;
-        let mut pipe = Pipeline::new();
-        Ok(pipe
-            .del(format!("operations:{operation_id}"))
-            .query_async(&mut con)
-            .await?)
+    async fn inner_remove_operation(&self, _operation_id: OperationId) -> Result<(), Error> {
+        unimplemented!()
     }
 }
 
 #[async_trait]
-impl ClientStateManager for RedisStateManager {
+impl ClientStateManager for MemoryStateManager {
     async fn add_action(
         &mut self,
         action_info: ActionInfo,
@@ -186,7 +180,7 @@ impl ClientStateManager for RedisStateManager {
 }
 
 #[async_trait]
-impl WorkerStateManager for RedisStateManager {
+impl WorkerStateManager for MemoryStateManager {
     async fn update_operation(
         &mut self,
         operation_id: OperationId,
@@ -199,7 +193,7 @@ impl WorkerStateManager for RedisStateManager {
 }
 
 #[async_trait]
-impl MatchingEngineStateManager for RedisStateManager {
+impl MatchingEngineStateManager for MemoryStateManager {
     async fn filter_operations(
         &self,
         filter: OperationFilter,
