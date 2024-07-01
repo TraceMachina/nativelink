@@ -1,0 +1,69 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+components:
+- ../../kubernetes/components/operator
+
+# Change this value to deploy custom overlays.
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/path
+      value: ./kubernetes/overlays/lre
+  target:
+    kind: Kustomization
+    name: nativelink
+
+# Modify this value to change the URL of the repository with deployment files.
+#
+# This is usually only necessary if you change deployment YAML files or
+# NativeLink config files. If you only intend to change the Rust sources you can
+# leave this as is and need to ensure that the Alerts below are patched to build
+# your local sources.
+- patch: |-
+    - op: replace
+      path: /spec/url
+      value: https://github.com/aaronmondal/nativelink
+  target:
+    kind: GitRepository
+    name: nativelink
+
+# Patch this to change to track a custom branch.
+- patch: |-
+    - op: replace
+      path: /spec/ref/branch
+      value: flux
+  target:
+    kind: GitRepository
+    name: nativelink
+
+# Setting the flake outputs to `./src_root#xxx` causes the Tekton pipelines to
+# build nativelink from your local sources.
+#
+# During development, the following formats might be useful as well:
+#
+# `github:user/repo#outname` to build an image from an arbitrary flake output.
+#
+# `github:TraceMachina/nativelink?ref=pull/<PR_NUMBER>/head#<OUT>` to deploy a
+# outputs from a Pull request.
+- patch: |-
+    - op: replace
+      path: /spec/eventMetadata/flakeOutput
+      value: ./src_root#image
+  target:
+    kind: Alert
+    name: nativelink-image-alert
+- patch: |-
+    - op: replace
+      path: /spec/eventMetadata/flakeOutput
+      value: ./src_root#nativelink-worker-init
+  target:
+    kind: Alert
+    name: nativelink-worker-init-alert
+- patch: |-
+    - op: replace
+      path: /spec/eventMetadata/flakeOutput
+      value: ./src_root#nativelink-worker-lre-cc
+  target:
+    kind: Alert
+    name: nativelink-worker-alert

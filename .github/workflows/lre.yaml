@@ -83,19 +83,104 @@ jobs:
         uses: >- # v4
           DeterminateSystems/magic-nix-cache-action@fc6aaceb40b9845a02b91e059ec147e78d1b4e41
 
-      - name: Start Kubernetes cluster (Infra)
+      - name: Start Kubernetes cluster
         run: >
           nix run .#native up
 
-      - name: Start Kubernetes cluster (Operations)
-        run: >
-          nix develop --impure --command
-          bash -c "./deployment-examples/kubernetes/01_operations.sh"
+      - name: Start NativeLink operator
+        env:
+          PR_URL: ${{ github.event.pull_request.head.repo.clone_url }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_COMMIT: ${{ github.event.pull_request.head.sha }}
+        run: |
+          nix develop --impure --command bash -c 'cat > kustomization.yaml << EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          components:
+          - kubernetes/components/operator
+          patches:
+          - patch: |-
+              - op: replace
+                path: /spec/path
+                value: ./kubernetes/overlays/lre
+            target:
+              kind: Kustomization
+              name: nativelink
+          - patch: |-
+              - op: replace
+                path: /spec/url
+                value: ${PR_URL}
+              - op: replace
+                path: /spec/ref/branch
+                value: ${PR_BRANCH}
+              - op: replace
+                path: /spec/ref/commit
+                value: ${PR_COMMIT}
+            target:
+              kind: GitRepository
+              name: nativelink
+          - patch: |-
+              - op: replace
+                path: /spec/eventMetadata/flakeOutput
+                value: ./src_root#image
+            target:
+              kind: Alert
+              name: nativelink-image-alert
+          - patch: |-
+              - op: replace
+                path: /spec/eventMetadata/flakeOutput
+                value: ./src_root#nativelink-worker-init
+            target:
+              kind: Alert
+              name: nativelink-worker-init-alert
+          - patch: |-
+              - op: replace
+                path: /spec/eventMetadata/flakeOutput
+                value: ./src_root#nativelink-worker-lre-cc
+            target:
+              kind: Alert
+              name: nativelink-worker-alert
+          EOF
+          kubectl apply -k . &&
+          rm kustomization.yaml'
 
-      - name: Start Kubernetes cluster (Application)
+      - name: Wait for Tekton pipelines
         run: >
           nix develop --impure --command
-          bash -c "./deployment-examples/kubernetes/02_application.sh"
+          bash -c "kubectl wait \
+            --for=condition=Succeeded \
+            --timeout=45m \
+            pipelinerun \
+                -l tekton.dev/pipeline=rebuild-nativelink"
+
+      - name: Wait for Configmaps
+        run: >
+          nix develop --impure --command
+          bash -c "flux reconcile kustomization -n default \
+            --timeout=15m \
+            nativelink-configmaps"
+
+      - name: Wait for NativeLink Kustomization
+        run: >
+          nix develop --impure --command
+          bash -c "flux reconcile kustomization -n default \
+            --timeout=15m \
+            nativelink"
+
+      - name: Wait for CAS
+        run: >
+          nix develop --impure --command
+          bash -c "kubectl rollout status deploy/nativelink-cas"
+
+      - name: Wait for scheduler
+        run: >
+          nix develop --impure --command
+          bash -c "kubectl rollout status deploy/nativelink-scheduler"
+
+      - name: Wait for worker
+        run: >
+          nix develop --impure --command
+          bash -c "kubectl rollout status deploy/nativelink-worker"
 
       - name: Get gateway IPs
         id: gateway-ips

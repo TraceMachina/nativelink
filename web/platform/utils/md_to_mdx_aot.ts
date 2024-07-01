@@ -83,22 +83,6 @@ const filesToConvert: ConvertFileType[] = [
     },
   },
   {
-    input: `${rootDir}/deployment-examples/chromium/README.md`,
-    output: `${docsDir}/deployment-examples/chromium.mdx`,
-    docs: {
-      title: "NativeLink deployment example for Chromium",
-      description: "NativeLink deployment example for Chromium",
-    },
-  },
-  {
-    input: `${rootDir}/deployment-examples/kubernetes/README.md`,
-    output: `${docsDir}/deployment-examples/kubernetes.mdx`,
-    docs: {
-      title: "Local Remote Execution architecture",
-      description: "Local Remote Execution architecture",
-    },
-  },
-  {
     input: `${rootDir}/CHANGELOG.md`,
     output: `${docsDir}/reference/changelog.mdx`,
     docs: {

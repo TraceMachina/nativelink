@@ -2,16 +2,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nativelink-worker-lre-cc
+  name: nativelink-worker
 spec:
   replicas: 1
-  selector:
-    matchLabels:
-      app: nativelink-worker-lre-cc
   template:
-    metadata:
-      labels:
-        app: nativelink-worker-lre-cc
     spec:
       initContainers:
         - name: setup-entrypoint
@@ -39,44 +33,16 @@ spec:
               mountPath: /entrypoint
             - name: mnt
               mountPath: /mnt
-
-        - name: nativelink-worker-init
-          # This image will be edited by kustomize.
-          image: nativelink-worker-init
-          args: ["/shared/nativelink"]
-          volumeMounts:
-            - name: shared
-              mountPath: /shared
-
       containers:
-        - name: nativelink-worker-lre-cc
-          # This image will be edited by kustomize.
-          image: nativelink-worker-lre-cc
-          env:
-            - name: RUST_LOG
-              value: warn
-            - name: CAS_ENDPOINT
-              value: nativelink-cas
-            - name: SCHEDULER_ENDPOINT
-              value: nativelink-scheduler
+        - name: nativelink-worker
           volumeMounts:
-            - name: worker-config
-              mountPath: /worker.json
-              subPath: worker.json
             - name: entrypoint
               mountPath: /entrypoint
-            - name: shared
-              mountPath: /shared
           command: ["/entrypoint/entrypoint.sh"]
           args: ["/shared/nativelink", "/worker.json"]
       volumes:
-        - name: shared
-          emptyDir: {}
         - name: entrypoint
           emptyDir: {}
-        - name: worker-config
-          configMap:
-            name: worker
         - name: mnt
           hostPath:
             path: /mnt

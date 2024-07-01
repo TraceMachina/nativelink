@@ -2,16 +2,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nativelink-worker-chromium
+  name: nativelink-worker
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: nativelink-worker-chromium
+      app: nativelink-worker
   template:
     metadata:
       labels:
-        app: nativelink-worker-chromium
+        app: nativelink-worker
     spec:
       initContainers:
         - name: nativelink-worker-init
@@ -21,11 +21,10 @@ spec:
           volumeMounts:
             - name: shared
               mountPath: /shared
-
       containers:
-        - name: nativelink-worker-chromium
+        - name: nativelink-worker
           # This image will be edited by kustomize.
-          image: nativelink-worker-chromium
+          image: nativelink-worker
           env:
             - name: RUST_LOG
               value: info
@@ -47,3 +46,12 @@ spec:
         - name: worker-config
           configMap:
             name: worker
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nativelink-worker
+spec:
+  selector:
+    app: nativelink-worker
+  clusterIP: None

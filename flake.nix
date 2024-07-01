@@ -237,6 +237,11 @@
 
         native-cli = pkgs.callPackage ./native-cli/default.nix {};
 
+        build-chromium-tests =
+          pkgs.writeShellScriptBin
+          "build-chromium-tests"
+          ./deploy/chromium-example/build_chromium_tests.sh;
+
         docs = pkgs.callPackage ./tools/docs.nix {rust = stable-rust.default;};
 
         inherit (nix2container.packages.${system}.nix2container) pullImage;
@@ -505,6 +510,7 @@
               pkgs.tektoncd-cli
               pkgs.pulumi
               pkgs.pulumiPackages.pulumi-language-go
+              pkgs.fluxcd
               pkgs.go
               pkgs.kustomize
 
@@ -521,6 +527,7 @@
               customClang
               native-cli
               docs
+              build-chromium-tests
             ]
             ++ maybeDarwinDeps
             ++ pkgs.lib.optionals (pkgs.stdenv.system != "x86_64-darwin") [
