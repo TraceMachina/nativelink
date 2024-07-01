@@ -106,16 +106,16 @@ export default defineConfig({
           label: "Guides",
           items: [
             {
-              label: "Configuration examples",
-              link: "/guides/configuration",
+              label: "Kubernetes example",
+              link: "/guides/kubernetes",
             },
             {
               label: "Chromium example",
               link: "/guides/chromium",
             },
             {
-              label: "Kubernetes example",
-              link: "/guides/kubernetes",
+              label: "Configuration examples",
+              link: "/guides/configuration",
             },
             {
               label: "Contributing",

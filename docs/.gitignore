@@ -32,7 +32,5 @@ src/content/docs/explanations/lre.mdx
 src/content/docs/reference/changelog.mdx
 src/content/docs/reference/nativelink-config.mdx
 src/content/docs/tutorials/setup.mdx
-src/content/docs/guides/chromium.mdx
 src/content/docs/guides/configuration.mdx
-src/content/docs/guides/kubernetes.mdx
 src/content/docs/guides/setup.md

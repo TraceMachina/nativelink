@@ -12,7 +12,6 @@
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
     };
     crane = {
       url = "github:ipetkov/crane";
@@ -37,7 +36,7 @@
       systems = [
         "x86_64-linux"
         "x86_64-darwin"
-        "apps.aarch64-linux.native"
+        "aarch64-linux"
         "aarch64-darwin"
       ];
       imports = [
@@ -57,6 +56,8 @@
         # See: https://github.com/TraceMachina/nativelink/issues/751
         stable-rust =
           if pkgs.stdenv.isDarwin
+          then pkgs.rust-bin.stable.${stable-rust-version}
+          else if system == "aarch64-linux"
           then pkgs.rust-bin.stable.${stable-rust-version}
           else pkgs.pkgsMusl.rust-bin.stable.${stable-rust-version};
         nightly-rust =
@@ -86,12 +87,23 @@
           stdenv = customStdenv;
         };
 
+        # TODO(aaronmondal): Properly separate host, build and target platforms.
+        currentRustTarget =
+          {
+            "x86_64-linux" = "x86_64-unknown-linux-musl";
+            # TODO(aaronmondal): Get musl to work.
+            "aarch64-linux" = "aarch64-unknown-linux-gnu";
+            "x86_64-darwin" = "x86_64-apple-darwin";
+            "aarch64-darwin" = "aarch64-apple-darwin";
+          }
+          .${system};
+
         craneLib =
           if pkgs.stdenv.isDarwin
           then (crane.mkLib pkgs).overrideToolchain stable-rust.default
           else
             (crane.mkLib pkgs).overrideToolchain (stable-rust.default.override {
-              targets = ["x86_64-unknown-linux-musl"];
+              targets = [currentRustTarget];
             });
 
         src = pkgs.lib.cleanSourceWith {
@@ -113,8 +125,12 @@
             nativeBuildInputs = maybeDarwinDeps;
           }
           // pkgs.lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
-            CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
-            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+            CARGO_BUILD_TARGET = currentRustTarget;
+            CARGO_BUILD_RUSTFLAGS =
+              if system == "aarch64-linux"
+              # TODO(aaronmondal): Make static musl work.
+              then "-C target-feature=-crt-static"
+              else "-C target-feature=+crt-static";
           };
 
         # Additional target for external dependencies to simplify caching.
@@ -144,6 +160,11 @@
         generate-toolchains = import ./tools/generate-toolchains.nix {inherit pkgs;};
 
         native-cli = import ./native-cli/default.nix {inherit pkgs;};
+
+        build-chromium-tests =
+          pkgs.writeShellScriptBin
+          "build-chromium-tests"
+          ./deploy/chromium-example/build_chromium_tests.sh;
 
         docs = pkgs.callPackage ./tools/docs.nix {rust = stable-rust.default;};
 
@@ -207,9 +228,9 @@
             name = "nixpkgs-patched";
             src = self.inputs.nixpkgs;
             patches = [
-              ./tools/nixpkgs_link_libunwind_and_libcxx.diff
+              # ./tools/nixpkgs_link_libunwind_and_libcxx.diff
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
-              ./tools/nixpkgs_trivy_0_52_2.diff
+              # ./tools/nixpkgs_trivy_0_52_2.diff
               ./tools/nixpkgs_playwright.diff
             ];
           };
@@ -283,6 +304,7 @@
               pkgs.docker-client
               pkgs.kind
               pkgs.tektoncd-cli
+              pkgs.fluxcd
               (pkgs.pulumi.withPackages (ps: [ps.pulumi-language-go]))
               pkgs.go
               pkgs.kustomize
@@ -294,6 +316,7 @@
               customClang
               native-cli
               docs
+              build-chromium-tests
             ]
             ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [
               # The docs on Mac require a manual setup outside the flake.
