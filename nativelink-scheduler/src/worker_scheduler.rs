@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage, WorkerId};
+use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
 use nativelink_util::metrics_utils::Registry;
 
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -36,7 +36,7 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     async fn update_action(
         &self,
         worker_id: &WorkerId,
-        action_info_hash_key: ActionInfoHashKey,
+        operation_id: &OperationId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error>;
 

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,7 +21,7 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
-use nativelink_util::action_messages::{ActionInfo, WorkerId};
+use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{
     CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent,
 };
@@ -33,7 +33,7 @@ pub type WorkerTimestamp = u64;
 /// Notifications to send worker about a requested state change.
 pub enum WorkerUpdate {
     /// Requests that the worker begin executing this action.
-    RunAction(Arc<ActionInfo>),
+    RunAction((OperationId, Arc<ActionInfo>)),
 
     /// Request that the worker is no longer in the pool and may discard any jobs.
     Disconnect,
@@ -52,7 +52,7 @@ pub struct Worker {
     pub tx: UnboundedSender<UpdateForWorker>,
 
     /// The action info of the running actions on the worker
-    pub running_action_infos: HashSet<Arc<ActionInfo>>,
+    pub running_action_infos: HashMap<OperationId, Arc<ActionInfo>>,
 
     /// Timestamp of last time this worker had been communicated with.
     // Warning: Do not update this timestamp without updating the placement of the worker in
@@ -108,7 +108,7 @@ impl Worker {
             id,
             platform_properties,
             tx,
-            running_action_infos: HashSet::new(),
+            running_action_infos: HashMap::new(),
             last_update_timestamp: timestamp,
             is_paused: false,
             is_draining: false,
@@ -140,7 +140,7 @@ impl Worker {
     /// Notifies the worker of a requested state change.
     pub fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
         match worker_update {
-            WorkerUpdate::RunAction(action_info) => self.run_action(action_info),
+            WorkerUpdate::RunAction((operation_id, action_info)) => self.run_action(operation_id, action_info),
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
                 send_msg_to_worker(&mut self.tx, update_for_worker::Update::Disconnect(()))
@@ -157,13 +157,13 @@ impl Worker {
         })
     }
 
-    fn run_action(&mut self, action_info: Arc<ActionInfo>) -> Result<(), Error> {
+    fn run_action(&mut self, operation_id: OperationId, action_info: Arc<ActionInfo>) -> Result<(), Error> {
         let tx = &mut self.tx;
         let worker_platform_properties = &mut self.platform_properties;
         let running_action_infos = &mut self.running_action_infos;
         self.metrics.run_action.wrap(move || {
             let action_info_clone = action_info.as_ref().clone();
-            running_action_infos.insert(action_info.clone());
+            running_action_infos.insert(operation_id, action_info.clone());
             reduce_platform_properties(
                 worker_platform_properties,
                 &action_info.platform_properties,
@@ -179,11 +179,15 @@ impl Worker {
         })
     }
 
-    pub fn complete_action(&mut self, action_info: &Arc<ActionInfo>) {
-        self.running_action_infos.remove(action_info);
+    pub fn complete_action(&mut self, operation_id: &OperationId) -> Result<(), Error> {
+        let action_info = self
+            .running_action_infos
+            .remove(operation_id)
+            .err_tip(|| format!("Worker {} tried to complete operation {} that was not running", self.id, operation_id))?;
         self.restore_platform_properties(&action_info.platform_properties);
         self.is_paused = false;
         self.metrics.actions_completed.inc();
+        Ok(())
     }
 
     pub fn has_actions(&self) -> bool {
@@ -277,7 +281,7 @@ impl MetricsComponent for Worker {
             "If this worker is draining.",
             vec![("worker_id".into(), format!("{}", self.id).into())],
         );
-        for action_info in self.running_action_infos.iter() {
+        for action_info in self.running_action_infos.values() {
             let action_name = action_info.unique_qualifier.action_name().to_string();
             c.publish_with_labels(
                 "timeout",

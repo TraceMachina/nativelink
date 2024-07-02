@@ -40,6 +40,7 @@ use tracing::{event, Level};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::scheduler_state::state_manager::ClientOperationId;
 
 /// Actions that are having their cache checked or failed cache lookup and are
 /// being forwarded upstream.  Missing the skip_cache_check actions which are
@@ -221,17 +222,10 @@ impl ActionScheduler for CacheLookupScheduler {
 
     async fn find_existing_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
-        {
-            let cache_check_actions = self.cache_check_actions.lock();
-            if let Some(rx) = subscribe_to_existing_action(&cache_check_actions, unique_qualifier) {
-                return Ok(Some(rx));
-            }
-        }
-        // Cache skipped may be in the upstream scheduler.
         self.action_scheduler
-            .find_existing_action(unique_qualifier)
+            .find_existing_action(client_operation_id)
             .await
     }
 

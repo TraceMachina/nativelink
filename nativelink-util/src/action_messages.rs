@@ -173,7 +173,7 @@ impl std::fmt::Debug for OperationId {
 }
 
 /// Unique id of worker.
-#[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
+#[derive(Default, Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
 pub struct WorkerId(pub Uuid);
 
 impl std::fmt::Display for WorkerId {
@@ -812,6 +812,20 @@ impl ActionStage {
     //       "finished" with "has a result".
     pub const fn is_finished(&self) -> bool {
         self.has_action_result()
+    }
+
+    /// Returns if the stage enum is the same as the other stage enum, but
+    /// does not compare the values of the enum.
+    pub const fn is_same_stage(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unknown, Self::Unknown)
+            | (Self::CacheCheck, Self::CacheCheck)
+            | (Self::Queued, Self::Queued)
+            | (Self::Executing, Self::Executing)
+            | (Self::Completed(_), Self::Completed(_))
+            | (Self::CompletedFromCache(_), Self::CompletedFromCache(_)) => true,
+            _ => false,
+        }
     }
 }
 

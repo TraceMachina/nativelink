@@ -1944,6 +1944,7 @@ dependencies = [
  "scopeguard",
  "serde",
  "serde_json",
+ "static_assertions",
  "tokio",
  "tokio-stream",
  "tonic",

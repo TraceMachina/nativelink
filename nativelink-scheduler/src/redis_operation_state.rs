@@ -340,7 +340,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
 
     async fn inner_filter_operations(
         &self,
-        filter: OperationFilter,
+        filter: &OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
         let handler = &|k: String, v: String| -> Result<(String, Arc<RedisOperation>), Error> {
             let operation = Arc::new(
@@ -355,7 +355,7 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
             .err_tip(|| "In RedisStateManager::inner_filter_operations")?;
         let mut v: Vec<Arc<dyn ActionStateResult>> = Vec::new();
         for (key, operation) in existing_operations.into_iter() {
-            if operation.matches_filter(&filter) {
+            if operation.matches_filter(filter) {
                 let store_subscription = self.store.clone().subscribe(key.into()).await;
                 v.push(Arc::new(RedisOperationState::new(
                     operation,
@@ -368,8 +368,8 @@ impl<T: ConnectionLike + Unpin + Clone + Send + Sync + 'static> RedisStateManage
 
     async fn inner_update_operation(
         &self,
-        operation_id: OperationId,
-        worker_id: Option<WorkerId>,
+        operation_id: &OperationId,
+        worker_id: Option<&WorkerId>,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
         let store = self.store.as_store_driver_pin();
@@ -421,7 +421,7 @@ impl ClientStateManager for RedisStateManager {
 
     async fn filter_operations(
         &self,
-        filter: OperationFilter,
+        filter: &OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
         self.inner_filter_operations(filter).await
     }
@@ -431,8 +431,8 @@ impl ClientStateManager for RedisStateManager {
 impl WorkerStateManager for RedisStateManager {
     async fn update_operation(
         &self,
-        operation_id: OperationId,
-        worker_id: WorkerId,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
         self.inner_update_operation(operation_id, Some(worker_id), action_stage)
@@ -444,17 +444,17 @@ impl WorkerStateManager for RedisStateManager {
 impl MatchingEngineStateManager for RedisStateManager {
     async fn filter_operations(
         &self,
-        filter: OperationFilter,
+        filter: &OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
         self.inner_filter_operations(filter).await
     }
 
-    async fn update_operation(
+    async fn assign_operation(
         &self,
-        operation_id: OperationId,
-        worker_id: Option<WorkerId>,
-        action_stage: Result<ActionStage, Error>,
+        operation_id: &OperationId,
+        worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error> {
+        // TODO! FIX ME!
         self.inner_update_operation(operation_id, worker_id, action_stage)
             .await
     }

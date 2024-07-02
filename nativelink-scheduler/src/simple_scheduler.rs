@@ -12,19 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 
 use async_lock::{Mutex, MutexGuard};
 use async_trait::async_trait;
-use futures::{Future, Stream, TryFutureExt};
-use hashbrown::{HashMap, HashSet};
+use futures::{Future, Stream};
+use hashbrown::HashMap;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
+    ActionInfo, ActionInfoHashKey, ActionStage, ActionState,
     OperationId, WorkerId,
 };
 use nativelink_util::metrics_utils::{
@@ -46,7 +45,7 @@ use crate::operation_state_manager::{
 };
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::scheduler_state::metrics::Metrics as SchedulerMetrics;
-use crate::scheduler_state::state_manager::{mutate_stage, StateManager, StateManagerImpl};
+use crate::scheduler_state::state_manager::{ClientOperationId, StateManager};
 use crate::scheduler_state::workers::Workers;
 use crate::worker::{Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
@@ -94,29 +93,45 @@ impl SimpleSchedulerImpl {
     }
 
     async fn clean_recently_completed_actions(&mut self) {
-        let expiry_time = SystemTime::now()
-            .checked_sub(self.retain_completed_for)
-            .unwrap();
-        self.state_manager
-            .inner
-            .lock()
-            .await
-            .recently_completed_actions
-            .retain(|action| action.completed_time > expiry_time);
+        todo!();
+        // let expiry_time = SystemTime::now()
+        //     .checked_sub(self.retain_completed_for)
+        //     .unwrap();
+        // self.state_manager
+        //     .inner
+        //     .lock()
+        //     .await
+        //     .recently_completed_actions
+        //     .retain(|action| action.completed_time > expiry_time);
     }
 
     async fn find_recently_completed_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        _unique_qualifier: &ActionInfoHashKey,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
-        Ok(self
-            .state_manager
-            .inner
-            .lock()
-            .await
-            .recently_completed_actions
-            .get(unique_qualifier)
-            .map(|action| watch::channel(action.state.clone()).1))
+        todo!();
+        // <StateManager as ClientStateManager>::filter_operations(
+        //     &self.state_manager,
+        //     &OperationFilter {
+        //         stages: OperationStageFlags::Any,
+        //         operation_id: None,
+        //         worker_id: None,
+        //         action_digest: None,
+        //         worker_update_before: None,
+        //         completed_before: None,
+        //         last_client_update_before: None,
+        //         unique_qualifier: Some(unique_qualifier.clone()),
+        //         order_by: None,
+        //     },
+        // )
+        // Ok(self
+        //     .state_manager
+        //     .inner
+        //     .lock()
+        //     .await
+        //     .recently_completed_actions
+        //     .get(unique_qualifier)
+        //     .map(|action| watch::channel(action.state.clone()).1))
     }
 
     async fn find_existing_action(
@@ -125,7 +140,7 @@ impl SimpleSchedulerImpl {
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
         let filter_result = <StateManager as ClientStateManager>::filter_operations(
             &self.state_manager,
-            OperationFilter {
+            &OperationFilter {
                 stages: OperationStageFlags::Any,
                 operation_id: None,
                 worker_id: None,
@@ -154,98 +169,93 @@ impl SimpleSchedulerImpl {
         }
     }
 
-    fn retry_action(
-        inner_state: &mut MutexGuard<'_, StateManagerImpl>,
-        max_job_retries: usize,
-        metrics: &Metrics,
-        action_info: &Arc<ActionInfo>,
-        worker_id: &WorkerId,
-        err: Error,
-    ) {
-        match inner_state.active_actions.remove(action_info) {
-            Some(running_action) => {
-                let mut awaited_action = running_action;
-                let send_result = if awaited_action.attempts >= max_job_retries {
-                    metrics.retry_action_max_attempts_reached.inc();
+    // fn retry_action(
+    //     inner_state: &mut MutexGuard<'_, StateManagerImpl>,
+    //     max_job_retries: usize,
+    //     metrics: &Metrics,
+    //     action_info: &Arc<ActionInfo>,
+    //     worker_id: &WorkerId,
+    //     err: Error,
+    // ) {
+    //     match inner_state.active_actions.remove(action_info) {
+    //         Some(running_action) => {
+    //             let mut awaited_action = running_action;
+    //             let send_result = if awaited_action.attempts >= max_job_retries {
+    //                 metrics.retry_action_max_attempts_reached.inc();
 
-                    mutate_stage(&mut awaited_action, ActionStage::Completed(ActionResult {
-                        execution_metadata: ExecutionMetadata {
-                            worker: format!("{worker_id}"),
-                            ..ExecutionMetadata::default()
-                        },
-                        error: Some(err.merge(make_err!(
-                            Code::Internal,
-                            "Job cancelled because it attempted to execute too many times and failed"
-                        ))),
-                        ..ActionResult::default()
-                    }))
-                    // Do not put the action back in the queue here, as this action attempted to run too many
-                    // times.
-                } else {
-                    metrics.retry_action.inc();
-                    let send_result = mutate_stage(&mut awaited_action, ActionStage::Queued);
-                    inner_state.queued_actions_set.insert(action_info.clone());
-                    inner_state
-                        .queued_actions
-                        .insert(action_info.clone(), awaited_action);
-                    send_result
-                };
+    //                 mutate_stage(&mut awaited_action, ActionStage::Completed(ActionResult {
+    //                     execution_metadata: ExecutionMetadata {
+    //                         worker: format!("{worker_id}"),
+    //                         ..ExecutionMetadata::default()
+    //                     },
+    //                     error: Some(err.merge(make_err!(
+    //                         Code::Internal,
+    //                         "Job cancelled because it attempted to execute too many times and failed"
+    //                     ))),
+    //                     ..ActionResult::default()
+    //                 }))
+    //                 // Do not put the action back in the queue here, as this action attempted to run too many
+    //                 // times.
+    //             } else {
+    //                 metrics.retry_action.inc();
+    //                 let send_result = mutate_stage(&mut awaited_action, ActionStage::Queued);
+    //                 inner_state.queued_actions_set.insert(action_info.clone());
+    //                 inner_state
+    //                     .queued_actions
+    //                     .insert(action_info.clone(), awaited_action);
+    //                 send_result
+    //             };
 
-                if send_result.is_err() {
-                    metrics.retry_action_no_more_listeners.inc();
-                    // Don't remove this task, instead we keep them around for a bit just in case
-                    // the client disconnected and will reconnect and ask for same job to be executed
-                    // again.
-                    event!(
-                        Level::WARN,
-                        ?action_info,
-                        ?worker_id,
-                        "Action has no more listeners during evict_worker()"
-                    );
-                }
-            }
-            None => {
-                metrics.retry_action_but_action_missing.inc();
-                event!(
-                    Level::ERROR,
-                    ?action_info,
-                    ?worker_id,
-                    "Worker stated it was running an action, but it was not in the active_actions"
-                );
-            }
-        }
-    }
+    //             if send_result.is_err() {
+    //                 metrics.retry_action_no_more_listeners.inc();
+    //                 // Don't remove this task, instead we keep them around for a bit just in case
+    //                 // the client disconnected and will reconnect and ask for same job to be executed
+    //                 // again.
+    //                 event!(
+    //                     Level::WARN,
+    //                     ?action_info,
+    //                     ?worker_id,
+    //                     "Action has no more listeners during evict_worker()"
+    //                 );
+    //             }
+    //         }
+    //         None => {
+    //             metrics.retry_action_but_action_missing.inc();
+    //             event!(
+    //                 Level::ERROR,
+    //                 ?action_info,
+    //                 ?worker_id,
+    //                 "Worker stated it was running an action, but it was not in the active_actions"
+    //             );
+    //         }
+    //     }
+    // }
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
     fn immediate_evict_worker(
-        inner_state: &mut MutexGuard<'_, StateManagerImpl>,
-        workers: &mut Workers,
-        max_job_retries: usize,
-        metrics: &Metrics,
+        &mut self,
         worker_id: &WorkerId,
         err: Error,
     ) {
-        if let Some(mut worker) = workers.remove_worker(worker_id) {
-            metrics.workers_evicted.inc();
+        if let Some(mut worker) = self.workers.remove_worker(worker_id) {
+            self.metrics.workers_evicted.inc();
             // We don't care if we fail to send message to worker, this is only a best attempt.
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
             // We create a temporary Vec to avoid doubt about a possible code
             // path touching the worker.running_action_infos elsewhere.
-            for action_info in worker.running_action_infos.drain() {
-                metrics.workers_evicted_with_running_action.inc();
-                SimpleSchedulerImpl::retry_action(
-                    inner_state,
-                    max_job_retries,
-                    metrics,
-                    &action_info,
-                    worker_id,
-                    err.clone(),
+            for (operation_id, _) in worker.running_action_infos.drain() {
+                self.metrics.workers_evicted_with_running_action.inc();
+                <StateManager as WorkerStateManager>::update_operation(
+                    &self.state_manager,
+                    &operation_id,
+                    &worker_id,
+                    Err(err.clone()),
                 );
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
         // TODO(allada) This should be moved to inside the Workers struct.
-        workers.worker_change_notify.notify_one();
+        self.workers.worker_change_notify.notify_one();
     }
 
     /// Sets if the worker is draining or not.
@@ -281,11 +291,12 @@ impl SimpleSchedulerImpl {
     async fn worker_notify_run_action(
         &mut self,
         worker_id: WorkerId,
+        operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<(), Error> {
         if let Some(worker) = self.workers.workers.get_mut(&worker_id) {
             let notify_worker_result =
-                worker.notify_update(WorkerUpdate::RunAction(action_info.clone()));
+                worker.notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())));
 
             if notify_worker_result.is_err() {
                 event!(
@@ -301,21 +312,7 @@ impl SimpleSchedulerImpl {
                     "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
                 );
 
-                let max_job_retries = self.max_job_retries;
-                let metrics = self.metrics.clone();
-                // TODO(allada) This is to get around rust borrow checker with double mut borrows
-                // of a mutex lock. Once the scheduler is fully moved to state manager this can be
-                // removed.
-                let state_manager = self.state_manager.clone();
-                let mut inner_state = state_manager.inner.lock().await;
-                SimpleSchedulerImpl::immediate_evict_worker(
-                    &mut inner_state,
-                    &mut self.workers,
-                    max_job_retries,
-                    &metrics,
-                    &worker_id,
-                    err.clone(),
-                );
+                self.immediate_evict_worker(&worker_id, err.clone());
                 return Err(err);
             }
         }
@@ -328,7 +325,7 @@ impl SimpleSchedulerImpl {
     {
         <StateManager as MatchingEngineStateManager>::filter_operations(
             &self.state_manager,
-            OperationFilter {
+            &OperationFilter {
                 stages: OperationStageFlags::Queued,
                 operation_id: None,
                 worker_id: None,
@@ -382,8 +379,9 @@ impl SimpleSchedulerImpl {
                     };
 
                     let Some(worker_id) = self
-                            .workers
-                            .find_worker_for_action(&action_info.platform_properties) else {
+                        .workers
+                        .find_worker_for_action(&action_info.platform_properties)
+                    else {
                         // If we could not find a woker for the action,
                         // we have nothing to do.
                         continue;
@@ -391,27 +389,13 @@ impl SimpleSchedulerImpl {
                     let operation_id = state.id.clone();
                     let ret = <StateManager as MatchingEngineStateManager>::assign_operation(
                         &self.state_manager,
-                        operation_id.clone(),
-                        Ok(worker_id),
+                        &operation_id,
+                        Ok(&worker_id),
                     )
                     .await;
 
                     if let Err(e) = ret {
-                        let max_job_retries = self.max_job_retries;
-                        let metrics = self.metrics.clone();
-                        // TODO(allada) This is to get around rust borrow checker with double mut borrows
-                        // of a mutex lock. Once the scheduler is fully moved to state manager this can be
-                        // removed.
-                        let state_manager = self.state_manager.clone();
-                        let mut inner_state = state_manager.inner.lock().await;
-                        SimpleSchedulerImpl::immediate_evict_worker(
-                            &mut inner_state,
-                            &mut self.workers,
-                            max_job_retries,
-                            &metrics,
-                            &worker_id,
-                            e.clone(),
-                        );
+                        self.immediate_evict_worker(&worker_id, e.clone());
 
                         event!(
                             Level::ERROR,
@@ -422,7 +406,7 @@ impl SimpleSchedulerImpl {
                         continue;
                     }
                     let notify_worker_run_action_result = self
-                        .worker_notify_run_action(worker_id, action_info.clone())
+                        .worker_notify_run_action(worker_id, operation_id, action_info.clone())
                         .await;
                     if let Err(err) = notify_worker_run_action_result {
                         event!(
@@ -444,69 +428,37 @@ impl SimpleSchedulerImpl {
     async fn update_action(
         &mut self,
         worker_id: &WorkerId,
-        action_info_hash_key: ActionInfoHashKey,
+        operation_id: &OperationId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
         let worker = self.workers.workers.get_mut(worker_id).err_tip(|| {
             format!("Worker {worker_id} does not exist in SimpleSchedulerImpl::update_action")
         })?;
-        let action_info_res = worker
-            .running_action_infos
-            .get(&action_info_hash_key)
-            .err_tip(|| format!("Action {action_info_hash_key:?} should not be running on worker {worker_id} in SimpleSchedulerImpl::update_action"));
-        let action_info = match action_info_res {
-            Ok(action_info) => action_info.clone(),
-            Err(err) => {
-                let max_job_retries = self.max_job_retries;
-                let metrics = self.metrics.clone();
-                // TODO(allada) This is to get around rust borrow checker with double mut borrows
-                // of a mutex lock. Once the scheduler is fully moved to state manager this can be
-                // removed.
-                let state_manager = self.state_manager.clone();
-                let mut inner_state = state_manager.inner.lock().await;
-                SimpleSchedulerImpl::immediate_evict_worker(
-                    &mut inner_state,
-                    &mut self.workers,
-                    max_job_retries,
-                    &metrics,
-                    worker_id,
-                    err.clone(),
-                );
-                return Err(err);
-            }
-        };
-        let operation_id = OperationId::new(action_info_hash_key.clone());
+        if !worker.running_action_infos.contains_key(operation_id) {
+            let err = make_err!(
+                Code::Internal,
+                "Operation {operation_id} should be running on worker {worker_id} in SimpleSchedulerImpl::update_action"
+            );
+            self.immediate_evict_worker(worker_id, err.clone());
+            return Err(err);
+        }
         let due_to_backpressure = action_stage
             .as_ref()
             .map_or_else(|e| e.code == Code::ResourceExhausted, |_| false);
-        let update_operation_result = <StateManager as WorkerStateManager>::update_operation(
+        let update_operation_res = <StateManager as WorkerStateManager>::update_operation(
             &self.state_manager,
-            operation_id.clone(),
-            *worker_id,
+            operation_id,
+            worker_id,
             action_stage.clone(),
         )
         .await
         .err_tip(|| "in update_operation on SimpleSchedulerImpl::update_action");
-        if let Err(e) = update_operation_result {
-            let max_job_retries = self.max_job_retries;
-            let metrics = self.metrics.clone();
-            // TODO(allada) This is to get around rust borrow checker with double mut borrows
-            // of a mutex lock. Once the scheduler is fully moved to state manager this can be
-            // removed.
-            let state_manager = self.state_manager.clone();
-            let mut inner_state = state_manager.inner.lock().await;
-            SimpleSchedulerImpl::immediate_evict_worker(
-                &mut inner_state,
-                &mut self.workers,
-                max_job_retries,
-                &metrics,
-                worker_id,
-                e.clone(),
-            );
+        if let Err(e) = update_operation_res {
+            self.immediate_evict_worker(worker_id, e.clone());
 
             event!(
                 Level::ERROR,
-                ?action_info_hash_key,
+                ?operation_id,
                 ?worker_id,
                 ?e,
                 "Failed to update_operation on update_action"
@@ -514,38 +466,29 @@ impl SimpleSchedulerImpl {
             return Err(e);
         }
 
-        match action_stage {
-            Ok(_) => worker.complete_action(&action_info),
+        let todo_handle_this_result = match action_stage {
+            Ok(_) => worker.complete_action(operation_id),
             Err(err) => {
                 // Clear this action from the current worker.
                 let was_paused = !worker.can_accept_work();
                 // This unpauses, but since we're completing with an error, don't
                 // unpause unless all actions have completed.
                 // Note: We need to run this before dealing with backpressure logic.
-                worker.complete_action(&action_info);
+                worker.complete_action(operation_id);
                 // Only pause if there's an action still waiting that will unpause.
                 if (was_paused || due_to_backpressure) && worker.has_actions() {
                     worker.is_paused = true;
                 }
 
-                let max_job_retries = self.max_job_retries;
-                let metrics = self.metrics.clone();
-                // TODO(allada) This is to get around rust borrow checker with double mut borrows
-                // of a mutex lock. Once the scheduler is fully moved to state manager this can be
-                // removed.
-                let state_manager = self.state_manager.clone();
-                let mut inner_state = state_manager.inner.lock().await;
-                // Re-queue the action or fail on max attempts.
-                SimpleSchedulerImpl::retry_action(
-                    &mut inner_state,
-                    max_job_retries,
-                    &metrics,
-                    &action_info,
+                <StateManager as WorkerStateManager>::update_operation(
+                    &self.state_manager,
+                    operation_id,
                     worker_id,
-                    err,
-                );
+                    Err(err.clone()),
+                )
+                .await
             }
-        }
+        };
 
         // TODO(allada) This should move to inside the Workers struct.
         self.workers.worker_change_notify.notify_one();
@@ -612,12 +555,9 @@ impl SimpleScheduler {
 
         let tasks_or_worker_change_notify = Arc::new(Notify::new());
         let state_manager = Arc::new(StateManager::new(
-            HashSet::new(),
-            BTreeMap::new(),
-            HashMap::new(),
-            HashSet::new(),
             Arc::new(SchedulerMetrics::default()),
             tasks_or_worker_change_notify.clone(),
+            max_job_retries,
         ));
         let metrics = Arc::new(Metrics::default());
         let metrics_for_do_try_match = metrics.clone();
@@ -726,26 +666,27 @@ impl ActionScheduler for SimpleScheduler {
 
     async fn find_existing_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        _client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
-        let inner = self.get_inner_lock().await;
-        let maybe_receiver = inner
-            .find_existing_action(unique_qualifier)
-            .and_then(|maybe_action| async {
-                if let Some(action) = maybe_action {
-                    Ok(Some(action))
-                } else {
-                    inner.find_recently_completed_action(unique_qualifier).await
-                }
-            })
-            .await
-            .err_tip(|| "Error while finding existing action")?;
-        if maybe_receiver.is_some() {
-            self.metrics.existing_actions_found.inc();
-        } else {
-            self.metrics.existing_actions_not_found.inc();
-        }
-        Ok(maybe_receiver)
+        todo!();
+        // let inner = self.get_inner_lock().await;
+        // let maybe_receiver = inner
+        //     .find_existing_action(unique_qualifier)
+        //     .and_then(|maybe_action| async {
+        //         if let Some(action) = maybe_action {
+        //             Ok(Some(action))
+        //         } else {
+        //             inner.find_recently_completed_action(unique_qualifier).await
+        //         }
+        //     })
+        //     .await
+        //     .err_tip(|| "Error while finding existing action")?;
+        // if maybe_receiver.is_some() {
+        //     self.metrics.existing_actions_found.inc();
+        // } else {
+        //     self.metrics.existing_actions_not_found.inc();
+        // }
+        // Ok(maybe_receiver)
     }
 
     async fn clean_recently_completed_actions(&self) {
@@ -770,23 +711,13 @@ impl WorkerScheduler for SimpleScheduler {
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id;
         let mut inner_scheduler = self.get_inner_lock().await;
-        let max_job_retries = inner_scheduler.max_job_retries;
-        // TODO(allada) This is to get around rust borrow checker with double mut borrows
-        // of a mutex lock. Once the scheduler is fully moved to state manager this can be
-        // removed.
-        let state_manager = inner_scheduler.state_manager.clone();
-        let mut inner_state = state_manager.inner.lock().await;
         self.metrics.add_worker.wrap(move || {
             inner_scheduler
                 .workers
                 .add_worker(worker)
                 .err_tip(|| "Error while adding worker, removing from pool")
                 .inspect_err(|err| {
-                    SimpleSchedulerImpl::immediate_evict_worker(
-                        &mut inner_state,
-                        &mut inner_scheduler.workers,
-                        max_job_retries,
-                        &self.metrics,
+                    inner_scheduler.immediate_evict_worker(
                         &worker_id,
                         err.clone(),
                     );
@@ -797,13 +728,13 @@ impl WorkerScheduler for SimpleScheduler {
     async fn update_action(
         &self,
         worker_id: &WorkerId,
-        action_info_hash_key: ActionInfoHashKey,
+        operation_id: &OperationId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
         let mut inner = self.get_inner_lock().await;
         self.metrics
             .update_action
-            .wrap(inner.update_action(worker_id, action_info_hash_key, action_stage))
+            .wrap(inner.update_action(worker_id, operation_id, action_stage))
             .await
     }
 
@@ -821,18 +752,7 @@ impl WorkerScheduler for SimpleScheduler {
 
     async fn remove_worker(&self, worker_id: WorkerId) {
         let mut inner_scheduler = self.get_inner_lock().await;
-        let max_job_retries = inner_scheduler.max_job_retries;
-        let metrics = inner_scheduler.metrics.clone();
-        // TODO(allada) This is to get around rust borrow checker with double mut borrows
-        // of a mutex lock. Once the scheduler is fully moved to state manager this can be
-        // removed.
-        let state_manager = inner_scheduler.state_manager.clone();
-        let mut inner_state = state_manager.inner.lock().await;
-        SimpleSchedulerImpl::immediate_evict_worker(
-            &mut inner_state,
-            &mut inner_scheduler.workers,
-            max_job_retries,
-            &metrics,
+        inner_scheduler.immediate_evict_worker(
             &worker_id,
             make_err!(Code::Internal, "Received request to remove worker"),
         );
@@ -841,8 +761,6 @@ impl WorkerScheduler for SimpleScheduler {
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
         let mut inner_scheduler = self.get_inner_lock().await;
         let worker_timeout_s = inner_scheduler.worker_timeout_s;
-        let max_job_retries = inner_scheduler.max_job_retries;
-        let metrics = inner_scheduler.metrics.clone();
         self.metrics
             .remove_timedout_workers
             .wrap(async move {
@@ -861,22 +779,13 @@ impl WorkerScheduler for SimpleScheduler {
                         }
                     })
                     .collect();
-                // TODO(allada) This is to get around rust borrow checker with double mut borrows
-                // of a mutex lock. Once the scheduler is fully moved to state manager this can be
-                // removed.
-                let state_manager = inner_scheduler.state_manager.clone();
-                let mut inner_state = state_manager.inner.lock().await;
                 for worker_id in &worker_ids_to_remove {
                     event!(
                         Level::WARN,
                         ?worker_id,
                         "Worker timed out, removing from pool"
                     );
-                    SimpleSchedulerImpl::immediate_evict_worker(
-                        &mut inner_state,
-                        &mut inner_scheduler.workers,
-                        max_job_retries,
-                        &metrics,
+                    inner_scheduler.immediate_evict_worker(
                         worker_id,
                         make_err!(
                             Code::Internal,
@@ -909,26 +818,26 @@ impl MetricsComponent for SimpleScheduler {
             let inner_scheduler = self.inner.lock_blocking();
             let inner_state = inner_scheduler.state_manager.inner.lock_blocking();
             inner_state.metrics.gather_metrics(c);
-            c.publish(
-                "queued_actions_total",
-                &inner_state.queued_actions.len(),
-                "The number actions in the queue.",
-            );
-            c.publish(
-                "workers_total",
-                &inner_scheduler.workers.workers.len(),
-                "The number workers active.",
-            );
-            c.publish(
-                "active_actions_total",
-                &inner_state.active_actions.len(),
-                "The number of running actions.",
-            );
-            c.publish(
-                "recently_completed_actions_total",
-                &inner_state.recently_completed_actions.len(),
-                "The number of recently completed actions in the buffer.",
-            );
+            // c.publish(
+            //     "queued_actions_total",
+            //     &inner_state.queued_actions.len(),
+            //     "The number actions in the queue.",
+            // );
+            // c.publish(
+            //     "workers_total",
+            //     &inner_scheduler.workers.workers.len(),
+            //     "The number workers active.",
+            // );
+            // c.publish(
+            //     "active_actions_total",
+            //     &inner_state.active_actions.len(),
+            //     "The number of running actions.",
+            // );
+            // c.publish(
+            //     "recently_completed_actions_total",
+            //     &inner_state.recently_completed_actions.len(),
+            //     "The number of recently completed actions in the buffer.",
+            // );
             c.publish(
                 "retain_completed_for_seconds",
                 &inner_scheduler.retain_completed_for,
@@ -966,26 +875,26 @@ impl MetricsComponent for SimpleScheduler {
                     format!("Total sum of available properties for {property}"),
                 );
             }
-            for (_, active_action) in inner_state.active_actions.iter() {
-                let action_name = active_action
-                    .action_info
-                    .unique_qualifier
-                    .action_name()
-                    .into();
-                let worker_id_str = match active_action.worker_id {
-                    Some(id) => id.to_string(),
-                    None => "Unassigned".to_string(),
-                };
-                c.publish_with_labels(
-                    "active_actions",
-                    active_action,
-                    "",
-                    vec![
-                        ("worker_id".into(), worker_id_str.into()),
-                        ("digest".into(), action_name),
-                    ],
-                );
-            }
+            // for (_, active_action) in inner_state.active_actions.iter() {
+            //     let action_name = active_action
+            //         .action_info
+            //         .unique_qualifier
+            //         .action_name()
+            //         .into();
+            //     let worker_id_str = match active_action.worker_id {
+            //         Some(id) => id.to_string(),
+            //         None => "Unassigned".to_string(),
+            //     };
+            //     c.publish_with_labels(
+            //         "active_actions",
+            //         active_action,
+            //         "",
+            //         vec![
+            //             ("worker_id".into(), worker_id_str.into()),
+            //             ("digest".into(), action_name),
+            //         ],
+            //     );
+            // }
             // Note: We don't publish queued_actions because it can be very large.
             // Note: We don't publish recently completed actions because it can be very large.
         }
@@ -1051,31 +960,31 @@ impl Metrics {
                 vec![("result".into(), "missing_action_result".into())],
             );
         }
-        c.publish(
-            "update_operation_with_internal_error",
-            &self.update_operation_with_internal_error,
-            "The number of times update_operation_with_internal_error was triggered.",
-        );
-        {
-            c.publish_with_labels(
-                "update_operation_with_internal_error_errors",
-                &self.update_operation_with_internal_error_no_action,
-                "Stats about what errors caused update_operation_with_internal_error() in scheduler.",
-                vec![("result".into(), "no_action".into())],
-            );
-            c.publish_with_labels(
-                "update_operation_with_internal_error_errors",
-                &self.update_operation_with_internal_error_backpressure,
-                "Stats about what errors caused update_operation_with_internal_error() in scheduler.",
-                vec![("result".into(), "backpressure".into())],
-            );
-            c.publish_with_labels(
-                "update_operation_with_internal_error_errors",
-                &self.update_operation_with_internal_error_from_wrong_worker,
-                "Stats about what errors caused update_operation_with_internal_error() in scheduler.",
-                vec![("result".into(), "from_wrong_worker".into())],
-            );
-        }
+        // c.publish(
+        //     "update_operation_with_internal_error",
+        //     &self.update_operation_with_internal_error,
+        //     "The number of times update_operation_with_internal_error was triggered.",
+        // );
+        // {
+        //     c.publish_with_labels(
+        //         "update_operation_with_internal_error_errors",
+        //         &self.update_operation_with_internal_error_no_action,
+        //         "Stats about what errors caused update_operation_with_internal_error() in scheduler.",
+        //         vec![("result".into(), "no_action".into())],
+        //     );
+        //     c.publish_with_labels(
+        //         "update_operation_with_internal_error_errors",
+        //         &self.update_operation_with_internal_error_backpressure,
+        //         "Stats about what errors caused update_operation_with_internal_error() in scheduler.",
+        //         vec![("result".into(), "backpressure".into())],
+        //     );
+        //     c.publish_with_labels(
+        //         "update_operation_with_internal_error_errors",
+        //         &self.update_operation_with_internal_error_from_wrong_worker,
+        //         "Stats about what errors caused update_operation_with_internal_error() in scheduler.",
+        //         vec![("result".into(), "from_wrong_worker".into())],
+        //     );
+        // }
         c.publish(
             "workers_evicted_total",
             &self.workers_evicted,

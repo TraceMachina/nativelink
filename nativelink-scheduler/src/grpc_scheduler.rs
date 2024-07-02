@@ -28,7 +28,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionState, DEFAULT_EXECUTION_PRIORITY
 };
 use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::retry::{Retrier, RetryResult};
@@ -44,6 +44,7 @@ use tracing::{event, Level};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::scheduler_state::state_manager::ClientOperationId;
 
 pub struct GrpcScheduler {
     platform_property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
@@ -259,10 +260,10 @@ impl ActionScheduler for GrpcScheduler {
 
     async fn find_existing_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
         let request = WaitExecutionRequest {
-            name: unique_qualifier.action_name(),
+            name: client_operation_id.to_string(),
         };
         let result_stream = self
             .perform_request(request, |request| async move {

@@ -19,13 +19,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
+use nativelink_util::action_messages::{ActionInfo, ActionState};
 use nativelink_util::metrics_utils::Registry;
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::scheduler_state::state_manager::ClientOperationId;
 
 pub struct PropertyModifierScheduler {
     modifications: Vec<nativelink_config::schedulers::PropertyModification>,
@@ -116,9 +117,9 @@ impl ActionScheduler for PropertyModifierScheduler {
 
     async fn find_existing_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
-        self.scheduler.find_existing_action(unique_qualifier).await
+        self.scheduler.find_existing_action(client_operation_id).await
     }
 
     async fn clean_recently_completed_actions(&self) {
