@@ -16,7 +16,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::ops::DerefMut;
+use std::ops::{DerefMut, RangeBounds};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -38,7 +38,7 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -1529,6 +1529,72 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         original_inode, new_inode,
         "Expected the same inode for the file"
     );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn list_test() -> Result<(), Error> {
+    let store =
+        FilesystemStore::new(&nativelink_config::stores::FilesystemStore::default()).await?;
+
+    const KEY1: StoreKey = StoreKey::new_str("key1");
+    const KEY2: StoreKey = StoreKey::new_str("key2");
+    const KEY3: StoreKey = StoreKey::new_str("key3");
+    const VALUE: &str = "value1";
+    store.update_oneshot(KEY1, VALUE.into()).await?;
+    store.update_oneshot(KEY2, VALUE.into()).await?;
+    store.update_oneshot(KEY3, VALUE.into()).await?;
+
+    async fn get_list(
+        store: &FilesystemStore,
+        range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
+    ) -> Vec<StoreKey<'static>> {
+        let mut found_keys = vec![];
+        store
+            .list(range, |key| {
+                found_keys.push(key.borrow().into_owned());
+                true
+            })
+            .await
+            .unwrap();
+        found_keys
+    }
+    {
+        // Test listing all keys.
+        let keys = get_list(&store, ..).await;
+        assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+    }
+    {
+        // Test listing from key1 to all.
+        let keys = get_list(&store, KEY1..).await;
+        assert_eq!(keys, vec![KEY1, KEY2, KEY3]);
+    }
+    {
+        // Test listing from key1 to key2.
+        let keys = get_list(&store, KEY1..KEY2).await;
+        assert_eq!(keys, vec![KEY1]);
+    }
+    {
+        // Test listing from key1 including key2.
+        let keys = get_list(&store, KEY1..=KEY2).await;
+        assert_eq!(keys, vec![KEY1, KEY2]);
+    }
+    {
+        // Test listing from key1 to key3.
+        let keys = get_list(&store, KEY1..KEY3).await;
+        assert_eq!(keys, vec![KEY1, KEY2]);
+    }
+    {
+        // Test listing from all to key2.
+        let keys = get_list(&store, ..KEY2).await;
+        assert_eq!(keys, vec![KEY1]);
+    }
+    {
+        // Test listing from key2 to key3.
+        let keys = get_list(&store, KEY2..KEY3).await;
+        assert_eq!(keys, vec![KEY2]);
+    }
 
     Ok(())
 }
