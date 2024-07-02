@@ -1,5 +1,15 @@
-# NativeLink
+<p align="center">
+  <a href="https://www.nativelink.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="./NativeLinkDark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="./NativeLinkLight.svg">
+      <img alt="NativeLink" src="./NativeLinkLight.svg">
+    </picture>
+  </a>
+</p>
 
+[![Homepage](https://img.shields.io/badge/Homepage-8A2BE2)](https://nativelink.com)
+![GitHub stars](https://img.shields.io/github/stars/tracemachina/nativelink?style=social)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
