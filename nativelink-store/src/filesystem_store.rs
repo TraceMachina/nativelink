@@ -15,6 +15,8 @@
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
+use std::ops::Bound;
+use std::path::MAIN_SEPARATOR_STR as PATH_SEP;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -129,7 +131,13 @@ impl Drop for EncodedFilePath {
 
 #[inline]
 fn to_full_path_from_digest(folder: &str, digest: &DigestInfo) -> OsString {
-    format!("{}/{}-{}", folder, digest.hash_str(), digest.size_bytes).into()
+    format!(
+        "{}{PATH_SEP}{}-{}",
+        folder,
+        digest.hash_str(),
+        digest.size_bytes
+    )
+    .into()
 }
 
 pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
@@ -437,10 +445,11 @@ async fn add_files_to_cache<Fe: FileEntry>(
     }
 
     let mut file_infos: Vec<(String, SystemTime, u64)> = {
-        let (_permit, dir_handle) = fs::read_dir(format!("{}/", shared_context.content_path))
-            .await
-            .err_tip(|| "Failed opening content directory for iterating in filesystem store")?
-            .into_inner();
+        let (_permit, dir_handle) =
+            fs::read_dir(format!("{}{PATH_SEP}", shared_context.content_path))
+                .await
+                .err_tip(|| "Failed opening content directory for iterating in filesystem store")?
+                .into_inner();
 
         let read_dir_stream = ReadDirStream::new(dir_handle);
         read_dir_stream
@@ -491,8 +500,11 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 "Failed to add file to eviction cache",
             );
             // Ignore result.
-            let _ =
-                fs::remove_file(format!("{}/{}", &shared_context.content_path, &file_name)).await;
+            let _ = fs::remove_file(format!(
+                "{}{PATH_SEP}{}",
+                &shared_context.content_path, &file_name
+            ))
+            .await;
         }
     }
     Ok(())
@@ -750,6 +762,23 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             *result = Some(0);
         }
         Ok(())
+    }
+
+    async fn list(
+        self: Pin<&Self>,
+        range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
+        handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
+    ) -> Result<usize, Error> {
+        let range = (
+            range.0.map(|v| v.into_digest()),
+            range.1.map(|v| v.into_digest()),
+        );
+
+        let iterations = self
+            .evicting_map
+            .range(range, |key, _value| handler(&key.into()))
+            .await;
+        Ok(iterations)
     }
 
     async fn update(
