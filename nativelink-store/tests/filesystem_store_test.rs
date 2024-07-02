@@ -16,7 +16,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::ops::DerefMut;
+use std::ops::{DerefMut, RangeBounds};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -38,7 +38,7 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -1530,5 +1530,165 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         "Expected the same inode for the file"
     );
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn list_test() -> Result<(), Error> {
+    use nativelink_util::common::DigestInfo;
+    use sha2::{Digest, Sha256};
+
+    // Use unique paths based on the current timestamp to ensure new directories are created.
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let content_path = make_temp_path(&format!("content_{timestamp}"));
+    let temp_path = make_temp_path(&format!("temp_{timestamp}"));
+
+    // Remove, but here due to previous error seen by Jacob in CI
+    fs::create_dir_all(&content_path)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to create content path: {e:?}"));
+    fs::create_dir_all(&temp_path)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to create temp path: {e:?}"));
+
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+            &nativelink_config::stores::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                read_buffer_size: 1,
+                ..Default::default()
+            },
+            |_| sleep(Duration::ZERO),
+            |from, to| std::fs::rename(from, to),
+        )
+        .await?,
+    );
+
+    const KEY1: &str = "key1";
+    const KEY2: &str = "key2";
+    const KEY3: &str = "key3";
+    const VALUE: &str = "value1";
+
+    // Function to hash a key string and return a hex string
+    fn hash_key(key: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(key.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
+    // Calculate the expected digests the same way the other tests do it
+    let expected_digest1 = DigestInfo::try_new(&hash_key(KEY1), VALUE.len() as i64)?;
+    let expected_digest2 = DigestInfo::try_new(&hash_key(KEY2), VALUE.len() as i64)?;
+    let expected_digest3 = DigestInfo::try_new(&hash_key(KEY3), VALUE.len() as i64)?;
+
+    // if you need to debug the expected digests you can do something like this
+    // println!("Expected digest for KEY1: {expected_digest1:}");
+
+    store
+        .update_oneshot(StoreKey::Digest(expected_digest1), VALUE.into())
+        .await?;
+    store
+        .update_oneshot(StoreKey::Digest(expected_digest2), VALUE.into())
+        .await?;
+    store
+        .update_oneshot(StoreKey::Digest(expected_digest3), VALUE.into())
+        .await?;
+
+    async fn get_list(
+        store: &FilesystemStore,
+        range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
+    ) -> Vec<StoreKey<'static>> {
+        let mut found_keys = vec![];
+        store
+            .list(range, |key| {
+                found_keys.push(key.borrow().into_owned());
+                true
+            })
+            .await
+            .unwrap();
+        found_keys
+    }
+
+    {
+        // Test listing all keys.
+        let keys = get_list(&store, ..).await;
+        assert_eq!(
+            keys,
+            vec![
+                StoreKey::Digest(expected_digest1),
+                StoreKey::Digest(expected_digest2),
+                StoreKey::Digest(expected_digest3)
+            ]
+        );
+    }
+    {
+        // Test listing from key1 to all.
+        let keys = get_list(&store, StoreKey::Digest(expected_digest1)..).await;
+        assert_eq!(
+            keys,
+            vec![
+                StoreKey::Digest(expected_digest1),
+                StoreKey::Digest(expected_digest2),
+                StoreKey::Digest(expected_digest3)
+            ]
+        );
+    }
+    {
+        // Test listing from key1 to key2.
+        let keys = get_list(
+            &store,
+            StoreKey::Digest(expected_digest1)..StoreKey::Digest(expected_digest2),
+        )
+        .await;
+        assert_eq!(keys, vec![StoreKey::Digest(expected_digest1)]);
+    }
+    {
+        // Test listing from key1 including key2.
+        let keys = get_list(
+            &store,
+            StoreKey::Digest(expected_digest1)..=StoreKey::Digest(expected_digest2),
+        )
+        .await;
+        assert_eq!(
+            keys,
+            vec![
+                StoreKey::Digest(expected_digest1),
+                StoreKey::Digest(expected_digest2)
+            ]
+        );
+    }
+    {
+        // Test listing from key1 to key3.
+        let keys = get_list(
+            &store,
+            StoreKey::Digest(expected_digest1)..StoreKey::Digest(expected_digest3),
+        )
+        .await;
+        assert_eq!(
+            keys,
+            vec![
+                StoreKey::Digest(expected_digest1),
+                StoreKey::Digest(expected_digest2)
+            ]
+        );
+    }
+    {
+        // Test listing from all to key2.
+        let keys = get_list(&store, ..StoreKey::Digest(expected_digest2)).await;
+        assert_eq!(keys, vec![StoreKey::Digest(expected_digest1)]);
+    }
+    {
+        // Test listing from key2 to key3.
+        let keys = get_list(
+            &store,
+            StoreKey::Digest(expected_digest2)..StoreKey::Digest(expected_digest3),
+        )
+        .await;
+        assert_eq!(keys, vec![StoreKey::Digest(expected_digest2)]);
+    }
     Ok(())
 }
