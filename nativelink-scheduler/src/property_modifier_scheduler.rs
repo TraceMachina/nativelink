@@ -90,6 +90,7 @@ impl ActionScheduler for PropertyModifierScheduler {
 
     async fn add_action(
         &self,
+        client_operation_id: ClientOperationId,
         mut action_info: ActionInfo,
     ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         let platform_property_manager = self
@@ -111,7 +112,7 @@ impl ActionScheduler for PropertyModifierScheduler {
                 }
             };
         }
-        self.scheduler.add_action(action_info).await
+        self.scheduler.add_action(client_operation_id, action_info).await
     }
 
     async fn find_existing_action(

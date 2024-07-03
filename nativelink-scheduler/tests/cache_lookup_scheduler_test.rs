@@ -98,10 +98,9 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
         }));
     let mut skip_cache_action = action_info.clone();
     skip_cache_action.skip_cache_lookup = true;
-    // TODO(this is wrong).
     let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let _ = join!(
-        context.cache_scheduler.add_action(skip_cache_action),
+        context.cache_scheduler.add_action(client_operation_id.clone(), skip_cache_action),
         context
             .mock_scheduler
             .expect_add_action(Ok((client_operation_id, forward_watch_channel_rx)))

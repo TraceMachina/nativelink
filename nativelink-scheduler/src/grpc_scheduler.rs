@@ -118,7 +118,7 @@ impl GrpcScheduler {
             .await
             .err_tip(|| "Recieving response from upstream scheduler")?
         {
-            let client_operation_id = ClientOperationId::from_operation(&initial_response);
+            let client_operation_id = ClientOperationId::from_raw_string(initial_response.name.clone());
             let (tx, rx) = watch::channel(Arc::new(initial_response.try_into()?));
             background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
@@ -219,6 +219,7 @@ impl ActionScheduler for GrpcScheduler {
 
     async fn add_action(
         &self,
+        _client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {

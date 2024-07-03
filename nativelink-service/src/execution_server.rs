@@ -260,7 +260,7 @@ impl ExecutionServer {
 
         let (client_operation_id, rx) = instance_info
             .scheduler
-            .add_action(action_info)
+            .add_action(ClientOperationId::new(action_info.unique_qualifier.clone()), action_info)
             .await
             .err_tip(|| "Failed to schedule task")?;
 

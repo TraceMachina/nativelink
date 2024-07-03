@@ -35,6 +35,7 @@ pub trait ActionScheduler: Sync + Send + Unpin {
     /// Adds an action to the scheduler for remote execution.
     async fn add_action(
         &self,
+        client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error>;
 

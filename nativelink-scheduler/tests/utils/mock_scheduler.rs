@@ -24,7 +24,7 @@ use tokio::sync::{mpsc, watch, Mutex};
 #[allow(clippy::large_enum_variant)]
 enum ActionSchedulerCalls {
     GetPlatformPropertyManager(String),
-    AddAction(ActionInfo),
+    AddAction((ClientOperationId, ActionInfo)),
     FindExistingAction(ClientOperationId),
 }
 
@@ -82,7 +82,7 @@ impl MockActionScheduler {
     pub async fn expect_add_action(
         &self,
         result: Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error>,
-    ) -> ActionInfo {
+    ) -> (ClientOperationId, ActionInfo) {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::AddAction(req) = rx_call_lock
             .recv()
@@ -142,10 +142,11 @@ impl ActionScheduler for MockActionScheduler {
 
     async fn add_action(
         &self,
+        client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         self.tx_call
-            .send(ActionSchedulerCalls::AddAction(action_info))
+            .send(ActionSchedulerCalls::AddAction((client_operation_id, action_info)))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock

@@ -85,9 +85,9 @@ impl SimpleSchedulerImpl {
     /// All further updates to the action will be provided through `listener`.
     async fn add_action(
         &mut self,
+        client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
-        let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
         let add_action_result = self
             .state_manager
             .add_action(client_operation_id.clone(), action_info)
@@ -95,8 +95,7 @@ impl SimpleSchedulerImpl {
         add_action_result
             .as_receiver()
             .await
-            .cloned()
-            .map(|receiver| (client_operation_id, receiver))
+            .map(move |receiver| (client_operation_id, receiver.clone()))
     }
 
     async fn clean_recently_completed_actions(&mut self) {
@@ -673,12 +672,13 @@ impl ActionScheduler for SimpleScheduler {
 
     async fn add_action(
         &self,
+        client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         let mut inner = self.get_inner_lock().await;
         self.metrics
             .add_action
-            .wrap(inner.add_action(action_info))
+            .wrap(inner.add_action(client_operation_id, action_info))
             .await
     }
 
