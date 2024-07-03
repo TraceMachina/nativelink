@@ -28,9 +28,11 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionState, ClientOperationId, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionInfoHashKey, ActionState, ClientOperationId, OperationId, DEFAULT_EXECUTION_PRIORITY
 };
+use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
@@ -119,7 +121,17 @@ impl GrpcScheduler {
             .err_tip(|| "Recieving response from upstream scheduler")?
         {
             let client_operation_id = ClientOperationId::from_raw_string(initial_response.name.clone());
-            let (tx, rx) = watch::channel(Arc::new(initial_response.try_into()?));
+            // Our operation_id is not needed here is just a place holder to recycle existing object.
+            // The only thing that actually matters is the client_operation_id.
+            let operation_id = OperationId::new(ActionInfoHashKey{
+                instance_name: "dummy_instance_name".to_string(),
+                digest_function: DigestHasherFunc::Sha256,
+                digest: DigestInfo::zero_digest(),
+                salt: 0,
+            });
+            let action_state = ActionState::try_from_operation(initial_response, operation_id.clone())
+                .err_tip(|| "In GrpcScheduler::stream_state")?;
+            let (tx, rx) = watch::channel(Arc::new(action_state));
             background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
                     select!(
@@ -136,7 +148,8 @@ impl GrpcScheduler {
                             let Ok(Some(response)) = response else {
                                 return;
                             };
-                            match response.try_into() {
+                            let maybe_action_state = ActionState::try_from_operation(response, operation_id.clone());
+                            match maybe_action_state {
                                 Ok(response) => {
                                     if let Err(err) = tx.send(Arc::new(response)) {
                                         event!(

@@ -1134,10 +1134,25 @@ where
     }
 }
 
-impl TryFrom<Operation> for ActionState {
-    type Error = Error;
+/// Current state of the action.
+/// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
+#[derive(PartialEq, Debug, Clone)]
+pub struct ActionState {
+    pub stage: ActionStage,
+    pub id: OperationId,
+}
 
-    fn try_from(operation: Operation) -> Result<ActionState, Error> {
+impl ActionState {
+    #[inline]
+    pub fn unique_qualifier(&self) -> &ActionInfoHashKey {
+        &self.id.unique_qualifier
+    }
+    #[inline]
+    pub fn action_digest(&self) -> &DigestInfo {
+        &self.id.unique_qualifier.digest
+    }
+
+    pub fn try_from_operation(operation: Operation, operation_id: OperationId) -> Result<Self, Error> {
         let metadata = from_any::<ExecuteOperationMetadata>(
             &operation
                 .metadata
@@ -1176,35 +1191,12 @@ impl TryFrom<Operation> for ActionState {
             }
         };
 
-        // NOTE: This will error if we are forwarding an operation from
-        // one remote execution system to another that does not use our operation name
-        // format (ie: very unlikely, but possible).
-        let id = OperationId::try_from(operation.name.as_str())?;
-        Ok(Self { id, stage })
-    }
-}
-
-/// Current state of the action.
-/// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone)]
-pub struct ActionState {
-    pub stage: ActionStage,
-    pub id: OperationId,
-}
-
-impl ActionState {
-    #[inline]
-    pub fn unique_qualifier(&self) -> &ActionInfoHashKey {
-        &self.id.unique_qualifier
-    }
-    #[inline]
-    pub fn action_digest(&self) -> &DigestInfo {
-        &self.id.unique_qualifier.digest
+        Ok(Self { id: operation_id, stage })
     }
 
     pub fn as_operation(&self, client_operation_id: ClientOperationId) -> Operation {
         let stage = Into::<execution_stage::Value>::into(&self.stage) as i32;
-        let name = client_operation_id.to_string();
+        let name = client_operation_id.into_string();
 
         let result = if self.stage.has_action_result() {
             let execute_response: ExecuteResponse = self.stage.clone().into();

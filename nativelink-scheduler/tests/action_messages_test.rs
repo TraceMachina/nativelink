@@ -47,8 +47,9 @@ async fn action_state_any_url_test() -> Result<(), Error> {
         salt: 0,
     };
     let client_id = ClientOperationId::new(unique_qualifier.clone());
+    let operation_id = OperationId::new(unique_qualifier);
     let action_state = ActionState {
-        id: OperationId::new(unique_qualifier),
+        id: operation_id.clone(),
         // Result is only populated if has_action_result.
         stage: ActionStage::Completed(ActionResult::default()),
     };
@@ -62,7 +63,7 @@ async fn action_state_any_url_test() -> Result<(), Error> {
         other => panic!("Expected Some(Result(Any)), got: {other:?}"),
     }
 
-    let action_state_round_trip: ActionState = operation.try_into()?;
+    let action_state_round_trip = ActionState::try_from_operation(operation, operation_id)?;
     assert_eq!(action_state, action_state_round_trip);
 
     Ok(())
