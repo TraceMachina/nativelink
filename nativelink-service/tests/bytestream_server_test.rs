@@ -18,6 +18,7 @@ use futures::poll;
 use futures::task::Poll;
 use hyper::body::Sender;
 use maplit::hashmap;
+use nativelink_config::cas_server::ByteStreamConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
@@ -67,6 +68,7 @@ fn make_bytestream_server(store_manager: &StoreManager) -> Result<ByteStreamServ
             },
             persist_stream_on_disconnect_timeout: 0,
             max_bytes_per_stream: 1024,
+            max_decoding_message_size: 1024,
         },
         store_manager,
     )
@@ -1007,5 +1009,67 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
         .await
         .err_tip(|| "Failed to join")?
         .err_tip(|| "Failed write")?;
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn test_configured_limits() -> Result<(), Box<dyn std::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let _config = ByteStreamConfig {
+        max_bytes_per_stream: 1024,
+        max_decoding_message_size: 128 * 1024 * 1024, // 128MB.
+        cas_stores: {
+            let mut map = std::collections::HashMap::new();
+            map.insert("main_cas".to_string(), (1024 * 1024 * 1024).to_string()); // 1 GB
+            map
+        },
+        persist_stream_on_disconnect_timeout: 100000,
+    };
+    let bs_server = Arc::new(make_bytestream_server(store_manager.as_ref())?);
+
+    // Create a large message that exceeds our custom limit, proving that the limit is enforced.
+    let large_data = vec![0u8; 130 * 1024 * 1024]; // 130 MB, barely over the limit
+
+    let resource_name = format!(
+        "{}/uploads/{}/blobs/{}/{}",
+        INSTANCE_NAME,
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b",
+        HASH1,
+        large_data.len()
+    );
+
+    // Setup stream.
+    let (mut tx, join_handle) = {
+        let (tx, body) = Body::channel();
+        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
+        let stream =
+            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+
+        let bs_server_clone = bs_server.clone();
+        let join_handle = spawn!("test_configured_limits_negative_write_stream", async move {
+            let response_future = bs_server_clone.write(Request::new(stream));
+            response_future.await
+        });
+        (tx, join_handle)
+    };
+
+    let write_request = WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: large_data.into(),
+    };
+
+    tx.send_data(encode_stream_proto(&write_request)?).await?;
+    drop(tx);
+
+    let result = join_handle.await.err_tip(|| "Failed to join")?;
+
+    // Checking that the write was unsuccessful due to message size limit
+    assert!(
+        result.is_err(),
+        "Expected failure due to message size exceeding limit"
+    );
+
     Ok(())
 }
