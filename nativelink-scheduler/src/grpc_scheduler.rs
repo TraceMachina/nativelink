@@ -28,7 +28,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionState, DEFAULT_EXECUTION_PRIORITY
+    ActionInfo, ActionState, ClientOperationId, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::retry::{Retrier, RetryResult};
@@ -44,7 +44,6 @@ use tracing::{event, Level};
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::scheduler_state::state_manager::ClientOperationId;
 
 pub struct GrpcScheduler {
     platform_property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
@@ -113,12 +112,13 @@ impl GrpcScheduler {
 
     async fn stream_state(
         mut result_stream: Streaming<Operation>,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         if let Some(initial_response) = result_stream
             .message()
             .await
             .err_tip(|| "Recieving response from upstream scheduler")?
         {
+            let client_operation_id = ClientOperationId::from_operation(&initial_response);
             let (tx, rx) = watch::channel(Arc::new(initial_response.try_into()?));
             background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
@@ -159,7 +159,7 @@ impl GrpcScheduler {
                     )
                 }
             });
-            return Ok(rx);
+            return Ok((client_operation_id, rx));
         }
         Err(make_err!(
             Code::Internal,
@@ -220,7 +220,7 @@ impl ActionScheduler for GrpcScheduler {
     async fn add_action(
         &self,
         action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {
             None
         } else {
@@ -280,7 +280,7 @@ impl ActionScheduler for GrpcScheduler {
             .and_then(|result_stream| Self::stream_state(result_stream.into_inner()))
             .await;
         match result_stream {
-            Ok(result_stream) => Ok(Some(result_stream)),
+            Ok(result_stream) => Ok(Some(result_stream.1)),
             Err(err) => {
                 event!(
                     Level::WARN,

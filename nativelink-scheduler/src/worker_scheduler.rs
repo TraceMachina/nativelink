@@ -48,7 +48,7 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     ) -> Result<(), Error>;
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
-    async fn remove_worker(&self, worker_id: WorkerId);
+    async fn remove_worker(&self, worker_id: WorkerId) -> Result<(), Error>;
 
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.

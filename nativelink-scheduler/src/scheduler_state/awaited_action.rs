@@ -17,7 +17,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use nativelink_error::Error;
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId,
 };
@@ -42,7 +41,7 @@ struct SortInfo {
 /// get the previous sort key and perform any additional operations
 /// that may be needed after the sort key has been updated without allowing
 /// anyone else to read or modify the sort key until the caller is done.
-struct SortInfoLock<'a> {
+pub struct SortInfoLock<'a> {
     previous_sort_key: AwaitedActionSortKey,
     new_sort_info: ReadOrWriteGuard<'a, SortInfo>,
 }
@@ -75,10 +74,6 @@ pub struct AwaitedAction {
 
     /// Number of attempts the job has been tried.
     attempts: AtomicUsize,
-
-    /// Possible last error set by the worker. If empty and attempts is set, it may be due to
-    /// something like a worker timeout.
-    last_error: RwLock<Option<Error>>,
 
     /// The time the action was last updated.
     last_updated_timestamp: AtomicU64,
@@ -119,7 +114,6 @@ impl AwaitedAction {
                 notify_channel: tx,
                 sort_info,
                 attempts: AtomicUsize::new(0),
-                last_error: RwLock::new(None),
                 last_updated_timestamp: AtomicU64::new(SystemTime::now().unix_timestamp()),
                 worker_id: RwLock::new(None),
             },
@@ -128,10 +122,10 @@ impl AwaitedAction {
         )
     }
 
-    /// Gets the action info.
-    pub fn get_action_info(&self) -> &Arc<ActionInfo> {
-        &self.action_info
-    }
+    // /// Gets the action info.
+    // pub fn get_action_info(&self) -> &Arc<ActionInfo> {
+    //     &self.action_info
+    // }
 
     /// Updates the timestamp of the action.
     fn update_timestamp(&self) {
@@ -187,26 +181,10 @@ impl AwaitedAction {
         self.attempts.fetch_add(1, Ordering::Release);
     }
 
-    /// Subtracts one from the number of attempts the action has been tried.
-    pub fn dec_attempts(&self) {
-        self.attempts.fetch_sub(1, Ordering::Release);
-    }
-
-    /// Gets the last error (if any) that this action has caused.
-    /// This is usually set by the worker if there was some internal error
-    /// but a retry is still possible.
-    pub fn get_last_error(&self) -> Option<Error> {
-        self.last_error.read().clone()
-    }
-
-    /// Sets the last error that this action has caused.
-    /// This is usually set by the worker if there was some internal error
-    /// but a retry is still possible.
-    pub fn set_last_error(&self, error: Error) {
-        self.update_timestamp();
-        let mut last_error = self.last_error.write();
-        *last_error = Some(error);
-    }
+    // /// Subtracts one from the number of attempts the action has been tried.
+    // pub fn dec_attempts(&self) {
+    //     self.attempts.fetch_sub(1, Ordering::Release);
+    // }
 
     /// Gets the worker id that is currently processing this action.
     pub fn get_worker_id(&self) -> Option<WorkerId> {
@@ -214,10 +192,10 @@ impl AwaitedAction {
     }
 
     /// Sets the worker id that is currently processing this action.
-    pub fn set_worker_id(&self, new_worker_id: WorkerId) {
+    pub fn set_worker_id(&self, new_worker_id: Option<WorkerId>) {
         self.update_timestamp();
         let mut worker_id = self.worker_id.write();
-        *worker_id = Some(new_worker_id);
+        *worker_id = new_worker_id;
     }
 
     /// Gets the current state of the action.
@@ -357,11 +335,6 @@ impl MetricsComponent for AwaitedAction {
             "attempts",
             &self.get_attempts(),
             "The number of attempts this action has tried.",
-        );
-        c.publish(
-            "last_error",
-            &format!("{:?}", self.get_last_error()),
-            "The last error this action caused from a retry (if any).",
         );
         c.publish(
             "worker_id",

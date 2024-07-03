@@ -18,19 +18,19 @@ use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error};
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
+use nativelink_util::action_messages::{ActionInfo, ActionState, ClientOperationId};
 use tokio::sync::{mpsc, watch, Mutex};
 
 #[allow(clippy::large_enum_variant)]
 enum ActionSchedulerCalls {
     GetPlatformPropertyManager(String),
     AddAction(ActionInfo),
-    FindExistingAction(ActionInfoHashKey),
+    FindExistingAction(ClientOperationId),
 }
 
 enum ActionSchedulerReturns {
     GetPlatformPropertyManager(Result<Arc<PlatformPropertyManager>, Error>),
-    AddAction(Result<watch::Receiver<Arc<ActionState>>, Error>),
+    AddAction(Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error>),
     FindExistingAction(Result<Option<watch::Receiver<Arc<ActionState>>>, Error>),
 }
 
@@ -81,7 +81,7 @@ impl MockActionScheduler {
 
     pub async fn expect_add_action(
         &self,
-        result: Result<watch::Receiver<Arc<ActionState>>, Error>,
+        result: Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error>,
     ) -> ActionInfo {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::AddAction(req) = rx_call_lock
@@ -101,7 +101,7 @@ impl MockActionScheduler {
     pub async fn expect_find_existing_action(
         &self,
         result: Result<Option<watch::Receiver<Arc<ActionState>>>, Error>,
-    ) -> ActionInfoHashKey {
+    ) -> ClientOperationId {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::FindExistingAction(req) = rx_call_lock
             .recv()
@@ -143,7 +143,7 @@ impl ActionScheduler for MockActionScheduler {
     async fn add_action(
         &self,
         action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         self.tx_call
             .send(ActionSchedulerCalls::AddAction(action_info))
             .expect("Could not send request to mpsc");
@@ -160,11 +160,11 @@ impl ActionScheduler for MockActionScheduler {
 
     async fn find_existing_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
         self.tx_call
             .send(ActionSchedulerCalls::FindExistingAction(
-                unique_qualifier.clone(),
+                client_operation_id.clone(),
             ))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;

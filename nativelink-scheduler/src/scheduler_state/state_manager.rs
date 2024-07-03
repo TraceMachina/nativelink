@@ -21,12 +21,11 @@ use async_trait::async_trait;
 use hashbrown::HashMap;
 use nativelink_error::{make_err, Code, Error};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
-    OperationId, WorkerId,
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId,
+    ExecutionMetadata, OperationId, WorkerId,
 };
 use tokio::sync::Notify;
 use tracing::{event, Level};
-use uuid::Uuid;
 
 use crate::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -37,15 +36,6 @@ use crate::scheduler_state::client_action_state_result::ClientActionStateResult;
 use crate::scheduler_state::metrics::Metrics;
 
 use super::awaited_action::AwaitedActionSortKey;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ClientOperationId(Uuid);
-
-impl ToString for ClientOperationId {
-    fn to_string(&self) -> String {
-        self.0.to_string()
-    }
-}
 
 #[derive(Debug, Clone)]
 struct SortedAwaitedAction {
@@ -104,13 +94,14 @@ pub struct AwaitedActionDb {
 }
 
 impl AwaitedActionDb {
-    fn get_by_client_operation_id(
-        &self,
-        client_operation_id: &ClientOperationId,
-    ) -> Option<&Arc<AwaitedAction>> {
-        self.client_operation_to_awaited_action
-            .get(client_operation_id)
-    }
+    // TODO(UNUSED!)
+    // fn get_by_client_operation_id(
+    //     &self,
+    //     client_operation_id: &ClientOperationId,
+    // ) -> Option<&Arc<AwaitedAction>> {
+    //     self.client_operation_to_awaited_action
+    //         .get(client_operation_id)
+    // }
 
     fn get_by_operation_id(&self, operation_id: &OperationId) -> Option<&Arc<AwaitedAction>> {
         self.operation_id_to_awaited_action.get(operation_id)
@@ -176,7 +167,7 @@ impl AwaitedActionDb {
     fn set_action_state(
         &mut self,
         awaited_action: Arc<AwaitedAction>,
-        action_state: Arc<ActionState>,
+        new_action_state: Arc<ActionState>,
     ) -> bool {
         // We need to first get a lock on the awaited action to ensure
         // another operation doesn't update it while we are looking up
@@ -184,9 +175,9 @@ impl AwaitedActionDb {
         let sort_info = awaited_action.get_sort_info();
         let old_state = awaited_action.get_current_state();
 
-        let has_listeners = awaited_action.set_current_state(action_state.clone());
+        let has_listeners = awaited_action.set_current_state(new_action_state.clone());
 
-        if !old_state.stage.is_same_stage(&action_state.stage) {
+        if !old_state.stage.is_same_stage(&new_action_state.stage) {
             let sort_key = sort_info.get_previous_sort_key();
             let btree = self.get_sort_map_for_state(&old_state.stage);
             drop(sort_info);
@@ -203,14 +194,18 @@ impl AwaitedActionDb {
                 return false;
             };
 
-            self.insert_sort_map_for_stage(&action_state.stage, sorted_awaited_action);
+            self.insert_sort_map_for_stage(&new_action_state.stage, sorted_awaited_action);
         }
         has_listeners
     }
 
-    fn subscribe_or_add_action(&mut self, action_info: ActionInfo) -> Arc<ClientActionStateResult> {
+    fn subscribe_or_add_action(
+        &mut self,
+        new_client_operation_id: ClientOperationId,
+        action_info: ActionInfo,
+    ) -> Arc<ClientActionStateResult> {
         // Check to see if the action is already known and subscribe if it is.
-        let action_info = match self.try_subscribe(action_info) {
+        let action_info = match self.try_subscribe(&new_client_operation_id, action_info) {
             Ok(subscription) => return subscription,
             Err(action_info) => Arc::new(action_info),
         };
@@ -218,6 +213,8 @@ impl AwaitedActionDb {
         let (awaited_action, sort_key, subscription) =
             AwaitedAction::new_with_subscription(action_info.clone());
         let awaited_action = Arc::new(awaited_action);
+        self.client_operation_to_awaited_action
+            .insert(new_client_operation_id, awaited_action.clone());
         self.action_info_hash_key_to_awaited_action
             .insert(action_info.unique_qualifier.clone(), awaited_action.clone());
 
@@ -233,8 +230,12 @@ impl AwaitedActionDb {
 
     fn try_subscribe(
         &mut self,
+        client_operation_id: &ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<Arc<ClientActionStateResult>, ActionInfo> {
+        if action_info.skip_cache_lookup {
+            return Err(action_info);
+        }
         let Some(awaited_action) = self
             .action_info_hash_key_to_awaited_action
             .get(&action_info.unique_qualifier)
@@ -264,6 +265,10 @@ impl AwaitedActionDb {
         }
 
         let subscription = awaited_action.subscribe();
+
+        self.client_operation_to_awaited_action
+            .insert(client_operation_id.clone(), awaited_action);
+
         Ok(Arc::new(ClientActionStateResult::new(subscription)))
     }
 }
@@ -372,11 +377,11 @@ pub(crate) struct StateManagerImpl {
 //     }
 // }
 
-/// Modifies the `priority` of `action_info` within `ActionInfo`.
-///
-fn mutate_priority(action_info: &mut Arc<ActionInfo>, priority: i32) {
-    Arc::make_mut(action_info).priority = priority;
-}
+// /// Modifies the `priority` of `action_info` within `ActionInfo`.
+// ///
+// fn mutate_priority(action_info: &mut Arc<ActionInfo>, priority: i32) {
+//     Arc::make_mut(action_info).priority = priority;
+// }
 
 impl StateManagerImpl {
     // /// Marks the specified action as active, assigns it to the given worker, and updates the
@@ -585,10 +590,8 @@ impl StateManagerImpl {
                 // Don't count a backpressure failure as an attempt for an action.
                 let due_to_backpressure = err.code == Code::ResourceExhausted;
                 if due_to_backpressure {
-                    awaited_action.dec_attempts();
+                    awaited_action.inc_attempts();
                 }
-
-                awaited_action.set_last_error(err.clone());
 
                 if awaited_action.get_attempts() >= self.max_job_retries {
                     ActionStage::Completed(ActionResult {
@@ -607,6 +610,7 @@ impl StateManagerImpl {
                 }
             }
         };
+        awaited_action.set_worker_id(maybe_worker_id.map(|w| w.clone()));
         let has_listeners = self.action_db.set_action_state(
             awaited_action.clone(),
             Arc::new(ActionState {
@@ -630,9 +634,12 @@ impl StateManagerImpl {
 
     fn inner_add_operation(
         &mut self,
+        new_client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<Arc<dyn ActionStateResult>, Error> {
-        let subscription = self.action_db.subscribe_or_add_action(action_info);
+        let subscription = self
+            .action_db
+            .subscribe_or_add_action(new_client_operation_id, action_info);
         self.tasks_change_notify.notify_one();
         return Ok(subscription);
     }
@@ -642,10 +649,11 @@ impl StateManagerImpl {
 impl ClientStateManager for StateManager {
     async fn add_action(
         &self,
+        new_client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<Arc<dyn ActionStateResult>, Error> {
         let mut inner = self.inner.lock().await;
-        inner.inner_add_operation(action_info)
+        inner.inner_add_operation(new_client_operation_id, action_info)
     }
 
     async fn filter_operations(

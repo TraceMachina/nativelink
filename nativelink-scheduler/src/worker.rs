@@ -140,7 +140,9 @@ impl Worker {
     /// Notifies the worker of a requested state change.
     pub fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
         match worker_update {
-            WorkerUpdate::RunAction((operation_id, action_info)) => self.run_action(operation_id, action_info),
+            WorkerUpdate::RunAction((operation_id, action_info)) => {
+                self.run_action(operation_id, action_info)
+            }
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
                 send_msg_to_worker(&mut self.tx, update_for_worker::Update::Disconnect(()))
@@ -157,12 +159,17 @@ impl Worker {
         })
     }
 
-    fn run_action(&mut self, operation_id: OperationId, action_info: Arc<ActionInfo>) -> Result<(), Error> {
+    fn run_action(
+        &mut self,
+        operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<(), Error> {
         let tx = &mut self.tx;
         let worker_platform_properties = &mut self.platform_properties;
         let running_action_infos = &mut self.running_action_infos;
         self.metrics.run_action.wrap(move || {
             let action_info_clone = action_info.as_ref().clone();
+            let operation_id_string = operation_id.to_string();
             running_action_infos.insert(operation_id, action_info.clone());
             reduce_platform_properties(
                 worker_platform_properties,
@@ -172,7 +179,7 @@ impl Worker {
                 tx,
                 update_for_worker::Update::StartAction(StartExecute {
                     execute_request: Some(action_info_clone.into()),
-                    salt: *action_info.salt(),
+                    operation_id: operation_id_string,
                     queued_timestamp: Some(action_info.insert_timestamp.into()),
                 }),
             )
@@ -180,10 +187,12 @@ impl Worker {
     }
 
     pub fn complete_action(&mut self, operation_id: &OperationId) -> Result<(), Error> {
-        let action_info = self
-            .running_action_infos
-            .remove(operation_id)
-            .err_tip(|| format!("Worker {} tried to complete operation {} that was not running", self.id, operation_id))?;
+        let action_info = self.running_action_infos.remove(operation_id).err_tip(|| {
+            format!(
+                "Worker {} tried to complete operation {} that was not running",
+                self.id, operation_id
+            )
+        })?;
         self.restore_platform_properties(&action_info.platform_properties);
         self.is_paused = false;
         self.metrics.actions_completed.inc();

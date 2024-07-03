@@ -45,6 +45,33 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
 pub type WorkerTimestamp = u64;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ClientOperationId(String);
+
+impl ClientOperationId {
+    pub fn new(unique_qualifier: ActionInfoHashKey) -> Self {
+        Self(OperationId::new(unique_qualifier).to_string())
+    }
+
+    pub fn from_raw_string(name: String) -> Self {
+        Self(name)
+    }
+
+    pub fn from_operation(operation: &Operation) -> Self {
+        Self(operation.name.clone())
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl ToString for ClientOperationId {
+    fn to_string(&self) -> String {
+        self.0.clone()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationId {
     pub unique_qualifier: ActionInfoHashKey,
@@ -1174,26 +1201,18 @@ impl ActionState {
     pub fn action_digest(&self) -> &DigestInfo {
         &self.id.unique_qualifier.digest
     }
-}
 
-impl MetricsComponent for ActionState {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish("stage", &self.stage, "");
-    }
-}
+    pub fn as_operation(&self, client_operation_id: ClientOperationId) -> Operation {
+        let stage = Into::<execution_stage::Value>::into(&self.stage) as i32;
+        let name = client_operation_id.to_string();
 
-impl From<ActionState> for Operation {
-    fn from(val: ActionState) -> Self {
-        let stage = Into::<execution_stage::Value>::into(&val.stage) as i32;
-        let name = val.id.to_string();
-
-        let result = if val.stage.has_action_result() {
-            let execute_response: ExecuteResponse = val.stage.into();
+        let result = if self.stage.has_action_result() {
+            let execute_response: ExecuteResponse = self.stage.clone().into();
             Some(LongRunningResult::Response(to_any(&execute_response)))
         } else {
             None
         };
-        let digest = Some(val.id.unique_qualifier.digest.into());
+        let digest = Some(self.id.unique_qualifier.digest.into());
 
         let metadata = ExecuteOperationMetadata {
             stage,
@@ -1204,11 +1223,17 @@ impl From<ActionState> for Operation {
             partial_execution_metadata: None,
         };
 
-        Self {
+        Operation {
             name,
             metadata: Some(to_any(&metadata)),
             done: result.is_some(),
             result,
         }
+    }
+}
+
+impl MetricsComponent for ActionState {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish("stage", &self.stage, "");
     }
 }

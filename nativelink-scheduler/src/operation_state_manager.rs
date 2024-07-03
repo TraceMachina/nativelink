@@ -21,7 +21,8 @@ use bitflags::bitflags;
 use futures::Stream;
 use nativelink_error::Error;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId,
+    ActionInfo, ActionInfoHashKey, ActionStage, ActionState, ClientOperationId, OperationId,
+    WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use tokio::sync::watch;
@@ -102,6 +103,7 @@ pub trait ClientStateManager: Sync + Send + 'static {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
         &self,
+        client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<Arc<dyn ActionStateResult>, Error>;
 

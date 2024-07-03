@@ -23,12 +23,11 @@ use futures::{Future, Stream};
 use hashbrown::HashMap;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionStage, ActionState,
-    OperationId, WorkerId,
+    ActionInfo, ActionInfoHashKey, ActionStage, ActionState, ClientOperationId, OperationId,
+    WorkerId,
 };
 use nativelink_util::metrics_utils::{
-    AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper,
-    MetricsComponent, Registry,
+    AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
 };
 use nativelink_util::platform_properties::PlatformPropertyValue;
 use nativelink_util::spawn;
@@ -45,7 +44,7 @@ use crate::operation_state_manager::{
 };
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::scheduler_state::metrics::Metrics as SchedulerMetrics;
-use crate::scheduler_state::state_manager::{ClientOperationId, StateManager};
+use crate::scheduler_state::state_manager::StateManager;
 use crate::scheduler_state::workers::Workers;
 use crate::worker::{Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
@@ -87,9 +86,17 @@ impl SimpleSchedulerImpl {
     async fn add_action(
         &mut self,
         action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-        let add_action_result = self.state_manager.add_action(action_info).await?;
-        add_action_result.as_receiver().await.cloned()
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
+        let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
+        let add_action_result = self
+            .state_manager
+            .add_action(client_operation_id.clone(), action_info)
+            .await?;
+        add_action_result
+            .as_receiver()
+            .await
+            .cloned()
+            .map(|receiver| (client_operation_id, receiver))
     }
 
     async fn clean_recently_completed_actions(&mut self) {
@@ -105,7 +112,7 @@ impl SimpleSchedulerImpl {
         //     .retain(|action| action.completed_time > expiry_time);
     }
 
-    async fn find_recently_completed_action(
+    async fn _find_recently_completed_action(
         &self,
         _unique_qualifier: &ActionInfoHashKey,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
@@ -134,7 +141,7 @@ impl SimpleSchedulerImpl {
         //     .map(|action| watch::channel(action.state.clone()).1))
     }
 
-    async fn find_existing_action(
+    async fn _find_existing_action(
         &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
@@ -232,11 +239,12 @@ impl SimpleSchedulerImpl {
     // }
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
-    fn immediate_evict_worker(
+    async fn immediate_evict_worker(
         &mut self,
         worker_id: &WorkerId,
         err: Error,
-    ) {
+    ) -> Result<(), Error> {
+        let mut result = Ok(());
         if let Some(mut worker) = self.workers.remove_worker(worker_id) {
             self.metrics.workers_evicted.inc();
             // We don't care if we fail to send message to worker, this is only a best attempt.
@@ -245,17 +253,21 @@ impl SimpleSchedulerImpl {
             // path touching the worker.running_action_infos elsewhere.
             for (operation_id, _) in worker.running_action_infos.drain() {
                 self.metrics.workers_evicted_with_running_action.inc();
-                <StateManager as WorkerStateManager>::update_operation(
-                    &self.state_manager,
-                    &operation_id,
-                    &worker_id,
-                    Err(err.clone()),
+                result = result.merge(
+                    <StateManager as WorkerStateManager>::update_operation(
+                        &self.state_manager,
+                        &operation_id,
+                        &worker_id,
+                        Err(err.clone()),
+                    )
+                    .await,
                 );
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
         // TODO(allada) This should be moved to inside the Workers struct.
         self.workers.worker_change_notify.notify_one();
+        result
     }
 
     /// Sets if the worker is draining or not.
@@ -312,8 +324,8 @@ impl SimpleSchedulerImpl {
                     "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
                 );
 
-                self.immediate_evict_worker(&worker_id, err.clone());
-                return Err(err);
+                return Result::<(), _>::Err(err.clone())
+                    .merge(self.immediate_evict_worker(&worker_id, err).await);
             }
         }
         Ok(())
@@ -394,12 +406,14 @@ impl SimpleSchedulerImpl {
                     )
                     .await;
 
-                    if let Err(e) = ret {
-                        self.immediate_evict_worker(&worker_id, e.clone());
+                    if let Err(err) = ret {
+                        let evict_worker_result =
+                            self.immediate_evict_worker(&worker_id, err.clone()).await;
 
                         event!(
                             Level::ERROR,
-                            ?e,
+                            ?err,
+                            ?evict_worker_result,
                             "update operation failed for {}",
                             operation_id
                         );
@@ -439,8 +453,8 @@ impl SimpleSchedulerImpl {
                 Code::Internal,
                 "Operation {operation_id} should be running on worker {worker_id} in SimpleSchedulerImpl::update_action"
             );
-            self.immediate_evict_worker(worker_id, err.clone());
-            return Err(err);
+            return Result::<(), _>::Err(err.clone())
+                .merge(self.immediate_evict_worker(worker_id, err).await);
         }
         let due_to_backpressure = action_stage
             .as_ref()
@@ -453,20 +467,22 @@ impl SimpleSchedulerImpl {
         )
         .await
         .err_tip(|| "in update_operation on SimpleSchedulerImpl::update_action");
-        if let Err(e) = update_operation_res {
-            self.immediate_evict_worker(worker_id, e.clone());
+        if let Err(err) = update_operation_res {
+            let result = Result::<(), _>::Err(err.clone())
+                .merge(self.immediate_evict_worker(worker_id, err).await);
 
             event!(
                 Level::ERROR,
                 ?operation_id,
                 ?worker_id,
-                ?e,
+                ?result,
                 "Failed to update_operation on update_action"
             );
-            return Err(e);
+            return result;
         }
 
-        let todo_handle_this_result = match action_stage {
+        // TODO(HANDLE THIS!!!)
+        let _todo_handle_this_result = match action_stage {
             Ok(_) => worker.complete_action(operation_id),
             Err(err) => {
                 // Clear this action from the current worker.
@@ -474,19 +490,21 @@ impl SimpleSchedulerImpl {
                 // This unpauses, but since we're completing with an error, don't
                 // unpause unless all actions have completed.
                 // Note: We need to run this before dealing with backpressure logic.
-                worker.complete_action(operation_id);
+                let complete_action_res = worker.complete_action(operation_id);
                 // Only pause if there's an action still waiting that will unpause.
                 if (was_paused || due_to_backpressure) && worker.has_actions() {
                     worker.is_paused = true;
                 }
 
-                <StateManager as WorkerStateManager>::update_operation(
-                    &self.state_manager,
-                    operation_id,
-                    worker_id,
-                    Err(err.clone()),
+                complete_action_res.merge(
+                    <StateManager as WorkerStateManager>::update_operation(
+                        &self.state_manager,
+                        operation_id,
+                        worker_id,
+                        Err(err.clone()),
+                    )
+                    .await,
                 )
-                .await
             }
         };
 
@@ -656,7 +674,7 @@ impl ActionScheduler for SimpleScheduler {
     async fn add_action(
         &self,
         action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         let mut inner = self.get_inner_lock().await;
         self.metrics
             .add_action
@@ -711,18 +729,23 @@ impl WorkerScheduler for SimpleScheduler {
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id;
         let mut inner_scheduler = self.get_inner_lock().await;
-        self.metrics.add_worker.wrap(move || {
-            inner_scheduler
-                .workers
-                .add_worker(worker)
-                .err_tip(|| "Error while adding worker, removing from pool")
-                .inspect_err(|err| {
-                    inner_scheduler.immediate_evict_worker(
-                        &worker_id,
-                        err.clone(),
+        self.metrics
+            .add_worker
+            .wrap(async move {
+                let result = inner_scheduler
+                    .workers
+                    .add_worker(worker)
+                    .err_tip(|| "Error while adding worker, removing from pool");
+                if let Err(err) = result {
+                    return Result::<(), _>::Err(err.clone()).merge(
+                        inner_scheduler
+                            .immediate_evict_worker(&worker_id, err)
+                            .await,
                     );
-                })
-        })
+                }
+                Ok(())
+            })
+            .await
     }
 
     async fn update_action(
@@ -750,12 +773,14 @@ impl WorkerScheduler for SimpleScheduler {
             .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
     }
 
-    async fn remove_worker(&self, worker_id: WorkerId) {
+    async fn remove_worker(&self, worker_id: WorkerId) -> Result<(), Error> {
         let mut inner_scheduler = self.get_inner_lock().await;
-        inner_scheduler.immediate_evict_worker(
-            &worker_id,
-            make_err!(Code::Internal, "Received request to remove worker"),
-        );
+        inner_scheduler
+            .immediate_evict_worker(
+                &worker_id,
+                make_err!(Code::Internal, "Received request to remove worker"),
+            )
+            .await
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
@@ -764,6 +789,7 @@ impl WorkerScheduler for SimpleScheduler {
         self.metrics
             .remove_timedout_workers
             .wrap(async move {
+                let mut result = Ok(());
                 // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
                 // map most of the time.
                 let worker_ids_to_remove: Vec<WorkerId> = inner_scheduler
@@ -785,16 +811,20 @@ impl WorkerScheduler for SimpleScheduler {
                         ?worker_id,
                         "Worker timed out, removing from pool"
                     );
-                    inner_scheduler.immediate_evict_worker(
-                        worker_id,
-                        make_err!(
-                            Code::Internal,
-                            "Worker {worker_id} timed out, removing from pool"
-                        ),
+                    result = result.merge(
+                        inner_scheduler
+                            .immediate_evict_worker(
+                                worker_id,
+                                make_err!(
+                                    Code::Internal,
+                                    "Worker {worker_id} timed out, removing from pool"
+                                ),
+                            )
+                            .await,
                     );
                 }
 
-                Ok(())
+                result
             })
             .await
     }
@@ -916,7 +946,7 @@ struct Metrics {
     retry_action_max_attempts_reached: CounterWithTime,
     retry_action_no_more_listeners: CounterWithTime,
     retry_action_but_action_missing: CounterWithTime,
-    add_worker: FuncCounterWrapper,
+    add_worker: AsyncCounterWrapper,
     timedout_workers: CounterWithTime,
     lock_stall_time: AtomicU64,
     lock_stall_time_counter: AtomicU64,

@@ -26,7 +26,7 @@ pub struct MatchingEngineActionStateResult {
     action_state: watch::Receiver<Arc<ActionState>>,
 }
 impl MatchingEngineActionStateResult {
-    pub(crate) fn new(
+    pub(crate) fn _new(
         action_info: Arc<ActionInfo>,
         action_state: watch::Receiver<Arc<ActionState>>,
     ) -> Self {

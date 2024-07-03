@@ -16,14 +16,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfo, ActionState};
+use nativelink_util::action_messages::{ActionInfo, ActionState, ClientOperationId};
 use nativelink_util::metrics_utils::Registry;
 use tokio::sync::watch;
 
 use crate::platform_property_manager::PlatformPropertyManager;
-// TODO! This should not live in state_manager!!!!!
-// DO NOT LET THIS LAND THIS WAY!!!!
-use crate::scheduler_state::state_manager::ClientOperationId;
 
 /// ActionScheduler interface is responsible for interactions between the scheduler
 /// and action related operations.
@@ -39,7 +36,7 @@ pub trait ActionScheduler: Sync + Send + Unpin {
     async fn add_action(
         &self,
         action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error>;
 
     /// Find an existing action by its name.
     async fn find_existing_action(

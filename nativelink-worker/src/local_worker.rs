@@ -232,7 +232,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             self.metrics.start_actions_received.inc();
 
                             let execute_request = start_execute.execute_request.as_ref();
-                            let salt = start_execute.salt;
+                            let operation_id = start_execute.operation_id.clone();
                             let maybe_instance_name = execute_request.map(|v| v.instance_name.clone());
                             let action_digest = execute_request.and_then(|v| v.action_digest.clone());
                             let digest_hasher = execute_request
@@ -303,8 +303,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                                 ExecuteResult{
                                                     worker_id,
                                                     instance_name,
-                                                    action_digest,
-                                                    salt,
+                                                    operation_id,
                                                     digest_function: digest_hasher.proto_digest_func().into(),
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
                                                 }
@@ -316,8 +315,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             grpc_client.execution_response(ExecuteResult{
                                                 worker_id,
                                                 instance_name,
-                                                action_digest,
-                                                salt,
+                                                operation_id,
                                                 digest_function: digest_hasher.proto_digest_func().into(),
                                                 result: Some(execute_result::Result::InternalError(e.into())),
                                             }).await.err_tip(|| "Error calling execution_response with error")?;

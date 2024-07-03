@@ -1733,7 +1733,7 @@ impl RunningActionsManagerImpl {
             let action_info = ActionInfo::try_from_action_and_execute_request_with_salt(
                 execute_request,
                 action,
-                start_execute.salt,
+                0, // TODO: salt is no longer needed.
                 load_start_timestamp,
                 queued_timestamp,
             )

@@ -28,7 +28,9 @@ use nativelink_macro::nativelink_test;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
-use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage, ActionState, OperationId};
+use nativelink_util::action_messages::{
+    ActionInfoHashKey, ActionStage, ActionState, ClientOperationId, OperationId,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformPropertyValue;
@@ -76,6 +78,8 @@ async fn add_action_adds_property() -> Result<(), Error> {
         name.clone(),
         PropertyType::exact,
     )])));
+    // TODO(this is wrong!)
+    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, action_info) = join!(
         context.modifier_scheduler.add_action(action_info),
         context
@@ -83,7 +87,7 @@ async fn add_action_adds_property() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(forward_watch_channel_rx)),
+            .expect_add_action(Ok((client_operation_id, forward_watch_channel_rx))),
     );
     assert_eq!(
         HashMap::from([(name, PlatformPropertyValue::Exact(value))]),
@@ -116,6 +120,8 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
         name.clone(),
         PropertyType::exact,
     )])));
+    // TODO(this is wrong!)
+    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, action_info) = join!(
         context.modifier_scheduler.add_action(action_info),
         context
@@ -123,7 +129,7 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(forward_watch_channel_rx)),
+            .expect_add_action(Ok((client_operation_id, forward_watch_channel_rx))),
     );
     assert_eq!(
         HashMap::from([(name, PlatformPropertyValue::Exact(replaced_value))]),
@@ -153,6 +159,8 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
         name.clone(),
         PropertyType::exact,
     )])));
+    // TODO(this is wrong!)
+    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, action_info) = join!(
         context.modifier_scheduler.add_action(action_info),
         context
@@ -160,7 +168,7 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(forward_watch_channel_rx)),
+            .expect_add_action(Ok((client_operation_id, forward_watch_channel_rx))),
     );
     assert_eq!(
         HashMap::from([(name, PlatformPropertyValue::Exact(value))]),
@@ -190,6 +198,8 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
         name,
         PropertyType::exact,
     )])));
+    // TODO(this is wrong!)
+    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, action_info) = join!(
         context.modifier_scheduler.add_action(action_info),
         context
@@ -197,7 +207,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(forward_watch_channel_rx)),
+            .expect_add_action(Ok((client_operation_id, forward_watch_channel_rx))),
     );
     assert_eq!(
         HashMap::from([]),
@@ -222,6 +232,8 @@ async fn add_action_property_remove() -> Result<(), Error> {
             stage: ActionStage::Queued,
         }));
     let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
+    // TODO(this is wrong!)
+    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, action_info) = join!(
         context.modifier_scheduler.add_action(action_info),
         context
@@ -229,7 +241,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(forward_watch_channel_rx)),
+            .expect_add_action(Ok((client_operation_id, forward_watch_channel_rx))),
     );
     assert_eq!(
         HashMap::from([]),
@@ -241,20 +253,20 @@ async fn add_action_property_remove() -> Result<(), Error> {
 #[nativelink_test]
 async fn find_existing_action_call_passed() -> Result<(), Error> {
     let context = make_modifier_scheduler(vec![]);
-    let action_name = ActionInfoHashKey {
+    let operation_id = ClientOperationId::new(ActionInfoHashKey {
         instance_name: "instance".to_string(),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new([8; 32], 1),
         salt: 1000,
-    };
-    let (actual_result, actual_action_name) = join!(
+    });
+    let (actual_result, actual_operation_id) = join!(
         context
             .modifier_scheduler
-            .find_existing_action(&action_name),
+            .find_existing_action(&operation_id),
         context.mock_scheduler.expect_find_existing_action(Ok(None)),
     );
     assert_eq!(true, actual_result.unwrap().is_none());
-    assert_eq!(action_name, actual_action_name);
+    assert_eq!(operation_id, actual_operation_id);
     Ok(())
 }
 
