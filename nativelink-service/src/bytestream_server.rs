@@ -199,8 +199,10 @@ impl ByteStreamServer {
         })
     }
 
+    /// The ByteStream service allows clients to specify a max size for the messages they send.
+    /// The default value is 128MB. This function allows you to set a different value.
     pub fn into_service(self) -> Server<Self> {
-        Server::new(self)
+        Server::new(self).max_decoding_message_size(128 * 1024 * 1024)
     }
 
     fn create_or_join_upload_stream(
