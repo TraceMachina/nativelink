@@ -14,46 +14,38 @@
 
 use std::sync::Arc;
 
+use async_lock::Mutex;
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId, WorkerId};
+use nativelink_util::metrics_utils::Registry;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::Notify;
+use tonic::async_trait;
 use tracing::{event, Level};
 
+use crate::platform_property_manager::PlatformPropertyManager;
+use crate::worker_scheduler::WorkerScheduler;
 use crate::{
     operation_state_manager::WorkerStateManager,
     worker::{Worker, WorkerTimestamp, WorkerUpdate},
 };
 
 /// A collection of workers that are available to run tasks.
-pub struct Workers {
+struct ApiWorkerSchedulerImpl {
     /// A `LruCache` of workers availabled based on `allocation_strategy`.
-    pub(crate) workers: LruCache<WorkerId, Worker>,
+    workers: LruCache<WorkerId, Worker>,
 
     /// The worker state manager.
     worker_state_manager: Arc<dyn WorkerStateManager>,
     /// The allocation strategy for workers.
-    pub(crate) allocation_strategy: WorkerAllocationStrategy,
+    allocation_strategy: WorkerAllocationStrategy,
     /// A channel to notify the matching engine that the worker pool has changed.
-    pub(crate) worker_change_notify: Arc<Notify>,
+    worker_change_notify: Arc<Notify>,
 }
 
-impl Workers {
-    pub(crate) fn new(
-        worker_state_manager: Arc<dyn WorkerStateManager>,
-        allocation_strategy: WorkerAllocationStrategy,
-        worker_change_notify: Arc<Notify>,
-    ) -> Self {
-        Self {
-            workers: LruCache::unbounded(),
-            worker_state_manager,
-            allocation_strategy,
-            worker_change_notify,
-        }
-    }
-
+impl ApiWorkerSchedulerImpl {
     /// Refreshes the lifetime of the worker with the given timestamp.
     pub(crate) fn refresh_lifetime(
         &mut self,
@@ -111,7 +103,11 @@ impl Workers {
     }
 
     /// Sets if the worker is draining or not.
-    pub async fn set_drain_worker(&mut self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
+    pub async fn set_drain_worker(
+        &mut self,
+        worker_id: &WorkerId,
+        is_draining: bool,
+    ) -> Result<(), Error> {
         let worker = self
             .workers
             .get_mut(&worker_id)
@@ -122,11 +118,7 @@ impl Workers {
         Ok(())
     }
 
-    // Attempts to find a worker that is capable of running this action.
-    // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
-    // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
-    // simulation of worst cases in a single threaded environment.
-    pub(crate) fn find_worker_for_action(
+    fn inner_find_worker_for_action(
         &self,
         platform_properties: &PlatformProperties,
     ) -> Option<WorkerId> {
@@ -160,11 +152,8 @@ impl Workers {
                 Code::Internal,
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
             );
-            return Result::<(), _>::Err(err.clone()).merge(
-                self
-                    .immediate_evict_worker(worker_id, err)
-                    .await,
-            );
+            return Result::<(), _>::Err(err.clone())
+                .merge(self.immediate_evict_worker(worker_id, err).await);
         }
 
         // Update the operation in the worker state manager.
@@ -175,11 +164,8 @@ impl Workers {
                 .await
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             if let Err(err) = update_operation_res {
-                let result = Result::<(), _>::Err(err.clone()).merge(
-                    self
-                        .immediate_evict_worker(worker_id, err)
-                        .await,
-                );
+                let result = Result::<(), _>::Err(err.clone())
+                    .merge(self.immediate_evict_worker(worker_id, err).await);
 
                 event!(
                     Level::ERROR,
@@ -217,7 +203,7 @@ impl Workers {
 
     /// Notifies the specified worker to run the given action and handles errors by evicting
     /// the worker if the notification fails.
-    pub async fn worker_notify_run_action(
+    async fn worker_notify_run_action(
         &mut self,
         worker_id: WorkerId,
         operation_id: OperationId,
@@ -241,10 +227,8 @@ impl Workers {
                     "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
                 );
 
-                return Result::<(), _>::Err(err.clone()).merge(
-                    self.immediate_evict_worker(&worker_id, err)
-                        .await,
-                );
+                return Result::<(), _>::Err(err.clone())
+                    .merge(self.immediate_evict_worker(&worker_id, err).await);
             }
         }
         Ok(())
@@ -274,5 +258,180 @@ impl Workers {
         // TODO(allada) This should be moved to inside the Workers struct.
         self.worker_change_notify.notify_one();
         result
+    }
+}
+
+pub struct ApiWorkerScheduler {
+    inner: Mutex<ApiWorkerSchedulerImpl>,
+    platform_property_manager: Arc<PlatformPropertyManager>,
+
+    /// Timeout of how long to evict workers if no response in this given amount of time in seconds.
+    worker_timeout_s: u64,
+}
+
+impl ApiWorkerScheduler {
+    pub fn new(
+        worker_state_manager: Arc<dyn WorkerStateManager>,
+        platform_property_manager: Arc<PlatformPropertyManager>,
+        allocation_strategy: WorkerAllocationStrategy,
+        worker_change_notify: Arc<Notify>,
+        worker_timeout_s: u64,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(ApiWorkerSchedulerImpl {
+                workers: LruCache::unbounded(),
+                worker_state_manager,
+                allocation_strategy,
+                worker_change_notify,
+            }),
+            platform_property_manager,
+            worker_timeout_s,
+        })
+    }
+
+    pub async fn worker_notify_run_action(
+        &self,
+        worker_id: WorkerId,
+        operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        inner
+            .worker_notify_run_action(worker_id, operation_id, action_info)
+            .await
+    }
+
+    /// Attempts to find a worker that is capable of running this action.
+    // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
+    // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
+    // simulation of worst cases in a single threaded environment.
+    pub async fn find_worker_for_action(
+        &self,
+        platform_properties: &PlatformProperties,
+    ) -> Option<WorkerId> {
+        let inner = self.inner.lock().await;
+        inner.inner_find_worker_for_action(platform_properties)
+    }
+
+    /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
+    #[must_use]
+    pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
+        let inner = self.inner.lock().await;
+        inner.workers.contains(worker_id)
+    }
+
+    /// A unit test function used to send the keep alive message to the worker from the server.
+    pub async fn send_keep_alive_to_worker_for_test(
+        &self,
+        worker_id: &WorkerId,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        let worker = inner.workers.get_mut(worker_id).ok_or_else(|| {
+            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
+        })?;
+        worker.keep_alive()
+    }
+}
+
+#[async_trait]
+impl WorkerScheduler for ApiWorkerScheduler {
+    fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
+        self.platform_property_manager.as_ref()
+    }
+
+    async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        let worker_id = worker.id;
+        let result = inner
+            .add_worker(worker)
+            .err_tip(|| "Error while adding worker, removing from pool");
+        if let Err(err) = result {
+            return Result::<(), _>::Err(err.clone())
+                .merge(inner.immediate_evict_worker(&worker_id, err).await);
+        }
+        Ok(())
+    }
+
+    async fn update_action(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        action_stage: Result<ActionStage, Error>,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        inner
+            .update_action(worker_id, operation_id, action_stage)
+            .await
+    }
+
+    async fn worker_keep_alive_received(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        inner
+            .refresh_lifetime(worker_id, timestamp)
+            .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
+    }
+
+    async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        inner
+            .immediate_evict_worker(
+                worker_id,
+                make_err!(Code::Internal, "Received request to remove worker"),
+            )
+            .await
+    }
+
+    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+
+        let mut result = Ok(());
+        // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
+        // map most of the time.
+        let worker_ids_to_remove: Vec<WorkerId> = inner
+            .workers
+            .iter()
+            .rev()
+            .map_while(|(worker_id, worker)| {
+                if worker.last_update_timestamp <= now_timestamp - self.worker_timeout_s {
+                    Some(*worker_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for worker_id in &worker_ids_to_remove {
+            event!(
+                Level::WARN,
+                ?worker_id,
+                "Worker timed out, removing from pool"
+            );
+            result = result.merge(
+                inner
+                    .immediate_evict_worker(
+                        worker_id,
+                        make_err!(
+                            Code::Internal,
+                            "Worker {worker_id} timed out, removing from pool"
+                        ),
+                    )
+                    .await,
+            );
+        }
+
+        result
+    }
+
+    async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        inner.set_drain_worker(worker_id, is_draining).await
+    }
+
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
+        // We do not register anything here because we only want to register metrics
+        // once and we rely on the `ActionScheduler::register_metrics()` to do that.
     }
 }

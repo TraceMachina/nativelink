@@ -15,10 +15,9 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use async_lock::Mutex;
 use async_trait::async_trait;
 use futures::{Future, Stream};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, ClientOperationId, OperationId, WorkerId,
 };
@@ -37,7 +36,7 @@ use crate::operation_state_manager::{
 };
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::scheduler_state::state_manager::StateManager;
-use crate::scheduler_state::workers::Workers;
+use crate::scheduler_state::workers::ApiWorkerScheduler;
 use crate::worker::{Worker, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
 
@@ -66,14 +65,11 @@ pub struct SimpleScheduler {
     _task_worker_matching_future: JoinHandleDropGuard<()>,
 
     /// The duration that actions are kept in recently_completed_actions for.
-    retain_completed_for: Duration,
-
-    /// Timeout of how long to evict workers if no response in this given amount of time in seconds.
-    worker_timeout_s: u64,
+    _retain_completed_for: Duration,
 
     /// A `Workers` pool that contains all workers that are available to execute actions in a priority
     /// order based on the allocation strategy.
-    workers: Mutex<Workers>,
+    workers: Arc<ApiWorkerScheduler>,
 }
 
 impl SimpleScheduler {
@@ -156,7 +152,7 @@ impl SimpleScheduler {
     async fn do_try_match(&self) -> Result<(), Error> {
         async fn match_action_to_worker(
             action_state_result: &dyn ActionStateResult,
-            workers: &mut Workers,
+            workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
         ) -> Result<(), Error> {
             let action_info = action_state_result
@@ -167,7 +163,7 @@ impl SimpleScheduler {
             // Try to find a worker for the action.
             let worker_id = {
                 let platform_properties = &action_info.platform_properties;
-                match workers.find_worker_for_action(platform_properties) {
+                match workers.find_worker_for_action(platform_properties).await {
                     Some(worker_id) => worker_id,
                     // If we could not find a worker for the action,
                     // we have nothing to do.
@@ -185,30 +181,15 @@ impl SimpleScheduler {
             };
 
             // Tell the matching engine that the operation is being assigned to a worker.
-            {
-                let assign_operation_result = matching_engine_state_manager
-                    .assign_operation(&operation_id, Ok(&worker_id))
-                    .await
-                    .err_tip(|| "Failed to assign operation in do_try_match");
-                if let Err(err) = assign_operation_result {
-                    return workers
-                        .immediate_evict_worker(&worker_id, err.clone())
-                        .await
-                        .err_tip(|| {
-                            format!("Update operation failed for {operation_id} in do_try_match")
-                        })
-                        .merge(Err(err));
-                }
-            }
+            matching_engine_state_manager
+                .assign_operation(&operation_id, Ok(&worker_id))
+                .await
+                .err_tip(|| "Failed to assign operation in do_try_match")?;
 
             // Notify the worker to run the action.
             {
                 workers
-                    .worker_notify_run_action(
-                        worker_id,
-                        operation_id,
-                        action_info,
-                    )
+                    .worker_notify_run_action(worker_id, operation_id, action_info)
                     .await
                     .err_tip(|| {
                         "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
@@ -218,7 +199,6 @@ impl SimpleScheduler {
 
         let mut result = Ok(());
 
-        let mut workers = self.workers.lock().await;
         let mut stream = self
             .get_queued_operations()
             .await
@@ -228,7 +208,7 @@ impl SimpleScheduler {
             result = result.merge(
                 match_action_to_worker(
                     action_state_result.as_ref(),
-                    &mut workers,
+                    self.workers.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
                 )
                 .await,
@@ -239,7 +219,9 @@ impl SimpleScheduler {
 }
 
 impl SimpleScheduler {
-    pub fn new(scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler) -> Arc<Self> {
+    pub fn new(
+        scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         Self::new_with_callback(scheduler_cfg, || {
             // The cost of running `do_try_match()` is very high, but constant
             // in relation to the number of changes that have happened. This means
@@ -258,7 +240,7 @@ impl SimpleScheduler {
     >(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
         on_matching_engine_run: F,
-    ) -> Arc<Self> {
+    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             scheduler_cfg
                 .supported_platform_properties
@@ -287,14 +269,23 @@ impl SimpleScheduler {
             max_job_retries,
         ));
 
-        Arc::new_cyclic(move |weak_self| -> Self {
+        let workers = ApiWorkerScheduler::new(
+            state_manager.clone(),
+            platform_property_manager.clone(),
+            scheduler_cfg.allocation_strategy,
+            tasks_or_worker_change_notify.clone(),
+            worker_timeout_s,
+        );
+
+        let workers_copy = workers.clone();
+
+        let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
-            let tasks_or_worker_change_notify_copy = tasks_or_worker_change_notify.clone();
             let task_worker_matching_future =
                 spawn!("simple_scheduler_task_worker_matching", async move {
                     // Break out of the loop only when the inner is dropped.
                     loop {
-                        tasks_or_worker_change_notify_copy.notified().await;
+                        tasks_or_worker_change_notify.notified().await;
                         let result = match weak_inner.upgrade() {
                             Some(scheduler) => scheduler.do_try_match().await,
                             // If the inner went away it means the scheduler is shutting
@@ -312,36 +303,13 @@ impl SimpleScheduler {
             SimpleScheduler {
                 matching_engine_state_manager: state_manager.clone(),
                 client_state_manager: state_manager.clone(),
-                retain_completed_for: Duration::new(retain_completed_for_s, 0),
-                worker_timeout_s,
-                workers: Mutex::new(Workers::new(
-                    state_manager.clone(),
-                    scheduler_cfg.allocation_strategy,
-                    tasks_or_worker_change_notify,
-                )),
+                _retain_completed_for: Duration::new(retain_completed_for_s, 0),
+                workers,
                 platform_property_manager,
                 _task_worker_matching_future: task_worker_matching_future,
             }
-        })
-    }
-
-    /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
-    #[must_use]
-    pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
-        let workers = self.workers.lock().await;
-        workers.workers.contains(worker_id)
-    }
-
-    /// A unit test function used to send the keep alive message to the worker from the server.
-    pub async fn send_keep_alive_to_worker_for_test(
-        &self,
-        worker_id: &WorkerId,
-    ) -> Result<(), Error> {
-        let mut workers = self.workers.lock().await;
-        let worker = workers.workers.get_mut(worker_id).ok_or_else(|| {
-            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
-        })?;
-        worker.keep_alive()
+        });
+        (action_scheduler, workers_copy)
     }
 }
 
@@ -385,23 +353,11 @@ impl ActionScheduler for SimpleScheduler {
 #[async_trait]
 impl WorkerScheduler for SimpleScheduler {
     fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
-        self.platform_property_manager.as_ref()
+        self.workers.get_platform_property_manager()
     }
 
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
-        let worker_id = worker.id;
-        let mut workers = self.workers.lock().await;
-        let result = workers
-            .add_worker(worker)
-            .err_tip(|| "Error while adding worker, removing from pool");
-        if let Err(err) = result {
-            return Result::<(), _>::Err(err.clone()).merge(
-                workers
-                    .immediate_evict_worker(&worker_id, err)
-                    .await,
-            );
-        }
-        Ok(())
+        self.workers.add_worker(worker).await
     }
 
     async fn update_action(
@@ -410,8 +366,8 @@ impl WorkerScheduler for SimpleScheduler {
         operation_id: &OperationId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
-        let mut workers = self.workers.lock().await;
-        workers.update_action(worker_id, operation_id, action_stage)
+        self.workers
+            .update_action(worker_id, operation_id, action_stage)
             .await
     }
 
@@ -420,69 +376,24 @@ impl WorkerScheduler for SimpleScheduler {
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        let mut workers = self.workers.lock().await;
-        workers
-            .refresh_lifetime(worker_id, timestamp)
-            .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
-    }
-
-    async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        let mut workers = self.workers.lock().await;
-        workers
-            .immediate_evict_worker(
-                worker_id,
-                make_err!(Code::Internal, "Received request to remove worker"),
-            )
+        self.workers
+            .worker_keep_alive_received(worker_id, timestamp)
             .await
     }
 
+    async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        self.workers.remove_worker(worker_id).await
+    }
+
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        let mut workers = self.workers.lock().await;
-        let worker_timeout_s = self.worker_timeout_s;
-
-        let mut result = Ok(());
-        // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
-        // map most of the time.
-        let worker_ids_to_remove: Vec<WorkerId> = workers
-            .workers
-            .iter()
-            .rev()
-            .map_while(|(worker_id, worker)| {
-                if worker.last_update_timestamp <= now_timestamp - worker_timeout_s {
-                    Some(*worker_id)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for worker_id in &worker_ids_to_remove {
-            event!(
-                Level::WARN,
-                ?worker_id,
-                "Worker timed out, removing from pool"
-            );
-            result = result.merge(
-                workers
-                    .immediate_evict_worker(
-                        worker_id,
-                        make_err!(
-                            Code::Internal,
-                            "Worker {worker_id} timed out, removing from pool"
-                        ),
-                    )
-                    .await,
-            );
-        }
-
-        result
+        self.workers.remove_timedout_workers(now_timestamp).await
     }
 
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
-        self.workers.lock().await.set_drain_worker(worker_id, is_draining).await
+        self.workers.set_drain_worker(worker_id, is_draining).await
     }
 
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
-        // We do not register anything here because we only want to register metrics
-        // once and we rely on the `ActionScheduler::register_metrics()` to do that.
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        self.workers.clone().register_metrics(registry);
     }
 }

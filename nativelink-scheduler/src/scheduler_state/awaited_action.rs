@@ -222,7 +222,10 @@ impl AwaitedAction {
     // TODO(allada) IMPORTANT: This function should only be visible to ActionActionDb.
     pub(crate) fn set_current_state(&self, state: Arc<ActionState>) -> bool {
         self.update_worker_timestamp();
-        self.notify_channel.send(state).map_or(false, |_| true)
+        // Note: Use `send_replace()`. Using `send()` will not change the value if
+        // there are no subscribers.
+        self.notify_channel.send_replace(state);
+        self.notify_channel.receiver_count() > 0
     }
 
     pub fn subscribe(&self) -> watch::Receiver<Arc<ActionState>> {

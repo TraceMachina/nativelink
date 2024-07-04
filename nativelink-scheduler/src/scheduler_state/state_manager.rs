@@ -266,6 +266,11 @@ impl AwaitedActionDb {
         else {
             return Err(action_info);
         };
+        // Do not subscribe if the action is already completed,
+        // this is the responsibility of the CacheLookupScheduler.
+        if awaited_action.get_current_state().stage.is_finished() {
+            return Err(action_info);
+        }
         let awaited_action = awaited_action.clone();
         if let Some(sort_info_lock) = awaited_action.set_priority(action_info.priority) {
             let state = awaited_action.get_current_state();
@@ -298,13 +303,13 @@ impl AwaitedActionDb {
 }
 
 #[repr(transparent)]
-pub(crate) struct StateManager {
-    pub inner: Arc<Mutex<StateManagerImpl>>,
+pub struct StateManager {
+    inner: Arc<Mutex<StateManagerImpl>>,
 }
 
 impl StateManager {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         // metrics: Arc<Metrics>,
         tasks_change_notify: Arc<Notify>,
         max_job_retries: usize,

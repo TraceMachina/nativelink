@@ -57,8 +57,8 @@ fn inner_scheduler_factory(
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
         SchedulerConfig::simple(config) => {
-            let scheduler = SimpleScheduler::new(config);
-            (Some(scheduler.clone()), Some(scheduler))
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(config);
+            (Some(action_scheduler), Some(worker_scheduler))
         }
         SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
         SchedulerConfig::cache_lookup(config) => {
