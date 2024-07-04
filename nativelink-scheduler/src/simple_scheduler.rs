@@ -436,7 +436,7 @@ impl SimpleSchedulerImpl {
         if !worker.running_action_infos.contains_key(operation_id) {
             let err = make_err!(
                 Code::Internal,
-                "Operation {operation_id} should be running on worker {worker_id} in SimpleSchedulerImpl::update_action"
+                "Operation {operation_id} should not be running on worker {worker_id} in SimpleSchedulerImpl::update_action"
             );
             return Result::<(), _>::Err(err.clone())
                 .merge(self.immediate_evict_worker(worker_id, err).await);

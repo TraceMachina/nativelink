@@ -105,7 +105,9 @@ impl AwaitedActionDb {
             .get(client_operation_id)
     }
 
-    // fn get_all_
+    fn get_all_awaited_actions(&self) -> impl Iterator<Item = &Arc<AwaitedAction>> {
+        self.client_operation_to_awaited_action.values()
+    }
 
     fn get_by_operation_id(&self, operation_id: &OperationId) -> Option<&Arc<AwaitedAction>> {
         self.operation_id_to_awaited_action.get(operation_id)
@@ -370,18 +372,28 @@ impl StateManager {
         }
 
         if get_tree_for_stage(&inner.action_db, filter.stages).is_none() {
-            let all_items: Vec<Arc<dyn ActionStateResult>> = inner
+            let mut all_items: Vec<Arc<AwaitedAction>> = inner
                 .action_db
-                .get_cache_check_actions()
-                .iter()
-                .chain(inner.action_db.get_queued_actions())
-                .chain(inner.action_db.get_executing_actions())
-                .chain(inner.action_db.get_completed_actions())
-                .filter(|item| filter_check(item.awaited_action.as_ref(), filter))
+                .get_all_awaited_actions()
+                .filter(|awaited_action| filter_check(awaited_action.as_ref(), filter))
                 .cloned()
-                .map(|v| to_action_state_result(v.awaited_action))
                 .collect();
-            return Ok(Box::pin(stream::iter(all_items)));
+            match filter.order_by_priority_direction {
+                Some(OrderDirection::Asc) => all_items.sort_unstable_by(|a, b| {
+                    a.get_sort_info()
+                        .get_new_sort_key()
+                        .cmp(&b.get_sort_info().get_new_sort_key())
+                }),
+                Some(OrderDirection::Desc) => all_items.sort_unstable_by(|a, b| {
+                    b.get_sort_info()
+                        .get_new_sort_key()
+                        .cmp(&a.get_sort_info().get_new_sort_key())
+                }),
+                None => {}
+            }
+            return Ok(Box::pin(stream::iter(
+                all_items.into_iter().map(to_action_state_result),
+            )));
         }
 
         drop(inner);
