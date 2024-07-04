@@ -16,6 +16,10 @@ Supports Unix-based operating systems and Windows.
 
 Below, you will find a few different options for getting started with NativeLink.
 
+## 🚀 Example Deployments
+
+You can find a few example deployments in the [deployment-examples directory](./deployment-examples).
+
 ### 📝 Clone the NativeLink repository
 1. Go to the [NativeLink](https://github.com/TraceMachina/nativelink) repository on GitHub. Clone the repository via SSH or HTTPS. In this example the repository is cloned via SSH:
 ```bash
@@ -192,9 +196,9 @@ cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.j
 > cargo clean
 > ```
 
-## 🚀 Example Deployments
+## Project Health
 
-You can find a few example deployments in the [deployment-examples directory](./deployment-examples).
+* Powering more than 1 billion devices at the edge.
 
 ## 🏺 History
 
