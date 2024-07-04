@@ -5,24 +5,42 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
 [![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://nativelink.slack.com/join/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A#/shared-invite/email)
 
-NativeLink is an extremely (blazingly?) fast and efficient build cache and
-remote executor for systems that communicate using the [Remote execution
-protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/) and
-[Reclient](https://github.com/bazelbuild/reclient). NativeLink powers over one billion requests per month for customers using the system for their  production workloads.
+## What's NativeLink?
 
-Supports Unix-based operating systems and Windows.
+NativeLink is a blazingly fast, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for large-scale projects by intelligently caching build artifacts and distributing tasks across multiple machines, delivering exceptional speed improvements. NativeLink powers over one billion requests per month for customers using the system in production workloads.
 
-## Getting Started with NativeLink
+## Key Features
 
-Below, you will find a few different options for getting started with NativeLink.
+1. **Advanced Build Cache**:
+   - Stores results of previous build steps
+   - Reuses cached results for unchanged components
+   - Significantly reduces build times, especially for incremental changes
+
+2. **Efficient Remote Execution**:
+   - Distributes build and test tasks across a network of machines
+   - Parallelizes workloads for faster completion
+   - Utilizes remote resources to offload computational burden from local machines
+   - Ensures consistency with a uniform, controlled build environment
+
+NativeLink seamlessly integrates with build tools that use the Remote Execution protocol, such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/), and [Reclient](https://github.com/bazelbuild/reclient). It supports Unix-based operating systems and Windows, ensuring broad compatibility across different development environments.
+
+
+## 🚀 Getting Started
+
+This guide provides instructions on how to install, configure, and start using NativeLink. It covers various installation methods and includes steps for evaluating the system once it's up and running.
 
 ### 📝 Clone the NativeLink repository
+
 1. Go to the [NativeLink](https://github.com/TraceMachina/nativelink) repository on GitHub. Clone the repository via SSH or HTTPS. In this example the repository is cloned via SSH:
 ```bash
 git clone git@github.com:TraceMachina/nativelink.git
 ```
 
-### 📦 Installing with Cargo
+### 🛠️ Installation Methods
+
+Choose one of the following methods to install NativeLink:
+
+#### 📦 Installing with Cargo
 
 1. First install Rust, but skip to step 2 if you have it already.
 ```bash
@@ -32,6 +50,100 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```bash
 cargo install --git https://github.com/TraceMachina/nativelink --tag v0.4.0
 ```
+
+#### ❄️ Installing with Nix
+
+**Installation requirements:**
+
+* Nix with [flakes](https://nixos.wiki/wiki/Flakes) enabled
+
+This build doesn't require cloning the repository, but you need to provide a
+configuration file, for instance the one at [`nativelink-config/examples/basic_cas.json`](./nativelink-config/examples/basic_cas.json).
+
+The following command builds and runs NativeLink in release (optimized) mode:
+
+```sh
+nix run github:TraceMachina/nativelink ./basic_cas.json
+```
+
+For use in production pin the executable to a specific revision:
+
+```sh
+nix run github:TraceMachina/nativelink/<revision> ./basic_cas.json
+```
+
+#### 🍃 Building with Bazel
+
+**Build requirements:**
+
+* Bazel `7.0.2`
+* A recent C++ toolchain with LLD as linker
+
+> [!TIP]
+> This build supports Nix/direnv which provides Bazel but no C++ toolchain
+> (yet).
+
+The following commands places an executable in `./bazel-bin/nativelink` and
+starts the service:
+
+```sh
+# Unoptimized development build on Unix
+bazel run nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
+
+# Optimized release build on Unix
+bazel run -c opt nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
+
+# Unoptimized development build on Windows
+bazel run --config=windows nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
+
+# Optimized release build on Windows
+bazel run --config=windows -c opt nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
+```
+
+> [!WARNING]
+> The Rust compiler `rustc` generates numerous artifacts during compilation,
+> including dependencies, macros, and intermediate files.
+> When compiling programs from source, be mindful of the associated files'
+> impact on your disk usage in the `bazel-bin/` directory.
+> This directory can grow substantially in size.
+>
+> If the facing issues due to this, run the following command
+> to clear cache files:
+> ```sh
+> bazel clean --expunge
+> ```
+
+#### 📦 Building with Cargo
+
+**Build requirements:**
+
+* Cargo 1.74.0+
+* A recent C++ toolchain with LLD as linker
+
+> [!TIP]
+> This build supports Nix/direnv which provides Cargo but no C++
+> toolchain/stdenv (yet).
+
+```bash
+# Unoptimized development build
+cargo run --bin nativelink -- ./nativelink-config/examples/basic_cas.json
+
+# Optimized release build
+cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.json
+```
+
+> [!WARNING]
+> The Rust compiler `rustc` generates numerous artifacts during compilation,
+> including dependencies, macros, and intermediate files.
+> When compiling programs from source, be mindful of the associated files'
+> impact on your disk usage in the target/ directory.
+> This directory can grow substantially in size.
+>
+> If the facing issues due to this, run the following command
+> to clear cache files:
+> ```sh
+> cargo clean
+> ```
 
 ### ⚙️ Configure and 🦾 Start NativeLink
 
@@ -48,7 +160,7 @@ curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelin
 nativelink basic_cas.json
 ```
 
-## 🧪 Evaluating NativeLink
+### 🧪 Evaluating NativeLink
 
 1. Once you've built NativeLink and have an instance running with the `basic_cas.json` configuration, launch a separate terminal session.
 2. Navigate to where you cloned the NativeLink repository:
@@ -98,99 +210,7 @@ sequenceDiagram
     cas->>build server (client): service queries
     build server (client)->>cas: service queries
 ```
-## ❄️ Installing with Nix
 
-**Installation requirements:**
-
-* Nix with [flakes](https://nixos.wiki/wiki/Flakes) enabled
-
-This build doesn't require cloning the repository, but you need to provide a
-configuration file, for instance the one at [`nativelink-config/examples/basic_cas.json`](./nativelink-config/examples/basic_cas.json).
-
-The following command builds and runs NativeLink in release (optimized) mode:
-
-```sh
-nix run github:TraceMachina/nativelink ./basic_cas.json
-```
-
-For use in production pin the executable to a specific revision:
-
-```sh
-nix run github:TraceMachina/nativelink/<revision> ./basic_cas.json
-```
-
-## 🌱 Building with Bazel
-
-**Build requirements:**
-
-* Bazel `7.0.2`
-* A recent C++ toolchain with LLD as linker
-
-> [!TIP]
-> This build supports Nix/direnv which provides Bazel but no C++ toolchain
-> (yet).
-
-The following commands places an executable in `./bazel-bin/nativelink` and
-starts the service:
-
-```sh
-# Unoptimized development build on Unix
-bazel run nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
-
-# Optimized release build on Unix
-bazel run -c opt nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
-
-# Unoptimized development build on Windows
-bazel run --config=windows nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
-
-# Optimized release build on Windows
-bazel run --config=windows -c opt nativelink -- $(pwd)/nativelink-config/examples/basic_cas.json
-```
-
-> [!WARNING]
-> The Rust compiler `rustc` generates numerous artifacts during compilation,
-> including dependencies, macros, and intermediate files.
-> When compiling programs from source, be mindful of the associated files'
-> impact on your disk usage in the `bazel-bin/` directory.
-> This directory can grow substantially in size.
->
-> If the facing issues due to this, run the following command
-> to clear cache files:
-> ```sh
-> bazel clean --expunge
-> ```
-
-## 📦 Building with Cargo
-
-**Build requirements:**
-
-* Cargo 1.74.0+
-* A recent C++ toolchain with LLD as linker
-
-> [!TIP]
-> This build supports Nix/direnv which provides Cargo but no C++
-> toolchain/stdenv (yet).
-
-```bash
-# Unoptimized development build
-cargo run --bin nativelink -- ./nativelink-config/examples/basic_cas.json
-
-# Optimized release build
-cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.json
-```
-
-> [!WARNING]
-> The Rust compiler `rustc` generates numerous artifacts during compilation,
-> including dependencies, macros, and intermediate files.
-> When compiling programs from source, be mindful of the associated files'
-> impact on your disk usage in the target/ directory.
-> This directory can grow substantially in size.
->
-> If the facing issues due to this, run the following command
-> to clear cache files:
-> ```sh
-> cargo clean
-> ```
 
 ## 🚀 Example Deployments
 
@@ -213,6 +233,21 @@ designed by the developer. Rust doesn't have these issues, since the compiler
 will always tell you when the code you are writing might introduce undefined
 behavior. The last major reason is because Rust is extremely fast and has no
 garbage collection (like C++, but unlike `Java`, `Go`, or `Typescript`).
+
+## ✍️ Authors
+
+<a href="https://github.com/tracemachina/nativelink/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=tracemachina/nativelink" />
+</a>
+
+
+## 🤝 Contributing
+
+Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CONTRIBUTING.md) guide to learn how to contribute to NativeLink. It only takes ~5 minutes to get started!
+
+## 📊 Stats
+
+![Alt](https://repobeats.axiom.co/api/embed/d8bfc6d283632c060beaab1e69494c2f7774a548.svg "Repobeats analytics image")
 
 ## 📜 License
 
