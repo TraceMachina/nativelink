@@ -144,7 +144,7 @@ const WORKER_TIMEOUT_S: u64 = 100;
 async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
@@ -198,7 +198,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
 // async fn find_executing_action() -> Result<(), Error> {
 //     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 //
-//     let scheduler = SimpleScheduler::new_with_callback(
+//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
 //         &nativelink_config::schedulers::SimpleScheduler::default(),
 //         || async move {},
 //     );
@@ -260,7 +260,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
 // async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
 //     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
 //     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
-//     let scheduler = SimpleScheduler::new_with_callback(
+//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
 //         &nativelink_config::schedulers::SimpleScheduler {
 //             worker_timeout_s: WORKER_TIMEOUT_S,
 //             ..Default::default()
@@ -412,7 +412,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
 async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
@@ -443,7 +443,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
     };
 
     // Set the worker draining.
-    scheduler.set_drain_worker(worker_id, true).await?;
+    scheduler.set_drain_worker(&worker_id, true).await?;
     tokio::task::yield_now().await;
 
     let action_digest = DigestInfo::new([88u8; 32], 512);
@@ -468,7 +468,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
     }
 
     // Set the worker not draining.
-    scheduler.set_drain_worker(worker_id, false).await?;
+    scheduler.set_drain_worker(&worker_id, false).await?;
     tokio::task::yield_now().await;
 
     {
@@ -490,7 +490,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
@@ -571,7 +571,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
 async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
@@ -676,7 +676,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 #[nativelink_test]
 async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
@@ -714,7 +714,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
 // async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
 //     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
 //     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
-//     let scheduler = SimpleScheduler::new_with_callback(
+//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
 //         &nativelink_config::schedulers::SimpleScheduler {
 //             worker_timeout_s: WORKER_TIMEOUT_S,
 //             ..Default::default()
@@ -818,7 +818,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
 // async fn update_action_sends_completed_result_to_client_test() -> Result<(), Error> {
 //     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 //
-//     let scheduler = SimpleScheduler::new_with_callback(
+//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
 //         &nativelink_config::schedulers::SimpleScheduler::default(),
 //         || async move {},
 //     );
@@ -924,7 +924,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
 // async fn update_action_sends_completed_result_after_disconnect() -> Result<(), Error> {
 //     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 //
-//     let scheduler = SimpleScheduler::new_with_callback(
+//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
 //         &nativelink_config::schedulers::SimpleScheduler::default(),
 //         || async move {},
 //     );
@@ -1032,7 +1032,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let good_worker_id: WorkerId = WorkerId(Uuid::new_v4());
     let rogue_worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
@@ -1128,7 +1128,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
 async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
@@ -1257,7 +1257,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
 async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
@@ -1396,7 +1396,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
 async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
@@ -1447,7 +1447,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
 async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler {
             max_job_retries: 1,
             ..Default::default()
@@ -1575,7 +1575,7 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
     // Since the inner spawn owns this callback, we can use the callback to know if the
     // inner spawn was dropped because our callback would be dropped, which dropps our
     // DropChecker.
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         move || {
             // This will ensure dropping happens if this function is ever dropped.
@@ -1600,7 +1600,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
 
-    let scheduler = SimpleScheduler::new_with_callback(
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
     );
