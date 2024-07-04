@@ -112,7 +112,9 @@ impl ActionScheduler for PropertyModifierScheduler {
                 }
             };
         }
-        self.scheduler.add_action(client_operation_id, action_info).await
+        self.scheduler
+            .add_action(client_operation_id, action_info)
+            .await
     }
 
     async fn find_existing_action(

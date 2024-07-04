@@ -95,7 +95,7 @@ impl SimpleSchedulerImpl {
         add_action_result
             .as_receiver()
             .await
-            .map(move |receiver| (client_operation_id, receiver.clone()))
+            .map(move |receiver| (client_operation_id, receiver.into_owned()))
     }
 
     async fn clean_recently_completed_actions(&mut self) {
@@ -147,15 +147,8 @@ impl SimpleSchedulerImpl {
         let filter_result = <StateManager as ClientStateManager>::filter_operations(
             &self.state_manager,
             &OperationFilter {
-                stages: OperationStageFlags::Any,
-                operation_id: None,
-                worker_id: None,
-                action_digest: None,
-                worker_update_before: None,
-                completed_before: None,
-                last_client_update_before: None,
                 unique_qualifier: Some(unique_qualifier.clone()),
-                order_by: None,
+                ..Default::default()
             },
         )
         .await;
@@ -168,7 +161,7 @@ impl SimpleSchedulerImpl {
                     .as_receiver()
                     .await
                     .err_tip(|| "In SimpleScheduler::find_existing_action getting receiver")?
-                    .clone(),
+                    .into_owned(),
             ))
         } else {
             Ok(None)
@@ -338,14 +331,7 @@ impl SimpleSchedulerImpl {
             &self.state_manager,
             &OperationFilter {
                 stages: OperationStageFlags::Queued,
-                operation_id: None,
-                worker_id: None,
-                action_digest: None,
-                worker_update_before: None,
-                completed_before: None,
-                last_client_update_before: None,
-                unique_qualifier: None,
-                order_by: None,
+                ..Default::default()
             },
         )
         .await

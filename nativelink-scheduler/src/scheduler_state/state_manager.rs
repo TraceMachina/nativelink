@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use std::cmp;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
+use std::ops::Bound;
 use std::sync::Arc;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
+use futures::stream::{self, unfold};
 use hashbrown::HashMap;
 use nativelink_error::{make_err, Code, Error};
 use nativelink_util::action_messages::{
@@ -29,10 +31,11 @@ use tracing::{event, Level};
 
 use crate::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
-    OperationFilter, WorkerStateManager,
+    OperationFilter, OperationStageFlags, OrderDirection, WorkerStateManager,
 };
 use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::scheduler_state::client_action_state_result::ClientActionStateResult;
+use crate::scheduler_state::matching_engine_action_state_result::MatchingEngineActionStateResult;
 use crate::scheduler_state::metrics::Metrics;
 
 use super::awaited_action::AwaitedActionSortKey;
@@ -94,17 +97,34 @@ pub struct AwaitedActionDb {
 }
 
 impl AwaitedActionDb {
-    // TODO(UNUSED!)
-    // fn get_by_client_operation_id(
-    //     &self,
-    //     client_operation_id: &ClientOperationId,
-    // ) -> Option<&Arc<AwaitedAction>> {
-    //     self.client_operation_to_awaited_action
-    //         .get(client_operation_id)
-    // }
+    fn get_by_client_operation_id(
+        &self,
+        client_operation_id: &ClientOperationId,
+    ) -> Option<&Arc<AwaitedAction>> {
+        self.client_operation_to_awaited_action
+            .get(client_operation_id)
+    }
+
+    // fn get_all_
 
     fn get_by_operation_id(&self, operation_id: &OperationId) -> Option<&Arc<AwaitedAction>> {
         self.operation_id_to_awaited_action.get(operation_id)
+    }
+
+    fn get_cache_check_actions(&self) -> &BTreeSet<SortedAwaitedAction> {
+        &self.sorted_action_info_hash_keys.cache_check
+    }
+
+    fn get_queued_actions(&self) -> &BTreeSet<SortedAwaitedAction> {
+        &self.sorted_action_info_hash_keys.queued
+    }
+
+    fn get_executing_actions(&self) -> &BTreeSet<SortedAwaitedAction> {
+        &self.sorted_action_info_hash_keys.executing
+    }
+
+    fn get_completed_actions(&self) -> &BTreeSet<SortedAwaitedAction> {
+        &self.sorted_action_info_hash_keys.completed
     }
 
     fn get_sort_map_for_state(
@@ -128,7 +148,7 @@ impl AwaitedActionDb {
         stage: &ActionStage,
         sorted_awaited_action: SortedAwaitedAction,
     ) {
-        let did_insert = match stage {
+        let newly_inserted = match stage {
             ActionStage::Unknown => self
                 .sorted_action_info_hash_keys
                 .unknown
@@ -154,7 +174,7 @@ impl AwaitedActionDb {
                 .completed_from_cache
                 .insert(sorted_awaited_action),
         };
-        if did_insert {
+        if !newly_inserted {
             event!(
                 Level::ERROR,
                 "Tried to insert an action that was already in the sorted map. This should never happen.",
@@ -217,6 +237,8 @@ impl AwaitedActionDb {
             .insert(new_client_operation_id, awaited_action.clone());
         self.action_info_hash_key_to_awaited_action
             .insert(action_info.unique_qualifier.clone(), awaited_action.clone());
+        self.operation_id_to_awaited_action
+            .insert(awaited_action.get_operation_id(), awaited_action.clone());
 
         self.insert_sort_map_for_stage(
             &awaited_action.get_current_state().stage,
@@ -275,7 +297,7 @@ impl AwaitedActionDb {
 
 #[repr(transparent)]
 pub(crate) struct StateManager {
-    pub inner: Mutex<StateManagerImpl>,
+    pub inner: Arc<Mutex<StateManagerImpl>>,
 }
 
 impl StateManager {
@@ -286,13 +308,142 @@ impl StateManager {
         max_job_retries: usize,
     ) -> Self {
         Self {
-            inner: Mutex::new(StateManagerImpl {
+            inner: Arc::new(Mutex::new(StateManagerImpl {
                 action_db: AwaitedActionDb::default(),
                 metrics,
                 tasks_change_notify,
                 max_job_retries,
-            }),
+            })),
         }
+    }
+
+    async fn inner_filter_operations(
+        &self,
+        filter: &OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        fn to_action_state_result(
+            awaited_action: Arc<AwaitedAction>,
+        ) -> Arc<dyn ActionStateResult> {
+            Arc::new(MatchingEngineActionStateResult::new(awaited_action))
+        }
+
+        fn get_tree_for_stage<'a>(
+            action_db: &'a AwaitedActionDb,
+            stage: OperationStageFlags,
+        ) -> Option<&'a BTreeSet<SortedAwaitedAction>> {
+            match stage {
+                OperationStageFlags::CacheCheck => Some(action_db.get_cache_check_actions()),
+                OperationStageFlags::Queued => Some(action_db.get_queued_actions()),
+                OperationStageFlags::Executing => Some(action_db.get_executing_actions()),
+                OperationStageFlags::Completed => Some(action_db.get_completed_actions()),
+                _ => None,
+            }
+        }
+
+        let inner = self.inner.lock().await;
+
+        if let Some(operation_id) = &filter.operation_id {
+            return Ok(inner
+                .action_db
+                .get_by_operation_id(&operation_id)
+                .filter(|awaited_action| filter_check(awaited_action.as_ref(), filter))
+                .cloned()
+                .map(|awaited_action| -> ActionStateResultStream {
+                    Box::pin(stream::once(async move {
+                        to_action_state_result(awaited_action)
+                    }))
+                })
+                .unwrap_or_else(|| Box::pin(stream::empty())));
+        }
+        if let Some(client_operation_id) = &filter.client_operation_id {
+            return Ok(inner
+                .action_db
+                .get_by_client_operation_id(client_operation_id)
+                .filter(|awaited_action| filter_check(awaited_action.as_ref(), filter))
+                .cloned()
+                .map(|awaited_action| -> ActionStateResultStream {
+                    Box::pin(stream::once(async move {
+                        to_action_state_result(awaited_action)
+                    }))
+                })
+                .unwrap_or_else(|| Box::pin(stream::empty())));
+        }
+
+        if get_tree_for_stage(&inner.action_db, filter.stages).is_none() {
+            let all_items: Vec<Arc<dyn ActionStateResult>> = inner
+                .action_db
+                .get_cache_check_actions()
+                .iter()
+                .chain(inner.action_db.get_queued_actions())
+                .chain(inner.action_db.get_executing_actions())
+                .chain(inner.action_db.get_completed_actions())
+                .filter(|item| filter_check(item.awaited_action.as_ref(), filter))
+                .cloned()
+                .map(|v| to_action_state_result(v.awaited_action))
+                .collect();
+            return Ok(Box::pin(stream::iter(all_items)));
+        }
+
+        drop(inner);
+
+        struct State {
+            inner: Arc<Mutex<StateManagerImpl>>,
+            filter: OperationFilter,
+            buffer: VecDeque<SortedAwaitedAction>,
+            start_key: Bound<SortedAwaitedAction>,
+        }
+        let state = State {
+            inner: self.inner.clone(),
+            filter: filter.clone(),
+            buffer: VecDeque::new(),
+            start_key: Bound::Unbounded,
+        };
+
+        const STREAM_BUFF_SIZE: usize = 64;
+
+        Ok(Box::pin(unfold(state, move |mut state| async move {
+            if let Some(sorted_awaited_action) = state.buffer.pop_front() {
+                if state.buffer.is_empty() {
+                    state.start_key = Bound::Excluded(sorted_awaited_action.clone());
+                }
+                return Some((
+                    to_action_state_result(sorted_awaited_action.awaited_action),
+                    state,
+                ));
+            }
+
+            let inner = state.inner.lock().await;
+
+            let btree = get_tree_for_stage(&inner.action_db, state.filter.stages)
+                .expect("get_tree_for_stage() should have already returned Some but in iteration it returned None");
+
+            let range = (state.start_key.as_ref(), Bound::Unbounded);
+            if state.filter.order_by_priority_direction == Some(OrderDirection::Asc) {
+                btree
+                    .range(range)
+                    .filter(|item| filter_check(item.awaited_action.as_ref(), &state.filter))
+                    .take(STREAM_BUFF_SIZE)
+                    .for_each(|item| state.buffer.push_back(item.clone()));
+            } else {
+                btree
+                    .range(range)
+                    .rev()
+                    .filter(|item| filter_check(item.awaited_action.as_ref(), &state.filter))
+                    .take(STREAM_BUFF_SIZE)
+                    .for_each(|item| state.buffer.push_back(item.clone()));
+            }
+            drop(inner);
+            let Some(sorted_awaited_action) = state.buffer.pop_front() else {
+                return None;
+            };
+            if state.buffer.is_empty() {
+                state.start_key = Bound::Excluded(sorted_awaited_action.clone());
+            }
+            return Some((
+                to_action_state_result(sorted_awaited_action.awaited_action),
+                state,
+            ));
+        })))
     }
 }
 
@@ -382,6 +533,66 @@ pub(crate) struct StateManagerImpl {
 // fn mutate_priority(action_info: &mut Arc<ActionInfo>, priority: i32) {
 //     Arc::make_mut(action_info).priority = priority;
 // }
+
+fn filter_check(awaited_action: &AwaitedAction, filter: &OperationFilter) -> bool {
+    // Note: The caller must filter `client_operation_id`.
+
+    if let Some(operation_id) = &filter.operation_id {
+        if operation_id != &awaited_action.get_operation_id() {
+            return false;
+        }
+    }
+
+    if filter.worker_id.is_some() {
+        if filter.worker_id != awaited_action.get_worker_id() {
+            return false;
+        }
+    }
+
+    {
+        let action_info = awaited_action.get_action_info();
+        if let Some(unique_qualifier) = &filter.unique_qualifier {
+            if unique_qualifier != &action_info.unique_qualifier {
+                return false;
+            }
+        }
+        if let Some(action_digest) = filter.action_digest {
+            if &action_digest != action_info.digest() {
+                return false;
+            }
+        }
+    }
+
+    {
+        let last_worker_update_timestamp = awaited_action.get_last_worker_updated_timestamp();
+        if let Some(worker_update_before) = filter.worker_update_before {
+            if worker_update_before < last_worker_update_timestamp {
+                return false;
+            }
+        }
+        let state = awaited_action.get_current_state();
+        if let Some(completed_before) = filter.completed_before {
+            if state.stage.is_finished() && completed_before < last_worker_update_timestamp {
+                return false;
+            }
+        }
+        if filter.stages != OperationStageFlags::Any {
+            let stage_flag = match state.stage {
+                ActionStage::Unknown => OperationStageFlags::Any,
+                ActionStage::CacheCheck => OperationStageFlags::CacheCheck,
+                ActionStage::Queued => OperationStageFlags::Queued,
+                ActionStage::Executing => OperationStageFlags::Executing,
+                ActionStage::Completed(_) => OperationStageFlags::Completed,
+                ActionStage::CompletedFromCache(_) => OperationStageFlags::Completed,
+            };
+            if !filter.stages.intersects(stage_flag) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
 
 impl StateManagerImpl {
     // /// Marks the specified action as active, assigns it to the given worker, and updates the
@@ -565,7 +776,10 @@ impl StateManagerImpl {
         // This might happen if the worker sending the update is not the
         // worker that was assigned.
         let awaited_action_worker_id = awaited_action.get_worker_id();
-        if maybe_worker_id.is_some() && maybe_worker_id != awaited_action_worker_id.as_ref() {
+        if awaited_action_worker_id.is_some()
+            && maybe_worker_id.is_some()
+            && maybe_worker_id != awaited_action_worker_id.as_ref()
+        {
             let err = make_err!(
                 Code::Internal,
                 "Worker ids do not match - {:?} != {:?} for {:?}",
@@ -658,30 +872,9 @@ impl ClientStateManager for StateManager {
 
     async fn filter_operations(
         &self,
-        _filter: &OperationFilter,
+        filter: &OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
-        todo!();
-        // let inner = self.inner.lock().await;
-        // // TODO(adams): Build out a proper filter for other fields for state, at the moment
-        // //  this only supports the unique qualifier.
-        // let unique_qualifier = filter
-        //     .unique_qualifier
-        //     .as_ref()
-        //     .err_tip(|| "No unique qualifier provided")?;
-        // let maybe_awaited_action = inner
-        //     .queued_actions_set
-        //     .get(unique_qualifier)
-        //     .and_then(|action_info| inner.queued_actions.get(action_info))
-        //     .or_else(|| inner.active_actions.get(unique_qualifier));
-
-        // let Some(awaited_action) = maybe_awaited_action else {
-        //     return Ok(Box::pin(stream::empty()));
-        // };
-
-        // let rx = awaited_action.notify_channel.subscribe();
-        // let action_result: [Arc<dyn ActionStateResult>; 1] =
-        //     [Arc::new(ClientActionStateResult::new(rx))];
-        // Ok(Box::pin(stream::iter(action_result)))
+        self.inner_filter_operations(filter).await
     }
 }
 
@@ -702,9 +895,9 @@ impl WorkerStateManager for StateManager {
 impl MatchingEngineStateManager for StateManager {
     async fn filter_operations(
         &self,
-        _filter: &OperationFilter, // TODO(adam): reference filter
+        filter: &OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
-        todo!();
+        self.inner_filter_operations(filter).await
         // let inner = self.inner.lock().await;
         // // TODO(adams): use OperationFilter vs directly encoding it.
         // let action_infos =

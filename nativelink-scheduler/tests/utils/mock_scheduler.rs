@@ -146,7 +146,10 @@ impl ActionScheduler for MockActionScheduler {
         action_info: ActionInfo,
     ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         self.tx_call
-            .send(ActionSchedulerCalls::AddAction((client_operation_id, action_info)))
+            .send(ActionSchedulerCalls::AddAction((
+                client_operation_id,
+                action_info,
+            )))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::future::Shared as SharedFuture;
 use futures::stream::StreamExt;
 use futures::FutureExt;
 use nativelink_error::{make_err, Code, Error};
@@ -25,7 +26,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId, OperationId
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId,
+    OperationId,
 };
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
@@ -35,7 +37,6 @@ use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::select;
 use tokio::sync::{oneshot, watch};
-use futures::future::Shared as SharedFuture;
 use tokio_stream::wrappers::WatchStream;
 use tonic::Request;
 use tracing::{event, Level};
@@ -46,7 +47,13 @@ use crate::platform_property_manager::PlatformPropertyManager;
 /// Actions that are having their cache checked or failed cache lookup and are
 /// being forwarded upstream.  Missing the skip_cache_check actions which are
 /// forwarded directly.
-type CheckActions = HashMap<ActionInfoHashKey, (SharedFuture<oneshot::Receiver<ClientOperationId>>, watch::Receiver<Arc<ActionState>>)>;
+type CheckActions = HashMap<
+    ActionInfoHashKey,
+    (
+        SharedFuture<oneshot::Receiver<ClientOperationId>>,
+        watch::Receiver<Arc<ActionState>>,
+    ),
+>;
 
 pub struct CacheLookupScheduler {
     /// A reference to the AC to find existing actions in.
@@ -90,19 +97,21 @@ async fn get_action_from_store(
 fn subscribe_to_existing_action(
     cache_check_actions: &MutexGuard<CheckActions>,
     unique_qualifier: &ActionInfoHashKey,
-) -> Option<(SharedFuture<oneshot::Receiver<ClientOperationId>>, watch::Receiver<Arc<ActionState>>)> {
-    cache_check_actions.get(unique_qualifier).map(|(client_operation_id_rx, rx)| {
-        let mut rx = rx.clone();
-        rx.mark_changed();
-        (client_operation_id_rx.clone(), rx)
-    })
+) -> Option<(
+    SharedFuture<oneshot::Receiver<ClientOperationId>>,
+    watch::Receiver<Arc<ActionState>>,
+)> {
+    cache_check_actions
+        .get(unique_qualifier)
+        .map(|(client_operation_id_rx, rx)| {
+            let mut rx = rx.clone();
+            rx.mark_changed();
+            (client_operation_id_rx.clone(), rx)
+        })
 }
 
 impl CacheLookupScheduler {
-    pub fn new(
-        ac_store: Store,
-        action_scheduler: Arc<dyn ActionScheduler>,
-    ) -> Result<Self, Error> {
+    pub fn new(ac_store: Store, action_scheduler: Arc<dyn ActionScheduler>) -> Result<Self, Error> {
         Ok(Self {
             ac_store,
             action_scheduler,
@@ -129,7 +138,10 @@ impl ActionScheduler for CacheLookupScheduler {
     ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         if action_info.skip_cache_lookup {
             // Cache lookup skipped, forward to the upstream.
-            return self.action_scheduler.add_action(client_operation_id, action_info).await;
+            return self
+                .action_scheduler
+                .add_action(client_operation_id, action_info)
+                .await;
         }
         let mut current_state = Arc::new(ActionState {
             id: OperationId::new(action_info.unique_qualifier.clone()),
@@ -140,12 +152,15 @@ impl ActionScheduler for CacheLookupScheduler {
             let mut cache_check_actions = self.cache_check_actions.lock();
             let current_state = current_state.clone();
             let unique_qualifier = action_info.unique_qualifier.clone();
-            subscribe_to_existing_action(&cache_check_actions, &unique_qualifier)
-                .ok_or_else(move || {
+            subscribe_to_existing_action(&cache_check_actions, &unique_qualifier).ok_or_else(
+                move || {
                     let (client_operation_id_tx, client_operation_id_rx) = oneshot::channel();
                     let client_operation_id_rx = client_operation_id_rx.shared();
                     let (tx, rx) = watch::channel(current_state);
-                    cache_check_actions.insert(unique_qualifier.clone(), (client_operation_id_rx.clone(), rx));
+                    cache_check_actions.insert(
+                        unique_qualifier.clone(),
+                        (client_operation_id_rx.clone(), rx),
+                    );
                     // In the event we loose the reference to our `scope_guard`, it will remove
                     // the action from the cache_check_actions map.
                     let cache_check_actions = self.cache_check_actions.clone();
@@ -157,16 +172,22 @@ impl ActionScheduler for CacheLookupScheduler {
                             cache_check_actions.lock().remove(&unique_qualifier);
                         }),
                     )
-                })
+                },
+            )
         };
-        let (client_operation_id_tx, client_operation_id_rx, tx, scope_guard) = match cache_check_result {
-            Ok((client_operation_id_tx, rx)) => {
-                let client_operation_id = client_operation_id_tx.await
-                    .map_err(|_| make_err!(Code::Internal, "Client operation id tx hung up in CacheLookupScheduler::add_action"))?;
-                return Ok((client_operation_id, rx));
-            }
-            Err(client_tx_and_scope_guard) => client_tx_and_scope_guard,
-        };
+        let (client_operation_id_tx, client_operation_id_rx, tx, scope_guard) =
+            match cache_check_result {
+                Ok((client_operation_id_tx, rx)) => {
+                    let client_operation_id = client_operation_id_tx.await.map_err(|_| {
+                        make_err!(
+                            Code::Internal,
+                            "Client operation id tx hung up in CacheLookupScheduler::add_action"
+                        )
+                    })?;
+                    return Ok((client_operation_id, rx));
+                }
+                Err(client_tx_and_scope_guard) => client_tx_and_scope_guard,
+            };
         let rx = tx.subscribe();
 
         let ac_store = self.ac_store.clone();
@@ -206,7 +227,10 @@ impl ActionScheduler for CacheLookupScheduler {
                 }
             }
             // Not in cache, forward to upstream and proxy state.
-            match action_scheduler.add_action(client_operation_id_clone, action_info).await {
+            match action_scheduler
+                .add_action(client_operation_id_clone, action_info)
+                .await
+            {
                 Ok((new_client_operation_id, rx)) => {
                     // It's ok if the other end hung up, just keep going just
                     // in case they come back.
@@ -235,8 +259,12 @@ impl ActionScheduler for CacheLookupScheduler {
                 }
             }
         });
-        let client_operation_id = client_operation_id_rx.await
-            .map_err(|_| make_err!(Code::Internal, "Client operation id tx hung up in CacheLookupScheduler::add_action"))?;
+        let client_operation_id = client_operation_id_rx.await.map_err(|_| {
+            make_err!(
+                Code::Internal,
+                "Client operation id tx hung up in CacheLookupScheduler::add_action"
+            )
+        })?;
         Ok((client_operation_id, rx))
     }
 

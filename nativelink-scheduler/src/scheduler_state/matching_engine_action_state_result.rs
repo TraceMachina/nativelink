@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use async_trait::async_trait;
 use nativelink_error::Error;
@@ -21,33 +21,28 @@ use tokio::sync::watch;
 
 use crate::operation_state_manager::ActionStateResult;
 
+use super::awaited_action::AwaitedAction;
+
 pub struct MatchingEngineActionStateResult {
-    action_info: Arc<ActionInfo>,
-    action_state: watch::Receiver<Arc<ActionState>>,
+    awaited_action: Arc<AwaitedAction>,
 }
 impl MatchingEngineActionStateResult {
-    pub(crate) fn _new(
-        action_info: Arc<ActionInfo>,
-        action_state: watch::Receiver<Arc<ActionState>>,
-    ) -> Self {
-        Self {
-            action_info,
-            action_state,
-        }
+    pub(crate) fn new(awaited_action: Arc<AwaitedAction>) -> Self {
+        Self { awaited_action }
     }
 }
 
 #[async_trait]
 impl ActionStateResult for MatchingEngineActionStateResult {
     async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
-        Ok(self.action_state.borrow().clone())
+        Ok(self.awaited_action.get_current_state())
     }
 
-    async fn as_receiver(&self) -> Result<&'_ watch::Receiver<Arc<ActionState>>, Error> {
-        Ok(&self.action_state)
+    async fn as_receiver(&self) -> Result<Cow<'_, watch::Receiver<Arc<ActionState>>>, Error> {
+        Ok(Cow::Owned(self.awaited_action.subscribe()))
     }
 
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        Ok(self.action_info.clone())
+        Ok(self.awaited_action.get_action_info().clone())
     }
 }

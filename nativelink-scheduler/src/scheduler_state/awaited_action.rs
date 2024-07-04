@@ -15,7 +15,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId,
@@ -67,6 +67,9 @@ pub struct AwaitedAction {
     /// The action that is being awaited on.
     action_info: Arc<ActionInfo>,
 
+    // The unique identifier of the operation.
+    // TODO(operation_id should be stored here).
+    // operation_id: OperationId,
     /// The data that is used to sort the action in the queue.
     /// The first item in the tuple is the current priority,
     /// the second item is the sort key.
@@ -76,7 +79,7 @@ pub struct AwaitedAction {
     attempts: AtomicUsize,
 
     /// The time the action was last updated.
-    last_updated_timestamp: AtomicU64,
+    last_worker_updated_timestamp: AtomicU64,
 
     /// Worker that is currently running this action, None if unassigned.
     worker_id: RwLock<Option<WorkerId>>,
@@ -114,7 +117,7 @@ impl AwaitedAction {
                 notify_channel: tx,
                 sort_info,
                 attempts: AtomicUsize::new(0),
-                last_updated_timestamp: AtomicU64::new(SystemTime::now().unix_timestamp()),
+                last_worker_updated_timestamp: AtomicU64::new(SystemTime::now().unix_timestamp()),
                 worker_id: RwLock::new(None),
             },
             sort_key,
@@ -122,14 +125,23 @@ impl AwaitedAction {
         )
     }
 
-    // /// Gets the action info.
-    // pub fn get_action_info(&self) -> &Arc<ActionInfo> {
-    //     &self.action_info
-    // }
+    /// Gets the action info.
+    pub fn get_action_info(&self) -> &Arc<ActionInfo> {
+        &self.action_info
+    }
+
+    pub fn get_operation_id(&self) -> OperationId {
+        self.notify_channel.borrow().id.clone()
+    }
+
+    pub fn get_last_worker_updated_timestamp(&self) -> SystemTime {
+        let timestamp = self.last_worker_updated_timestamp.load(Ordering::Acquire);
+        SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp)
+    }
 
     /// Updates the timestamp of the action.
-    fn update_timestamp(&self) {
-        self.last_updated_timestamp
+    fn update_worker_timestamp(&self) {
+        self.last_worker_updated_timestamp
             .store(SystemTime::now().unix_timestamp(), Ordering::Release);
     }
 
@@ -142,7 +154,6 @@ impl AwaitedAction {
     /// sort key until the result is dropped.
     #[must_use]
     pub fn set_priority<'a>(&'a self, new_priority: i32) -> Option<SortInfoLock<'a>> {
-        self.update_timestamp();
         let sort_info_lock = self.sort_info.upgradable_read();
         if sort_info_lock.priority == new_priority {
             return None;
@@ -193,9 +204,11 @@ impl AwaitedAction {
 
     /// Sets the worker id that is currently processing this action.
     pub fn set_worker_id(&self, new_worker_id: Option<WorkerId>) {
-        self.update_timestamp();
         let mut worker_id = self.worker_id.write();
-        *worker_id = new_worker_id;
+        if *worker_id != new_worker_id {
+            self.update_worker_timestamp();
+            *worker_id = new_worker_id;
+        }
     }
 
     /// Gets the current state of the action.
@@ -208,7 +221,7 @@ impl AwaitedAction {
     #[must_use]
     // TODO(allada) IMPORTANT: This function should only be visible to ActionActionDb.
     pub(crate) fn set_current_state(&self, state: Arc<ActionState>) -> bool {
-        self.update_timestamp();
+        self.update_worker_timestamp();
         self.notify_channel.send(state).map_or(false, |_| true)
     }
 

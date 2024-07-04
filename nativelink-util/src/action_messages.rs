@@ -1152,7 +1152,10 @@ impl ActionState {
         &self.id.unique_qualifier.digest
     }
 
-    pub fn try_from_operation(operation: Operation, operation_id: OperationId) -> Result<Self, Error> {
+    pub fn try_from_operation(
+        operation: Operation,
+        operation_id: OperationId,
+    ) -> Result<Self, Error> {
         let metadata = from_any::<ExecuteOperationMetadata>(
             &operation
                 .metadata
@@ -1191,7 +1194,10 @@ impl ActionState {
             }
         };
 
-        Ok(Self { id: operation_id, stage })
+        Ok(Self {
+            id: operation_id,
+            stage,
+        })
     }
 
     pub fn as_operation(&self, client_operation_id: ClientOperationId) -> Operation {

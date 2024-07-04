@@ -80,7 +80,9 @@ async fn add_action_adds_property() -> Result<(), Error> {
     )])));
     let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, (passed_client_operation_id, action_info)) = join!(
-        context.modifier_scheduler.add_action(client_operation_id.clone(), action_info),
+        context
+            .modifier_scheduler
+            .add_action(client_operation_id.clone(), action_info),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
@@ -122,7 +124,9 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
     )])));
     let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, (passed_client_operation_id, action_info)) = join!(
-        context.modifier_scheduler.add_action(client_operation_id.clone(), action_info),
+        context
+            .modifier_scheduler
+            .add_action(client_operation_id.clone(), action_info),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
@@ -161,7 +165,9 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
     )])));
     let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, (passed_client_operation_id, action_info)) = join!(
-        context.modifier_scheduler.add_action(client_operation_id.clone(), action_info),
+        context
+            .modifier_scheduler
+            .add_action(client_operation_id.clone(), action_info),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
@@ -200,7 +206,9 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
     )])));
     let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, (passed_client_operation_id, action_info)) = join!(
-        context.modifier_scheduler.add_action(client_operation_id.clone(), action_info),
+        context
+            .modifier_scheduler
+            .add_action(client_operation_id.clone(), action_info),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
@@ -234,7 +242,9 @@ async fn add_action_property_remove() -> Result<(), Error> {
     let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
     let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let (_, _, (passed_client_operation_id, action_info)) = join!(
-        context.modifier_scheduler.add_action(client_operation_id.clone(), action_info),
+        context
+            .modifier_scheduler
+            .add_action(client_operation_id.clone(), action_info),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
