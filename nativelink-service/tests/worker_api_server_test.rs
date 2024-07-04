@@ -263,7 +263,7 @@ pub async fn going_away_removes_worker_test() -> Result<(), Box<dyn std::error::
 
     test_context
         .scheduler
-        .remove_worker(test_context.worker_id)
+        .remove_worker(&test_context.worker_id)
         .await
         .unwrap();
 

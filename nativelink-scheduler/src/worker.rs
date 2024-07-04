@@ -186,7 +186,7 @@ impl Worker {
         })
     }
 
-    pub fn complete_action(&mut self, operation_id: &OperationId) -> Result<(), Error> {
+    pub(crate) fn complete_action(&mut self, operation_id: &OperationId) -> Result<(), Error> {
         let action_info = self.running_action_infos.remove(operation_id).err_tip(|| {
             format!(
                 "Worker {} tried to complete operation {} that was not running",

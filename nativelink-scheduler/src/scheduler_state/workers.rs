@@ -17,7 +17,7 @@ use std::sync::Arc;
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
-use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
+use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId, WorkerId};
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::Notify;
 use tracing::{event, Level};
@@ -31,6 +31,9 @@ use crate::{
 pub struct Workers {
     /// A `LruCache` of workers availabled based on `allocation_strategy`.
     pub(crate) workers: LruCache<WorkerId, Worker>,
+
+    /// The worker state manager.
+    worker_state_manager: Arc<dyn WorkerStateManager>,
     /// The allocation strategy for workers.
     pub(crate) allocation_strategy: WorkerAllocationStrategy,
     /// A channel to notify the matching engine that the worker pool has changed.
@@ -39,11 +42,13 @@ pub struct Workers {
 
 impl Workers {
     pub(crate) fn new(
+        worker_state_manager: Arc<dyn WorkerStateManager>,
         allocation_strategy: WorkerAllocationStrategy,
         worker_change_notify: Arc<Notify>,
     ) -> Self {
         Self {
             workers: LruCache::unbounded(),
+            worker_state_manager,
             allocation_strategy,
             worker_change_notify,
         }
@@ -55,7 +60,7 @@ impl Workers {
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        let worker = self.workers.get_mut(worker_id).ok_or_else(|| {
+        let worker = self.workers.peek_mut(worker_id).ok_or_else(|| {
             make_input_err!(
                 "Worker not found in worker map in refresh_lifetime() {}",
                 worker_id
@@ -105,6 +110,18 @@ impl Workers {
         result
     }
 
+    /// Sets if the worker is draining or not.
+    pub async fn set_drain_worker(&mut self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
+        let worker = self
+            .workers
+            .get_mut(&worker_id)
+            .err_tip(|| format!("Worker {worker_id} doesn't exist in the pool"))?;
+        worker.is_draining = is_draining;
+        // TODO(allada) This should move to inside the Workers struct.
+        self.worker_change_notify.notify_one();
+        Ok(())
+    }
+
     // Attempts to find a worker that is capable of running this action.
     // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
@@ -126,11 +143,82 @@ impl Workers {
         };
         workers_iter.map(|(_, w)| &w.id).copied()
     }
+
+    pub async fn update_action(
+        &mut self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        action_stage: Result<ActionStage, Error>,
+    ) -> Result<(), Error> {
+        let worker = self.workers.get_mut(worker_id).err_tip(|| {
+            format!("Worker {worker_id} does not exist in SimpleScheduler::update_action")
+        })?;
+
+        // Ensure the worker is supposed to be running the operation.
+        if !worker.running_action_infos.contains_key(operation_id) {
+            let err = make_err!(
+                Code::Internal,
+                "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
+            );
+            return Result::<(), _>::Err(err.clone()).merge(
+                self
+                    .immediate_evict_worker(worker_id, err)
+                    .await,
+            );
+        }
+
+        // Update the operation in the worker state manager.
+        {
+            let update_operation_res = self
+                .worker_state_manager
+                .update_operation(operation_id, worker_id, action_stage.clone())
+                .await
+                .err_tip(|| "in update_operation on SimpleScheduler::update_action");
+            if let Err(err) = update_operation_res {
+                let result = Result::<(), _>::Err(err.clone()).merge(
+                    self
+                        .immediate_evict_worker(worker_id, err)
+                        .await,
+                );
+
+                event!(
+                    Level::ERROR,
+                    ?operation_id,
+                    ?worker_id,
+                    ?result,
+                    "Failed to update_operation on update_action"
+                );
+                return result;
+            }
+        }
+
+        // Clear this action from the current worker.
+        let complete_action_res = {
+            let was_paused = !worker.can_accept_work();
+
+            // Note: We need to run this before dealing with backpressure logic.
+            let complete_action_res = worker.complete_action(operation_id);
+
+            let due_to_backpressure = action_stage
+                .as_ref()
+                .map_or_else(|e| e.code == Code::ResourceExhausted, |_| false);
+            // Only pause if there's an action still waiting that will unpause.
+            if (was_paused || due_to_backpressure) && worker.has_actions() {
+                worker.is_paused = true;
+            }
+            complete_action_res
+        };
+
+        // TODO(allada) This should move to inside the Workers struct.
+        self.worker_change_notify.notify_one();
+
+        complete_action_res
+    }
+
     /// Notifies the specified worker to run the given action and handles errors by evicting
     /// the worker if the notification fails.
     pub async fn worker_notify_run_action(
         &mut self,
-        worker_state_manager: &dyn WorkerStateManager,
         worker_id: WorkerId,
         operation_id: OperationId,
         action_info: Arc<ActionInfo>,
@@ -154,7 +242,7 @@ impl Workers {
                 );
 
                 return Result::<(), _>::Err(err.clone()).merge(
-                    self.immediate_evict_worker(worker_state_manager, &worker_id, err)
+                    self.immediate_evict_worker(&worker_id, err)
                         .await,
                 );
             }
@@ -165,7 +253,6 @@ impl Workers {
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
     pub async fn immediate_evict_worker(
         &mut self,
-        worker_state_manager: &dyn WorkerStateManager,
         worker_id: &WorkerId,
         err: Error,
     ) -> Result<(), Error> {
@@ -177,7 +264,7 @@ impl Workers {
             // path touching the worker.running_action_infos elsewhere.
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
-                    worker_state_manager
+                    self.worker_state_manager
                         .update_operation(&operation_id, &worker_id, Err(err.clone()))
                         .await,
                 );

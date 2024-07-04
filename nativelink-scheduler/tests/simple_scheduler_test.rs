@@ -443,7 +443,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
     };
 
     // Set the worker draining.
-    scheduler.set_drain_worker(worker_id, true).await?;
+    scheduler.set_drain_worker(&worker_id, true).await?;
     tokio::task::yield_now().await;
 
     let action_digest = DigestInfo::new([88u8; 32], 512);
@@ -468,7 +468,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
     }
 
     // Set the worker not draining.
-    scheduler.set_drain_worker(worker_id, false).await?;
+    scheduler.set_drain_worker(&worker_id, false).await?;
     tokio::task::yield_now().await;
 
     {

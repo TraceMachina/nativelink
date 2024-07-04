@@ -188,7 +188,7 @@ impl WorkerApiServer {
     ) -> Result<Response<()>, Error> {
         let worker_id: WorkerId = going_away_request.worker_id.try_into()?;
         self.scheduler
-            .remove_worker(worker_id)
+            .remove_worker(&worker_id)
             .await
             .err_tip(|| "While calling WorkerApiServer::inner_going_away")?;
         Ok(Response::new(()))
