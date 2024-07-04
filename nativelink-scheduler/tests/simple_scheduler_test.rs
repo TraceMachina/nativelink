@@ -194,219 +194,239 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
     Ok(())
 }
 
-// #[nativelink_test]
-// async fn find_executing_action() -> Result<(), Error> {
-//     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
-//
-//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-//         &nativelink_config::schedulers::SimpleScheduler::default(),
-//         || async move {},
-//     );
-//     let action_digest = DigestInfo::new([99u8; 32], 512);
-//
-//     let mut rx_from_worker =
-//         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
-//     let insert_timestamp = make_system_time(1);
-//     let (client_operation_id, client_rx) = setup_action(
-//         &scheduler,
-//         action_digest,
-//         PlatformProperties::default(),
-//         insert_timestamp,
-//     )
-//     .await?;
-//
-//     // Drop our receiver and look up a new one.
-//     drop(client_rx);
-//     let mut client_rx = scheduler
-//         .find_by_client_operation_id(&client_operation_id)
-//         .await
-//         .expect("Action not found")
-//         .unwrap();
-//
-//     {
-//         // Worker should have been sent an execute command.
-//         let expected_msg_for_worker = UpdateForWorker {
-//             update: Some(update_for_worker::Update::StartAction(StartExecute {
-//                 execute_request: Some(ExecuteRequest {
-//                     instance_name: INSTANCE_NAME.to_string(),
-//                     skip_cache_lookup: true,
-//                     action_digest: Some(action_digest.into()),
-//                     digest_function: digest_function::Value::Sha256.into(),
-//                     ..Default::default()
-//                 }),
-//                 operation_id: "Unknown Generated internally".to_string(),
-//                 queued_timestamp: Some(insert_timestamp.into()),
-//             })),
-//         };
-//         let msg_for_worker = rx_from_worker.recv().await.unwrap();
-//         // Operation ID is random so we ignore it.
-//         assert!(update_eq(expected_msg_for_worker, msg_for_worker, true));
-//     }
-//     {
-//         // Client should get notification saying it's being executed.
-//         let action_state = client_rx.borrow_and_update();
-//         let expected_action_state = ActionState {
-//             // Name is a random string, so we ignore it and just make it the same.
-//             id: action_state.id.clone(),
-//             stage: ActionStage::Executing,
-//         };
-//         assert_eq!(action_state.as_ref(), &expected_action_state);
-//     }
-//
-//     Ok(())
-// }
+#[nativelink_test]
+async fn find_executing_action() -> Result<(), Error> {
+    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
-// #[nativelink_test]
-// async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
-//     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
-//     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
-//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-//         &nativelink_config::schedulers::SimpleScheduler {
-//             worker_timeout_s: WORKER_TIMEOUT_S,
-//             ..Default::default()
-//         },
-//         || async move {},
-//     );
-//     let action_digest1 = DigestInfo::new([99u8; 32], 512);
-//     let action_digest2 = DigestInfo::new([88u8; 32], 512);
-//
-//     let mut rx_from_worker1 =
-//         setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
-//     let insert_timestamp1 = make_system_time(1);
-//     let (_client_operation_id1, mut client_rx1) = setup_action(
-//         &scheduler,
-//         action_digest1,
-//         PlatformProperties::default(),
-//         insert_timestamp1,
-//     )
-//     .await?;
-//     let insert_timestamp2 = make_system_time(2);
-//     let (_client_operation_id2, mut client_rx2) = setup_action(
-//         &scheduler,
-//         action_digest2,
-//         PlatformProperties::default(),
-//         insert_timestamp2,
-//     )
-//     .await?;
-//
-//     let mut expected_start_execute_for_worker1 = StartExecute {
-//         execute_request: Some(ExecuteRequest {
-//             instance_name: INSTANCE_NAME.to_string(),
-//             skip_cache_lookup: true,
-//             action_digest: Some(action_digest1.into()),
-//             digest_function: digest_function::Value::Sha256.into(),
-//             ..Default::default()
-//         }),
-//         operation_id: "WILL BE SET BELOW".to_string(),
-//         queued_timestamp: Some(insert_timestamp1.into()),
-//     };
-//
-//     let mut expected_start_execute_for_worker2 = StartExecute {
-//         execute_request: Some(ExecuteRequest {
-//             instance_name: INSTANCE_NAME.to_string(),
-//             skip_cache_lookup: true,
-//             action_digest: Some(action_digest2.into()),
-//             digest_function: digest_function::Value::Sha256.into(),
-//             ..Default::default()
-//         }),
-//         operation_id: "WILL BE SET BELOW".to_string(),
-//         queued_timestamp: Some(insert_timestamp2.into()),
-//     };
-//     let operation_id1 = {
-//         // Worker1 should now see first execution request.
-//         let update_for_worker = rx_from_worker1.recv().await.expect("Worker terminated stream").update.expect("`update` should be set on UpdateForWorker");
-//         let (operation_id, rx_start_execute) = match update_for_worker {
-//             update_for_worker::Update::StartAction(start_execute) => {
-//                 (OperationId::try_from(start_execute.operation_id.as_str()).unwrap(),
-//                     start_execute)
-//             },
-//             v => panic!("Expected StartAction, got : {v:?}"),
-//         };
-//         expected_start_execute_for_worker1.operation_id = operation_id.to_string();
-//         assert_eq!(expected_start_execute_for_worker1, rx_start_execute);
-//         operation_id
-//     };
-//     let operation_id2 = {
-//         // Worker1 should now see second execution request.
-//         let update_for_worker = rx_from_worker1.recv().await.expect("Worker terminated stream").update.expect("`update` should be set on UpdateForWorker");
-//         let (operation_id, rx_start_execute) = match update_for_worker {
-//             update_for_worker::Update::StartAction(start_execute) => {
-//                 (OperationId::try_from(start_execute.operation_id.as_str()).unwrap(),
-//                     start_execute)
-//             },
-//             v => panic!("Expected StartAction, got : {v:?}"),
-//         };
-//         expected_start_execute_for_worker2.operation_id = operation_id.to_string();
-//         assert_eq!(expected_start_execute_for_worker2, rx_start_execute);
-//         operation_id
-//     };
-//
-//     // Add a second worker that can take jobs if the first dies.
-//     let mut rx_from_worker2 =
-//         setup_new_worker(&scheduler, worker_id2, PlatformProperties::default()).await?;
-//
-//     {
-//         let expected_action_stage = ActionStage::Executing;
-//         // Client should get notification saying it's being executed.
-//         let action_state = client_rx1.borrow_and_update();
-//         // We now know the name of the action so populate it.
-//         assert_eq!(&action_state.stage, &expected_action_stage);
-//     }
-//     {
-//         let expected_action_stage = ActionStage::Executing;
-//         // Client should get notification saying it's being executed.
-//         let action_state = client_rx2.borrow_and_update();
-//         // We now know the name of the action so populate it.
-//         assert_eq!(&action_state.stage, &expected_action_stage);
-//     }
-//
-//     // Now remove worker.
-//     let _ = scheduler.remove_worker(worker_id1).await;
-//     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
-//
-//     {
-//         // Worker1 should have received a disconnect message.
-//         let msg_for_worker = rx_from_worker1.recv().await.unwrap();
-//         assert_eq!(
-//             msg_for_worker,
-//             UpdateForWorker {
-//                 update: Some(update_for_worker::Update::Disconnect(()))
-//             }
-//         );
-//     }
-//     {
-//         let expected_action_stage = ActionStage::Executing;
-//         // Client should get notification saying it's being executed.
-//         let action_state = client_rx1.borrow_and_update();
-//         // We now know the name of the action so populate it.
-//         assert_eq!(&action_state.stage, &expected_action_stage);
-//     }
-//     {
-//         let expected_action_stage = ActionStage::Executing;
-//         // Client should get notification saying it's being executed.
-//         let action_state = client_rx2.borrow_and_update();
-//         // We now know the name of the action so populate it.
-//         assert_eq!(&action_state.stage, &expected_action_stage);
-//     }
-//     {
-//         // Worker2 should now see execution request.
-//         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
-//         expected_start_execute_for_worker1.operation_id = operation_id1.to_string();
-//         assert_eq!(msg_for_worker, UpdateForWorker {
-//             update: Some(update_for_worker::Update::StartAction(expected_start_execute_for_worker1)),
-//         });
-//     }
-//     {
-//         // Worker2 should now see execution request.
-//         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
-//         expected_start_execute_for_worker2.operation_id = operation_id2.to_string();
-//         assert_eq!(msg_for_worker, UpdateForWorker {
-//             update: Some(update_for_worker::Update::StartAction(expected_start_execute_for_worker2)),
-//         });
-//     }
-//
-//     Ok(())
-// }
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &nativelink_config::schedulers::SimpleScheduler::default(),
+        || async move {},
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let (client_operation_id, client_rx) = setup_action(
+        &scheduler,
+        action_digest,
+        PlatformProperties::default(),
+        insert_timestamp,
+    )
+    .await?;
+
+    // Drop our receiver and look up a new one.
+    drop(client_rx);
+    let mut client_rx = scheduler
+        .find_by_client_operation_id(&client_operation_id)
+        .await
+        .expect("Action not found")
+        .unwrap();
+
+    {
+        // Worker should have been sent an execute command.
+        let expected_msg_for_worker = UpdateForWorker {
+            update: Some(update_for_worker::Update::StartAction(StartExecute {
+                execute_request: Some(ExecuteRequest {
+                    instance_name: INSTANCE_NAME.to_string(),
+                    skip_cache_lookup: true,
+                    action_digest: Some(action_digest.into()),
+                    digest_function: digest_function::Value::Sha256.into(),
+                    ..Default::default()
+                }),
+                operation_id: "Unknown Generated internally".to_string(),
+                queued_timestamp: Some(insert_timestamp.into()),
+            })),
+        };
+        let msg_for_worker = rx_from_worker.recv().await.unwrap();
+        // Operation ID is random so we ignore it.
+        assert!(update_eq(expected_msg_for_worker, msg_for_worker, true));
+    }
+    {
+        // Client should get notification saying it's being executed.
+        let action_state = client_rx.borrow_and_update();
+        let expected_action_state = ActionState {
+            // Name is a random string, so we ignore it and just make it the same.
+            id: action_state.id.clone(),
+            stage: ActionStage::Executing,
+        };
+        assert_eq!(action_state.as_ref(), &expected_action_state);
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
+    let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &nativelink_config::schedulers::SimpleScheduler {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            ..Default::default()
+        },
+        || async move {},
+    );
+    let action_digest1 = DigestInfo::new([99u8; 32], 512);
+    let action_digest2 = DigestInfo::new([88u8; 32], 512);
+
+    let mut rx_from_worker1 =
+        setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
+    let insert_timestamp1 = make_system_time(1);
+    let (_client_operation_id1, mut client_rx1) = setup_action(
+        &scheduler,
+        action_digest1,
+        PlatformProperties::default(),
+        insert_timestamp1,
+    )
+    .await?;
+    let insert_timestamp2 = make_system_time(2);
+    let (_client_operation_id2, mut client_rx2) = setup_action(
+        &scheduler,
+        action_digest2,
+        PlatformProperties::default(),
+        insert_timestamp2,
+    )
+    .await?;
+
+    let mut expected_start_execute_for_worker1 = StartExecute {
+        execute_request: Some(ExecuteRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            skip_cache_lookup: true,
+            action_digest: Some(action_digest1.into()),
+            digest_function: digest_function::Value::Sha256.into(),
+            ..Default::default()
+        }),
+        operation_id: "WILL BE SET BELOW".to_string(),
+        queued_timestamp: Some(insert_timestamp1.into()),
+    };
+
+    let mut expected_start_execute_for_worker2 = StartExecute {
+        execute_request: Some(ExecuteRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            skip_cache_lookup: true,
+            action_digest: Some(action_digest2.into()),
+            digest_function: digest_function::Value::Sha256.into(),
+            ..Default::default()
+        }),
+        operation_id: "WILL BE SET BELOW".to_string(),
+        queued_timestamp: Some(insert_timestamp2.into()),
+    };
+    let operation_id1 = {
+        // Worker1 should now see first execution request.
+        let update_for_worker = rx_from_worker1
+            .recv()
+            .await
+            .expect("Worker terminated stream")
+            .update
+            .expect("`update` should be set on UpdateForWorker");
+        let (operation_id, rx_start_execute) = match update_for_worker {
+            update_for_worker::Update::StartAction(start_execute) => (
+                OperationId::try_from(start_execute.operation_id.as_str()).unwrap(),
+                start_execute,
+            ),
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        expected_start_execute_for_worker1.operation_id = operation_id.to_string();
+        assert_eq!(expected_start_execute_for_worker1, rx_start_execute);
+        operation_id
+    };
+    let operation_id2 = {
+        // Worker1 should now see second execution request.
+        let update_for_worker = rx_from_worker1
+            .recv()
+            .await
+            .expect("Worker terminated stream")
+            .update
+            .expect("`update` should be set on UpdateForWorker");
+        let (operation_id, rx_start_execute) = match update_for_worker {
+            update_for_worker::Update::StartAction(start_execute) => (
+                OperationId::try_from(start_execute.operation_id.as_str()).unwrap(),
+                start_execute,
+            ),
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        expected_start_execute_for_worker2.operation_id = operation_id.to_string();
+        assert_eq!(expected_start_execute_for_worker2, rx_start_execute);
+        operation_id
+    };
+
+    // Add a second worker that can take jobs if the first dies.
+    let mut rx_from_worker2 =
+        setup_new_worker(&scheduler, worker_id2, PlatformProperties::default()).await?;
+
+    {
+        let expected_action_stage = ActionStage::Executing;
+        // Client should get notification saying it's being executed.
+        let action_state = client_rx1.borrow_and_update();
+        // We now know the name of the action so populate it.
+        assert_eq!(&action_state.stage, &expected_action_stage);
+    }
+    {
+        let expected_action_stage = ActionStage::Executing;
+        // Client should get notification saying it's being executed.
+        let action_state = client_rx2.borrow_and_update();
+        // We now know the name of the action so populate it.
+        assert_eq!(&action_state.stage, &expected_action_stage);
+    }
+
+    // Now remove worker.
+    let _ = scheduler.remove_worker(&worker_id1).await;
+    tokio::task::yield_now().await; // Allow task<->worker matcher to run.
+
+    {
+        // Worker1 should have received a disconnect message.
+        let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+        assert_eq!(
+            msg_for_worker,
+            UpdateForWorker {
+                update: Some(update_for_worker::Update::Disconnect(()))
+            }
+        );
+    }
+    {
+        let expected_action_stage = ActionStage::Executing;
+        // Client should get notification saying it's being executed.
+        let action_state = client_rx1.borrow_and_update();
+        // We now know the name of the action so populate it.
+        assert_eq!(&action_state.stage, &expected_action_stage);
+    }
+    {
+        let expected_action_stage = ActionStage::Executing;
+        // Client should get notification saying it's being executed.
+        let action_state = client_rx2.borrow_and_update();
+        // We now know the name of the action so populate it.
+        assert_eq!(&action_state.stage, &expected_action_stage);
+    }
+    {
+        // Worker2 should now see execution request.
+        let msg_for_worker = rx_from_worker2.recv().await.unwrap();
+        expected_start_execute_for_worker1.operation_id = operation_id1.to_string();
+        assert_eq!(
+            msg_for_worker,
+            UpdateForWorker {
+                update: Some(update_for_worker::Update::StartAction(
+                    expected_start_execute_for_worker1
+                )),
+            }
+        );
+    }
+    {
+        // Worker2 should now see execution request.
+        let msg_for_worker = rx_from_worker2.recv().await.unwrap();
+        expected_start_execute_for_worker2.operation_id = operation_id2.to_string();
+        assert_eq!(
+            msg_for_worker,
+            UpdateForWorker {
+                update: Some(update_for_worker::Update::StartAction(
+                    expected_start_execute_for_worker2
+                )),
+            }
+        );
+    }
+
+    Ok(())
+}
 
 #[nativelink_test]
 async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> {
@@ -710,322 +730,324 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
     Ok(())
 }
 
-// #[nativelink_test]
-// async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
-//     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
-//     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
-//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-//         &nativelink_config::schedulers::SimpleScheduler {
-//             worker_timeout_s: WORKER_TIMEOUT_S,
-//             ..Default::default()
-//         },
-//         || async move {},
-//     );
-//     let action_digest = DigestInfo::new([99u8; 32], 512);
-//
-//     // Note: This needs to stay in scope or a disconnect will trigger.
-//     let mut rx_from_worker1 =
-//         setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
-//     let insert_timestamp = make_system_time(1);
-//     let (_client_operation_id, mut client_rx) = setup_action(
-//         &scheduler,
-//         action_digest,
-//         PlatformProperties::default(),
-//         insert_timestamp,
-//     )
-//     .await?;
-//
-//     // Note: This needs to stay in scope or a disconnect will trigger.
-//     let mut rx_from_worker2 =
-//         setup_new_worker(&scheduler, worker_id2, PlatformProperties::default()).await?;
-//
-//     let unique_qualifier = ActionInfoHashKey {
-//         instance_name: "".to_string(),
-//         digest: DigestInfo::zero_digest(),
-//         digest_function: DigestHasherFunc::Sha256,
-//         salt: 0,
-//     };
-//     let id = OperationId::new(unique_qualifier);
-//     let mut expected_action_state = ActionState {
-//         id: id.clone(),
-//         stage: ActionStage::Executing,
-//     };
-//
-//     let execution_request_for_worker = UpdateForWorker {
-//         update: Some(update_for_worker::Update::StartAction(StartExecute {
-//             execute_request: Some(ExecuteRequest {
-//                 instance_name: INSTANCE_NAME.to_string(),
-//                 skip_cache_lookup: true,
-//                 action_digest: Some(action_digest.into()),
-//                 digest_function: digest_function::Value::Sha256.into(),
-//                 ..Default::default()
-//             }),
-//             operation_id: id.to_string(),
-//             queued_timestamp: Some(insert_timestamp.into()),
-//         })),
-//     };
-//
-//     {
-//         // Worker1 should now see execution request.
-//         let msg_for_worker = rx_from_worker1.recv().await.unwrap();
-//         assert_eq!(msg_for_worker, execution_request_for_worker);
-//     }
-//
-//     {
-//         // Client should get notification saying it's being executed.
-//         let action_state = client_rx.borrow_and_update();
-//         // We now know the name of the action so populate it.
-//         expected_action_state.id = action_state.id.clone();
-//         assert_eq!(action_state.as_ref(), &expected_action_state);
-//     }
-//
-//     // Keep worker 2 alive.
-//     scheduler
-//         .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S)
-//         .await?;
-//     // This should remove worker 1 (the one executing our job).
-//     scheduler
-//         .remove_timedout_workers(NOW_TIME + WORKER_TIMEOUT_S)
-//         .await?;
-//     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
-//
-//     {
-//         // Worker1 should have received a disconnect message.
-//         let msg_for_worker = rx_from_worker1.recv().await.unwrap();
-//         assert_eq!(
-//             msg_for_worker,
-//             UpdateForWorker {
-//                 update: Some(update_for_worker::Update::Disconnect(()))
-//             }
-//         );
-//     }
-//     {
-//         // Client should get notification saying it's being executed.
-//         let action_state = client_rx.borrow_and_update();
-//         expected_action_state.stage = ActionStage::Executing;
-//         assert_eq!(action_state.as_ref(), &expected_action_state);
-//     }
-//     {
-//         // Worker2 should now see execution request.
-//         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
-//         assert_eq!(msg_for_worker, execution_request_for_worker);
-//     }
-//
-//     Ok(())
-// }
-//
-// #[nativelink_test]
-// async fn update_action_sends_completed_result_to_client_test() -> Result<(), Error> {
-//     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
-//
-//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-//         &nativelink_config::schedulers::SimpleScheduler::default(),
-//         || async move {},
-//     );
-//     let action_digest = DigestInfo::new([99u8; 32], 512);
-//
-//     let mut rx_from_worker =
-//         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
-//     let insert_timestamp = make_system_time(1);
-//     let (client_operation_id, mut client_rx) = setup_action(
-//         &scheduler,
-//         action_digest,
-//         PlatformProperties::default(),
-//         insert_timestamp,
-//     )
-//     .await?;
-//
-//     let operation_id = {
-//         // Other tests check full data. We only care if we got StartAction.
-//         match rx_from_worker.recv().await.unwrap().update {
-//             Some(update_for_worker::Update::StartAction(start_execute)) => {
-//                 // Other tests check full data. We only care if client thinks we are Executing.
-//                 assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
-//                 start_execute.operation_id
-//             }
-//             v => panic!("Expected StartAction, got : {v:?}"),
-//         }
-//     };
-//
-//     let action_info_hash_key = ActionInfoHashKey {
-//         instance_name: INSTANCE_NAME.to_string(),
-//         digest_function: DigestHasherFunc::Sha256,
-//         digest: action_digest,
-//         salt: 0,
-//     };
-//     let action_result = ActionResult {
-//         output_files: vec![FileInfo {
-//             name_or_path: NameOrPath::Name("hello".to_string()),
-//             digest: DigestInfo::new([5u8; 32], 18),
-//             is_executable: true,
-//         }],
-//         output_folders: vec![DirectoryInfo {
-//             path: "123".to_string(),
-//             tree_digest: DigestInfo::new([9u8; 32], 100),
-//         }],
-//         output_file_symlinks: vec![SymlinkInfo {
-//             name_or_path: NameOrPath::Name("foo".to_string()),
-//             target: "bar".to_string(),
-//         }],
-//         output_directory_symlinks: vec![SymlinkInfo {
-//             name_or_path: NameOrPath::Name("foo2".to_string()),
-//             target: "bar2".to_string(),
-//         }],
-//         exit_code: 0,
-//         stdout_digest: DigestInfo::new([6u8; 32], 19),
-//         stderr_digest: DigestInfo::new([7u8; 32], 20),
-//         execution_metadata: ExecutionMetadata {
-//             worker: worker_id.to_string(),
-//             queued_timestamp: make_system_time(5),
-//             worker_start_timestamp: make_system_time(6),
-//             worker_completed_timestamp: make_system_time(7),
-//             input_fetch_start_timestamp: make_system_time(8),
-//             input_fetch_completed_timestamp: make_system_time(9),
-//             execution_start_timestamp: make_system_time(10),
-//             execution_completed_timestamp: make_system_time(11),
-//             output_upload_start_timestamp: make_system_time(12),
-//             output_upload_completed_timestamp: make_system_time(13),
-//         },
-//         server_logs: HashMap::default(),
-//         error: None,
-//         message: String::new(),
-//     };
-//     scheduler
-//         .update_action(
-//             &worker_id,
-//             &OperationId::try_from(operation_id.as_str())?,
-//             Ok(ActionStage::Completed(action_result.clone())),
-//         )
-//         .await?;
-//
-//     {
-//         // Client should get notification saying it has been completed.
-//         let action_state = client_rx.borrow_and_update();
-//         let expected_action_state = ActionState {
-//             // Name is a random string, so we ignore it and just make it the same.
-//             id: action_state.id.clone(),
-//             stage: ActionStage::Completed(action_result),
-//         };
-//         assert_eq!(action_state.as_ref(), &expected_action_state);
-//     }
-//     {
-//         // Update info for the action should now be closed (notification happens through Err).
-//         let result = client_rx.changed().await;
-//         assert!(
-//             result.is_err(),
-//             "Expected result to be an error : {result:?}"
-//         );
-//     }
-//
-//     Ok(())
-// }
+#[nativelink_test]
+async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
+    let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
+    let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &nativelink_config::schedulers::SimpleScheduler {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            ..Default::default()
+        },
+        || async move {},
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
 
-// #[nativelink_test]
-// async fn update_action_sends_completed_result_after_disconnect() -> Result<(), Error> {
-//     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
-//
-//     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-//         &nativelink_config::schedulers::SimpleScheduler::default(),
-//         || async move {},
-//     );
-//     let action_digest = DigestInfo::new([99u8; 32], 512);
-//
-//     let mut rx_from_worker =
-//         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
-//     let insert_timestamp = make_system_time(1);
-//     let (client_id, client_rx) = setup_action(
-//         &scheduler,
-//         action_digest,
-//         PlatformProperties::default(),
-//         insert_timestamp,
-//     )
-//     .await?;
-//
-//     // Drop our receiver and don't reconnect until completed.
-//     let unique_qualifier = client_rx.borrow().id.unique_qualifier.clone();
-//     drop(client_rx);
-//
-//     let operation_id = {
-//         // Other tests check full data. We only care if we got StartAction.
-//         let operation_id = match rx_from_worker.recv().await.unwrap().update {
-//             Some(update_for_worker::Update::StartAction(exec)) => { exec.operation_id },
-//             v => panic!("Expected StartAction, got : {v:?}"),
-//         };
-//         // Other tests check full data. We only care if client thinks we are Executing.
-//         OperationId::try_from(operation_id.as_str())?
-//     };
-//
-//     let action_info_hash_key = ActionInfoHashKey {
-//         instance_name: INSTANCE_NAME.to_string(),
-//         digest_function: DigestHasherFunc::Sha256,
-//         digest: action_digest,
-//         salt: 0,
-//     };
-//
-//     let action_result = ActionResult {
-//         output_files: vec![FileInfo {
-//             name_or_path: NameOrPath::Name("hello".to_string()),
-//             digest: DigestInfo::new([5u8; 32], 18),
-//             is_executable: true,
-//         }],
-//         output_folders: vec![DirectoryInfo {
-//             path: "123".to_string(),
-//             tree_digest: DigestInfo::new([9u8; 32], 100),
-//         }],
-//         output_file_symlinks: vec![SymlinkInfo {
-//             name_or_path: NameOrPath::Name("foo".to_string()),
-//             target: "bar".to_string(),
-//         }],
-//         output_directory_symlinks: vec![SymlinkInfo {
-//             name_or_path: NameOrPath::Name("foo2".to_string()),
-//             target: "bar2".to_string(),
-//         }],
-//         exit_code: 0,
-//         stdout_digest: DigestInfo::new([6u8; 32], 19),
-//         stderr_digest: DigestInfo::new([7u8; 32], 20),
-//         execution_metadata: ExecutionMetadata {
-//             worker: worker_id.to_string(),
-//             queued_timestamp: make_system_time(5),
-//             worker_start_timestamp: make_system_time(6),
-//             worker_completed_timestamp: make_system_time(7),
-//             input_fetch_start_timestamp: make_system_time(8),
-//             input_fetch_completed_timestamp: make_system_time(9),
-//             execution_start_timestamp: make_system_time(10),
-//             execution_completed_timestamp: make_system_time(11),
-//             output_upload_start_timestamp: make_system_time(12),
-//             output_upload_completed_timestamp: make_system_time(13),
-//         },
-//         server_logs: HashMap::default(),
-//         error: None,
-//         message: String::new(),
-//     };
-//     scheduler
-//         .update_action(
-//             &worker_id,
-//             &operation_id,
-//             Ok(ActionStage::Completed(action_result.clone())),
-//         )
-//         .await?;
-//
-//     // Now look up a channel after the action has completed.
-//     let mut client_rx = scheduler
-//         .find_existing_action(&client_id)
-//         .await
-//         .unwrap()
-//         .expect("Action not found");
-//     {
-//         // Client should get notification saying it has been completed.
-//         let action_state = client_rx.borrow_and_update();
-//         let expected_action_state = ActionState {
-//             // Name is a random string, so we ignore it and just make it the same.
-//             id: action_state.id.clone(),
-//             stage: ActionStage::Completed(action_result),
-//         };
-//         assert_eq!(action_state.as_ref(), &expected_action_state);
-//     }
-//
-//     Ok(())
-// }
+    // Note: This needs to stay in scope or a disconnect will trigger.
+    let mut rx_from_worker1 =
+        setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let (_client_operation_id, mut client_rx) = setup_action(
+        &scheduler,
+        action_digest,
+        PlatformProperties::default(),
+        insert_timestamp,
+    )
+    .await?;
+
+    // Note: This needs to stay in scope or a disconnect will trigger.
+    let mut rx_from_worker2 =
+        setup_new_worker(&scheduler, worker_id2, PlatformProperties::default()).await?;
+
+    let mut start_execute = StartExecute {
+        execute_request: Some(ExecuteRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            skip_cache_lookup: true,
+            action_digest: Some(action_digest.into()),
+            digest_function: digest_function::Value::Sha256.into(),
+            ..Default::default()
+        }),
+        operation_id: "UNKNOWN HERE, WE WILL SET IT LATER".to_string(),
+        queued_timestamp: Some(insert_timestamp.into()),
+    };
+
+    let operation_id = {
+        // Worker1 should now see execution request.
+        let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+        let operation_id = if let update_for_worker::Update::StartAction(start_execute) =
+            msg_for_worker.update.as_ref().unwrap()
+        {
+            start_execute.operation_id.clone()
+        } else {
+            panic!("Expected StartAction, got : {msg_for_worker:?}");
+        };
+        start_execute.operation_id = operation_id.clone();
+        assert_eq!(
+            msg_for_worker,
+            UpdateForWorker {
+                update: Some(update_for_worker::Update::StartAction(
+                    start_execute.clone()
+                )),
+            }
+        );
+        OperationId::try_from(operation_id.as_str()).unwrap()
+    };
+
+    {
+        // Client should get notification saying it's being executed.
+        let action_state = client_rx.borrow_and_update();
+        assert_eq!(
+            action_state.as_ref(),
+            &ActionState {
+                id: operation_id.clone(),
+                stage: ActionStage::Executing,
+            }
+        );
+    }
+
+    // Keep worker 2 alive.
+    scheduler
+        .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S)
+        .await?;
+    // This should remove worker 1 (the one executing our job).
+    scheduler
+        .remove_timedout_workers(NOW_TIME + WORKER_TIMEOUT_S)
+        .await?;
+    tokio::task::yield_now().await; // Allow task<->worker matcher to run.
+
+    {
+        // Worker1 should have received a disconnect message.
+        let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+        assert_eq!(
+            msg_for_worker,
+            UpdateForWorker {
+                update: Some(update_for_worker::Update::Disconnect(()))
+            }
+        );
+    }
+    {
+        // Client should get notification saying it's being executed.
+        let action_state = client_rx.borrow_and_update();
+        assert_eq!(
+            action_state.as_ref(),
+            &ActionState {
+                id: operation_id.clone(),
+                stage: ActionStage::Executing,
+            }
+        );
+    }
+    {
+        // Worker2 should now see execution request.
+        let msg_for_worker = rx_from_worker2.recv().await.unwrap();
+        assert_eq!(
+            msg_for_worker,
+            UpdateForWorker {
+                update: Some(update_for_worker::Update::StartAction(
+                    start_execute.clone()
+                )),
+            }
+        );
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn update_action_sends_completed_result_to_client_test() -> Result<(), Error> {
+    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &nativelink_config::schedulers::SimpleScheduler::default(),
+        || async move {},
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let (_client_operation_id, mut client_rx) = setup_action(
+        &scheduler,
+        action_digest,
+        PlatformProperties::default(),
+        insert_timestamp,
+    )
+    .await?;
+
+    let operation_id = {
+        // Other tests check full data. We only care if we got StartAction.
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(start_execute)) => {
+                // Other tests check full data. We only care if client thinks we are Executing.
+                assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+                start_execute.operation_id
+            }
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+    };
+
+    // let action_info_hash_key = ActionInfoHashKey {
+    //     instance_name: INSTANCE_NAME.to_string(),
+    //     digest_function: DigestHasherFunc::Sha256,
+    //     digest: action_digest,
+    //     salt: 0,
+    // };
+    let action_result = ActionResult {
+        output_files: vec![FileInfo {
+            name_or_path: NameOrPath::Name("hello".to_string()),
+            digest: DigestInfo::new([5u8; 32], 18),
+            is_executable: true,
+        }],
+        output_folders: vec![DirectoryInfo {
+            path: "123".to_string(),
+            tree_digest: DigestInfo::new([9u8; 32], 100),
+        }],
+        output_file_symlinks: vec![SymlinkInfo {
+            name_or_path: NameOrPath::Name("foo".to_string()),
+            target: "bar".to_string(),
+        }],
+        output_directory_symlinks: vec![SymlinkInfo {
+            name_or_path: NameOrPath::Name("foo2".to_string()),
+            target: "bar2".to_string(),
+        }],
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([6u8; 32], 19),
+        stderr_digest: DigestInfo::new([7u8; 32], 20),
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            queued_timestamp: make_system_time(5),
+            worker_start_timestamp: make_system_time(6),
+            worker_completed_timestamp: make_system_time(7),
+            input_fetch_start_timestamp: make_system_time(8),
+            input_fetch_completed_timestamp: make_system_time(9),
+            execution_start_timestamp: make_system_time(10),
+            execution_completed_timestamp: make_system_time(11),
+            output_upload_start_timestamp: make_system_time(12),
+            output_upload_completed_timestamp: make_system_time(13),
+        },
+        server_logs: HashMap::default(),
+        error: None,
+        message: String::new(),
+    };
+    scheduler
+        .update_action(
+            &worker_id,
+            &OperationId::try_from(operation_id.as_str())?,
+            Ok(ActionStage::Completed(action_result.clone())),
+        )
+        .await?;
+
+    {
+        // Client should get notification saying it has been completed.
+        let action_state = client_rx.borrow_and_update();
+        let expected_action_state = ActionState {
+            // Name is a random string, so we ignore it and just make it the same.
+            id: action_state.id.clone(),
+            stage: ActionStage::Completed(action_result),
+        };
+        assert_eq!(action_state.as_ref(), &expected_action_state);
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn update_action_sends_completed_result_after_disconnect() -> Result<(), Error> {
+    let worker_id: WorkerId = WorkerId(Uuid::new_v4());
+
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &nativelink_config::schedulers::SimpleScheduler::default(),
+        || async move {},
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let (client_id, client_rx) = setup_action(
+        &scheduler,
+        action_digest,
+        PlatformProperties::default(),
+        insert_timestamp,
+    )
+    .await?;
+
+    // Drop our receiver and don't reconnect until completed.
+    drop(client_rx);
+
+    let operation_id = {
+        // Other tests check full data. We only care if we got StartAction.
+        let operation_id = match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(exec)) => exec.operation_id,
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        // Other tests check full data. We only care if client thinks we are Executing.
+        OperationId::try_from(operation_id.as_str())?
+    };
+
+    let action_result = ActionResult {
+        output_files: vec![FileInfo {
+            name_or_path: NameOrPath::Name("hello".to_string()),
+            digest: DigestInfo::new([5u8; 32], 18),
+            is_executable: true,
+        }],
+        output_folders: vec![DirectoryInfo {
+            path: "123".to_string(),
+            tree_digest: DigestInfo::new([9u8; 32], 100),
+        }],
+        output_file_symlinks: vec![SymlinkInfo {
+            name_or_path: NameOrPath::Name("foo".to_string()),
+            target: "bar".to_string(),
+        }],
+        output_directory_symlinks: vec![SymlinkInfo {
+            name_or_path: NameOrPath::Name("foo2".to_string()),
+            target: "bar2".to_string(),
+        }],
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([6u8; 32], 19),
+        stderr_digest: DigestInfo::new([7u8; 32], 20),
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            queued_timestamp: make_system_time(5),
+            worker_start_timestamp: make_system_time(6),
+            worker_completed_timestamp: make_system_time(7),
+            input_fetch_start_timestamp: make_system_time(8),
+            input_fetch_completed_timestamp: make_system_time(9),
+            execution_start_timestamp: make_system_time(10),
+            execution_completed_timestamp: make_system_time(11),
+            output_upload_start_timestamp: make_system_time(12),
+            output_upload_completed_timestamp: make_system_time(13),
+        },
+        server_logs: HashMap::default(),
+        error: None,
+        message: String::new(),
+    };
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            Ok(ActionStage::Completed(action_result.clone())),
+        )
+        .await?;
+
+    // Now look up a channel after the action has completed.
+    let mut client_rx = scheduler
+        .find_by_client_operation_id(&client_id)
+        .await
+        .unwrap()
+        .expect("Action not found");
+    {
+        // Client should get notification saying it has been completed.
+        let action_state = client_rx.borrow_and_update();
+        let expected_action_state = ActionState {
+            // Name is a random string, so we ignore it and just make it the same.
+            id: action_state.id.clone(),
+            stage: ActionStage::Completed(action_result),
+        };
+        assert_eq!(action_state.as_ref(), &expected_action_state);
+    }
+
+    Ok(())
+}
 
 #[nativelink_test]
 async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
@@ -1041,7 +1063,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let mut rx_from_worker =
         setup_new_worker(&scheduler, good_worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let (client_id, mut client_rx) = setup_action(
+    let (_client_id, mut client_rx) = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
