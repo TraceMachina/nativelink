@@ -16,19 +16,33 @@
 [![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://nativelink.slack.com/join/shared_invite/zt-281qk1ho0-krT7HfTUIYfQMdwflRuq7A#/shared-invite/email)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-NativeLink is an extremely (blazingly?) fast and efficient build cache and
-remote executor for systems that communicate using the [Remote execution
-protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), and
-[Reclient](https://github.com/bazelbuild/reclient). NativeLink powers several billion requests per month in production workloads and powers operating systems deployed to over one billion edge devices and hundreds of thousands of data center servers in HPC environments.
+## What's NativeLink?
 
-Supports Unix-based operating systems and Windows.
+NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines.
+
+NativeLink is trusted in production environments to reduce costs and developer iteration times-- handling over **one billion requests** per month for its customers, including large corporations such as **Samsung**.
+
+
+## 🔑 Key Features
+
+1. **Advanced Build Cache**:
+   - Stores and reuses results of previous build steps for unchanged components
+   - Significantly reduces build times, especially for incremental changes
+
+2. **Efficient Remote Execution**:
+   - Distributes build and test tasks across a network of machines
+   - Parallelizes workloads for faster completion
+   - Utilizes remote resources to offload computational burden from local machines
+   - Ensures consistency with a uniform, controlled build environment
+
+NativeLink seamlessly integrates with build tools that use the Remote Execution protocol, such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/), and [Reclient](https://github.com/bazelbuild/reclient). It supports Unix-based operating systems and Windows, ensuring broad compatibility across different development environments.
 
 ## 🚀 Quickstart
 
-The setups below are **production-grade** installations. See the
-[contribution docs](https://docs.nativelink.com/contribute/nix/) for
-instructions on how to build from source with [Bazel](https://docs.nativelink.com/contribute/bazel/),
-[Cargo](https://docs.nativelink.com/contribute/cargo/), and [Nix](https://docs.nativelink.com/contribute/nix/).
+To start, you can deploy NativeLink as a Docker image (as shown below) or by using our cloud-hosted solution, [NativeLink Cloud](https://app.nativelink.com). It's **FREE** for individuals, open-source projects, and cloud production environments, with support for unlimited team members.
+
+The setups below are **production-grade** installations. See the [contribution docs](https://docs.nativelink.com/contribute/nix/) for instructions on how to build from source with [Bazel](https://docs.nativelink.com/contribute/bazel/), [Cargo](https://docs.nativelink.com/contribute/cargo/), and [Nix](https://docs.nativelink.com/contribute/nix/).
+
 
 ### 📦 Prebuilt images
 
@@ -90,8 +104,22 @@ curl -O \
 nix run github:TraceMachina/nativelink ./basic_cas.json
 ```
 
-See the [contribution docs](https://docs.nativelink.com/contribute/nix) for
-further information.
+See the [contribution docs](https://docs.nativelink.com/contribute/nix) for further information.
+
+## ✍️ Authors
+
+<a href="https://github.com/tracemachina/nativelink/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=tracemachina/nativelink" />
+</a>
+
+
+## 🤝 Contributing
+
+Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CONTRIBUTING.md) guide to learn how to contribute to NativeLink. We welcome contributions from developers of all skill levels and backgrounds!
+
+## 📊 Stats
+
+![Alt](https://repobeats.axiom.co/api/embed/d8bfc6d283632c060beaab1e69494c2f7774a548.svg "Repobeats analytics image")
 
 ## 📜 License
 
