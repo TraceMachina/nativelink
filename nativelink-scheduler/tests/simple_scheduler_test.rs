@@ -218,7 +218,7 @@ async fn find_executing_action() -> Result<(), Error> {
     // Drop our receiver and look up a new one.
     drop(client_rx);
     let mut client_rx = scheduler
-        .find_existing_action(&client_operation_id)
+        .find_by_client_operation_id(&client_operation_id)
         .await
         .expect("Action not found")
         .unwrap();
@@ -289,45 +289,57 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     )
     .await?;
 
-    let execution_request_for_worker1 = UpdateForWorker {
-        update: Some(update_for_worker::Update::StartAction(StartExecute {
-            execute_request: Some(ExecuteRequest {
-                instance_name: INSTANCE_NAME.to_string(),
-                skip_cache_lookup: true,
-                action_digest: Some(action_digest1.into()),
-                digest_function: digest_function::Value::Sha256.into(),
-                ..Default::default()
-            }),
-            operation_id: "Unknown Generated internally".to_string(),
-            queued_timestamp: Some(insert_timestamp1.into()),
-        })),
+    let mut expected_start_execute_for_worker1 = StartExecute {
+        execute_request: Some(ExecuteRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            skip_cache_lookup: true,
+            action_digest: Some(action_digest1.into()),
+            digest_function: digest_function::Value::Sha256.into(),
+            ..Default::default()
+        }),
+        operation_id: "WILL BE SET BELOW".to_string(),
+        queued_timestamp: Some(insert_timestamp1.into()),
     };
 
-    let execution_request_for_worker2 = UpdateForWorker {
-        update: Some(update_for_worker::Update::StartAction(StartExecute {
-            execute_request: Some(ExecuteRequest {
-                instance_name: INSTANCE_NAME.to_string(),
-                skip_cache_lookup: true,
-                action_digest: Some(action_digest2.into()),
-                digest_function: digest_function::Value::Sha256.into(),
-                ..Default::default()
-            }),
-            operation_id: "Unknown Generated internally".to_string(),
-            queued_timestamp: Some(insert_timestamp2.into()),
-        })),
+    let mut expected_start_execute_for_worker2 = StartExecute {
+        execute_request: Some(ExecuteRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            skip_cache_lookup: true,
+            action_digest: Some(action_digest2.into()),
+            digest_function: digest_function::Value::Sha256.into(),
+            ..Default::default()
+        }),
+        operation_id: "WILL BE SET BELOW".to_string(),
+        queued_timestamp: Some(insert_timestamp2.into()),
     };
-    {
+    let operation_id1 = {
+        // Worker1 should now see first execution request.
+        let update_for_worker = rx_from_worker1.recv().await.expect("Worker terminated stream").update.expect("`update` should be set on UpdateForWorker");
+        let (operation_id, rx_start_execute) = match update_for_worker {
+            update_for_worker::Update::StartAction(start_execute) => {
+                (OperationId::try_from(start_execute.operation_id.as_str()).unwrap(),
+                    start_execute)
+            },
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        expected_start_execute_for_worker1.operation_id = operation_id.to_string();
+        assert_eq!(expected_start_execute_for_worker1, rx_start_execute);
+        operation_id
+    };
+    let operation_id2 = {
         // Worker1 should now see second execution request.
-        let msg_for_worker = rx_from_worker1.recv().await.unwrap();
-        // Operation ID is random so we ignore it.
-        println!("{:?}", msg_for_worker);
-        println!("{:?}", execution_request_for_worker1);
-        assert!(update_eq(
-            execution_request_for_worker1.clone(),
-            msg_for_worker,
-            true
-        ));
-    }
+        let update_for_worker = rx_from_worker1.recv().await.expect("Worker terminated stream").update.expect("`update` should be set on UpdateForWorker");
+        let (operation_id, rx_start_execute) = match update_for_worker {
+            update_for_worker::Update::StartAction(start_execute) => {
+                (OperationId::try_from(start_execute.operation_id.as_str()).unwrap(),
+                    start_execute)
+            },
+            v => panic!("Expected StartAction, got : {v:?}"),
+        };
+        expected_start_execute_for_worker2.operation_id = operation_id.to_string();
+        assert_eq!(expected_start_execute_for_worker2, rx_start_execute);
+        operation_id
+    };
 
     // Add a second worker that can take jobs if the first dies.
     let mut rx_from_worker2 =
@@ -379,12 +391,18 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     {
         // Worker2 should now see execution request.
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
-        assert_eq!(msg_for_worker, execution_request_for_worker1.clone());
+        expected_start_execute_for_worker1.operation_id = operation_id1.to_string();
+        assert_eq!(msg_for_worker, UpdateForWorker {
+            update: Some(update_for_worker::Update::StartAction(expected_start_execute_for_worker1)),
+        });
     }
     {
         // Worker2 should now see execution request.
         let msg_for_worker = rx_from_worker2.recv().await.unwrap();
-        assert_eq!(msg_for_worker, execution_request_for_worker2.clone());
+        expected_start_execute_for_worker2.operation_id = operation_id2.to_string();
+        assert_eq!(msg_for_worker, UpdateForWorker {
+            update: Some(update_for_worker::Update::StartAction(expected_start_execute_for_worker2)),
+        });
     }
 
     Ok(())

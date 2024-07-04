@@ -835,7 +835,13 @@ impl StateManagerImpl {
                 }
             }
         };
-        awaited_action.set_worker_id(maybe_worker_id.map(|w| w.clone()));
+        if matches!(stage, ActionStage::Queued) {
+            // If the action is queued, we need to unset the worker id regardless of
+            // which worker sent the update.
+            awaited_action.set_worker_id(None);
+        } else {
+            awaited_action.set_worker_id(maybe_worker_id.map(|w| w.clone()));
+        }
         let has_listeners = self.action_db.set_action_state(
             awaited_action.clone(),
             Arc::new(ActionState {
