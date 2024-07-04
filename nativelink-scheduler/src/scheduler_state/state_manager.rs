@@ -814,11 +814,11 @@ impl StateManagerImpl {
             Err(err) => {
                 // Don't count a backpressure failure as an attempt for an action.
                 let due_to_backpressure = err.code == Code::ResourceExhausted;
-                if due_to_backpressure {
+                if !due_to_backpressure {
                     awaited_action.inc_attempts();
                 }
 
-                if awaited_action.get_attempts() >= self.max_job_retries {
+                if awaited_action.get_attempts() > self.max_job_retries {
                     ActionStage::Completed(ActionResult {
                         execution_metadata: ExecutionMetadata {
                             worker: maybe_worker_id.map_or_else(String::default, |v| v.to_string()),
