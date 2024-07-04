@@ -199,9 +199,6 @@ cargo run --release --bin nativelink -- ./nativelink-config/examples/basic_cas.j
 ## Project Health
 
 * Powering more than 1 billion devices at the edge.
-  
-![Alt](https://repobeats.axiom.co/api/embed/d8bfc6d283632c060beaab1e69494c2f7774a548.svg "Repobeats analytics image")
-
 
 ## 🏺 History
 
