@@ -309,6 +309,8 @@ impl SimpleScheduler {
         let worker = workers.workers.get_mut(worker_id).err_tip(|| {
             format!("Worker {worker_id} does not exist in SimpleScheduler::update_action")
         })?;
+
+        // Ensure the worker is supposed to be running the operation.
         if !worker.running_action_infos.contains_key(operation_id) {
             let err = make_err!(
                 Code::Internal,
@@ -320,61 +322,53 @@ impl SimpleScheduler {
                     .await,
             );
         }
-        let due_to_backpressure = action_stage
-            .as_ref()
-            .map_or_else(|e| e.code == Code::ResourceExhausted, |_| false);
-        let update_operation_res = self
-            .worker_state_manager
-            .update_operation(operation_id, worker_id, action_stage.clone())
-            .await
-            .err_tip(|| "in update_operation on SimpleScheduler::update_action");
-        if let Err(err) = update_operation_res {
-            let result = Result::<(), _>::Err(err.clone()).merge(
-                workers
-                    .immediate_evict_worker(self.worker_state_manager.as_ref(), worker_id, err)
-                    .await,
-            );
 
-            event!(
-                Level::ERROR,
-                ?operation_id,
-                ?worker_id,
-                ?result,
-                "Failed to update_operation on update_action"
-            );
-            return result;
-        }
-
-        // TODO(HANDLE THIS!!!)
-        fn foo() {
-            todo!();
-        }
-        let _todo_handle_this_result = match action_stage {
-            Ok(_) => worker.complete_action(operation_id),
-            Err(err) => {
-                // Clear this action from the current worker.
-                let was_paused = !worker.can_accept_work();
-                // This unpauses, but since we're completing with an error, don't
-                // unpause unless all actions have completed.
-                // Note: We need to run this before dealing with backpressure logic.
-                let complete_action_res = worker.complete_action(operation_id);
-                // Only pause if there's an action still waiting that will unpause.
-                if (was_paused || due_to_backpressure) && worker.has_actions() {
-                    worker.is_paused = true;
-                }
-
-                complete_action_res.merge(
-                    self.worker_state_manager
-                        .update_operation(operation_id, worker_id, Err(err.clone()))
+        // Update the operation in the worker state manager.
+        {
+            let update_operation_res = self
+                .worker_state_manager
+                .update_operation(operation_id, worker_id, action_stage.clone())
+                .await
+                .err_tip(|| "in update_operation on SimpleScheduler::update_action");
+            if let Err(err) = update_operation_res {
+                let result = Result::<(), _>::Err(err.clone()).merge(
+                    workers
+                        .immediate_evict_worker(self.worker_state_manager.as_ref(), worker_id, err)
                         .await,
-                )
+                );
+
+                event!(
+                    Level::ERROR,
+                    ?operation_id,
+                    ?worker_id,
+                    ?result,
+                    "Failed to update_operation on update_action"
+                );
+                return result;
             }
+        }
+
+        // Clear this action from the current worker.
+        let complete_action_res = {
+            let was_paused = !worker.can_accept_work();
+
+            // Note: We need to run this before dealing with backpressure logic.
+            let complete_action_res = worker.complete_action(operation_id);
+
+            let due_to_backpressure = action_stage
+                .as_ref()
+                .map_or_else(|e| e.code == Code::ResourceExhausted, |_| false);
+            // Only pause if there's an action still waiting that will unpause.
+            if (was_paused || due_to_backpressure) && worker.has_actions() {
+                worker.is_paused = true;
+            }
+            complete_action_res
         };
 
         // TODO(allada) This should move to inside the Workers struct.
         workers.worker_change_notify.notify_one();
 
-        Ok(())
+        complete_action_res
     }
 }
 
