@@ -98,7 +98,7 @@ impl MockActionScheduler {
         req
     }
 
-    pub async fn expect_find_existing_action(
+    pub async fn expect_find_by_client_operation_id(
         &self,
         result: Result<Option<watch::Receiver<Arc<ActionState>>>, Error>,
     ) -> ClientOperationId {
@@ -108,7 +108,7 @@ impl MockActionScheduler {
             .await
             .expect("Could not receive msg in mpsc")
         else {
-            panic!("Got incorrect call waiting for find_existing_action")
+            panic!("Got incorrect call waiting for find_by_client_operation_id")
         };
         self.tx_resp
             .send(ActionSchedulerReturns::FindExistingAction(result))
@@ -162,7 +162,7 @@ impl ActionScheduler for MockActionScheduler {
         }
     }
 
-    async fn find_existing_action(
+    async fn find_by_client_operation_id(
         &self,
         client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
@@ -178,7 +178,7 @@ impl ActionScheduler for MockActionScheduler {
             .expect("Could not receive msg in mpsc")
         {
             ActionSchedulerReturns::FindExistingAction(result) => result,
-            _ => panic!("Expected find_existing_action return value"),
+            _ => panic!("Expected find_by_client_operation_id return value"),
         }
     }
 

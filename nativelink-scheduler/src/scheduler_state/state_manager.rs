@@ -36,7 +36,7 @@ use crate::operation_state_manager::{
 use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::scheduler_state::client_action_state_result::ClientActionStateResult;
 use crate::scheduler_state::matching_engine_action_state_result::MatchingEngineActionStateResult;
-use crate::scheduler_state::metrics::Metrics;
+// use crate::scheduler_state::metrics::Metrics;
 
 use super::awaited_action::AwaitedActionSortKey;
 
@@ -305,14 +305,14 @@ pub(crate) struct StateManager {
 impl StateManager {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        metrics: Arc<Metrics>,
+        // metrics: Arc<Metrics>,
         tasks_change_notify: Arc<Notify>,
         max_job_retries: usize,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(StateManagerImpl {
                 action_db: AwaitedActionDb::default(),
-                metrics,
+                // metrics,
                 tasks_change_notify,
                 max_job_retries,
             })),
@@ -465,8 +465,7 @@ impl StateManager {
 pub(crate) struct StateManagerImpl {
     pub(crate) action_db: AwaitedActionDb,
 
-    pub(crate) metrics: Arc<Metrics>,
-
+    // pub(crate) metrics: Arc<Metrics>,
     /// Notify task<->worker matching engine that work needs to be done.
     pub(crate) tasks_change_notify: Arc<Notify>,
 

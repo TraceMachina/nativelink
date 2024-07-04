@@ -261,7 +261,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn find_existing_action_call_passed() -> Result<(), Error> {
+async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
     let context = make_modifier_scheduler(vec![]);
     let operation_id = ClientOperationId::new(ActionInfoHashKey {
         instance_name: "instance".to_string(),
@@ -272,8 +272,10 @@ async fn find_existing_action_call_passed() -> Result<(), Error> {
     let (actual_result, actual_operation_id) = join!(
         context
             .modifier_scheduler
-            .find_existing_action(&operation_id),
-        context.mock_scheduler.expect_find_existing_action(Ok(None)),
+            .find_by_client_operation_id(&operation_id),
+        context
+            .mock_scheduler
+            .expect_find_by_client_operation_id(Ok(None)),
     );
     assert_eq!(true, actual_result.unwrap().is_none());
     assert_eq!(operation_id, actual_operation_id);

@@ -28,12 +28,15 @@
 // use nativelink_scheduler::worker::Worker;
 // use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 // use nativelink_util::action_messages::{
-//     ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId, SymlinkInfo, WorkerId, INTERNAL_ERROR_EXIT_CODE
+//     ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId, DirectoryInfo,
+//     ExecutionMetadata, FileInfo, NameOrPath, OperationId, SymlinkInfo, WorkerId,
+//     INTERNAL_ERROR_EXIT_CODE,
 // };
 // use nativelink_util::common::DigestInfo;
 // use nativelink_util::digest_hasher::DigestHasherFunc;
 // use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 // use pretty_assertions::assert_eq;
+// use redis::Client;
 // use tokio::sync::{mpsc, watch};
 // use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
 // use uuid::Uuid;
@@ -84,6 +87,7 @@
 
 // async fn setup_action(
 //     scheduler: &SimpleScheduler,
+//     client_operation_id: ClientOperationId,
 //     action_digest: DigestInfo,
 //     platform_properties: PlatformProperties,
 //     insert_timestamp: SystemTime,
@@ -91,7 +95,7 @@
 //     let mut action_info = make_base_action_info(insert_timestamp);
 //     action_info.platform_properties = platform_properties;
 //     action_info.unique_qualifier.digest = action_digest;
-//     let result = scheduler.add_action(action_info).await;
+//     let result = scheduler.add_action(client_operation_id, action_info).await;
 //     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 //     result
 // }
@@ -177,7 +181,7 @@
 //     // Drop our receiver and look up a new one.
 //     drop(client_rx);
 //     let mut client_rx = scheduler
-//         .find_existing_action(&client_operation_id)
+//         .find_by_client_operation_id(&client_operation_id)
 //         .await
 //         .expect("Action not found")
 //         .unwrap();
@@ -964,7 +968,7 @@
 
 //     // Now look up a channel after the action has completed.
 //     let mut client_rx = scheduler
-//         .find_existing_action(&unique_qualifier)
+//         .find_by_client_operation_id(&unique_qualifier)
 //         .await
 //         .unwrap()
 //         .expect("Action not found");
@@ -996,31 +1000,29 @@
 //     let mut rx_from_worker =
 //         setup_new_worker(&scheduler, good_worker_id, PlatformProperties::default()).await?;
 //     let insert_timestamp = make_system_time(1);
-//     let mut client_rx = setup_action(
+//     let (_client_operation_id, mut client_rx) = setup_action(
 //         &scheduler,
+//         ClientOperationId::from_raw_string("dummy client id".to_string()),
 //         action_digest,
 //         PlatformProperties::default(),
 //         insert_timestamp,
 //     )
 //     .await?;
 
-//     {
+//     let operation_id = {
 //         // Other tests check full data. We only care if we got StartAction.
-//         match rx_from_worker.recv().await.unwrap().update {
-//             Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+//         let operation_id = match rx_from_worker.recv().await.unwrap().update {
+//             Some(update_for_worker::Update::StartAction(start_execute)) => {
+//                 OperationId::try_from(start_execute.operation_id.as_str()).unwrap()
+//             }
 //             v => panic!("Expected StartAction, got : {v:?}"),
-//         }
+//         };
 //         // Other tests check full data. We only care if client thinks we are Executing.
 //         assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
-//     }
+//         operation_id
+//     };
 //     let _ = setup_new_worker(&scheduler, rogue_worker_id, PlatformProperties::default()).await?;
 
-//     let action_info_hash_key = ActionInfoHashKey {
-//         instance_name: INSTANCE_NAME.to_string(),
-//         digest_function: DigestHasherFunc::Sha256,
-//         digest: action_digest,
-//         salt: 0,
-//     };
 //     let action_result = ActionResult {
 //         output_files: Vec::default(),
 //         output_folders: Vec::default(),
@@ -1048,7 +1050,7 @@
 //     let update_action_result = scheduler
 //         .update_action(
 //             &rogue_worker_id,
-//             action_info_hash_key,
+//             &operation_id,
 //             Ok(ActionStage::Completed(action_result.clone())),
 //         )
 //         .await;

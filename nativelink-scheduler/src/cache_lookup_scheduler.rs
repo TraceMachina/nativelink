@@ -268,12 +268,12 @@ impl ActionScheduler for CacheLookupScheduler {
         Ok((client_operation_id, rx))
     }
 
-    async fn find_existing_action(
+    async fn find_by_client_operation_id(
         &self,
         client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
         self.action_scheduler
-            .find_existing_action(client_operation_id)
+            .find_by_client_operation_id(client_operation_id)
             .await
     }
 

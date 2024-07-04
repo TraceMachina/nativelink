@@ -59,12 +59,10 @@ fn static_now_fn() -> Result<Duration, Error> {
 async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
-    let scheduler = Arc::new(SimpleScheduler::new(
-        &nativelink_config::schedulers::SimpleScheduler {
-            worker_timeout_s: worker_timeout,
-            ..Default::default()
-        },
-    ));
+    let scheduler = SimpleScheduler::new(&nativelink_config::schedulers::SimpleScheduler {
+        worker_timeout_s: worker_timeout,
+        ..Default::default()
+    });
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
     schedulers.insert(SCHEDULER_NAME.to_string(), scheduler.clone());

@@ -40,7 +40,7 @@ pub trait ActionScheduler: Sync + Send + Unpin {
     ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error>;
 
     /// Find an existing action by its name.
-    async fn find_existing_action(
+    async fn find_by_client_operation_id(
         &self,
         client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error>;

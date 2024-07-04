@@ -292,7 +292,7 @@ impl ExecutionServer {
         };
         let Some(rx) = instance_info
             .scheduler
-            .find_existing_action(&client_operation_id)
+            .find_by_client_operation_id(&client_operation_id)
             .await
             .err_tip(|| "Error running find_existing_action in ExecutionServer::wait_execution")?
         else {

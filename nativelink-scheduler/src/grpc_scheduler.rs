@@ -275,7 +275,7 @@ impl ActionScheduler for GrpcScheduler {
         Self::stream_state(result_stream).await
     }
 
-    async fn find_existing_action(
+    async fn find_by_client_operation_id(
         &self,
         client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
@@ -288,7 +288,7 @@ impl ActionScheduler for GrpcScheduler {
                     .connection_manager
                     .connection()
                     .await
-                    .err_tip(|| "in find_existing_action()")?;
+                    .err_tip(|| "in find_by_client_operation_id()")?;
                 ExecutionClient::new(channel)
                     .wait_execution(Request::new(request))
                     .await

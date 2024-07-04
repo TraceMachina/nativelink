@@ -111,7 +111,7 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn find_existing_action_call_passed() -> Result<(), Error> {
+async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
     let context = make_cache_scheduler()?;
     let client_operation_id = ClientOperationId::new(ActionInfoHashKey {
         instance_name: "instance".to_string(),
@@ -122,8 +122,10 @@ async fn find_existing_action_call_passed() -> Result<(), Error> {
     let (actual_result, actual_client_id) = join!(
         context
             .cache_scheduler
-            .find_existing_action(&client_operation_id),
-        context.mock_scheduler.expect_find_existing_action(Ok(None)),
+            .find_by_client_operation_id(&client_operation_id),
+        context
+            .mock_scheduler
+            .expect_find_by_client_operation_id(Ok(None)),
     );
     assert_eq!(true, actual_result.unwrap().is_none());
     assert_eq!(client_operation_id, actual_client_id);
