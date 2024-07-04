@@ -16,13 +16,16 @@ use std::sync::Arc;
 
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
-use nativelink_error::{error_if, make_input_err, Error, ResultExt};
-use nativelink_util::action_messages::WorkerId;
+use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::Notify;
 use tracing::{event, Level};
 
-use crate::worker::{Worker, WorkerTimestamp};
+use crate::{
+    operation_state_manager::WorkerStateManager,
+    worker::{Worker, WorkerTimestamp, WorkerUpdate},
+};
 
 /// A collection of workers that are available to run tasks.
 pub struct Workers {
@@ -122,5 +125,67 @@ impl Workers {
             }),
         };
         workers_iter.map(|(_, w)| &w.id).copied()
+    }
+    /// Notifies the specified worker to run the given action and handles errors by evicting
+    /// the worker if the notification fails.
+    pub async fn worker_notify_run_action(
+        &mut self,
+        worker_state_manager: &dyn WorkerStateManager,
+        worker_id: WorkerId,
+        operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<(), Error> {
+        if let Some(worker) = self.workers.get_mut(&worker_id) {
+            let notify_worker_result =
+                worker.notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())));
+
+            if notify_worker_result.is_err() {
+                event!(
+                    Level::WARN,
+                    ?worker_id,
+                    ?action_info,
+                    ?notify_worker_result,
+                    "Worker command failed, removing worker",
+                );
+
+                let err = make_err!(
+                    Code::Internal,
+                    "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
+                );
+
+                return Result::<(), _>::Err(err.clone()).merge(
+                    self.immediate_evict_worker(worker_state_manager, &worker_id, err)
+                        .await,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
+    pub async fn immediate_evict_worker(
+        &mut self,
+        worker_state_manager: &dyn WorkerStateManager,
+        worker_id: &WorkerId,
+        err: Error,
+    ) -> Result<(), Error> {
+        let mut result = Ok(());
+        if let Some(mut worker) = self.remove_worker(worker_id) {
+            // We don't care if we fail to send message to worker, this is only a best attempt.
+            let _ = worker.notify_update(WorkerUpdate::Disconnect);
+            // We create a temporary Vec to avoid doubt about a possible code
+            // path touching the worker.running_action_infos elsewhere.
+            for (operation_id, _) in worker.running_action_infos.drain() {
+                result = result.merge(
+                    worker_state_manager
+                        .update_operation(&operation_id, &worker_id, Err(err.clone()))
+                        .await,
+                );
+            }
+        }
+        // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
+        // TODO(allada) This should be moved to inside the Workers struct.
+        self.worker_change_notify.notify_one();
+        result
     }
 }

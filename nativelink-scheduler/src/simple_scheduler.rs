@@ -38,7 +38,7 @@ use crate::operation_state_manager::{
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::scheduler_state::state_manager::StateManager;
 use crate::scheduler_state::workers::Workers;
-use crate::worker::{Worker, WorkerTimestamp, WorkerUpdate};
+use crate::worker::{Worker, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for workers in seconds.
@@ -138,33 +138,6 @@ impl SimpleScheduler {
         ))
     }
 
-    /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
-    async fn immediate_evict_worker(
-        workers: &mut Workers,
-        worker_state_manager: &dyn WorkerStateManager,
-        worker_id: &WorkerId,
-        err: Error,
-    ) -> Result<(), Error> {
-        let mut result = Ok(());
-        if let Some(mut worker) = workers.remove_worker(worker_id) {
-            // We don't care if we fail to send message to worker, this is only a best attempt.
-            let _ = worker.notify_update(WorkerUpdate::Disconnect);
-            // We create a temporary Vec to avoid doubt about a possible code
-            // path touching the worker.running_action_infos elsewhere.
-            for (operation_id, _) in worker.running_action_infos.drain() {
-                result = result.merge(
-                    worker_state_manager
-                        .update_operation(&operation_id, &worker_id, Err(err.clone()))
-                        .await,
-                );
-            }
-        }
-        // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
-        // TODO(allada) This should be moved to inside the Workers struct.
-        workers.worker_change_notify.notify_one();
-        result
-    }
-
     /// Sets if the worker is draining or not.
     async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
         let mut workers = self.workers.lock().await;
@@ -178,51 +151,50 @@ impl SimpleScheduler {
         Ok(())
     }
 
-    /// Notifies the specified worker to run the given action and handles errors by evicting
-    /// the worker if the notification fails.
-    ///
-    /// # Note
-    ///
-    /// Intended utility function for matching engine.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the notification to the worker fails, and in that case,
-    /// the worker will be immediately evicted from the system.
-    ///
-    async fn worker_notify_run_action(
-        workers: &mut Workers,
-        worker_state_manager: &dyn WorkerStateManager,
-        worker_id: WorkerId,
-        operation_id: OperationId,
-        action_info: Arc<ActionInfo>,
-    ) -> Result<(), Error> {
-        if let Some(worker) = workers.workers.get_mut(&worker_id) {
-            let notify_worker_result =
-                worker.notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())));
+    // /// Notifies the specified worker to run the given action and handles errors by evicting
+    // /// the worker if the notification fails.
+    // ///
+    // /// # Note
+    // ///
+    // /// Intended utility function for matching engine.
+    // ///
+    // /// # Errors
+    // ///
+    // /// This function will return an error if the notification to the worker fails, and in that case,
+    // /// the worker will be immediately evicted from the system.
+    // ///
+    // async fn worker_notify_run_action(
+    //     workers: &mut Workers,
+    //     worker_state_manager: &dyn WorkerStateManager,
+    //     worker_id: WorkerId,
+    //     operation_id: OperationId,
+    //     action_info: Arc<ActionInfo>,
+    // ) -> Result<(), Error> {
+    //     if let Some(worker) = workers.workers.get_mut(&worker_id) {
+    //         let notify_worker_result =
+    //             worker.notify_update(WorkerUpdate::RunAction((operation_id, action_info.clone())));
 
-            if notify_worker_result.is_err() {
-                event!(
-                    Level::WARN,
-                    ?worker_id,
-                    ?action_info,
-                    ?notify_worker_result,
-                    "Worker command failed, removing worker",
-                );
+    //         if notify_worker_result.is_err() {
+    //             event!(
+    //                 Level::WARN,
+    //                 ?worker_id,
+    //                 ?action_info,
+    //                 ?notify_worker_result,
+    //                 "Worker command failed, removing worker",
+    //             );
 
-                let err = make_err!(
-                    Code::Internal,
-                    "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
-                );
+    //             let err = make_err!(
+    //                 Code::Internal,
+    //                 "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
+    //             );
 
-                return Result::<(), _>::Err(err.clone()).merge(
-                    Self::immediate_evict_worker(workers, worker_state_manager, &worker_id, err)
-                        .await,
-                );
-            }
-        }
-        Ok(())
-    }
+    //             return Result::<(), _>::Err(err.clone()).merge(
+    //                 workers.immediate_evict_worker(worker_state_manager, &worker_id, err).await,
+    //             );
+    //         }
+    //     }
+    //     Ok(())
+    // }
 
     async fn get_queued_operations(
         &self,
@@ -279,33 +251,29 @@ impl SimpleScheduler {
                     .await
                     .err_tip(|| "Failed to assign operation in do_try_match");
                 if let Err(err) = assign_operation_result {
-                    return SimpleScheduler::immediate_evict_worker(
-                        workers,
-                        worker_state_manager,
-                        &worker_id,
-                        err.clone(),
-                    )
-                    .await
-                    .err_tip(|| {
-                        format!("Update operation failed for {operation_id} in do_try_match")
-                    })
-                    .merge(Err(err));
+                    return workers
+                        .immediate_evict_worker(worker_state_manager, &worker_id, err.clone())
+                        .await
+                        .err_tip(|| {
+                            format!("Update operation failed for {operation_id} in do_try_match")
+                        })
+                        .merge(Err(err));
                 }
             }
 
             // Notify the worker to run the action.
             {
-                SimpleScheduler::worker_notify_run_action(
-                    workers,
-                    worker_state_manager,
-                    worker_id,
-                    operation_id,
-                    action_info,
-                )
-                .await
-                .err_tip(|| {
-                    "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
-                })
+                workers
+                    .worker_notify_run_action(
+                        worker_state_manager,
+                        worker_id,
+                        operation_id,
+                        action_info,
+                    )
+                    .await
+                    .err_tip(|| {
+                        "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
+                    })
             }
         }
 
@@ -347,13 +315,9 @@ impl SimpleScheduler {
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
             );
             return Result::<(), _>::Err(err.clone()).merge(
-                Self::immediate_evict_worker(
-                    &mut workers,
-                    self.worker_state_manager.as_ref(),
-                    worker_id,
-                    err,
-                )
-                .await,
+                workers
+                    .immediate_evict_worker(self.worker_state_manager.as_ref(), worker_id, err)
+                    .await,
             );
         }
         let due_to_backpressure = action_stage
@@ -366,13 +330,9 @@ impl SimpleScheduler {
             .err_tip(|| "in update_operation on SimpleScheduler::update_action");
         if let Err(err) = update_operation_res {
             let result = Result::<(), _>::Err(err.clone()).merge(
-                Self::immediate_evict_worker(
-                    &mut workers,
-                    self.worker_state_manager.as_ref(),
-                    worker_id,
-                    err,
-                )
-                .await,
+                workers
+                    .immediate_evict_worker(self.worker_state_manager.as_ref(), worker_id, err)
+                    .await,
             );
 
             event!(
@@ -576,13 +536,9 @@ impl WorkerScheduler for SimpleScheduler {
             .err_tip(|| "Error while adding worker, removing from pool");
         if let Err(err) = result {
             return Result::<(), _>::Err(err.clone()).merge(
-                SimpleScheduler::immediate_evict_worker(
-                    &mut workers,
-                    self.worker_state_manager.as_ref(),
-                    &worker_id,
-                    err,
-                )
-                .await,
+                workers
+                    .immediate_evict_worker(self.worker_state_manager.as_ref(), &worker_id, err)
+                    .await,
             );
         }
         Ok(())
@@ -611,13 +567,13 @@ impl WorkerScheduler for SimpleScheduler {
 
     async fn remove_worker(&self, worker_id: WorkerId) -> Result<(), Error> {
         let mut workers = self.workers.lock().await;
-        SimpleScheduler::immediate_evict_worker(
-            &mut workers,
-            self.worker_state_manager.as_ref(),
-            &worker_id,
-            make_err!(Code::Internal, "Received request to remove worker"),
-        )
-        .await
+        workers
+            .immediate_evict_worker(
+                self.worker_state_manager.as_ref(),
+                &worker_id,
+                make_err!(Code::Internal, "Received request to remove worker"),
+            )
+            .await
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
@@ -646,16 +602,16 @@ impl WorkerScheduler for SimpleScheduler {
                 "Worker timed out, removing from pool"
             );
             result = result.merge(
-                SimpleScheduler::immediate_evict_worker(
-                    &mut workers,
-                    self.worker_state_manager.as_ref(),
-                    worker_id,
-                    make_err!(
-                        Code::Internal,
-                        "Worker {worker_id} timed out, removing from pool"
-                    ),
-                )
-                .await,
+                workers
+                    .immediate_evict_worker(
+                        self.worker_state_manager.as_ref(),
+                        worker_id,
+                        make_err!(
+                            Code::Internal,
+                            "Worker {worker_id} timed out, removing from pool"
+                        ),
+                    )
+                    .await,
             );
         }
 
