@@ -57,6 +57,9 @@ const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_se
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
 
+/// If this value changes update the documentation in the config definition.
+const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
 type StoreUpdateFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 
@@ -156,6 +159,7 @@ pub struct ByteStreamServer {
     stores: HashMap<String, Store>,
     // Max number of bytes to send on each grpc stream chunk.
     max_bytes_per_stream: usize,
+    max_decoding_message_size: usize,
     active_uploads: Arc<Mutex<HashMap<String, BytesWrittenAndIdleStream>>>,
     sleep_fn: SleepFn,
 }
@@ -191,16 +195,23 @@ impl ByteStreamServer {
         } else {
             config.max_bytes_per_stream
         };
+        let max_decoding_message_size = if config.max_decoding_message_size == 0 {
+            DEFAULT_MAX_DECODING_MESSAGE_SIZE
+        } else {
+            config.max_decoding_message_size
+        };
         Ok(ByteStreamServer {
             stores,
             max_bytes_per_stream,
+            max_decoding_message_size,
             active_uploads: Arc::new(Mutex::new(HashMap::new())),
             sleep_fn,
         })
     }
 
     pub fn into_service(self) -> Server<Self> {
-        Server::new(self)
+        let max_decoding_message_size = self.max_decoding_message_size;
+        Server::new(self).max_decoding_message_size(max_decoding_message_size)
     }
 
     fn create_or_join_upload_stream(
