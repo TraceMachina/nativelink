@@ -198,12 +198,7 @@ export function preProcessMarkdown(markdown: string): string {
       continue;
     }
 
-    const htmlTagPattern = /<[^>]*>/g;
-    if (htmlTagPattern.test(line)) {
-      processedLines.push(line);
-    } else {
-      processedLines.push(line.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
-    }
+    processedLines.push(line.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
   }
 
   return processedLines.join("\n");
