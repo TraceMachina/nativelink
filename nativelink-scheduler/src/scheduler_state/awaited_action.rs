@@ -153,7 +153,7 @@ impl AwaitedAction {
     /// will hold a lock preventing anyone else from reading or modifying the
     /// sort key until the result is dropped.
     #[must_use]
-    pub fn set_priority<'a>(&'a self, new_priority: i32) -> Option<SortInfoLock<'a>> {
+    pub fn set_priority(&self, new_priority: i32) -> Option<SortInfoLock> {
         let sort_info_lock = self.sort_info.upgradable_read();
         if sort_info_lock.priority == new_priority {
             return None;
@@ -173,7 +173,7 @@ impl AwaitedAction {
     }
 
     /// Gets the sort info of the action.
-    pub fn get_sort_info<'a>(&'a self) -> SortInfoLock<'a> {
+    pub fn get_sort_info(&self) -> SortInfoLock {
         let sort_info = self.sort_info.read();
         SortInfoLock {
             previous_sort_key: sort_info.sort_key,
@@ -199,7 +199,7 @@ impl AwaitedAction {
 
     /// Gets the worker id that is currently processing this action.
     pub fn get_worker_id(&self) -> Option<WorkerId> {
-        self.worker_id.read().clone()
+        *self.worker_id.read()
     }
 
     /// Sets the worker id that is currently processing this action.
@@ -244,6 +244,7 @@ impl AwaitedAction {
 pub struct AwaitedActionSortKey(u128);
 
 impl AwaitedActionSortKey {
+    #[rustfmt::skip]
     const fn new(priority: i32, insert_timestamp: u64, hash: [u8; 4]) -> Self {
         // Shift `new_priority` so [`i32::MIN`] is represented by zero.
         // This makes it so any nagative values are positive, but
@@ -251,9 +252,10 @@ impl AwaitedActionSortKey {
         const MIN_I32: i64 = (i32::MIN as i64).abs();
         let priority = ((priority as i64 + MIN_I32) as u32).to_be_bytes();
 
+        // Invert our timestamp so the larger the timestamp the lower the number.
+        // This makes timestamp descending order instead of ascending.
         let timestamp = (insert_timestamp ^ u64::MAX).to_be_bytes();
 
-        #[cfg_attr(rustfmt, rustfmt_skip)]
         AwaitedActionSortKey(u128::from_be_bytes([
             priority[0], priority[1], priority[2], priority[3],
             timestamp[0], timestamp[1], timestamp[2], timestamp[3],
@@ -286,7 +288,7 @@ const_assert_eq!(
     // Note: `6543210fedcba987` are the inverted bits of `9abcdef012345678`.
     // This effectively inverts the priority to now have the highest priority
     // be the lowest timestamps.
-    AwaitedActionSortKey(0x92345678_6543210fedcba987_9abcdef0).0
+    AwaitedActionSortKey(0x9234_5678_6543_210f_edcb_a987_9abc_def0).0
 );
 // Ensure the priority is used as the sort key first.
 const_assert!(
@@ -354,11 +356,9 @@ impl MetricsComponent for AwaitedAction {
         );
         c.publish(
             "worker_id",
-            &format!(
-                "{}",
-                self.get_worker_id()
-                    .map_or(String::new(), |v| v.to_string())
-            ),
+            &self
+                .get_worker_id()
+                .map_or(String::new(), |v| v.to_string()),
             "The current worker processing the action (if any).",
         );
     }
