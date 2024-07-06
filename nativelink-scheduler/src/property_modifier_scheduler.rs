@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
+use nativelink_util::action_messages::{ActionInfo, ActionState, ClientOperationId};
 use nativelink_util::metrics_utils::Registry;
 use parking_lot::Mutex;
 use tokio::sync::watch;
@@ -90,8 +90,9 @@ impl ActionScheduler for PropertyModifierScheduler {
 
     async fn add_action(
         &self,
+        client_operation_id: ClientOperationId,
         mut action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         let platform_property_manager = self
             .get_platform_property_manager(&action_info.unique_qualifier.instance_name)
             .await
@@ -111,14 +112,18 @@ impl ActionScheduler for PropertyModifierScheduler {
                 }
             };
         }
-        self.scheduler.add_action(action_info).await
+        self.scheduler
+            .add_action(client_operation_id, action_info)
+            .await
     }
 
-    async fn find_existing_action(
+    async fn find_by_client_operation_id(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
-        self.scheduler.find_existing_action(unique_qualifier).await
+        self.scheduler
+            .find_by_client_operation_id(client_operation_id)
+            .await
     }
 
     async fn clean_recently_completed_actions(&self) {

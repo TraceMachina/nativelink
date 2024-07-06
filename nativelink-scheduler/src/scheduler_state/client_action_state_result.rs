@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use async_trait::async_trait;
 use nativelink_error::Error;
@@ -41,8 +41,8 @@ impl ActionStateResult for ClientActionStateResult {
         Ok(self.rx.borrow().clone())
     }
 
-    async fn as_receiver(&self) -> Result<&'_ Receiver<Arc<ActionState>>, Error> {
-        Ok(&self.rx)
+    async fn as_receiver(&self) -> Result<Cow<'_, Receiver<Arc<ActionState>>>, Error> {
+        Ok(Cow::Borrowed(&self.rx))
     }
 
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {

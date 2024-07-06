@@ -28,9 +28,12 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionInfoHashKey, ActionState, ClientOperationId, OperationId,
+    DEFAULT_EXECUTION_PRIORITY,
 };
+use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
@@ -112,13 +115,26 @@ impl GrpcScheduler {
 
     async fn stream_state(
         mut result_stream: Streaming<Operation>,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         if let Some(initial_response) = result_stream
             .message()
             .await
             .err_tip(|| "Recieving response from upstream scheduler")?
         {
-            let (tx, rx) = watch::channel(Arc::new(initial_response.try_into()?));
+            let client_operation_id =
+                ClientOperationId::from_raw_string(initial_response.name.clone());
+            // Our operation_id is not needed here is just a place holder to recycle existing object.
+            // The only thing that actually matters is the client_operation_id.
+            let operation_id = OperationId::new(ActionInfoHashKey {
+                instance_name: "dummy_instance_name".to_string(),
+                digest_function: DigestHasherFunc::Sha256,
+                digest: DigestInfo::zero_digest(),
+                salt: 0,
+            });
+            let action_state =
+                ActionState::try_from_operation(initial_response, operation_id.clone())
+                    .err_tip(|| "In GrpcScheduler::stream_state")?;
+            let (tx, rx) = watch::channel(Arc::new(action_state));
             background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
                     select!(
@@ -135,7 +151,8 @@ impl GrpcScheduler {
                             let Ok(Some(response)) = response else {
                                 return;
                             };
-                            match response.try_into() {
+                            let maybe_action_state = ActionState::try_from_operation(response, operation_id.clone());
+                            match maybe_action_state {
                                 Ok(response) => {
                                     if let Err(err) = tx.send(Arc::new(response)) {
                                         event!(
@@ -158,7 +175,7 @@ impl GrpcScheduler {
                     )
                 }
             });
-            return Ok(rx);
+            return Ok((client_operation_id, rx));
         }
         Err(make_err!(
             Code::Internal,
@@ -218,8 +235,9 @@ impl ActionScheduler for GrpcScheduler {
 
     async fn add_action(
         &self,
+        _client_operation_id: ClientOperationId,
         action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {
             None
         } else {
@@ -257,12 +275,12 @@ impl ActionScheduler for GrpcScheduler {
         Self::stream_state(result_stream).await
     }
 
-    async fn find_existing_action(
+    async fn find_by_client_operation_id(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
         let request = WaitExecutionRequest {
-            name: unique_qualifier.action_name(),
+            name: client_operation_id.to_string(),
         };
         let result_stream = self
             .perform_request(request, |request| async move {
@@ -270,7 +288,7 @@ impl ActionScheduler for GrpcScheduler {
                     .connection_manager
                     .connection()
                     .await
-                    .err_tip(|| "in find_existing_action()")?;
+                    .err_tip(|| "in find_by_client_operation_id()")?;
                 ExecutionClient::new(channel)
                     .wait_execution(Request::new(request))
                     .await
@@ -279,7 +297,7 @@ impl ActionScheduler for GrpcScheduler {
             .and_then(|result_stream| Self::stream_state(result_stream.into_inner()))
             .await;
         match result_stream {
-            Ok(result_stream) => Ok(Some(result_stream)),
+            Ok(result_stream) => Ok(Some(result_stream.1)),
             Err(err) => {
                 event!(
                     Level::WARN,

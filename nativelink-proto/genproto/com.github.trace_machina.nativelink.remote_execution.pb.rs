@@ -60,18 +60,9 @@ pub struct ExecuteResult {
     /// / that initially sent the job as part of the BRE protocol.
     #[prost(string, tag = "6")]
     pub instance_name: ::prost::alloc::string::String,
-    /// / The original execution digest request for this response. The scheduler knows what it
-    /// / should be, but we do safety checks to ensure it really is the request we expected.
-    #[prost(message, optional, tag = "2")]
-    pub action_digest: ::core::option::Option<
-        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
-    >,
-    /// / The salt originally sent along with the StartExecute request. This salt is used
-    /// / as a seed for cases where the execution digest should never be cached or merged
-    /// / with other jobs. This salt is added to the hash function used to compute jobs that
-    /// / are running or cached.
-    #[prost(uint64, tag = "3")]
-    pub salt: u64,
+    /// / The operation ID that was executed.
+    #[prost(string, tag = "8")]
+    pub operation_id: ::prost::alloc::string::String,
     /// The digest function that was used to compute the action digest
     /// and all related blobs.
     ///
@@ -168,9 +159,9 @@ pub struct StartExecute {
     pub execute_request: ::core::option::Option<
         super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteRequest,
     >,
-    /// / See documentation in ExecuteResult::salt.
-    #[prost(uint64, tag = "2")]
-    pub salt: u64,
+    /// Id of the operation.
+    #[prost(string, tag = "4")]
+    pub operation_id: ::prost::alloc::string::String,
     /// / The time at which the command was added to the queue to allow population
     /// / of the ActionResult.
     #[prost(message, optional, tag = "3")]

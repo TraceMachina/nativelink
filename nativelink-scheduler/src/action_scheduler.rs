@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
+use nativelink_util::action_messages::{ActionInfo, ActionState, ClientOperationId};
 use nativelink_util::metrics_utils::Registry;
 use tokio::sync::watch;
 
@@ -35,13 +35,14 @@ pub trait ActionScheduler: Sync + Send + Unpin {
     /// Adds an action to the scheduler for remote execution.
     async fn add_action(
         &self,
+        client_operation_id: ClientOperationId,
         action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
+    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error>;
 
     /// Find an existing action by its name.
-    async fn find_existing_action(
+    async fn find_by_client_operation_id(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error>;
 
     /// Cleans up the cache of recently completed actions.

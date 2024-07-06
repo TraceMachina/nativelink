@@ -57,8 +57,8 @@ fn inner_scheduler_factory(
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
         SchedulerConfig::simple(config) => {
-            let scheduler = Arc::new(SimpleScheduler::new(config));
-            (Some(scheduler.clone()), Some(scheduler))
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(config);
+            (Some(action_scheduler), Some(worker_scheduler))
         }
         SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
         SchedulerConfig::cache_lookup(config) => {
@@ -119,7 +119,7 @@ fn inner_scheduler_factory(
 fn start_cleanup_timer(action_scheduler: &Arc<dyn ActionScheduler>) {
     let weak_scheduler = Arc::downgrade(action_scheduler);
     background_spawn!("default_scheduler_factory_cleanup_timer", async move {
-        let mut ticker = interval(Duration::from_secs(1));
+        let mut ticker = interval(Duration::from_secs(10));
         loop {
             ticker.tick().await;
             match weak_scheduler.upgrade() {

@@ -45,6 +45,33 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
 pub type WorkerTimestamp = u64;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ClientOperationId(String);
+
+impl ClientOperationId {
+    pub fn new(unique_qualifier: ActionInfoHashKey) -> Self {
+        Self(OperationId::new(unique_qualifier).to_string())
+    }
+
+    pub fn from_raw_string(name: String) -> Self {
+        Self(name)
+    }
+
+    pub fn from_operation(operation: &Operation) -> Self {
+        Self(operation.name.clone())
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl ToString for ClientOperationId {
+    fn to_string(&self) -> String {
+        self.0.clone()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationId {
     pub unique_qualifier: ActionInfoHashKey,
@@ -173,7 +200,7 @@ impl std::fmt::Debug for OperationId {
 }
 
 /// Unique id of worker.
-#[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
+#[derive(Default, Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
 pub struct WorkerId(pub Uuid);
 
 impl std::fmt::Display for WorkerId {
@@ -813,6 +840,20 @@ impl ActionStage {
     pub const fn is_finished(&self) -> bool {
         self.has_action_result()
     }
+
+    /// Returns if the stage enum is the same as the other stage enum, but
+    /// does not compare the values of the enum.
+    pub const fn is_same_stage(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unknown, Self::Unknown)
+            | (Self::CacheCheck, Self::CacheCheck)
+            | (Self::Queued, Self::Queued)
+            | (Self::Executing, Self::Executing)
+            | (Self::Completed(_), Self::Completed(_))
+            | (Self::CompletedFromCache(_), Self::CompletedFromCache(_)) => true,
+            _ => false,
+        }
+    }
 }
 
 impl MetricsComponent for ActionStage {
@@ -1093,10 +1134,28 @@ where
     }
 }
 
-impl TryFrom<Operation> for ActionState {
-    type Error = Error;
+/// Current state of the action.
+/// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
+#[derive(PartialEq, Debug, Clone)]
+pub struct ActionState {
+    pub stage: ActionStage,
+    pub id: OperationId,
+}
 
-    fn try_from(operation: Operation) -> Result<ActionState, Error> {
+impl ActionState {
+    #[inline]
+    pub fn unique_qualifier(&self) -> &ActionInfoHashKey {
+        &self.id.unique_qualifier
+    }
+    #[inline]
+    pub fn action_digest(&self) -> &DigestInfo {
+        &self.id.unique_qualifier.digest
+    }
+
+    pub fn try_from_operation(
+        operation: Operation,
+        operation_id: OperationId,
+    ) -> Result<Self, Error> {
         let metadata = from_any::<ExecuteOperationMetadata>(
             &operation
                 .metadata
@@ -1135,51 +1194,23 @@ impl TryFrom<Operation> for ActionState {
             }
         };
 
-        // NOTE: This will error if we are forwarding an operation from
-        // one remote execution system to another that does not use our operation name
-        // format (ie: very unlikely, but possible).
-        let id = OperationId::try_from(operation.name.as_str())?;
-        Ok(Self { id, stage })
+        Ok(Self {
+            id: operation_id,
+            stage,
+        })
     }
-}
 
-/// Current state of the action.
-/// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone)]
-pub struct ActionState {
-    pub stage: ActionStage,
-    pub id: OperationId,
-}
+    pub fn as_operation(&self, client_operation_id: ClientOperationId) -> Operation {
+        let stage = Into::<execution_stage::Value>::into(&self.stage) as i32;
+        let name = client_operation_id.into_string();
 
-impl ActionState {
-    #[inline]
-    pub fn unique_qualifier(&self) -> &ActionInfoHashKey {
-        &self.id.unique_qualifier
-    }
-    #[inline]
-    pub fn action_digest(&self) -> &DigestInfo {
-        &self.id.unique_qualifier.digest
-    }
-}
-
-impl MetricsComponent for ActionState {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish("stage", &self.stage, "");
-    }
-}
-
-impl From<ActionState> for Operation {
-    fn from(val: ActionState) -> Self {
-        let stage = Into::<execution_stage::Value>::into(&val.stage) as i32;
-        let name = val.id.to_string();
-
-        let result = if val.stage.has_action_result() {
-            let execute_response: ExecuteResponse = val.stage.into();
+        let result = if self.stage.has_action_result() {
+            let execute_response: ExecuteResponse = self.stage.clone().into();
             Some(LongRunningResult::Response(to_any(&execute_response)))
         } else {
             None
         };
-        let digest = Some(val.id.unique_qualifier.digest.into());
+        let digest = Some(self.id.unique_qualifier.digest.into());
 
         let metadata = ExecuteOperationMetadata {
             stage,
@@ -1190,11 +1221,17 @@ impl From<ActionState> for Operation {
             partial_execution_metadata: None,
         };
 
-        Self {
+        Operation {
             name,
             metadata: Some(to_any(&metadata)),
             done: result.is_some(),
             result,
         }
+    }
+}
+
+impl MetricsComponent for ActionState {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish("stage", &self.stage, "");
     }
 }

@@ -1944,6 +1944,7 @@ dependencies = [
  "scopeguard",
  "serde",
  "serde_json",
+ "static_assertions",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -1955,6 +1956,8 @@ dependencies = [
 name = "nativelink-service"
 version = "0.4.0"
 dependencies = [
+ "async-lock",
+ "async-trait",
  "bytes",
  "futures",
  "hyper",

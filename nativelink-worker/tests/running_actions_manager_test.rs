@@ -443,7 +443,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
         },
     )?);
     {
-        const SALT: u64 = 55;
+        let operation_id = "55".to_string();
         let command = Command {
             arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
             output_files: vec!["some/path/test.txt".to_string()],
@@ -496,7 +496,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
                         digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
-                    salt: SALT,
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -557,7 +557,7 @@ async fn ensure_output_files_full_directories_are_created_test(
         },
     )?);
     {
-        const SALT: u64 = 55;
+        let operation_id = "55".to_string();
         let working_directory = "some_cwd";
         let command = Command {
             arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
@@ -612,7 +612,7 @@ async fn ensure_output_files_full_directories_are_created_test(
                         digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
-                    salt: SALT,
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -673,7 +673,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?);
     let action_result = {
-        const SALT: u64 = 55;
+        let operation_id = "55".to_string();
         #[cfg(target_family = "unix")]
         let arguments = vec![
             "sh".to_string(),
@@ -743,7 +743,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
                         digest_function: ProtoDigestFunction::Blake3.into(),
                         ..Default::default()
                     }),
-                    salt: SALT,
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -844,7 +844,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
         },
     )?);
     let action_result = {
-        const SALT: u64 = 55;
+        let operation_id = "55".to_string();
         #[cfg(target_family = "unix")]
         let arguments = vec![
             "sh".to_string(),
@@ -914,7 +914,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
                         digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
-                    salt: SALT,
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -1018,7 +1018,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
     )?);
     let queued_timestamp = make_system_time(1000);
     let action_result = {
-        const SALT: u64 = 55;
+        let operation_id = "55".to_string();
         let command = Command {
             arguments: vec![
                 "sh".to_string(),
@@ -1069,7 +1069,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
                         digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
-                    salt: SALT,
+                    operation_id,
                     queued_timestamp: Some(queued_timestamp.into()),
                 },
             )
@@ -1223,7 +1223,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
     let arguments = vec!["cmd".to_string(), "/C".to_string(), "exit 33".to_string()];
 
     let action_result = {
-        const SALT: u64 = 55;
+        let operation_id = "55".to_string();
         let command = Command {
             arguments,
             output_paths: vec![],
@@ -1263,7 +1263,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
                         digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
-                    salt: SALT,
+                    operation_id,
                     queued_timestamp: Some(queued_timestamp.into()),
                 },
             )
@@ -1316,7 +1316,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
 #[nativelink_test]
 async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 55;
+    let operation_id = "55".to_string();
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
     let root_action_directory = make_temp_path("root_action_directory");
@@ -1393,7 +1393,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
                     digest_function: ProtoDigestFunction::Sha256.into(),
                     ..Default::default()
                 }),
-                salt: SALT,
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -1445,7 +1445,7 @@ echo | set /p=\"Wrapper script did run\" 1>&2
 exit 0
 ";
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 66;
+    let operation_id = "66".to_string();
     const EXPECTED_STDOUT: &str = "Action did run";
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -1538,7 +1538,7 @@ exit 0
                     digest_function: ProtoDigestFunction::Sha256.into(),
                     ..Default::default()
                 }),
-                salt: SALT,
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -1587,7 +1587,7 @@ echo | set /p=\"Wrapper script did run with property %PROPERTY% %VALUE% %INNER_T
 exit 0
 ";
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 66;
+    let operation_id = "66".to_string();
     const EXPECTED_STDOUT: &str = "Action did run";
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -1704,7 +1704,7 @@ exit 0
                     digest_function: ProtoDigestFunction::Sha256.into(),
                     ..Default::default()
                 }),
-                salt: SALT,
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -1751,7 +1751,7 @@ echo | set /p={\"failure\":\"timeout\"} 1>&2 > %SIDE_CHANNEL_FILE%
 exit 1
 ";
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 66;
+    let operation_id = "66".to_string();
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
     let root_action_directory = make_temp_path("root_action_directory");
@@ -1843,7 +1843,7 @@ exit 1
                     digest_function: ProtoDigestFunction::Sha256.into(),
                     ..Default::default()
                 }),
-                salt: SALT,
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -2355,7 +2355,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                         digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
-                    salt: 0,
+                    operation_id: "".to_string(),
                     queued_timestamp: Some(make_system_time(1000).into()),
                 },
             )
@@ -2433,7 +2433,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                         digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
-                    salt: 0,
+                    operation_id: "".to_string(),
                     queued_timestamp: Some(make_system_time(1000).into()),
                 },
             )
@@ -2511,7 +2511,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
                         digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
-                    salt: 0,
+                    operation_id: "".to_string(),
                     queued_timestamp: Some(make_system_time(1000).into()),
                 },
             )
@@ -2632,7 +2632,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
                     digest_function: ProtoDigestFunction::Sha256.into(),
                     ..Default::default()
                 }),
-                salt: 0,
+                operation_id: "".to_string(),
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -2751,7 +2751,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
                     digest_function: ProtoDigestFunction::Sha256.into(),
                     ..Default::default()
                 }),
-                salt: 0,
+                operation_id: "".to_string(),
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -2946,7 +2946,7 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
     #[cfg(target_family = "windows")]
     let arguments = vec!["cmd".to_string(), "/C".to_string(), "exit 0".to_string()];
 
-    const SALT: u64 = 55;
+    let operation_id = "55".to_string();
     let command = Command {
         arguments,
         output_paths: vec![],
@@ -2986,7 +2986,7 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
                     digest_function: ProtoDigestFunction::Sha256.into(),
                     ..Default::default()
                 }),
-                salt: SALT,
+                operation_id,
                 queued_timestamp: Some(queued_timestamp.into()),
             },
         )
@@ -3049,7 +3049,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?);
     let action_result = {
-        const SALT: u64 = 55;
+        let operation_id = "55".to_string();
         #[cfg(target_family = "unix")]
             let arguments = vec![
                 "sh".to_string(),
@@ -3119,7 +3119,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
                         digest_function: ProtoDigestFunction::Sha256.into(),
                         ..Default::default()
                     }),
-                    salt: SALT,
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -3196,7 +3196,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
 async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn std::error::Error>>
 {
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 66;
+    let operation_id = "66".to_string();
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
     let root_action_directory = make_temp_path("root_work_directory");
@@ -3292,7 +3292,7 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
                     digest_function: ProtoDigestFunction::Sha256.into(),
                     ..Default::default()
                 }),
-                salt: SALT,
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )

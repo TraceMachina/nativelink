@@ -195,8 +195,6 @@ async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error
 
 #[nativelink_test]
 async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::error::Error>> {
-    const SALT: u64 = 1000;
-
     let mut test_context = setup_local_worker(HashMap::new()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -237,7 +235,7 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,
-            salt: SALT,
+            salt: 0,
         },
         skip_cache_lookup: true,
     };
@@ -248,7 +246,7 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
             .send_data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
                     execute_request: Some(action_info.into()),
-                    salt: SALT,
+                    operation_id: String::new(),
                     queued_timestamp: None,
                 })),
             })?)
@@ -281,8 +279,6 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
 
 #[nativelink_test]
 async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Error>> {
-    const SALT: u64 = 1000;
-
     let mut test_context = setup_local_worker(HashMap::new()).await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
@@ -323,7 +319,7 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
-            salt: SALT,
+            salt: 0,
         },
         skip_cache_lookup: true,
     };
@@ -334,7 +330,7 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
             .send_data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
                     execute_request: Some(action_info.into()),
-                    salt: SALT,
+                    operation_id: String::new(),
                     queued_timestamp: None,
                 })),
             })?)
@@ -400,8 +396,7 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
         ExecuteResult {
             worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
-            action_digest: Some(action_digest.into()),
-            salt: SALT,
+            operation_id: String::new(),
             digest_function: digest_function::Value::Sha256.into(),
             result: Some(execute_result::Result::ExecuteResponse(
                 ActionStage::Completed(action_result).into()
@@ -576,7 +571,6 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
 
-    const SALT: u64 = 1000;
     let action_digest = DigestInfo::new([3u8; 32], 10);
     let action_info = ActionInfo {
         command_digest: DigestInfo::new([1u8; 32], 10),
@@ -590,7 +584,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
-            salt: SALT,
+            salt: 0,
         },
         skip_cache_lookup: true,
     };
@@ -601,7 +595,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
             .send_data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
                     execute_request: Some(action_info.into()),
-                    salt: SALT,
+                    operation_id: String::new(),
                     queued_timestamp: None,
                 })),
             })?)
@@ -626,8 +620,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
         ExecuteResult {
             worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
-            action_digest: Some(action_digest.into()),
-            salt: SALT,
+            operation_id: String::new(),
             digest_function: digest_function::Value::Sha256.into(),
             result: Some(execute_result::Result::InternalError(
                 make_err!(Code::ResourceExhausted, "{}", EXPECTED_MSG,).into()
@@ -692,7 +685,7 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
             .send_data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
                     execute_request: Some(action_info.clone().into()),
-                    salt: SALT,
+                    operation_id: String::new(),
                     queued_timestamp: None,
                 })),
             })?)

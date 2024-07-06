@@ -30,7 +30,7 @@ use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
-    ActionInfoHashKey, ActionResult, ActionStage, ActionState, OperationId,
+    ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId, OperationId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -98,29 +98,36 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
         }));
     let mut skip_cache_action = action_info.clone();
     skip_cache_action.skip_cache_lookup = true;
+    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let _ = join!(
-        context.cache_scheduler.add_action(skip_cache_action),
+        context
+            .cache_scheduler
+            .add_action(client_operation_id.clone(), skip_cache_action),
         context
             .mock_scheduler
-            .expect_add_action(Ok(forward_watch_channel_rx))
+            .expect_add_action(Ok((client_operation_id, forward_watch_channel_rx)))
     );
     Ok(())
 }
 
 #[nativelink_test]
-async fn find_existing_action_call_passed() -> Result<(), Error> {
+async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
     let context = make_cache_scheduler()?;
-    let action_name = ActionInfoHashKey {
+    let client_operation_id = ClientOperationId::new(ActionInfoHashKey {
         instance_name: "instance".to_string(),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new([8; 32], 1),
         salt: 1000,
-    };
-    let (actual_result, actual_action_name) = join!(
-        context.cache_scheduler.find_existing_action(&action_name),
-        context.mock_scheduler.expect_find_existing_action(Ok(None)),
+    });
+    let (actual_result, actual_client_id) = join!(
+        context
+            .cache_scheduler
+            .find_by_client_operation_id(&client_operation_id),
+        context
+            .mock_scheduler
+            .expect_find_by_client_operation_id(Ok(None)),
     );
     assert_eq!(true, actual_result.unwrap().is_none());
-    assert_eq!(action_name, actual_action_name);
+    assert_eq!(client_operation_id, actual_client_id);
     Ok(())
 }
