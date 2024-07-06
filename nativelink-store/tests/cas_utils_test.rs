@@ -23,7 +23,7 @@ fn sha256_is_zero_digest() {
         packed_hash: Sha256::new().finalize().into(),
         size_bytes: 0,
     };
-    assert!(is_zero_digest(&digest));
+    assert!(is_zero_digest(digest));
 }
 
 #[test]
@@ -34,7 +34,7 @@ fn sha256_is_non_zero_digest() {
         packed_hash: hasher.finalize().into(),
         size_bytes: 1,
     };
-    assert!(!is_zero_digest(&digest));
+    assert!(!is_zero_digest(digest));
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn blake_is_zero_digest() {
         packed_hash: Blake3::new().finalize().into(),
         size_bytes: 0,
     };
-    assert!(is_zero_digest(&digest));
+    assert!(is_zero_digest(digest));
 }
 
 #[test]
@@ -54,5 +54,5 @@ fn blake_is_non_zero_digest() {
         packed_hash: hasher.finalize().into(),
         size_bytes: 1,
     };
-    assert!(!is_zero_digest(&digest));
+    assert!(!is_zero_digest(digest));
 }

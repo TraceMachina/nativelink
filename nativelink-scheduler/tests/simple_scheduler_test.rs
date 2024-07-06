@@ -52,18 +52,18 @@ fn update_eq(expected: UpdateForWorker, actual: UpdateForWorker, ignore_id: bool
         return false;
     };
     match actual_update {
-        update_for_worker::Update::Disconnect(()) => match expected_update {
-            update_for_worker::Update::Disconnect(()) => true,
-            _ => false,
-        },
-        update_for_worker::Update::KeepAlive(()) => match expected_update {
-            update_for_worker::Update::KeepAlive(()) => true,
-            _ => false,
-        },
+        update_for_worker::Update::Disconnect(()) => {
+            matches!(expected_update, update_for_worker::Update::Disconnect(()))
+        }
+        update_for_worker::Update::KeepAlive(()) => {
+            matches!(expected_update, update_for_worker::Update::KeepAlive(()))
+        }
         update_for_worker::Update::StartAction(actual_update) => match expected_update {
             update_for_worker::Update::StartAction(mut expected_update) => {
                 if ignore_id {
-                    expected_update.operation_id = actual_update.operation_id.clone();
+                    expected_update
+                        .operation_id
+                        .clone_from(&actual_update.operation_id);
                 }
                 expected_update == actual_update
             }
@@ -781,7 +781,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         } else {
             panic!("Expected StartAction, got : {msg_for_worker:?}");
         };
-        start_execute.operation_id = operation_id.clone();
+        start_execute.operation_id.clone_from(&operation_id);
         assert_eq!(
             msg_for_worker,
             UpdateForWorker {
