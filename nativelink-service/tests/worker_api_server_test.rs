@@ -85,13 +85,9 @@ impl MockWorkerStateManager {
         result: Result<(), Error>,
     ) -> (OperationId, WorkerId, Result<ActionStage, Error>) {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let req = match rx_call_lock
-            .recv()
-            .await
-            .expect("Could not receive msg in mpsc")
-        {
-            WorkerStateManagerCalls::UpdateOperation(req) => req,
-        };
+        let recv = rx_call_lock.recv();
+        let WorkerStateManagerCalls::UpdateOperation(req) =
+            recv.await.expect("Could not receive msg in mpsc");
         self.tx_resp
             .send(WorkerStateManagerReturns::UpdateOperation(result))
             .expect("Could not send request to mpsc");
@@ -110,7 +106,7 @@ impl WorkerStateManager for MockWorkerStateManager {
         self.tx_call
             .send(WorkerStateManagerCalls::UpdateOperation((
                 operation_id.clone(),
-                worker_id.clone(),
+                *worker_id,
                 action_stage,
             )))
             .expect("Could not send request to mpsc");
@@ -194,7 +190,7 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
 
     Ok(TestContext {
         scheduler,
-        state_manager: state_manager,
+        state_manager,
         worker_api_server,
         connection_worker_stream,
         worker_id: worker_id.try_into()?,
@@ -401,7 +397,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
     test_context
         .scheduler
         .worker_notify_run_action(
-            test_context.worker_id.clone(),
+            test_context.worker_id,
             expected_operation_id.clone(),
             action_info.clone(),
         )
