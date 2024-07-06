@@ -286,8 +286,7 @@ impl ExecutionServer {
                 .err_tip(|| "Failed to parse operation_id in ExecutionServer::wait_execution")?;
         let Some(instance_info) = self.instance_infos.get(&instance_name) else {
             return Err(Status::not_found(format!(
-                "No scheduler with the instance name {}",
-                instance_name
+                "No scheduler with the instance name {instance_name}"
             )));
         };
         let Some(rx) = instance_info

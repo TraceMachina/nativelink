@@ -335,7 +335,7 @@ impl ActionScheduler for SimpleScheduler {
         client_operation_id: &ClientOperationId,
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
         let maybe_receiver = self
-            .find_by_client_operation_id(&client_operation_id)
+            .find_by_client_operation_id(client_operation_id)
             .await
             .err_tip(|| {
                 format!("Error while finding action with client id: {client_operation_id:?}")
