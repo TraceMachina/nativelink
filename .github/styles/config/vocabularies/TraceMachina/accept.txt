@@ -5,10 +5,13 @@ Cloudflare
 ELB
 GPUs
 Goma
+Kustomization
+[Hh]ermeticity
+Kustomization
 LLD
 LLVM
 Machina
-Mintlify
+[Mm]onorepo
 NVMe
 NativeLink
 OCI
@@ -16,11 +19,11 @@ OSSF
 Reclient
 SPDX
 Starlark
-TIP
 Tokio
 TraceMachina
 [Tt]oolchain
 Qwik
+Verilog
 alex
 autoscaling
 blazingly
