@@ -139,12 +139,13 @@ pub struct ByteStreamConfig {
     /// According to <https://github.com/grpc/grpc.github.io/issues/371>
     /// 16KiB - 64KiB is optimal.
     ///
-    /// TODO(marcussorealheis) in the config tests, include a defined max_bytes_per_stream.
+    ///
     /// Defaults: 64KiB
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_bytes_per_stream: usize,
 
-    /// Used when the config specifies a maximum number of bytes to decode on each grpc stream chunk.
+    /// Maximum number of bytes to decode on each grpc stream chunk.
+    /// Defaults: 4 MiB
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_decoding_message_size: usize,
 
