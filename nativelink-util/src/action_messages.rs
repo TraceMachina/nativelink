@@ -66,9 +66,9 @@ impl ClientOperationId {
     }
 }
 
-impl ToString for ClientOperationId {
-    fn to_string(&self) -> String {
-        self.0.clone()
+impl std::fmt::Display for ClientOperationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}", self.0.clone()))
     }
 }
 
@@ -844,15 +844,15 @@ impl ActionStage {
     /// Returns if the stage enum is the same as the other stage enum, but
     /// does not compare the values of the enum.
     pub const fn is_same_stage(&self, other: &Self) -> bool {
-        match (self, other) {
+        matches!(
+            (self, other),
             (Self::Unknown, Self::Unknown)
-            | (Self::CacheCheck, Self::CacheCheck)
-            | (Self::Queued, Self::Queued)
-            | (Self::Executing, Self::Executing)
-            | (Self::Completed(_), Self::Completed(_))
-            | (Self::CompletedFromCache(_), Self::CompletedFromCache(_)) => true,
-            _ => false,
-        }
+                | (Self::CacheCheck, Self::CacheCheck)
+                | (Self::Queued, Self::Queued)
+                | (Self::Executing, Self::Executing)
+                | (Self::Completed(_), Self::Completed(_))
+                | (Self::CompletedFromCache(_), Self::CompletedFromCache(_))
+        )
     }
 }
 
