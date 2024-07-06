@@ -71,6 +71,7 @@ pub struct ExecuteResult {
     /// that case the server SHOULD infer the digest function using the
     /// length of the action digest hash and the digest functions announced
     /// in the server's capabilities.
+    /// TODO!!! THIS IS UNUSED AFAIK.
     #[prost(
         enumeration = "super::super::super::super::super::build::bazel::remote::execution::v2::digest_function::Value",
         tag = "7"
@@ -159,7 +160,7 @@ pub struct StartExecute {
     pub execute_request: ::core::option::Option<
         super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteRequest,
     >,
-    /// Id of the operation.
+    /// / Id of the operation.
     #[prost(string, tag = "4")]
     pub operation_id: ::prost::alloc::string::String,
     /// / The time at which the command was added to the queue to allow population

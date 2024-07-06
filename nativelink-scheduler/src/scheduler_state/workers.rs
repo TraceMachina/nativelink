@@ -25,12 +25,10 @@ use tokio::sync::Notify;
 use tonic::async_trait;
 use tracing::{event, Level};
 
+use crate::operation_state_manager::WorkerStateManager;
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::worker::{Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
-use crate::{
-    operation_state_manager::WorkerStateManager,
-    worker::{Worker, WorkerTimestamp, WorkerUpdate},
-};
 
 /// A collection of workers that are available to run tasks.
 struct ApiWorkerSchedulerImpl {
@@ -110,7 +108,7 @@ impl ApiWorkerSchedulerImpl {
     ) -> Result<(), Error> {
         let worker = self
             .workers
-            .get_mut(&worker_id)
+            .get_mut(worker_id)
             .err_tip(|| format!("Worker {worker_id} doesn't exist in the pool"))?;
         worker.is_draining = is_draining;
         // TODO(allada) This should move to inside the Workers struct.
@@ -249,7 +247,7 @@ impl ApiWorkerSchedulerImpl {
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager
-                        .update_operation(&operation_id, &worker_id, Err(err.clone()))
+                        .update_operation(&operation_id, worker_id, Err(err.clone()))
                         .await,
                 );
             }
