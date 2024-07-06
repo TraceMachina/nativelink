@@ -44,6 +44,10 @@ use tracing::{event, Level};
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 
+/// A future containing the resolved `ClientOperationId` once it is figured out.
+/// This future may be cloned and will always yield the same value once resolved.
+type ClientOperationIdFuture = SharedFuture<oneshot::Receiver<ClientOperationId>>;
+
 /// Actions that are having their cache checked or failed cache lookup and are
 /// being forwarded upstream.  Missing the skip_cache_check actions which are
 /// forwarded directly.
@@ -97,10 +101,7 @@ async fn get_action_from_store(
 fn subscribe_to_existing_action(
     cache_check_actions: &MutexGuard<CheckActions>,
     unique_qualifier: &ActionInfoHashKey,
-) -> Option<(
-    SharedFuture<oneshot::Receiver<ClientOperationId>>,
-    watch::Receiver<Arc<ActionState>>,
-)> {
+) -> Option<(ClientOperationIdFuture, watch::Receiver<Arc<ActionState>>)> {
     cache_check_actions
         .get(unique_qualifier)
         .map(|(client_operation_id_rx, rx)| {
