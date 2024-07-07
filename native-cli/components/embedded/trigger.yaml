@@ -57,7 +57,7 @@ metadata:
 spec:
   params:
     - name: flakeOutput
-      value: "$(body.flakeOutput)"
+      value: "$(body.metadata.flakeOutput)"
 ---
 apiVersion: v1
 kind: ServiceAccount

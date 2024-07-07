@@ -6,17 +6,17 @@ set -xeuo pipefail
 
 curl -v \
     -H 'content-Type: application/json' \
-    -d '{"flakeOutput": "./src_root#image"}' \
+    -d '{"metadata": {"flakeOutput": "./src_root#image"}}' \
     localhost:8082/eventlistener
 
 curl -v \
     -H 'content-Type: application/json' \
-    -d '{"flakeOutput": "./src_root#nativelink-worker-init"}' \
+    -d '{"metadata": {"flakeOutput": "./src_root#nativelink-worker-init"}}' \
     localhost:8082/eventlistener
 
 curl -v \
     -H 'content-Type: application/json' \
-    -d '{"flakeOutput": "./src_root#nativelink-worker-siso-chromium"}' \
+    -d '{"metadata": {"flakeOutput": "./src_root#nativelink-worker-siso-chromium"}}' \
     localhost:8082/eventlistener
 
 until kubectl get pipelinerun \
