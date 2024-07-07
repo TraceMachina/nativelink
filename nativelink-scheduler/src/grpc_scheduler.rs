@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,7 +46,8 @@ use tokio::time::sleep;
 use tonic::{Request, Streaming};
 use tracing::{event, Level};
 
-use crate::action_scheduler::ActionScheduler;
+use crate::action_scheduler::{ActionListener, ActionScheduler};
+use crate::default_action_listener::DefaultActionListener;
 use crate::platform_property_manager::PlatformPropertyManager;
 
 pub struct GrpcScheduler {
@@ -115,7 +117,7 @@ impl GrpcScheduler {
 
     async fn stream_state(
         mut result_stream: Streaming<Operation>,
-    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
+    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         if let Some(initial_response) = result_stream
             .message()
             .await
@@ -175,7 +177,10 @@ impl GrpcScheduler {
                     )
                 }
             });
-            return Ok((client_operation_id, rx));
+            return Ok(Box::pin(DefaultActionListener::new(
+                client_operation_id,
+                rx,
+            )));
         }
         Err(make_err!(
             Code::Internal,
@@ -237,7 +242,7 @@ impl ActionScheduler for GrpcScheduler {
         &self,
         _client_operation_id: ClientOperationId,
         action_info: ActionInfo,
-    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
+    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {
             None
         } else {
@@ -278,7 +283,7 @@ impl ActionScheduler for GrpcScheduler {
     async fn find_by_client_operation_id(
         &self,
         client_operation_id: &ClientOperationId,
-    ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
+    ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         let request = WaitExecutionRequest {
             name: client_operation_id.to_string(),
         };
@@ -297,7 +302,7 @@ impl ActionScheduler for GrpcScheduler {
             .and_then(|result_stream| Self::stream_state(result_stream.into_inner()))
             .await;
         match result_stream {
-            Ok(result_stream) => Ok(Some(result_stream.1)),
+            Ok(result_stream) => Ok(Some(result_stream)),
             Err(err) => {
                 event!(
                     Level::WARN,

@@ -13,21 +13,19 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::future::Shared as SharedFuture;
-use futures::stream::StreamExt;
-use futures::FutureExt;
-use nativelink_error::{make_err, Code, Error};
+use futures::Future;
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, GetActionResultRequest,
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId,
-    OperationId,
+    ActionInfo, ActionInfoHashKey, ActionStage, ActionState, ClientOperationId, OperationId,
 };
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
@@ -35,13 +33,11 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::{Store, StoreLike};
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
-use tokio::select;
-use tokio::sync::{oneshot, watch};
-use tokio_stream::wrappers::WatchStream;
+use tokio::sync::oneshot;
 use tonic::Request;
 use tracing::{event, Level};
 
-use crate::action_scheduler::ActionScheduler;
+use crate::action_scheduler::{ActionListener, ActionScheduler};
 use crate::platform_property_manager::PlatformPropertyManager;
 
 /// Actions that are having their cache checked or failed cache lookup and are
@@ -49,10 +45,10 @@ use crate::platform_property_manager::PlatformPropertyManager;
 /// forwarded directly.
 type CheckActions = HashMap<
     ActionInfoHashKey,
-    (
-        SharedFuture<oneshot::Receiver<ClientOperationId>>,
-        watch::Receiver<Arc<ActionState>>,
-    ),
+    Vec<(
+        ClientOperationId,
+        oneshot::Sender<Result<Pin<Box<dyn ActionListener>>, Error>>,
+    )>,
 >;
 
 pub struct CacheLookupScheduler {
@@ -95,19 +91,37 @@ async fn get_action_from_store(
 }
 
 fn subscribe_to_existing_action(
-    cache_check_actions: &MutexGuard<CheckActions>,
+    cache_check_actions: &mut MutexGuard<CheckActions>,
     unique_qualifier: &ActionInfoHashKey,
-) -> Option<(
-    SharedFuture<oneshot::Receiver<ClientOperationId>>,
-    watch::Receiver<Arc<ActionState>>,
-)> {
+    client_operation_id: &ClientOperationId,
+) -> Option<oneshot::Receiver<Result<Pin<Box<dyn ActionListener>>, Error>>> {
     cache_check_actions
-        .get(unique_qualifier)
-        .map(|(client_operation_id_rx, rx)| {
-            let mut rx = rx.clone();
-            rx.mark_changed();
-            (client_operation_id_rx.clone(), rx)
+        .get_mut(unique_qualifier)
+        .map(|oneshots| {
+            let (tx, rx) = oneshot::channel();
+            oneshots.push((client_operation_id.clone(), tx));
+            rx
         })
+}
+struct CachedActionListener {
+    client_operation_id: ClientOperationId,
+    action_state: Arc<ActionState>,
+}
+
+impl ActionListener for CachedActionListener {
+    fn client_operation_id(&self) -> &ClientOperationId {
+        &self.client_operation_id
+    }
+
+    fn action_state(&self) -> Arc<ActionState> {
+        self.action_state.clone()
+    }
+
+    fn changed(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + Sync + '_>> {
+        Box::pin(async { Ok(self.action_state.clone()) })
+    }
 }
 
 impl CacheLookupScheduler {
@@ -135,7 +149,7 @@ impl ActionScheduler for CacheLookupScheduler {
         &self,
         client_operation_id: ClientOperationId,
         action_info: ActionInfo,
-    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
+    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         if action_info.skip_cache_lookup {
             // Cache lookup skipped, forward to the upstream.
             return self
@@ -143,77 +157,83 @@ impl ActionScheduler for CacheLookupScheduler {
                 .add_action(client_operation_id, action_info)
                 .await;
         }
-        let mut current_state = Arc::new(ActionState {
-            id: OperationId::new(action_info.unique_qualifier.clone()),
-            stage: ActionStage::CacheCheck,
-        });
         let cache_check_result = {
             // Check this isn't a duplicate request first.
             let mut cache_check_actions = self.cache_check_actions.lock();
-            let current_state = current_state.clone();
             let unique_qualifier = action_info.unique_qualifier.clone();
-            subscribe_to_existing_action(&cache_check_actions, &unique_qualifier).ok_or_else(
-                move || {
-                    let (client_operation_id_tx, client_operation_id_rx) = oneshot::channel();
-                    let client_operation_id_rx = client_operation_id_rx.shared();
-                    let (tx, rx) = watch::channel(current_state);
-                    cache_check_actions.insert(
-                        unique_qualifier.clone(),
-                        (client_operation_id_rx.clone(), rx),
-                    );
-                    // In the event we loose the reference to our `scope_guard`, it will remove
-                    // the action from the cache_check_actions map.
-                    let cache_check_actions = self.cache_check_actions.clone();
-                    (
-                        client_operation_id_tx,
-                        client_operation_id_rx,
-                        tx,
-                        guard((), move |_| {
-                            cache_check_actions.lock().remove(&unique_qualifier);
-                        }),
-                    )
-                },
+            subscribe_to_existing_action(
+                &mut cache_check_actions,
+                &unique_qualifier,
+                &client_operation_id,
             )
+            .ok_or_else(move || {
+                let (action_listener_tx, action_listener_rx) = oneshot::channel();
+                cache_check_actions.insert(
+                    unique_qualifier.clone(),
+                    vec![(client_operation_id, action_listener_tx)],
+                );
+                // In the event we loose the reference to our `scope_guard`, it will remove
+                // the action from the cache_check_actions map.
+                let cache_check_actions = self.cache_check_actions.clone();
+                (
+                    action_listener_rx,
+                    guard((), move |_| {
+                        cache_check_actions.lock().remove(&unique_qualifier);
+                    }),
+                )
+            })
         };
-        let (client_operation_id_tx, client_operation_id_rx, tx, scope_guard) =
-            match cache_check_result {
-                Ok((client_operation_id_tx, rx)) => {
-                    let client_operation_id = client_operation_id_tx.await.map_err(|_| {
-                        make_err!(
-                            Code::Internal,
-                            "Client operation id tx hung up in CacheLookupScheduler::add_action"
-                        )
-                    })?;
-                    return Ok((client_operation_id, rx));
-                }
-                Err(client_tx_and_scope_guard) => client_tx_and_scope_guard,
-            };
-        let rx = tx.subscribe();
+        let (action_listener_rx, scope_guard) = match cache_check_result {
+            Ok(action_listener_fut) => {
+                let action_listener = action_listener_fut.await.map_err(|_| {
+                    make_err!(
+                        Code::Internal,
+                        "ActionListener tx hung up in CacheLookupScheduler::add_action"
+                    )
+                })?;
+                return action_listener;
+            }
+            Err(client_tx_and_scope_guard) => client_tx_and_scope_guard,
+        };
 
         let ac_store = self.ac_store.clone();
         let action_scheduler = self.action_scheduler.clone();
-        let client_operation_id_clone = client_operation_id.clone();
+        let cache_check_actions = self.cache_check_actions.clone();
         // We need this spawn because we are returning a stream and this spawn will populate the stream's data.
         background_spawn!("cache_lookup_scheduler_add_action", async move {
             // If our spawn ever dies, we will remove the action from the cache_check_actions map.
             let _scope_guard = scope_guard;
 
             // Perform cache check.
-            let action_digest = current_state.action_digest();
-            let instance_name = action_info.instance_name().clone();
+            let instance_name = action_info.unique_qualifier.instance_name.clone();
             if let Some(action_result) = get_action_from_store(
                 &ac_store,
-                *action_digest,
+                action_info.unique_qualifier.digest,
                 instance_name,
-                current_state.id.unique_qualifier.digest_function,
+                action_info.unique_qualifier.digest_function,
             )
             .await
             {
-                match ac_store.has(*action_digest).await {
+                match ac_store.has(action_info.unique_qualifier.digest).await {
                     Ok(Some(_)) => {
-                        Arc::make_mut(&mut current_state).stage =
-                            ActionStage::CompletedFromCache(action_result);
-                        let _ = tx.send(current_state);
+                        let maybe_pending_txs = {
+                            let mut cache_check_actions = cache_check_actions.lock();
+                            cache_check_actions.remove(&action_info.unique_qualifier)
+                        };
+                        let Some(pending_txs) = maybe_pending_txs else {
+                            return; // Noone is waiting for this action anymore.
+                        };
+                        let action_state = Arc::new(ActionState {
+                            id: OperationId::new(action_info.unique_qualifier.clone()),
+                            stage: ActionStage::CompletedFromCache(action_result),
+                        });
+                        for (client_operation_id, pending_tx) in pending_txs {
+                            // Ignore errors here, as the other end may have hung up.
+                            let _ = pending_tx.send(Ok(Box::pin(CachedActionListener {
+                                client_operation_id,
+                                action_state: action_state.clone(),
+                            })));
+                        }
                         return;
                     }
                     Err(err) => {
@@ -226,52 +246,39 @@ impl ActionScheduler for CacheLookupScheduler {
                     _ => {}
                 }
             }
-            // Not in cache, forward to upstream and proxy state.
-            match action_scheduler
-                .add_action(client_operation_id_clone, action_info)
-                .await
-            {
-                Ok((new_client_operation_id, rx)) => {
-                    // It's ok if the other end hung up, just keep going just
-                    // in case they come back.
-                    let _ = client_operation_id_tx.send(new_client_operation_id);
-                    let mut watch_stream = WatchStream::new(rx);
-                    loop {
-                        select!(
-                            Some(action_state) = watch_stream.next() => {
-                                if tx.send(action_state).is_err() {
-                                    break;
-                                }
-                            }
-                            _ = tx.closed() => {
-                                break;
-                            }
-                        )
-                    }
-                }
-                Err(err) => {
-                    Arc::make_mut(&mut current_state).stage =
-                        ActionStage::Completed(ActionResult {
-                            error: Some(err),
-                            ..Default::default()
-                        });
-                    let _ = tx.send(current_state);
-                }
+
+            let maybe_pending_txs = {
+                let mut cache_check_actions = cache_check_actions.lock();
+                cache_check_actions.remove(&action_info.unique_qualifier)
+            };
+            let Some(pending_txs) = maybe_pending_txs else {
+                return; // Noone is waiting for this action anymore.
+            };
+
+            for (client_operation_id, pending_tx) in pending_txs {
+                // Ignore errors here, as the other end may have hung up.
+                let _ = pending_tx.send(
+                    action_scheduler
+                        .add_action(client_operation_id, action_info.clone())
+                        .await,
+                );
             }
         });
-        let client_operation_id = client_operation_id_rx.await.map_err(|_| {
-            make_err!(
-                Code::Internal,
-                "Client operation id tx hung up in CacheLookupScheduler::add_action"
-            )
-        })?;
-        Ok((client_operation_id, rx))
+        action_listener_rx
+            .await
+            .map_err(|_| {
+                make_err!(
+                    Code::Internal,
+                    "ActionListener tx hung up in CacheLookupScheduler::add_action"
+                )
+            })?
+            .err_tip(|| "While passing through CacheLookupScheduler::add_action")
     }
 
     async fn find_by_client_operation_id(
         &self,
         client_operation_id: &ClientOperationId,
-    ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
+    ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         self.action_scheduler
             .find_by_client_operation_id(client_operation_id)
             .await

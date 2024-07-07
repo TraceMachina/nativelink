@@ -11,6 +11,7 @@ rust_library(
     srcs = [
         "src/action_scheduler.rs",
         "src/cache_lookup_scheduler.rs",
+        "src/default_action_listener.rs",
         "src/default_scheduler_factory.rs",
         "src/grpc_scheduler.rs",
         "src/lib.rs",
