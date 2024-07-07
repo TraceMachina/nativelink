@@ -14,17 +14,17 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
-use nativelink_util::action_messages::{ActionInfo, ActionState, ClientOperationId};
+use nativelink_util::action_messages::{ActionInfo, ClientOperationId};
 use nativelink_util::metrics_utils::Registry;
 use parking_lot::Mutex;
-use tokio::sync::watch;
 
-use crate::action_scheduler::ActionScheduler;
+use crate::action_scheduler::{ActionListener, ActionScheduler};
 use crate::platform_property_manager::PlatformPropertyManager;
 
 pub struct PropertyModifierScheduler {
@@ -92,7 +92,7 @@ impl ActionScheduler for PropertyModifierScheduler {
         &self,
         client_operation_id: ClientOperationId,
         mut action_info: ActionInfo,
-    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
+    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         let platform_property_manager = self
             .get_platform_property_manager(&action_info.unique_qualifier.instance_name)
             .await
@@ -120,7 +120,7 @@ impl ActionScheduler for PropertyModifierScheduler {
     async fn find_by_client_operation_id(
         &self,
         client_operation_id: &ClientOperationId,
-    ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
+    ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         self.scheduler
             .find_by_client_operation_id(client_operation_id)
             .await

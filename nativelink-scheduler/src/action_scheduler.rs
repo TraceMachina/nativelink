@@ -12,15 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::Future;
 use nativelink_error::Error;
 use nativelink_util::action_messages::{ActionInfo, ActionState, ClientOperationId};
 use nativelink_util::metrics_utils::Registry;
-use tokio::sync::watch;
 
 use crate::platform_property_manager::PlatformPropertyManager;
+
+/// ActionListener interface is responsible for interfacing with clients
+/// that are interested in the state of an action.
+pub trait ActionListener: Sync + Send + Unpin {
+    /// Returns the client operation id.
+    fn client_operation_id(&self) -> &ClientOperationId;
+
+    /// Returns the current action state.
+    fn action_state(&self) -> Arc<ActionState>;
+
+    /// Waits for the action state to change.
+    fn changed(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + Sync + '_>>;
+}
 
 /// ActionScheduler interface is responsible for interactions between the scheduler
 /// and action related operations.
@@ -37,13 +53,13 @@ pub trait ActionScheduler: Sync + Send + Unpin {
         &self,
         client_operation_id: ClientOperationId,
         action_info: ActionInfo,
-    ) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error>;
+    ) -> Result<Pin<Box<dyn ActionListener>>, Error>;
 
     /// Find an existing action by its name.
     async fn find_by_client_operation_id(
         &self,
         client_operation_id: &ClientOperationId,
-    ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error>;
+    ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error>;
 
     /// Cleans up the cache of recently completed actions.
     async fn clean_recently_completed_actions(&self);
