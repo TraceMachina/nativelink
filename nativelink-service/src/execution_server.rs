@@ -17,7 +17,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures::{Stream, StreamExt};
+use futures::stream::unfold;
+use futures::Stream;
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName};
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
@@ -27,18 +28,16 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, Command, ExecuteRequest, WaitExecutionRequest,
 };
 use nativelink_proto::google::longrunning::Operation;
-use nativelink_scheduler::action_scheduler::ActionScheduler;
+use nativelink_scheduler::action_scheduler::{ActionListener, ActionScheduler};
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionState, ClientOperationId, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionInfoHashKey, ClientOperationId, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::store_trait::Store;
-use tokio::sync::watch;
-use tokio_stream::wrappers::WatchStream;
 use tonic::{Request, Response, Status};
 use tracing::{error_span, event, instrument, Level};
 
@@ -208,15 +207,34 @@ impl ExecutionServer {
 
     fn to_execute_stream(
         nl_client_operation_id: NativelinkClientOperationId,
-        receiver: watch::Receiver<Arc<ActionState>>,
+        action_listener: Pin<Box<dyn ActionListener>>,
     ) -> Response<ExecuteStream> {
         let client_operation_id_string = nl_client_operation_id.into_string();
-        let receiver_stream = Box::pin(WatchStream::new(receiver).map(move |action_update| {
-            event!(Level::INFO, ?action_update, "Execute Resp Stream");
-            let client_operation_id =
-                ClientOperationId::from_raw_string(client_operation_id_string.clone());
-            Ok(action_update.as_operation(client_operation_id))
-        }));
+        let receiver_stream = Box::pin(unfold(
+            Some(action_listener),
+            move |maybe_action_listener| {
+                let client_operation_id_string = client_operation_id_string.clone();
+                async move {
+                    let mut action_listener = maybe_action_listener?;
+                    match action_listener.changed().await {
+                        Ok(action_update) => {
+                            event!(Level::INFO, ?action_update, "Execute Resp Stream");
+                            let client_operation_id = ClientOperationId::from_raw_string(
+                                client_operation_id_string.clone(),
+                            );
+                            Some((
+                                Ok(action_update.as_operation(client_operation_id)),
+                                Some(action_listener),
+                            ))
+                        }
+                        Err(err) => {
+                            event!(Level::ERROR, ?err, "Error in action_listener stream");
+                            Some((Err(err.into()), None))
+                        }
+                    }
+                }
+            },
+        ));
         tonic::Response::new(receiver_stream)
     }
 
@@ -258,7 +276,7 @@ impl ExecutionServer {
             )
             .await?;
 
-        let (client_operation_id, rx) = instance_info
+        let action_listener = instance_info
             .scheduler
             .add_action(
                 ClientOperationId::new(action_info.unique_qualifier.clone()),
@@ -270,9 +288,9 @@ impl ExecutionServer {
         Ok(Self::to_execute_stream(
             NativelinkClientOperationId {
                 instance_name,
-                client_operation_id,
+                client_operation_id: action_listener.client_operation_id().clone(),
             },
-            rx,
+            action_listener,
         ))
     }
 

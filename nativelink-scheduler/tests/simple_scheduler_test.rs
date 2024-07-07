@@ -13,17 +13,20 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::poll;
+use futures::task::Poll;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
-use nativelink_scheduler::action_scheduler::ActionScheduler;
+use nativelink_scheduler::action_scheduler::{ActionListener, ActionScheduler};
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -36,7 +39,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
 use uuid::Uuid;
 
@@ -128,7 +131,7 @@ async fn setup_action(
     action_digest: DigestInfo,
     platform_properties: PlatformProperties,
     insert_timestamp: SystemTime,
-) -> Result<(ClientOperationId, watch::Receiver<Arc<ActionState>>), Error> {
+) -> Result<Pin<Box<dyn ActionListener>>, Error> {
     let mut action_info = make_base_action_info(insert_timestamp);
     action_info.platform_properties = platform_properties;
     action_info.unique_qualifier.digest = action_digest;
@@ -153,13 +156,14 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let (_, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
         insert_timestamp,
     )
-    .await?;
+    .await
+    .unwrap();
 
     {
         // Worker should have been sent an execute command.
@@ -182,7 +186,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -207,17 +211,19 @@ async fn find_executing_action() -> Result<(), Error> {
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let (client_operation_id, client_rx) = setup_action(
+    let action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
         insert_timestamp,
     )
-    .await?;
+    .await
+    .unwrap();
 
+    let client_operation_id = action_listener.client_operation_id().clone();
     // Drop our receiver and look up a new one.
-    drop(client_rx);
-    let mut client_rx = scheduler
+    drop(action_listener);
+    let mut action_listener = scheduler
         .find_by_client_operation_id(&client_operation_id)
         .await
         .expect("Action not found")
@@ -244,7 +250,7 @@ async fn find_executing_action() -> Result<(), Error> {
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -273,7 +279,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     let mut rx_from_worker1 =
         setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
     let insert_timestamp1 = make_system_time(1);
-    let (_client_operation_id1, mut client_rx1) = setup_action(
+    let mut client1_action_listener = setup_action(
         &scheduler,
         action_digest1,
         PlatformProperties::default(),
@@ -281,7 +287,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     )
     .await?;
     let insert_timestamp2 = make_system_time(2);
-    let (_client_operation_id2, mut client_rx2) = setup_action(
+    let mut client2_action_listener = setup_action(
         &scheduler,
         action_digest2,
         PlatformProperties::default(),
@@ -358,14 +364,14 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client_rx1.borrow_and_update();
+        let action_state = client1_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client_rx2.borrow_and_update();
+        let action_state = client2_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
@@ -387,14 +393,14 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client_rx1.borrow_and_update();
+        let action_state = client2_action_listener.action_state();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client_rx2.borrow_and_update();
+        let action_state = client2_action_listener.action_state();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
@@ -441,7 +447,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let (_client_operation_id, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -458,7 +464,10 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
             v => panic!("Expected StartAction, got : {v:?}"),
         };
         // Other tests check full data. We only care if client thinks we are Executing.
-        assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+        assert_eq!(
+            action_listener.changed().await.unwrap().stage,
+            ActionStage::Executing
+        );
         operation_id
     };
 
@@ -468,7 +477,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     let action_digest = DigestInfo::new([88u8; 32], 512);
     let insert_timestamp = make_system_time(14);
-    let (_client_operation_id, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -478,7 +487,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it's been queued.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -493,7 +502,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it's being executed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -504,7 +513,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     Ok(())
 }
-//
+
 #[nativelink_test]
 async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), Error> {
     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
@@ -529,7 +538,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
     let mut rx_from_worker1 =
         setup_new_worker(&scheduler, worker_id1, platform_properties.clone()).await?;
     let insert_timestamp = make_system_time(1);
-    let (_client_operation_id, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         worker_properties.clone(),
@@ -539,7 +548,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
 
     {
         // Client should get notification saying it's been queued.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -569,7 +578,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -611,14 +620,14 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
     let insert_timestamp1 = make_system_time(1);
     let insert_timestamp2 = make_system_time(2);
-    let (_client1_operation_id, mut client1_rx) = setup_action(
+    let mut client1_action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
         insert_timestamp1,
     )
     .await?;
-    let (_client2_operation_id, mut client2_rx) = setup_action(
+    let mut client2_action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -628,8 +637,8 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
     {
         // Clients should get notification saying it's been queued.
-        let action_state1 = client1_rx.borrow_and_update();
-        let action_state2 = client2_rx.borrow_and_update();
+        let action_state1 = client1_action_listener.changed().await.unwrap();
+        let action_state2 = client2_action_listener.changed().await.unwrap();
         // Name is random so we set force it to be the same.
         expected_action_state.id = action_state1.id.clone();
         assert_eq!(action_state1.as_ref(), &expected_action_state);
@@ -665,11 +674,11 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         // Both client1 and client2 should be receiving the same updates.
         // Most importantly the `name` (which is random) will be the same.
         assert_eq!(
-            client1_rx.borrow_and_update().as_ref(),
+            client1_action_listener.changed().await.unwrap().as_ref(),
             &expected_action_state
         );
         assert_eq!(
-            client2_rx.borrow_and_update().as_ref(),
+            client2_action_listener.changed().await.unwrap().as_ref(),
             &expected_action_state
         );
     }
@@ -677,7 +686,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     {
         // Now if another action is requested it should also join with executing action.
         let insert_timestamp3 = make_system_time(2);
-        let (_client3_operation_id, mut client3_rx) = setup_action(
+        let mut client3_action_listener = setup_action(
             &scheduler,
             action_digest,
             PlatformProperties::default(),
@@ -685,7 +694,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         )
         .await?;
         assert_eq!(
-            client3_rx.borrow_and_update().as_ref(),
+            client3_action_listener.changed().await.unwrap().as_ref(),
             &expected_action_state
         );
     }
@@ -709,7 +718,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
     drop(rx_from_worker);
 
     let insert_timestamp = make_system_time(1);
-    let (_client_operation_id, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -718,7 +727,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
     .await?;
     {
         // Client should get notification saying it's being queued not executed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -747,7 +756,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     let mut rx_from_worker1 =
         setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let (_client_operation_id, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -795,7 +804,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
 
     {
         // Client should get notification saying it's being executed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
@@ -827,7 +836,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     }
     {
         // Client should get notification saying it's being executed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
@@ -865,7 +874,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let (_client_operation_id, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -878,7 +887,10 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         match rx_from_worker.recv().await.unwrap().update {
             Some(update_for_worker::Update::StartAction(start_execute)) => {
                 // Other tests check full data. We only care if client thinks we are Executing.
-                assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+                assert_eq!(
+                    action_listener.changed().await.unwrap().stage,
+                    ActionStage::Executing
+                );
                 start_execute.operation_id
             }
             v => panic!("Expected StartAction, got : {v:?}"),
@@ -938,7 +950,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
 
     {
         // Client should get notification saying it has been completed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -963,7 +975,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let (client_id, client_rx) = setup_action(
+    let action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -971,8 +983,10 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
     )
     .await?;
 
+    let client_id = action_listener.client_operation_id().clone();
+
     // Drop our receiver and don't reconnect until completed.
-    drop(client_rx);
+    drop(action_listener);
 
     let operation_id = {
         // Other tests check full data. We only care if we got StartAction.
@@ -1030,14 +1044,14 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         .await?;
 
     // Now look up a channel after the action has completed.
-    let mut client_rx = scheduler
+    let mut action_listener = scheduler
         .find_by_client_operation_id(&client_id)
         .await
         .unwrap()
         .expect("Action not found");
     {
         // Client should get notification saying it has been completed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -1063,7 +1077,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let mut rx_from_worker =
         setup_new_worker(&scheduler, good_worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let (_client_id, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -1078,7 +1092,10 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
             v => panic!("Expected StartAction, got : {v:?}"),
         }
         // Other tests check full data. We only care if client thinks we are Executing.
-        assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+        assert_eq!(
+            action_listener.changed().await.unwrap().stage,
+            ActionStage::Executing
+        );
     }
     let _ = setup_new_worker(&scheduler, rogue_worker_id, PlatformProperties::default()).await?;
 
@@ -1137,8 +1154,8 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     {
         // Ensure client did not get notified.
         assert_eq!(
-            client_rx.has_changed().unwrap(),
-            false,
+            poll!(action_listener.changed()),
+            Poll::Pending,
             "Client should not have been notified of event"
         );
     }
@@ -1169,7 +1186,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     };
 
     let insert_timestamp = make_system_time(1);
-    let (_, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -1201,7 +1218,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
 
     let operation_id = {
         // Client should get notification saying it's being executed.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         expected_action_state.id = action_state.id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -1245,7 +1262,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         // Action should now be executing.
         expected_action_state.stage = ActionStage::Completed(action_result.clone());
         assert_eq!(
-            client_rx.borrow_and_update().as_ref(),
+            action_listener.changed().await.unwrap().as_ref(),
             &expected_action_state
         );
     }
@@ -1255,7 +1272,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
 
     {
         let insert_timestamp = make_system_time(1);
-        let (_, mut client_rx) = setup_action(
+        let mut action_listener = setup_action(
             &scheduler,
             action_digest,
             PlatformProperties::default(),
@@ -1264,7 +1281,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         .await?;
         // We didn't disconnect our worker, so it will have scheduled it to the worker.
         expected_action_state.stage = ActionStage::Executing;
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         // The name of the action changed (since it's a new action), so update it.
         expected_action_state.id = action_state.id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -1292,7 +1309,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, platform_properties.clone()).await?;
     let insert_timestamp1 = make_system_time(1);
-    let (_client1_id, mut client1_rx) = setup_action(
+    let mut client1_action_listener = setup_action(
         &scheduler,
         action_digest1,
         platform_properties.clone(),
@@ -1300,7 +1317,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     )
     .await?;
     let insert_timestamp2 = make_system_time(1);
-    let (_client2_id, mut client2_rx) = setup_action(
+    let mut client2_action_listener = setup_action(
         &scheduler,
         action_digest2,
         platform_properties,
@@ -1313,8 +1330,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         v => panic!("Expected StartAction, got : {v:?}"),
     }
     let (operation_id1, operation_id2) = {
-        let state_1 = client1_rx.borrow_and_update();
-        let state_2 = client2_rx.borrow_and_update();
+        let state_1 = client1_action_listener.changed().await.unwrap();
+        let state_2 = client2_action_listener.changed().await.unwrap();
         // First client should be in an Executing state.
         assert_eq!(state_1.stage, ActionStage::Executing);
         // Second client should be in a queued state.
@@ -1356,15 +1373,9 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         )
         .await?;
 
-    // Ensure client did not get notified.
-    assert!(
-        client1_rx.changed().await.is_ok(),
-        "Client should have been notified of event"
-    );
-
     {
         // First action should now be completed.
-        let action_state = client1_rx.borrow_and_update();
+        let action_state = client1_action_listener.changed().await.unwrap();
         let mut expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -1385,7 +1396,10 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
             v => panic!("Expected StartAction, got : {v:?}"),
         }
         // Other tests check full data. We only care if client thinks we are Executing.
-        assert_eq!(client2_rx.borrow_and_update().stage, ActionStage::Executing);
+        assert_eq!(
+            client2_action_listener.changed().await.unwrap().stage,
+            ActionStage::Executing
+        );
     }
 
     // Tell scheduler our second task is completed.
@@ -1399,7 +1413,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
 
     {
         // Our second client should be notified it completed.
-        let action_state = client2_rx.borrow_and_update();
+        let action_state = client2_action_listener.changed().await.unwrap();
         let mut expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -1432,7 +1446,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     // This is queued after the next one (even though it's placed in the map
     // first), so it should execute second.
     let insert_timestamp2 = make_system_time(2);
-    let (_, mut client2_rx) = setup_action(
+    let mut client2_action_listener = setup_action(
         &scheduler,
         action_digest2,
         platform_properties.clone(),
@@ -1440,7 +1454,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     )
     .await?;
     let insert_timestamp1 = make_system_time(1);
-    let (_, mut client1_rx) = setup_action(
+    let mut client1_action_listener = setup_action(
         &scheduler,
         action_digest1,
         platform_properties.clone(),
@@ -1457,9 +1471,15 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     }
     {
         // First client should be in an Executing state.
-        assert_eq!(client1_rx.borrow_and_update().stage, ActionStage::Executing);
+        assert_eq!(
+            client1_action_listener.changed().await.unwrap().stage,
+            ActionStage::Executing
+        );
         // Second client should be in a queued state.
-        assert_eq!(client2_rx.borrow_and_update().stage, ActionStage::Queued);
+        assert_eq!(
+            client2_action_listener.changed().await.unwrap().stage,
+            ActionStage::Queued
+        );
     }
 
     Ok(())
@@ -1481,7 +1501,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let (_, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -1496,7 +1516,10 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             v => panic!("Expected StartAction, got : {v:?}"),
         };
         // Other tests check full data. We only care if client thinks we are Executing.
-        assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+        assert_eq!(
+            action_listener.changed().await.unwrap().stage,
+            ActionStage::Executing
+        );
         OperationId::try_from(operation_id.as_str())?
     };
 
@@ -1510,7 +1533,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it has been queued again.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -1529,7 +1552,10 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             v => panic!("Expected StartAction, got : {v:?}"),
         }
         // Other tests check full data. We only care if client thinks we are Executing.
-        assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+        assert_eq!(
+            action_listener.changed().await.unwrap().stage,
+            ActionStage::Executing
+        );
     }
 
     let err = make_err!(Code::Internal, "Some error");
@@ -1540,7 +1566,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
 
     {
         // Client should get notification saying it has been queued again.
-        let action_state = client_rx.borrow_and_update();
+        let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: action_state.id.clone(),
@@ -1630,7 +1656,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
 
     let mut rx_from_worker1 =
         setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
-    let (_, mut client_rx) = setup_action(
+    let mut action_listener = setup_action(
         &scheduler,
         action_digest,
         PlatformProperties::default(),
@@ -1648,7 +1674,10 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
             v => panic!("Expected StartAction, got : {v:?}"),
         };
         // Other tests check full data. We only care if client thinks we are Executing.
-        assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+        assert_eq!(
+            action_listener.changed().await.unwrap().stage,
+            ActionStage::Executing
+        );
         OperationId::try_from(operation_id.as_str())?
     };
 
@@ -1670,7 +1699,10 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
             .await
             .err_tip(|| "worker went away")?;
         // Other tests check full data. We only care if client thinks we are Executing.
-        assert_eq!(client_rx.borrow_and_update().stage, ActionStage::Executing);
+        assert_eq!(
+            action_listener.changed().await.unwrap().stage,
+            ActionStage::Executing
+        );
     }
 
     Ok(())

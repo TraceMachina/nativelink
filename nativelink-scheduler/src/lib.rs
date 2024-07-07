@@ -14,6 +14,7 @@
 
 pub mod action_scheduler;
 pub mod cache_lookup_scheduler;
+pub mod default_action_listener;
 pub mod default_scheduler_factory;
 pub mod grpc_scheduler;
 pub mod operation_state_manager;
