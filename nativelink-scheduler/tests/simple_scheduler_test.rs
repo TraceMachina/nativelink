@@ -393,14 +393,14 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client2_action_listener.action_state();
+        let action_state = client1_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }
     {
         let expected_action_stage = ActionStage::Executing;
         // Client should get notification saying it's being executed.
-        let action_state = client2_action_listener.action_state();
+        let action_state = client2_action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         assert_eq!(&action_state.stage, &expected_action_stage);
     }

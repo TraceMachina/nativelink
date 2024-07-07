@@ -39,6 +39,18 @@ impl DefaultActionListener {
             action_state,
         }
     }
+
+    pub async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+        self.action_state.changed().await.map_or_else(
+            |e| {
+                Err(make_err!(
+                    Code::Internal,
+                    "Sender of ActionState went away unexpectedly - {e:?}"
+                ))
+            },
+            |()| Ok(self.action_state.borrow_and_update().clone()),
+        )
+    }
 }
 
 impl ActionListener for DefaultActionListener {
@@ -46,24 +58,10 @@ impl ActionListener for DefaultActionListener {
         &self.client_operation_id
     }
 
-    fn action_state(&self) -> Arc<ActionState> {
-        self.action_state.borrow().clone()
-    }
-
     fn changed(
         &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + Sync + '_>> {
-        Box::pin(async move {
-            self.action_state.changed().await.map_or_else(
-                |e| {
-                    Err(make_err!(
-                        Code::Internal,
-                        "Sender of ActionState went away unexpectedly - {e:?}"
-                    ))
-                },
-                |()| Ok(self.action_state.borrow_and_update().clone()),
-            )
-        })
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + '_>> {
+        Box::pin(self.changed())
     }
 }
 

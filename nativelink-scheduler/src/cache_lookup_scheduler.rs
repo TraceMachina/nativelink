@@ -116,13 +116,9 @@ impl ActionListener for CachedActionListener {
         &self.client_operation_id
     }
 
-    fn action_state(&self) -> Arc<ActionState> {
-        self.action_state.clone()
-    }
-
     fn changed(
         &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + Sync + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + '_>> {
         Box::pin(async { Ok(self.action_state.clone()) })
     }
 }
