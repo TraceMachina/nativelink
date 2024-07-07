@@ -32,6 +32,8 @@ static_resources:
                         {{- end }}
                 http_filters:
                   - name: envoy.filters.http.router
+                upgrade_configs:
+                  - upgrade_type: websocket
     {{- end }}
   clusters:
     {{- range .InternalGateways }}
