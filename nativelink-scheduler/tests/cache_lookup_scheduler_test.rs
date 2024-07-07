@@ -27,6 +27,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
+use nativelink_scheduler::default_action_listener::DefaultActionListener;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
@@ -105,7 +106,10 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
             .add_action(client_operation_id.clone(), skip_cache_action),
         context
             .mock_scheduler
-            .expect_add_action(Ok((client_operation_id, forward_watch_channel_rx)))
+            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+                client_operation_id,
+                forward_watch_channel_rx
+            ))))
     );
     Ok(())
 }

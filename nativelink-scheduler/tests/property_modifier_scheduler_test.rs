@@ -26,6 +26,7 @@ use nativelink_config::schedulers::{PlatformPropertyAddition, PropertyModificati
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
+use nativelink_scheduler::default_action_listener::DefaultActionListener;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
 use nativelink_util::action_messages::{
@@ -88,7 +89,10 @@ async fn add_action_adds_property() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok((client_operation_id.clone(), forward_watch_channel_rx))),
+            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+                client_operation_id.clone(),
+                forward_watch_channel_rx
+            )))),
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
     assert_eq!(
@@ -132,7 +136,10 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok((client_operation_id.clone(), forward_watch_channel_rx))),
+            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+                client_operation_id.clone(),
+                forward_watch_channel_rx
+            )))),
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
     assert_eq!(
@@ -173,7 +180,10 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok((client_operation_id.clone(), forward_watch_channel_rx))),
+            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+                client_operation_id.clone(),
+                forward_watch_channel_rx
+            )))),
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
     assert_eq!(
@@ -214,7 +224,10 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok((client_operation_id.clone(), forward_watch_channel_rx))),
+            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+                client_operation_id.clone(),
+                forward_watch_channel_rx
+            )))),
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
     assert_eq!(
@@ -250,7 +263,10 @@ async fn add_action_property_remove() -> Result<(), Error> {
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok((client_operation_id.clone(), forward_watch_channel_rx))),
+            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+                client_operation_id.clone(),
+                forward_watch_channel_rx
+            )))),
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
     assert_eq!(
