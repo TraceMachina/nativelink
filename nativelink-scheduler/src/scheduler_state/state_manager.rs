@@ -21,7 +21,7 @@ use async_lock::Mutex;
 use async_trait::async_trait;
 use futures::stream::{self, unfold};
 use hashbrown::HashMap;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId,
     ExecutionMetadata, OperationId, WorkerId,
@@ -29,6 +29,7 @@ use nativelink_util::action_messages::{
 use tokio::sync::Notify;
 use tracing::{event, Level};
 
+use super::awaited_action::AwaitedActionSortKey;
 use crate::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, WorkerStateManager,
@@ -36,9 +37,6 @@ use crate::operation_state_manager::{
 use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::scheduler_state::client_action_state_result::ClientActionStateResult;
 use crate::scheduler_state::matching_engine_action_state_result::MatchingEngineActionStateResult;
-// use crate::scheduler_state::metrics::Metrics;
-
-use super::awaited_action::AwaitedActionSortKey;
 
 #[derive(Debug, Clone)]
 struct SortedAwaitedAction {
@@ -96,6 +94,7 @@ pub struct AwaitedActionDb {
     sorted_action_info_hash_keys: SortedAwaitedActions,
 }
 
+#[allow(clippy::mutable_key_type)]
 impl AwaitedActionDb {
     fn get_by_client_operation_id(
         &self,
@@ -227,9 +226,14 @@ impl AwaitedActionDb {
         action_info: ActionInfo,
     ) -> Arc<ClientActionStateResult> {
         // Check to see if the action is already known and subscribe if it is.
-        let action_info = match self.try_subscribe(&new_client_operation_id, action_info) {
+        let action_info = match self.try_subscribe(
+            &new_client_operation_id,
+            &action_info.unique_qualifier,
+            action_info.priority,
+            action_info.skip_cache_lookup,
+        ) {
             Ok(subscription) => return subscription,
-            Err(action_info) => Arc::new(action_info),
+            Err(_) => Arc::new(action_info),
         };
 
         let (awaited_action, sort_key, subscription) =
@@ -249,30 +253,41 @@ impl AwaitedActionDb {
                 awaited_action,
             },
         );
-        return Arc::new(ClientActionStateResult::new(subscription));
+        Arc::new(ClientActionStateResult::new(subscription))
     }
 
     fn try_subscribe(
         &mut self,
         client_operation_id: &ClientOperationId,
-        action_info: ActionInfo,
-    ) -> Result<Arc<ClientActionStateResult>, ActionInfo> {
-        if action_info.skip_cache_lookup {
-            return Err(action_info);
+        unique_qualifier: &ActionInfoHashKey,
+        priority: i32,
+        skip_cache_lookup: bool,
+    ) -> Result<Arc<ClientActionStateResult>, Error> {
+        if skip_cache_lookup {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "Cannot subscribe to an existing item when skip_cache_lookup is true."
+            ));
         }
-        let Some(awaited_action) = self
+
+        let awaited_action = self
             .action_info_hash_key_to_awaited_action
-            .get(&action_info.unique_qualifier)
-        else {
-            return Err(action_info);
-        };
+            .get(unique_qualifier)
+            .ok_or(make_input_err!(
+                "Could not find existing action with name: {}",
+                unique_qualifier.action_name()
+            ))
+            .err_tip(|| "In state_manager::try_subscribe")?;
+
         // Do not subscribe if the action is already completed,
         // this is the responsibility of the CacheLookupScheduler.
         if awaited_action.get_current_state().stage.is_finished() {
-            return Err(action_info);
+            return Err(make_input_err!(
+                "Subscribing an item that is already completed should be handled by CacheLookupScheduler."
+            ));
         }
         let awaited_action = awaited_action.clone();
-        if let Some(sort_info_lock) = awaited_action.set_priority(action_info.priority) {
+        if let Some(sort_info_lock) = awaited_action.set_priority(priority) {
             let state = awaited_action.get_current_state();
             let maybe_sorted_awaited_action =
                 self.get_sort_map_for_state(&state.stage)
@@ -281,13 +296,12 @@ impl AwaitedActionDb {
                         awaited_action: awaited_action.clone(),
                     });
             let Some(mut sorted_awaited_action) = maybe_sorted_awaited_action else {
-                event!(
-                    Level::ERROR,
-                    ?action_info,
-                    ?awaited_action,
-                    "sorted_action_info_hash_keys and action_info_hash_key_to_awaited_action are out of sync",
-                );
-                return Err(action_info);
+                // TODO: Either use event on all of the above error here, but both is overkill.
+                let err = make_err!(
+                    Code::Internal,
+                    "sorted_action_info_hash_keys and action_info_hash_key_to_awaited_action are out of sync");
+                event!(Level::ERROR, ?unique_qualifier, ?awaited_action, "{err:?}",);
+                return Err(err);
             };
             sorted_awaited_action.sort_key = sort_info_lock.get_new_sort_key();
             self.insert_sort_map_for_stage(&state.stage, sorted_awaited_action);
@@ -309,15 +323,10 @@ pub struct StateManager {
 
 impl StateManager {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        // metrics: Arc<Metrics>,
-        tasks_change_notify: Arc<Notify>,
-        max_job_retries: usize,
-    ) -> Self {
+    pub fn new(tasks_change_notify: Arc<Notify>, max_job_retries: usize) -> Self {
         Self {
             inner: Arc::new(Mutex::new(StateManagerImpl {
                 action_db: AwaitedActionDb::default(),
-                // metrics,
                 tasks_change_notify,
                 max_job_retries,
             })),
@@ -334,10 +343,10 @@ impl StateManager {
             Arc::new(MatchingEngineActionStateResult::new(awaited_action))
         }
 
-        fn get_tree_for_stage<'a>(
-            action_db: &'a AwaitedActionDb,
+        fn get_tree_for_stage(
+            action_db: &AwaitedActionDb,
             stage: OperationStageFlags,
-        ) -> Option<&'a BTreeSet<SortedAwaitedAction>> {
+        ) -> Option<&BTreeSet<SortedAwaitedAction>> {
             match stage {
                 OperationStageFlags::CacheCheck => Some(action_db.get_cache_check_actions()),
                 OperationStageFlags::Queued => Some(action_db.get_queued_actions()),
@@ -352,7 +361,7 @@ impl StateManager {
         if let Some(operation_id) = &filter.operation_id {
             return Ok(inner
                 .action_db
-                .get_by_operation_id(&operation_id)
+                .get_by_operation_id(operation_id)
                 .filter(|awaited_action| filter_check(awaited_action.as_ref(), filter))
                 .cloned()
                 .map(|awaited_action| -> ActionStateResultStream {
@@ -431,6 +440,7 @@ impl StateManager {
 
             let inner = state.inner.lock().await;
 
+            #[allow(clippy::mutable_key_type)]
             let btree = get_tree_for_stage(&inner.action_db, state.filter.stages)
                 .expect("get_tree_for_stage() should have already returned Some but in iteration it returned None");
 
@@ -450,16 +460,14 @@ impl StateManager {
                     .for_each(|item| state.buffer.push_back(item.clone()));
             }
             drop(inner);
-            let Some(sorted_awaited_action) = state.buffer.pop_front() else {
-                return None;
-            };
+            let sorted_awaited_action = state.buffer.pop_front()?;
             if state.buffer.is_empty() {
                 state.start_key = Bound::Excluded(sorted_awaited_action.clone());
             }
-            return Some((
+            Some((
                 to_action_state_result(sorted_awaited_action.awaited_action),
                 state,
-            ));
+            ))
         })))
     }
 }
@@ -470,7 +478,6 @@ impl StateManager {
 pub(crate) struct StateManagerImpl {
     pub(crate) action_db: AwaitedActionDb,
 
-    // pub(crate) metrics: Arc<Metrics>,
     /// Notify task<->worker matching engine that work needs to be done.
     pub(crate) tasks_change_notify: Arc<Notify>,
 
@@ -486,10 +493,8 @@ fn filter_check(awaited_action: &AwaitedAction, filter: &OperationFilter) -> boo
         }
     }
 
-    if filter.worker_id.is_some() {
-        if filter.worker_id != awaited_action.get_worker_id() {
-            return false;
-        }
+    if filter.worker_id.is_some() && filter.worker_id != awaited_action.get_worker_id() {
+        return false;
     }
 
     {
@@ -621,7 +626,7 @@ impl StateManagerImpl {
             // which worker sent the update.
             awaited_action.set_worker_id(None);
         } else {
-            awaited_action.set_worker_id(maybe_worker_id.map(|w| w.clone()));
+            awaited_action.set_worker_id(maybe_worker_id.copied());
         }
         let has_listeners = self.action_db.set_action_state(
             awaited_action.clone(),
@@ -653,7 +658,7 @@ impl StateManagerImpl {
             .action_db
             .subscribe_or_add_action(new_client_operation_id, action_info);
         self.tasks_change_notify.notify_one();
-        return Ok(subscription);
+        Ok(subscription)
     }
 }
 
