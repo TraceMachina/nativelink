@@ -3,7 +3,7 @@ pkgs.buildGoModule {
   pname = "native-cli";
   version = "0.4.0";
   src = ./.;
-  vendorHash = "sha256-zB+gaJB+5KEnkPHX2BY8nbO/oOmPk4lfmGzdPBMOSxE=";
+  vendorHash = "sha256-lqOzzt97Xr9tcsAcrIubPtFii85s2m06Hz+cfruHQqQ=";
   buildInputs = [pkgs.makeWrapper];
   ldflags = ["-s -w"];
   installPhase = ''
