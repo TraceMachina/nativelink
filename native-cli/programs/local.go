@@ -58,6 +58,16 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		os.Exit(1)
 	}
 
+	flux, err := components.AddComponent(
+		ctx,
+		"flux",
+		&components.Flux{Version: "2.3.0"},
+	)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
 	tektonPipelines, err := components.AddComponent(
 		ctx,
 		"tekton-pipelines",
@@ -83,6 +93,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		"tekton-dashboard",
 		&components.TektonDashboard{Version: "0.45.0"},
 	))
+
 	components.Check(components.AddComponent(
 		ctx,
 		"rebuild-nativelink",
@@ -93,6 +104,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 				tektonTriggers,
 				localSources,
 				nixStore,
+				flux,
 			),
 		},
 	))
