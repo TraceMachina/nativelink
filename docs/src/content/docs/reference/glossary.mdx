@@ -33,33 +33,33 @@ interacts with the NativeLink's server to leverage features such as caching
 Content Addressable Storage (CAS) is a storage system in which data is
 identified and accessed based on its content rather than its location. Each
 piece of data (artifact) is hashed, generating a unique identifier (digest)
-based on the data's content. In NativeLink, the CAS stores the binary artifacts
+based on the data content. In NativeLink, the CAS stores the binary artifacts
 resulting from build actions. It stores identical data pieces only once and
 reuses the data pieces as needed.
 
 ## Reclient
 
 Reclient is an open source build tool created by Google as the successor to
-Goma. In terms of NativeLink, it is a client that interacts with NativeLink's
+Goma. In terms of NativeLink, it's a client that interacts with NativeLink's
 server to leverage features such as caching (CAS), distributed execution, and
-artifact management. It is mostly used to compile and build Chromium, an open
+artifact management. It's mostly used to compile and build Chromium, an open
 source project behind the Google Chrome browser.
 
 ## Hermeticity
 
 For build systems, hermeticity refers to the property of creating isolated and
 self-contained environments for building and testing software. A hermetic build
-environment ensures that builds are not influenced by the external state, such
+environment ensures that builds aren't influenced by the external state, such
 as your local environment or variations in system dependencies. This isolation
 is achieved by using precise, versioned dependencies and fully specifying the
 build configuration. In NativeLink, hermeticity is achieved using Nix.
 
-## Mono Repo
+## Monorepo
 
-A mono repository, also referred to as a mono repo, contains the source code for
-multiple projects, often across different domains or areas of a single
+A monolithic repository, also referred to as a monorepo, contains the source
+code for multiple projects, often across different domains or areas of a single
 organization. They require unique tooling to handle multiple languages and
-technologies within the repo. A good example of a mono repo is the Chromium
+technologies within the repository. A good example of a monorepo is the Chromium
 project.
 
 ## NativeLink
@@ -74,9 +74,9 @@ usage and reduce build times.
 
 Nix is an open source tool that builds packages in isolation from each other.
 It's how builds remain hermetic in NativeLink. Nix ensures that builds are
-reproducible and don't have undeclared dependencies, makes it easy to share
-development and build environments for projects, and ensures that installing or
-upgrading packages cannot break other packages.
+reproducible and don't have undeclared dependencies, lets you share development
+and build environments for projects, and ensures that installing or upgrading
+packages can't break other packages.
 
 ## Remote caching
 
@@ -89,12 +89,12 @@ times and improves compute resource usage by avoiding redundant computations.
 Remote execution refers to the process of running computational tasks, such as
 building, compiling, and testing code, on remote servers rather than on a local
 machine. By using remote servers, tasks can be distributed across multiple
-servers (i.e., parallel processing). This can speed up build and test processes
-faster than local machines.
+servers (that is, parallel processing). This can speed up build and test
+processes faster than local machines.
 
 ## Remote Build Execution
 
-The Remote Execution Protocol is a set of protobol buffers (As of V2) which act
+The Remote Execution Protocol is a set of protocol buffers (As of V2) which act
 as standardized guidelines and API specifications that enable clients (such as
 build systems like Bazel) to distribute build and test action across multiple
 remote machines. This protocol facilitates the interaction between clients and
@@ -109,7 +109,7 @@ source code is written in Rust.
 
 ## Scheduler
 
-The scheduler is a core component in NativeLink. It is responsible for managing
+The scheduler is a core component in NativeLink. It's responsible for managing
 and coordinating the execution of tasks on remote workers based on resource
 availability and dependencies. It leverages the DAG representation of task
 dependencies to ensure tasks are executed in the correct order and optimizes the
@@ -121,12 +121,12 @@ A simulation is a computer-based model to replicate the behavior and
 interactions of robots within a virtual environment. People can test an analyze
 robotic systems without the need of physical robots in real-world environments.
 NativeLink executes high-fidelity simulations through its advanced caching
-system, distributed execution of design layouts (with Verilog & VHDL), and
+system, distributed execution of design layouts (such as Verilog & VHDL), and
 continuous, real-time monitoring to detect anomalies.
 
 ## Workers
 
-The workers are one of the core components of NativeLink. They are responsible
+The workers are one of the core components of NativeLink. They're responsible
 for executing the build tasks assigned by the scheduler and create the build
 artifacts. The worker pool can consist of multiple workers running on powerful
 remote machines.
