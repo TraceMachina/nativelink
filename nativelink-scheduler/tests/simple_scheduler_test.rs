@@ -601,7 +601,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
-        instance_name: "".to_string(),
+        instance_name: String::new(),
         digest: DigestInfo::zero_digest(),
         digest_function: DigestHasherFunc::Sha256,
     });
@@ -1158,7 +1158,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
-        instance_name: "".to_string(),
+        instance_name: String::new(),
         digest: DigestInfo::zero_digest(),
         digest_function: DigestHasherFunc::Sha256,
     });
