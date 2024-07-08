@@ -21,7 +21,6 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId,
 };
 use nativelink_util::evicting_map::InstantWrapper;
-use nativelink_util::metrics_utils::{CollectorState, MetricsComponent};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 use tokio::sync::watch;
@@ -347,30 +346,3 @@ const_assert!(
     AwaitedActionSortKey::new(0, 0, [0xff, 0xff, 0xff, 0xff]).0
         > AwaitedActionSortKey::new(0, 0, [0; 4]).0
 );
-
-impl MetricsComponent for AwaitedAction {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "action_digest",
-            &self.action_info.unique_qualifier.action_name(),
-            "The digest of the action.",
-        );
-        c.publish(
-            "current_state",
-            self.get_current_state().as_ref(),
-            "The current stage of the action.",
-        );
-        c.publish(
-            "attempts",
-            &self.get_attempts(),
-            "The number of attempts this action has tried.",
-        );
-        c.publish(
-            "worker_id",
-            &self
-                .get_worker_id()
-                .map_or(String::new(), |v| v.to_string()),
-            "The current worker processing the action (if any).",
-        );
-    }
-}
