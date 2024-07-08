@@ -1193,10 +1193,10 @@ impl RunningActionImpl {
                     OutputType::File(output_file) => output_files.push(output_file),
                     OutputType::Directory(output_folder) => output_folders.push(output_folder),
                     OutputType::FileSymlink(output_symlink) => {
-                        output_file_symlinks.push(output_symlink)
+                        output_file_symlinks.push(output_symlink);
                     }
                     OutputType::DirectorySymlink(output_symlink) => {
-                        output_directory_symlinks.push(output_symlink)
+                        output_directory_symlinks.push(output_symlink);
                     }
                     OutputType::None => { /* Safe to ignore */ }
                 }
@@ -2022,6 +2022,6 @@ impl MetricsComponent for Metrics {
             "task_timeouts_count",
             &self.task_timeouts,
             "Total number of task timeouts.",
-        )
+        );
     }
 }

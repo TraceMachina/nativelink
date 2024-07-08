@@ -54,7 +54,7 @@ pub struct OperationId {
 // TODO: Eventually we should make this it's own hash rather than delegate to ActionInfoHashKey.
 impl Hash for OperationId {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        ActionInfoHashKey::hash(&self.unique_qualifier, state)
+        ActionInfoHashKey::hash(&self.unique_qualifier, state);
     }
 }
 

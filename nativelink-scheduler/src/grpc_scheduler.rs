@@ -155,7 +155,7 @@ impl GrpcScheduler {
                                 },
                             }
                         }
-                    )
+                    );
                 }
             });
             return Ok(rx);

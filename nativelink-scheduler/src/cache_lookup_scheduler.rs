@@ -203,7 +203,7 @@ impl ActionScheduler for CacheLookupScheduler {
                             _ = tx.closed() => {
                                 break;
                             }
-                        )
+                        );
                     }
                 }
                 Err(err) => {
