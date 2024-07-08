@@ -146,6 +146,10 @@ export default defineConfig({
           label: "Reference",
           items: [
             {
+              label: "Configuration Reference",
+              link: "/reference/nativelink-config/",
+            },
+            {
               label: "Glossary",
               link: "/reference/glossary/",
             },
