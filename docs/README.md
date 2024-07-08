@@ -1,9 +1,9 @@
 # The NativeLink documentation
 
-This is the NativeLink documentation hosted at <https://docs.nativelink.com>.
+The NativeLink documentation gets deployed to <https://docs.nativelink.com>.
 
-> [!WARNING]
-> Setup for working on these docs differs substantially between Linux and Mac.
+> [!CAUTION]
+> Setup for working on these docs differs between Linux and Mac.
 >
 > For Linux: Use the Nix flake and run `pnpm i`.
 >
@@ -11,7 +11,7 @@ This is the NativeLink documentation hosted at <https://docs.nativelink.com>.
 > revoke`. Then manually install `pnpm`, run `pnpm i` and run `pnpm exec
 > playwright install`.
 >
-> Long term we'll add the automated setup to Mac.
+> It's a long term goal to add the automated setup to Mac.
 
 ## 📚 Stack
 
@@ -32,7 +32,8 @@ challenging. Feel free to copy-paste it into your own projects.
 
 ## 🚀 Common workflows
 
-See `package.json` for build scripts.
+See [`docs/package.json`](https://github.com/TraceMachina/nativelink/blob/main/docs/package.json)
+for build scripts.
 
 This project requires `pnpm`. The nix flake ships a compatible version.
 
@@ -65,12 +66,12 @@ pnpm preview
 
 When deploying to Cloudflare, make sure to set the `PNPM_VERSION` to `8.15.5` to
 stay in sync with the flake. Also, use `pnpm exec playwright install && pnpm
-build` on the Cloudflare worker. This sets up headless Chromium which is used to
+build` on the Cloudflare worker. This sets up headless Chromium which to
 generate mermaid diagrams during the build. You don't need to set playwright up
 locally as it's already configured in the flake.
 
 ## 🐛 Known issues
 
-- We use Bun as internal TypeScript processor, but can't use it as bundler yet.
-- `"@playform/compress": "=0.0.12"` because `0.0.13` doesn't properly compress
-  CSS.
+- The build process uses Bun as internal TypeScript processor, but can't use it
+  as bundler yet.
+- `"@playform/compress": "=0.0.12"` because `0.0.13` doesn't compress CSS.

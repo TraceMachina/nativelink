@@ -1,0 +1,78 @@
+---
+title: Building NativeLink with Cargo
+description: Instructions on building NativeLink with Cargo.
+---
+
+These instructions contain information on how to work with NativeLink for Cargo
+users.
+
+If you're using the Nix flake you're all set.
+
+If you're running outside of nix, install Cargo via [`rustup`](https://www.rust-lang.org/tools/install).
+
+## Build
+
+To build the `nativelink` executable:
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Tabs syncKey="optimization">
+  <TabItem label="Fast Build">
+    ```sh
+    cargo build --bin nativelink --profile=smol
+    ```
+  </TabItem>
+  <TabItem label="Development Build">
+    ```sh
+    cargo build --bin nativelink
+    ```
+  </TabItem>
+  <TabItem label="Optimized Build">
+    ```sh
+    cargo build --bin nativelink --release
+    ```
+  </TabItem>
+</Tabs>
+
+:::danger
+These builds, including the optimized build are **development** builds. They're
+non-hermetic and have unpredictable memory allocation behavior.
+
+Use the Nix build and Container images in production.
+:::
+
+:::note
+The Rust compiler `rustc` generates large artifacts during compilation,
+including dependencies, macros, and intermediate files. When compiling programs
+from source, be mindful of the associated files' impact on your disk usage in
+the target/ directory.
+
+If you're facing issues due to this, run the following command to clear cache
+files:
+
+```sh
+cargo clean
+```
+:::
+
+## Test
+
+To run the tests:
+
+<Tabs syncKey="optimization">
+  <TabItem label="Fast Build">
+    ```sh
+    cargo test --all --profile=smol
+    ```
+  </TabItem>
+  <TabItem label="Development Build">
+    ```sh
+    cargo test --all
+    ```
+  </TabItem>
+  <TabItem label="Optimized Build">
+    ```sh
+    cargo test --all --release
+    ```
+  </TabItem>
+</Tabs>

@@ -50,8 +50,13 @@ convertMarkdownToMdx(
 );
 convertMarkdownToMdx(
   "../CONTRIBUTING.md",
-  "src/content/docs/guides/contributing.mdx",
+  "src/content/docs/contribute/guidelines.mdx",
   "NativeLink contribution guidelines",
+);
+convertMarkdownToMdx(
+  "README.md",
+  "src/content/docs/contribute/docs.mdx",
+  "Working on documentation",
 );
 convertMarkdownToMdx(
   "../nativelink-config/README.md",
