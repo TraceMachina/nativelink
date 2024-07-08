@@ -165,7 +165,7 @@ pub struct ExecutionServer {
     instance_infos: HashMap<InstanceName, InstanceInfo>,
 }
 
-type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + Sync + 'static>>;
+type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send + 'static>>;
 
 impl ExecutionServer {
     pub fn new(

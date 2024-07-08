@@ -17,20 +17,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{Future, Stream};
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ClientOperationId, OperationId, WorkerId,
+    ActionInfo, ActionStage, ActionState, ClientOperationId, OperationId, WorkerId,
 };
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::Notify;
+use tokio::sync::{watch, Notify};
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
 use crate::action_scheduler::{ActionListener, ActionScheduler};
-use crate::default_action_listener::DefaultActionListener;
 use crate::operation_state_manager::{
     ActionStateResult, ClientStateManager, MatchingEngineStateManager, OperationFilter,
     OperationStageFlags,
@@ -52,6 +51,60 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
+
+struct SimpleSchedulerActionListener {
+    client_operation_id: ClientOperationId,
+    action_state_result: Arc<dyn ActionStateResult>,
+    maybe_receiver: Option<watch::Receiver<Arc<ActionState>>>,
+}
+
+impl SimpleSchedulerActionListener {
+    fn new(
+        client_operation_id: ClientOperationId,
+        action_state_result: Arc<dyn ActionStateResult>,
+    ) -> Self {
+        Self {
+            client_operation_id,
+            action_state_result,
+            maybe_receiver: None,
+        }
+    }
+}
+
+impl ActionListener for SimpleSchedulerActionListener {
+    fn client_operation_id(&self) -> &ClientOperationId {
+        &self.client_operation_id
+    }
+
+    fn changed(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + '_>> {
+        let action_state_result = self.action_state_result.clone();
+        Box::pin(async move {
+            let receiver = match &mut self.maybe_receiver {
+                Some(receiver) => receiver,
+                None => {
+                    let mut receiver = action_state_result
+                        .as_receiver()
+                        .await
+                        .err_tip(|| "In SimpleSchedulerActionListener::changed getting receiver")?
+                        .into_owned();
+                    receiver.mark_changed();
+                    self.maybe_receiver = Some(receiver.clone());
+                    self.maybe_receiver.as_mut().unwrap()
+                }
+            };
+            receiver.changed().await.map_err(|_| {
+                make_err!(
+                    Code::Internal,
+                    "Sender hungup in SimpleSchedulerActionListener::changed()"
+                )
+            })?;
+            let result = receiver.borrow().clone();
+            Ok(result)
+        })
+    }
+}
 
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
@@ -89,15 +142,11 @@ impl SimpleScheduler {
             .client_state_manager
             .add_action(client_operation_id.clone(), action_info)
             .await?;
-        add_action_result
-            .as_receiver()
-            .await
-            .map(move |receiver| -> Pin<Box<dyn ActionListener>> {
-                Box::pin(DefaultActionListener::new(
-                    client_operation_id,
-                    receiver.into_owned(),
-                ))
-            })
+
+        Ok(Box::pin(SimpleSchedulerActionListener::new(
+            client_operation_id,
+            add_action_result,
+        )))
     }
 
     async fn clean_recently_completed_actions(&self) {
@@ -127,16 +176,12 @@ impl SimpleScheduler {
 
         let mut stream = filter_result
             .err_tip(|| "In SimpleScheduler::find_by_client_operation_id getting filter result")?;
-        let Some(result) = stream.next().await else {
+        let Some(action_state_result) = stream.next().await else {
             return Ok(None);
         };
-        Ok(Some(Box::pin(DefaultActionListener::new(
+        Ok(Some(Box::pin(SimpleSchedulerActionListener::new(
             client_operation_id.clone(),
-            result
-                .as_receiver()
-                .await
-                .err_tip(|| "In SimpleScheduler::find_by_client_operation_id getting receiver")?
-                .into_owned(),
+            action_state_result,
         ))))
     }
 

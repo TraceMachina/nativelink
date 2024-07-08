@@ -47,6 +47,6 @@ impl ActionStateResult for ClientActionStateResult {
     }
 
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        unimplemented!()
+        todo!()
     }
 }

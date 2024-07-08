@@ -29,13 +29,10 @@ pub trait ActionListener: Sync + Send + Unpin {
     /// Returns the client operation id.
     fn client_operation_id(&self) -> &ClientOperationId;
 
-    /// Returns the current action state.
-    fn action_state(&self) -> Arc<ActionState>;
-
     /// Waits for the action state to change.
     fn changed(
         &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + Sync + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + '_>>;
 }
 
 /// ActionScheduler interface is responsible for interactions between the scheduler
