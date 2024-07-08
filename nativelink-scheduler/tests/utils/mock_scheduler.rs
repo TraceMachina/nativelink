@@ -182,6 +182,4 @@ impl ActionScheduler for MockActionScheduler {
             _ => panic!("Expected find_by_client_operation_id return value"),
         }
     }
-
-    async fn clean_recently_completed_actions(&self) {}
 }

@@ -313,6 +313,4 @@ impl ActionScheduler for GrpcScheduler {
             }
         }
     }
-
-    async fn clean_recently_completed_actions(&self) {}
 }
