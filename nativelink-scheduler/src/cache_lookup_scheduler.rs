@@ -284,6 +284,4 @@ impl ActionScheduler for CacheLookupScheduler {
             .find_by_client_operation_id(client_operation_id)
             .await
     }
-
-    async fn clean_recently_completed_actions(&self) {}
 }

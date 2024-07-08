@@ -81,6 +81,9 @@ pub struct AwaitedAction {
     /// The time the action was last updated.
     last_worker_updated_timestamp: AtomicU64,
 
+    /// Number of clients listening to the state of the action.
+    listening_clients: AtomicUsize,
+
     /// Worker that is currently running this action, None if unassigned.
     worker_id: RwLock<Option<WorkerId>>,
 
@@ -118,6 +121,7 @@ impl AwaitedAction {
                 sort_info,
                 attempts: AtomicUsize::new(0),
                 last_worker_updated_timestamp: AtomicU64::new(SystemTime::now().unix_timestamp()),
+                listening_clients: AtomicUsize::new(0),
                 worker_id: RwLock::new(None),
             },
             sort_key,
@@ -137,6 +141,18 @@ impl AwaitedAction {
     pub fn get_last_worker_updated_timestamp(&self) -> SystemTime {
         let timestamp = self.last_worker_updated_timestamp.load(Ordering::Acquire);
         SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp)
+    }
+
+    pub fn get_listening_clients(&self) -> usize {
+        self.listening_clients.load(Ordering::Acquire)
+    }
+
+    pub fn inc_listening_clients(&self) {
+        self.listening_clients.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn dec_listening_clients(&self) {
+        self.listening_clients.fetch_sub(1, Ordering::Release);
     }
 
     /// Updates the timestamp of the action.
@@ -191,11 +207,6 @@ impl AwaitedAction {
     pub fn inc_attempts(&self) {
         self.attempts.fetch_add(1, Ordering::Release);
     }
-
-    // /// Subtracts one from the number of attempts the action has been tried.
-    // pub fn dec_attempts(&self) {
-    //     self.attempts.fetch_sub(1, Ordering::Release);
-    // }
 
     /// Gets the worker id that is currently processing this action.
     pub fn get_worker_id(&self) -> Option<WorkerId> {

@@ -58,9 +58,6 @@ pub trait ActionScheduler: Sync + Send + Unpin {
         client_operation_id: &ClientOperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error>;
 
-    /// Cleans up the cache of recently completed actions.
-    async fn clean_recently_completed_actions(&self);
-
     /// Register the metrics for the action scheduler.
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }

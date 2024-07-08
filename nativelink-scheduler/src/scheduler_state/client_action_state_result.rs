@@ -17,22 +17,38 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfo, ActionState};
+use nativelink_util::{
+    action_messages::{ActionInfo, ActionState},
+    task::JoinHandleDropGuard,
+};
 use tokio::sync::watch::Receiver;
 
 use crate::operation_state_manager::ActionStateResult;
 
 pub(crate) struct ClientActionStateResult {
+    /// The receiver for the action state updates.
     rx: Receiver<Arc<ActionState>>,
+
+    /// Holds a handle to an optional spawn that will be automatically
+    /// canceled when this struct is dropped.
+    /// This is primarily used to keep the EvictionMap from dropping the
+    /// struct while a client is listening for updates.
+    _maybe_keepalive_spawn: Option<JoinHandleDropGuard<()>>,
 }
 
 impl ClientActionStateResult {
-    pub(crate) fn new(mut rx: Receiver<Arc<ActionState>>) -> Self {
+    pub(crate) fn new(
+        mut rx: Receiver<Arc<ActionState>>,
+        maybe_keepalive_spawn: Option<JoinHandleDropGuard<()>>,
+    ) -> Self {
         // Marking the initial value as changed for new or existing actions regardless if
         // underlying state has changed. This allows for triggering notification after subscription
         // without having to use an explicit notification.
         rx.mark_changed();
-        Self { rx }
+        Self {
+            rx,
+            _maybe_keepalive_spawn: maybe_keepalive_spawn,
+        }
     }
 }
 
