@@ -247,7 +247,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     .await?;
 
     let unique_qualifier = ActionInfoHashKey {
-        instance_name: "".to_string(),
+        instance_name: String::new(),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::zero_digest(),
         salt: 0,
@@ -528,7 +528,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let unique_qualifier = ActionInfoHashKey {
-        instance_name: "".to_string(),
+        instance_name: String::new(),
         digest: DigestInfo::zero_digest(),
         digest_function: DigestHasherFunc::Sha256,
         salt: 0,
@@ -689,7 +689,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         setup_new_worker(&scheduler, worker_id2, PlatformProperties::default()).await?;
 
     let unique_qualifier = ActionInfoHashKey {
-        instance_name: "".to_string(),
+        instance_name: String::new(),
         digest: DigestInfo::zero_digest(),
         digest_function: DigestHasherFunc::Sha256,
         salt: 0,
@@ -1078,7 +1078,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let unique_qualifier = ActionInfoHashKey {
-        instance_name: "".to_string(),
+        instance_name: String::new(),
         digest: DigestInfo::zero_digest(),
         digest_function: DigestHasherFunc::Sha256,
         salt: 0,

@@ -631,7 +631,7 @@ pub struct ExecutionMetadata {
 impl Default for ExecutionMetadata {
     fn default() -> Self {
         Self {
-            worker: "".to_string(),
+            worker: String::new(),
             queued_timestamp: SystemTime::UNIX_EPOCH,
             worker_start_timestamp: SystemTime::UNIX_EPOCH,
             worker_completed_timestamp: SystemTime::UNIX_EPOCH,
@@ -759,7 +759,7 @@ impl Default for ActionResult {
             stdout_digest: DigestInfo::new([0u8; 32], 0),
             stderr_digest: DigestInfo::new([0u8; 32], 0),
             execution_metadata: ExecutionMetadata {
-                worker: "".to_string(),
+                worker: String::new(),
                 queued_timestamp: SystemTime::UNIX_EPOCH,
                 worker_start_timestamp: SystemTime::UNIX_EPOCH,
                 worker_completed_timestamp: SystemTime::UNIX_EPOCH,
