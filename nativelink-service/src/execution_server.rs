@@ -222,9 +222,15 @@ impl ExecutionServer {
                             let client_operation_id = ClientOperationId::from_raw_string(
                                 client_operation_id_string.clone(),
                             );
+                            // If the action is finished we won't be sending any more updates.
+                            let maybe_action_listener = if action_update.stage.is_finished() {
+                                None
+                            } else {
+                                Some(action_listener)
+                            };
                             Some((
                                 Ok(action_update.as_operation(client_operation_id)),
-                                Some(action_listener),
+                                maybe_action_listener,
                             ))
                         }
                         Err(err) => {

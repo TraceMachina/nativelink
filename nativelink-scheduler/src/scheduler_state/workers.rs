@@ -176,7 +176,15 @@ impl ApiWorkerSchedulerImpl {
             }
         }
 
-        // Clear this action from the current worker.
+        // We are done if the action is not finished or there was an error.
+        let is_finished = action_stage
+            .as_ref()
+            .map_or_else(|_| true, |action_stage| action_stage.is_finished());
+        if !is_finished {
+            return Ok(());
+        }
+
+        // Clear this action from the current worker if finished.
         let complete_action_res = {
             let was_paused = !worker.can_accept_work();
 
@@ -193,7 +201,6 @@ impl ApiWorkerSchedulerImpl {
             complete_action_res
         };
 
-        // TODO(allada) This should move to inside the Workers struct.
         self.worker_change_notify.notify_one();
 
         complete_action_res
@@ -228,6 +235,14 @@ impl ApiWorkerSchedulerImpl {
                 return Result::<(), _>::Err(err.clone())
                     .merge(self.immediate_evict_worker(&worker_id, err).await);
             }
+        } else {
+            event!(
+                Level::WARN,
+                ?worker_id,
+                ?operation_id,
+                ?action_info,
+                "Worker not found in worker map in worker_notify_run_action"
+            );
         }
         Ok(())
     }
