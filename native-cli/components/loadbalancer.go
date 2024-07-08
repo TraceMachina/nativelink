@@ -310,6 +310,7 @@ func (component *Loadbalancer) Install(
 			"el-gateway":        false,
 			"hubble-gateway":    false,
 			"tkn-gateway":       false,
+			"capacitor-gateway": false,
 		},
 	), component.Gateways)
 	if err != nil {

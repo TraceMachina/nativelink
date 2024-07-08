@@ -57,3 +57,15 @@ spec:
     - name: tkn-gateway
       protocol: HTTP
       port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: Gateway
+metadata:
+  name: capacitor-gateway
+  namespace: flux-system
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: capacitor-gateway
+      protocol: HTTP
+      port: 80

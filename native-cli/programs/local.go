@@ -155,6 +155,17 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		},
 	}
 
+	capacitorGateway := components.Gateway{
+		ExternalPort: 9000, //nolint:mnd
+		InternalPort: 9000, //nolint:mnd
+		Routes: []components.RouteConfig{
+			{
+				Prefix:  "/",
+				Cluster: "capacitor-gateway",
+			},
+		},
+	}
+
 	nativelinkGateway := components.Gateway{
 		ExternalPort: 8082, //nolint:mnd
 		InternalPort: 8089, //nolint:mnd
@@ -184,6 +195,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		"kind-loadbalancer",
 		&components.Loadbalancer{
 			Gateways: []components.Gateway{
+				capacitorGateway,
 				nativelinkGateway,
 				hubbleGateway,
 				tknGateway,
