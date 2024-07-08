@@ -18,12 +18,12 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use nativelink_util::action_messages::{ActionInfoHashKey, ActionState, OperationId};
-use nativelink_util::metrics_utils::{CollectorState, MetricsComponent};
 
 /// A completed action that has no listeners.
 pub struct CompletedAction {
     /// The time the action was completed.
-    pub(crate) completed_time: SystemTime,
+    /// TODO!(unused?!)
+    pub(crate) _completed_time: SystemTime,
     /// The current state of the action when it was completed.
     pub(crate) state: Arc<ActionState>,
 }
@@ -53,20 +53,5 @@ impl Borrow<ActionInfoHashKey> for CompletedAction {
     #[inline]
     fn borrow(&self) -> &ActionInfoHashKey {
         &self.state.id.unique_qualifier
-    }
-}
-
-impl MetricsComponent for CompletedAction {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "completed_timestamp",
-            &self.completed_time,
-            "The timestamp this action was completed",
-        );
-        c.publish(
-            "current_state",
-            self.state.as_ref(),
-            "The current stage of the action.",
-        );
     }
 }
