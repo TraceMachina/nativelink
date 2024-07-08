@@ -45,7 +45,7 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
 pub type WorkerTimestamp = u64;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClientOperationId(String);
 
 impl ClientOperationId {
@@ -72,7 +72,7 @@ impl std::fmt::Display for ClientOperationId {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct OperationId {
     pub unique_qualifier: ActionInfoHashKey,
     pub id: Uuid,
@@ -237,7 +237,7 @@ impl TryFrom<String> for WorkerId {
 /// Since the hashing only needs the digest and salt we can just alias them here
 /// and point the original `ActionInfo` structs to reference these structs for
 /// it's hashing functions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActionInfoHashKey {
     /// Name of instance group this action belongs to.
     pub instance_name: String,

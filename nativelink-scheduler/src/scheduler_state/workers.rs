@@ -162,17 +162,14 @@ impl ApiWorkerSchedulerImpl {
                 .await
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             if let Err(err) = update_operation_res {
-                let result = Result::<(), _>::Err(err.clone())
-                    .merge(self.immediate_evict_worker(worker_id, err).await);
-
                 event!(
                     Level::ERROR,
                     ?operation_id,
                     ?worker_id,
-                    ?result,
+                    ?err,
                     "Failed to update_operation on update_action"
                 );
-                return result;
+                return Err(err);
             }
         }
 

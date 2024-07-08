@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{Future, Stream};
+use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, ClientOperationId, OperationId, WorkerId,
@@ -51,6 +52,10 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
+
+/// Default time in seconds before a client is evicted.
+// TODO(make this a config and documented)
+const CLIENT_EVICTION_SECONDS: u32 = 300; // 5 mins
 
 struct SimpleSchedulerActionListener {
     client_operation_id: ClientOperationId,
@@ -147,19 +152,6 @@ impl SimpleScheduler {
             client_operation_id,
             add_action_result,
         )))
-    }
-
-    async fn clean_recently_completed_actions(&self) {
-        todo!();
-        // let expiry_time = SystemTime::now()
-        //     .checked_sub(self.retain_completed_for)
-        //     .unwrap();
-        // self.state_manager
-        //     .inner
-        //     .lock()
-        //     .await
-        //     .recently_completed_actions
-        //     .retain(|action| action.completed_time > expiry_time);
     }
 
     async fn find_by_client_operation_id(
@@ -317,6 +309,10 @@ impl SimpleScheduler {
 
         let tasks_or_worker_change_notify = Arc::new(Notify::new());
         let state_manager = Arc::new(StateManager::new(
+            &EvictionPolicy {
+                max_seconds: CLIENT_EVICTION_SECONDS,
+                ..Default::default()
+            },
             tasks_or_worker_change_notify.clone(),
             max_job_retries,
         ));
@@ -393,10 +389,6 @@ impl ActionScheduler for SimpleScheduler {
                 format!("Error while finding action with client id: {client_operation_id:?}")
             })?;
         Ok(maybe_receiver)
-    }
-
-    async fn clean_recently_completed_actions(&self) {
-        self.clean_recently_completed_actions().await;
     }
 
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}

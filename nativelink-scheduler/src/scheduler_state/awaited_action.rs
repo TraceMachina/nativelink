@@ -14,13 +14,13 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId,
 };
-use nativelink_util::evicting_map::InstantWrapper;
+use nativelink_util::evicting_map::{InstantWrapper, LenEntry};
 use nativelink_util::metrics_utils::{CollectorState, MetricsComponent};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
@@ -81,11 +81,32 @@ pub struct AwaitedAction {
     /// The time the action was last updated.
     last_worker_updated_timestamp: AtomicU64,
 
+    /// Number of clients listening to the state of the action.
+    listening_clients: AtomicUsize,
+
     /// Worker that is currently running this action, None if unassigned.
     worker_id: RwLock<Option<WorkerId>>,
 
     /// The channel to notify subscribers of state changes when updated, completed or retrying.
     notify_channel: watch::Sender<Arc<ActionState>>,
+}
+
+#[repr(transparent)]
+#[derive(Debug, Clone)]
+pub struct WeakAwaitedAction {
+    inner: Weak<AwaitedAction>,
+}
+
+impl LenEntry for WeakAwaitedAction {
+    #[inline]
+    fn len(&self) -> usize {
+        0
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        true
+    }
 }
 
 impl AwaitedAction {
@@ -118,6 +139,7 @@ impl AwaitedAction {
                 sort_info,
                 attempts: AtomicUsize::new(0),
                 last_worker_updated_timestamp: AtomicU64::new(SystemTime::now().unix_timestamp()),
+                listening_clients: AtomicUsize::new(0),
                 worker_id: RwLock::new(None),
             },
             sort_key,
@@ -137,6 +159,18 @@ impl AwaitedAction {
     pub fn get_last_worker_updated_timestamp(&self) -> SystemTime {
         let timestamp = self.last_worker_updated_timestamp.load(Ordering::Acquire);
         SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp)
+    }
+
+    pub fn get_listening_clients(&self) -> usize {
+        self.listening_clients.load(Ordering::Acquire)
+    }
+
+    pub fn listening_clients_inc(&self) {
+        self.listening_clients.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn listening_clients_dec(&self) {
+        self.listening_clients.fetch_sub(1, Ordering::Release);
     }
 
     /// Updates the timestamp of the action.
@@ -191,11 +225,6 @@ impl AwaitedAction {
     pub fn inc_attempts(&self) {
         self.attempts.fetch_add(1, Ordering::Release);
     }
-
-    // /// Subtracts one from the number of attempts the action has been tried.
-    // pub fn dec_attempts(&self) {
-    //     self.attempts.fetch_sub(1, Ordering::Release);
-    // }
 
     /// Gets the worker id that is currently processing this action.
     pub fn get_worker_id(&self) -> Option<WorkerId> {

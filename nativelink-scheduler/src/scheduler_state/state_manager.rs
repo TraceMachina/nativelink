@@ -15,18 +15,23 @@
 use std::cmp;
 use std::collections::{BTreeSet, VecDeque};
 use std::ops::Bound;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use std::time::{Duration, SystemTime};
 
 use async_lock::Mutex;
 use async_trait::async_trait;
 use futures::stream::{self, unfold};
 use hashbrown::HashMap;
+use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId,
     ExecutionMetadata, OperationId, WorkerId,
 };
-use tokio::sync::Notify;
+use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::task::JoinHandleDropGuard;
+use nativelink_util::{background_spawn, spawn};
+use tokio::sync::{watch, Notify};
 use tracing::{event, Level};
 
 use super::awaited_action::AwaitedActionSortKey;
@@ -37,6 +42,9 @@ use crate::operation_state_manager::{
 use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::scheduler_state::client_action_state_result::ClientActionStateResult;
 use crate::scheduler_state::matching_engine_action_state_result::MatchingEngineActionStateResult;
+
+// TODO(move this to top)
+const KEEPALIVE_DURATION: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 struct SortedAwaitedAction {
@@ -76,10 +84,66 @@ struct SortedAwaitedActions {
     completed_from_cache: BTreeSet<SortedAwaitedAction>,
 }
 
-#[derive(Default)]
+#[derive(Debug)]
+struct ClientAwaitedAction {
+    state_manager_impl: Weak<Mutex<StateManagerImpl>>,
+    client_operation_id: Option<ClientOperationId>,
+    awaited_action: Arc<AwaitedAction>,
+}
+
+impl ClientAwaitedAction {
+    fn new(
+        state_manager_impl: Weak<Mutex<StateManagerImpl>>,
+        client_operation_id: Option<ClientOperationId>,
+        awaited_action: Arc<AwaitedAction>,
+    ) -> Self {
+        awaited_action.listening_clients_inc();
+        Self {
+            state_manager_impl,
+            client_operation_id,
+            awaited_action,
+        }
+    }
+}
+
+impl Drop for ClientAwaitedAction {
+    fn drop(&mut self) {
+        let Some(inner) = self.state_manager_impl.upgrade() else {
+            return; // Nothing to do.
+        };
+        let client_operation_id = self
+            .client_operation_id
+            .take()
+            .expect("Operation Id should be present");
+        let awaited_action = self.awaited_action.clone();
+        background_spawn!("client_action_state_result_drop", async move {
+            let mut inner = inner.lock().await;
+            awaited_action.listening_clients_dec();
+            inner.on_client_disconnect(&client_operation_id, awaited_action).await;
+        });
+    }
+}
+
+impl LenEntry for ClientAwaitedAction {
+    #[inline]
+    fn len(&self) -> usize {
+        0
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        true
+    }
+}
+
+/// The database for storing the state of all actions.
+/// IMPORTANT: Any time an item is removed from
+/// [`AwaitedActionDb::client_operation_to_awaited_action`], it must
+/// also remove the entries from all the other maps.
 pub struct AwaitedActionDb {
     /// A lookup table to lookup the state of an action by its client operation id.
-    client_operation_to_awaited_action: HashMap<ClientOperationId, Arc<AwaitedAction>>,
+    client_operation_to_awaited_action:
+        EvictingMap<ClientOperationId, Arc<ClientAwaitedAction>, SystemTime>,
 
     /// A lookup table to lookup the state of an action by its worker operation id.
     operation_id_to_awaited_action: HashMap<OperationId, Arc<AwaitedAction>>,
@@ -96,16 +160,93 @@ pub struct AwaitedActionDb {
 
 #[allow(clippy::mutable_key_type)]
 impl AwaitedActionDb {
-    fn get_by_client_operation_id(
+    async fn refresh_client_operation_id(&self, client_operation_id: &ClientOperationId) -> bool {
+        self.client_operation_to_awaited_action
+            .size_for_key(client_operation_id)
+            .await
+            .is_some()
+    }
+
+    async fn get_by_client_operation_id(
         &self,
         client_operation_id: &ClientOperationId,
-    ) -> Option<&Arc<AwaitedAction>> {
+    ) -> Option<Arc<ClientAwaitedAction>> {
         self.client_operation_to_awaited_action
             .get(client_operation_id)
+            .await
+    }
+
+    async fn remove_client_operation_id(
+        &mut self,
+        client_operation_id: &ClientOperationId,
+        awaited_action: Arc<AwaitedAction>,
+    ) -> bool {
+        let did_remove = self.client_operation_to_awaited_action
+            .remove(client_operation_id)
+            .await;
+        if !did_remove {
+            event!(
+                Level::ERROR,
+                ?client_operation_id,
+                ?awaited_action,
+                "Client operation id not found in StateManager::remove_client_operation_id"
+            );
+        }
+        if awaited_action.get_listening_clients() != 0 {
+            // We still have other clients listening to this action.
+            return did_remove;
+        }
+
+        let operation_id = awaited_action.get_operation_id();
+
+        // Cleanup operation_id_to_awaited_action.
+        if self.operation_id_to_awaited_action.remove(&operation_id).is_none() {
+            event!(
+                Level::ERROR,
+                ?client_operation_id,
+                ?operation_id,
+                ?awaited_action,
+                "operation_id_to_awaited_action and client_operation_to_awaited_action are out of sync",
+            );
+        }
+
+        // Cleanup action_info_hash_key_to_awaited_action.
+        let action_info = awaited_action.get_action_info();
+        let maybe_awaited_action = self
+            .action_info_hash_key_to_awaited_action
+            .remove(&action_info.unique_qualifier);
+        if maybe_awaited_action.is_none() {
+            event!(
+                Level::ERROR,
+                ?operation_id,
+                ?awaited_action,
+                "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
+            );
+        }
+
+        // Cleanup sorted_awaited_action.
+        let sort_info = awaited_action.get_sort_info();
+        let sort_key = sort_info.get_previous_sort_key();
+        let btree = self
+            .get_sort_map_for_state(&awaited_action.get_current_state().stage);
+        drop(sort_info);
+        let maybe_sorted_awaited_action = btree.take(&SortedAwaitedAction {
+            sort_key,
+            awaited_action,
+        });
+        if maybe_sorted_awaited_action.is_none() {
+            event!(
+                Level::ERROR,
+                ?operation_id,
+                ?sort_key,
+                "sorted_action_info_hash_keys and action_info_hash_key_to_awaited_action are out of sync",
+            );
+        }
+        return did_remove;
     }
 
     fn get_all_awaited_actions(&self) -> impl Iterator<Item = &Arc<AwaitedAction>> {
-        self.client_operation_to_awaited_action.values()
+        self.operation_id_to_awaited_action.values()
     }
 
     fn get_by_operation_id(&self, operation_id: &OperationId) -> Option<&Arc<AwaitedAction>> {
@@ -220,18 +361,23 @@ impl AwaitedActionDb {
         has_listeners
     }
 
-    fn subscribe_or_add_action(
+    async fn subscribe_or_add_action(
         &mut self,
-        new_client_operation_id: ClientOperationId,
+        state_manager_impl: &Weak<Mutex<StateManagerImpl>>,
+        client_operation_id: ClientOperationId,
         action_info: ActionInfo,
-    ) -> Arc<ClientActionStateResult> {
+    ) -> watch::Receiver<Arc<ActionState>> {
         // Check to see if the action is already known and subscribe if it is.
-        let action_info = match self.try_subscribe(
-            &new_client_operation_id,
-            &action_info.unique_qualifier,
-            action_info.priority,
-            action_info.skip_cache_lookup,
-        ) {
+        let subscription_result = self
+            .try_subscribe(
+                state_manager_impl,
+                &client_operation_id,
+                &action_info.unique_qualifier,
+                action_info.priority,
+                action_info.skip_cache_lookup,
+            )
+            .await;
+        let action_info = match subscription_result {
             Ok(subscription) => return subscription,
             Err(_) => Arc::new(action_info),
         };
@@ -240,7 +386,15 @@ impl AwaitedActionDb {
             AwaitedAction::new_with_subscription(action_info.clone());
         let awaited_action = Arc::new(awaited_action);
         self.client_operation_to_awaited_action
-            .insert(new_client_operation_id, awaited_action.clone());
+            .insert(
+                client_operation_id.clone(),
+                Arc::new(ClientAwaitedAction::new(
+                    state_manager_impl.clone(),
+                    Some(client_operation_id),
+                    awaited_action.clone(),
+                )),
+            )
+            .await;
         self.action_info_hash_key_to_awaited_action
             .insert(action_info.unique_qualifier.clone(), awaited_action.clone());
         self.operation_id_to_awaited_action
@@ -253,16 +407,18 @@ impl AwaitedActionDb {
                 awaited_action,
             },
         );
-        Arc::new(ClientActionStateResult::new(subscription))
+        // TODO(Use ClientActionStateResult here).
+        subscription
     }
 
-    fn try_subscribe(
+    async fn try_subscribe(
         &mut self,
+        state_manager_impl: &Weak<Mutex<StateManagerImpl>>,
         client_operation_id: &ClientOperationId,
         unique_qualifier: &ActionInfoHashKey,
         priority: i32,
         skip_cache_lookup: bool,
-    ) -> Result<Arc<ClientActionStateResult>, Error> {
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         if skip_cache_lookup {
             return Err(make_err!(
                 Code::InvalidArgument,
@@ -310,9 +466,18 @@ impl AwaitedActionDb {
         let subscription = awaited_action.subscribe();
 
         self.client_operation_to_awaited_action
-            .insert(client_operation_id.clone(), awaited_action);
+            .insert(
+                client_operation_id.clone(),
+                Arc::new(ClientAwaitedAction {
+                    state_manager_impl: state_manager_impl.clone(),
+                    client_operation_id: Some(client_operation_id.clone()),
+                    awaited_action: awaited_action,
+                }),
+            )
+            .await;
 
-        Ok(Arc::new(ClientActionStateResult::new(subscription)))
+        // TODO(Use ClientActionStateResult here).
+        Ok(subscription)
     }
 }
 
@@ -322,27 +487,39 @@ pub struct StateManager {
 }
 
 impl StateManager {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(tasks_change_notify: Arc<Notify>, max_job_retries: usize) -> Self {
+    pub fn new(
+        config: &EvictionPolicy,
+        tasks_change_notify: Arc<Notify>,
+        max_job_retries: usize,
+    ) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(StateManagerImpl {
-                action_db: AwaitedActionDb::default(),
-                tasks_change_notify,
-                max_job_retries,
-            })),
+            inner: Arc::new_cyclic(move |weak_self| {
+                Mutex::new(StateManagerImpl {
+                    weak_self: weak_self.clone(),
+                    action_db: AwaitedActionDb {
+                        client_operation_to_awaited_action: EvictingMap::new(
+                            config,
+                            SystemTime::now(),
+                        ),
+                        operation_id_to_awaited_action: HashMap::new(),
+                        action_info_hash_key_to_awaited_action: HashMap::new(),
+                        sorted_action_info_hash_keys: SortedAwaitedActions::default(),
+                    },
+                    tasks_change_notify,
+                    max_job_retries,
+                })
+            }),
         }
     }
 
-    async fn inner_filter_operations(
+    async fn inner_filter_operations<F>(
         &self,
         filter: &OperationFilter,
-    ) -> Result<ActionStateResultStream, Error> {
-        fn to_action_state_result(
-            awaited_action: Arc<AwaitedAction>,
-        ) -> Arc<dyn ActionStateResult> {
-            Arc::new(MatchingEngineActionStateResult::new(awaited_action))
-        }
-
+        to_action_state_result: F,
+    ) -> Result<ActionStateResultStream, Error>
+    where
+        F: Fn(Arc<AwaitedAction>) -> Arc<dyn ActionStateResult> + Send + Sync + 'static,
+    {
         fn get_tree_for_stage(
             action_db: &AwaitedActionDb,
             stage: OperationStageFlags,
@@ -375,11 +552,13 @@ impl StateManager {
             return Ok(inner
                 .action_db
                 .get_by_client_operation_id(client_operation_id)
-                .filter(|awaited_action| filter_check(awaited_action.as_ref(), filter))
-                .cloned()
-                .map(|awaited_action| -> ActionStateResultStream {
+                .await
+                .filter(|client_awaited_action| {
+                    filter_check(client_awaited_action.awaited_action.as_ref(), filter)
+                })
+                .map(|client_awaited_action| -> ActionStateResultStream {
                     Box::pin(stream::once(async move {
-                        to_action_state_result(awaited_action)
+                        to_action_state_result(client_awaited_action.awaited_action.clone())
                     }))
                 })
                 .unwrap_or_else(|| Box::pin(stream::empty())));
@@ -412,17 +591,21 @@ impl StateManager {
 
         drop(inner);
 
-        struct State {
+        struct State<
+            F: Fn(Arc<AwaitedAction>) -> Arc<dyn ActionStateResult> + Send + Sync + 'static,
+        > {
             inner: Arc<Mutex<StateManagerImpl>>,
             filter: OperationFilter,
             buffer: VecDeque<SortedAwaitedAction>,
             start_key: Bound<SortedAwaitedAction>,
+            to_action_state_result: F,
         }
         let state = State {
             inner: self.inner.clone(),
             filter: filter.clone(),
             buffer: VecDeque::new(),
             start_key: Bound::Unbounded,
+            to_action_state_result,
         };
 
         const STREAM_BUFF_SIZE: usize = 64;
@@ -433,7 +616,7 @@ impl StateManager {
                     state.start_key = Bound::Excluded(sorted_awaited_action.clone());
                 }
                 return Some((
-                    to_action_state_result(sorted_awaited_action.awaited_action),
+                    (state.to_action_state_result)(sorted_awaited_action.awaited_action),
                     state,
                 ));
             }
@@ -465,7 +648,7 @@ impl StateManager {
                 state.start_key = Bound::Excluded(sorted_awaited_action.clone());
             }
             Some((
-                to_action_state_result(sorted_awaited_action.awaited_action),
+                (state.to_action_state_result)(sorted_awaited_action.awaited_action),
                 state,
             ))
         })))
@@ -476,12 +659,14 @@ impl StateManager {
 /// includes the actions that are queued, active, and recently completed. It also includes the
 /// workers that are available to execute actions based on allocation strategy.
 pub(crate) struct StateManagerImpl {
-    pub(crate) action_db: AwaitedActionDb,
+    weak_self: Weak<Mutex<StateManagerImpl>>,
+
+    action_db: AwaitedActionDb,
 
     /// Notify task<->worker matching engine that work needs to be done.
-    pub(crate) tasks_change_notify: Arc<Notify>,
+    tasks_change_notify: Arc<Notify>,
 
-    pub(crate) max_job_retries: usize,
+    max_job_retries: usize,
 }
 
 fn filter_check(awaited_action: &AwaitedAction, filter: &OperationFilter) -> bool {
@@ -649,35 +834,100 @@ impl StateManagerImpl {
         Ok(())
     }
 
-    fn inner_add_operation(
+    async fn inner_add_operation(
         &mut self,
         new_client_operation_id: ClientOperationId,
         action_info: ActionInfo,
-    ) -> Result<Arc<dyn ActionStateResult>, Error> {
-        let subscription = self
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+        let rx = self
             .action_db
-            .subscribe_or_add_action(new_client_operation_id, action_info);
+            .subscribe_or_add_action(&self.weak_self, new_client_operation_id, action_info)
+            .await;
         self.tasks_change_notify.notify_one();
-        Ok(subscription)
+        Ok(rx)
     }
+
+    async fn on_client_disconnect(
+        &mut self,
+        client_operation_id: &ClientOperationId,
+        awaited_action: Arc<AwaitedAction>,
+    ) {
+        let did_remove_operation_id = self
+            .action_db
+            .remove_client_operation_id(client_operation_id, awaited_action)
+            .await;
+        if !did_remove_operation_id {
+            event!(
+                Level::ERROR,
+                ?client_operation_id,
+                "Client operation id not found in StateManager::on_client_disconnect"
+            );
+        }
+    }
+}
+
+fn make_client_keepalive_spawn(
+    client_operation_id: ClientOperationId,
+    inner_weak: Weak<Mutex<StateManagerImpl>>,
+) -> JoinHandleDropGuard<()> {
+    spawn!("client_action_state_result_keepalive", async move {
+        loop {
+            tokio::time::sleep(KEEPALIVE_DURATION).await;
+            let Some(inner) = inner_weak.upgrade() else {
+                return; // Nothing to do.
+            };
+            let inner = inner.lock().await;
+            let refresh_success = inner
+                .action_db
+                .refresh_client_operation_id(&client_operation_id)
+                .await;
+            if !refresh_success {
+                event! {
+                    Level::ERROR,
+                    ?client_operation_id,
+                    "Client operation id not found in StateManager::add_action keepalive"
+                };
+            }
+        }
+    })
 }
 
 #[async_trait]
 impl ClientStateManager for StateManager {
     async fn add_action(
         &self,
-        new_client_operation_id: ClientOperationId,
+        client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<Arc<dyn ActionStateResult>, Error> {
         let mut inner = self.inner.lock().await;
-        inner.inner_add_operation(new_client_operation_id, action_info)
+        let rx = inner
+            .inner_add_operation(client_operation_id.clone(), action_info)
+            .await?;
+
+        let inner_weak = Arc::downgrade(&self.inner);
+        Ok(Arc::new(ClientActionStateResult::new(
+            rx,
+            Some(make_client_keepalive_spawn(client_operation_id, inner_weak)),
+        )))
     }
 
     async fn filter_operations(
         &self,
         filter: &OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
-        self.inner_filter_operations(filter).await
+        let maybe_client_operation_id = filter.client_operation_id.clone();
+        let inner_weak = Arc::downgrade(&self.inner);
+        self.inner_filter_operations(filter, move |awaited_action| {
+            Arc::new(ClientActionStateResult::new(
+                awaited_action.subscribe(),
+                maybe_client_operation_id
+                    .as_ref()
+                    .map(|client_operation_id| {
+                        make_client_keepalive_spawn(client_operation_id.clone(), inner_weak.clone())
+                    }),
+            ))
+        })
+        .await
     }
 }
 
@@ -700,7 +950,10 @@ impl MatchingEngineStateManager for StateManager {
         &self,
         filter: &OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
-        self.inner_filter_operations(filter).await
+        self.inner_filter_operations(filter, |awaited_action| {
+            Arc::new(MatchingEngineActionStateResult::new(awaited_action))
+        })
+        .await
     }
 
     async fn assign_operation(

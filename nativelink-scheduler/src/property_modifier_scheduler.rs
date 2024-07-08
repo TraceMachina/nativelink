@@ -126,10 +126,6 @@ impl ActionScheduler for PropertyModifierScheduler {
             .await
     }
 
-    async fn clean_recently_completed_actions(&self) {
-        self.scheduler.clean_recently_completed_actions().await
-    }
-
     // Register metrics for the underlying ActionScheduler.
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
         let scheduler_registry = registry.sub_registry_with_prefix("property_modifier");
