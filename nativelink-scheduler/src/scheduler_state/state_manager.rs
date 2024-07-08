@@ -287,7 +287,7 @@ impl AwaitedActionDb {
             ));
         }
         let awaited_action = awaited_action.clone();
-        if let Some(sort_info_lock) = awaited_action.set_priority(priority) {
+        if let Some(sort_info_lock) = awaited_action.upgrade_priority(priority) {
             let state = awaited_action.get_current_state();
             let maybe_sorted_awaited_action =
                 self.get_sort_map_for_state(&state.stage)

@@ -145,7 +145,7 @@ impl AwaitedAction {
             .store(SystemTime::now().unix_timestamp(), Ordering::Release);
     }
 
-    /// Sets the priority of the action.
+    /// Upgrades the priority of the action if new priority is higher.
     ///
     /// If the priority was already set to `new_priority`, this function will
     /// return `None`. If the priority was different, it will return a
@@ -153,9 +153,9 @@ impl AwaitedAction {
     /// will hold a lock preventing anyone else from reading or modifying the
     /// sort key until the result is dropped.
     #[must_use]
-    pub fn set_priority(&self, new_priority: i32) -> Option<SortInfoLock> {
+    pub fn upgrade_priority(&self, new_priority: i32) -> Option<SortInfoLock> {
         let sort_info_lock = self.sort_info.upgradable_read();
-        if sort_info_lock.priority == new_priority {
+        if sort_info_lock.priority >= new_priority {
             return None;
         }
         let mut sort_info_lock = RwLockUpgradableReadGuard::upgrade(sort_info_lock);
