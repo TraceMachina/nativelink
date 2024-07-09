@@ -31,9 +31,9 @@ use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
-    ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId, DirectoryInfo,
-    ExecutionMetadata, FileInfo, NameOrPath, OperationId, SymlinkInfo, WorkerId,
-    INTERNAL_ERROR_EXIT_CODE,
+    ActionResult, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
+    ClientOperationId, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+    SymlinkInfo, WorkerId, INTERNAL_ERROR_EXIT_CODE,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -132,9 +132,8 @@ async fn setup_action(
     platform_properties: PlatformProperties,
     insert_timestamp: SystemTime,
 ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
-    let mut action_info = make_base_action_info(insert_timestamp);
+    let mut action_info = make_base_action_info(insert_timestamp, action_digest);
     action_info.platform_properties = platform_properties;
-    action_info.unique_qualifier.digest = action_digest;
     let client_id = ClientOperationId::new(action_info.unique_qualifier.clone());
     let result = scheduler.add_action(client_id, action_info).await;
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
@@ -171,7 +170,6 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
-                    skip_cache_lookup: true,
                     action_digest: Some(action_digest.into()),
                     digest_function: digest_function::Value::Sha256.into(),
                     ..Default::default()
@@ -235,7 +233,6 @@ async fn find_executing_action() -> Result<(), Error> {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
-                    skip_cache_lookup: true,
                     action_digest: Some(action_digest.into()),
                     digest_function: digest_function::Value::Sha256.into(),
                     ..Default::default()
@@ -298,7 +295,6 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     let mut expected_start_execute_for_worker1 = StartExecute {
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
-            skip_cache_lookup: true,
             action_digest: Some(action_digest1.into()),
             digest_function: digest_function::Value::Sha256.into(),
             ..Default::default()
@@ -310,7 +306,6 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     let mut expected_start_execute_for_worker2 = StartExecute {
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
-            skip_cache_lookup: true,
             action_digest: Some(action_digest2.into()),
             digest_function: digest_function::Value::Sha256.into(),
             ..Default::default()
@@ -564,7 +559,6 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
             update: Some(update_for_worker::Update::StartAction(StartExecute {
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
-                    skip_cache_lookup: true,
                     action_digest: Some(action_digest.into()),
                     digest_function: digest_function::Value::Sha256.into(),
                     ..Default::default()
@@ -606,12 +600,11 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let unique_qualifier = ActionInfoHashKey {
+    let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
         instance_name: "".to_string(),
         digest: DigestInfo::zero_digest(),
         digest_function: DigestHasherFunc::Sha256,
-        salt: 0,
-    };
+    });
     let id = OperationId::new(unique_qualifier);
     let mut expected_action_state = ActionState {
         id,
@@ -654,7 +647,6 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
-                    skip_cache_lookup: true,
                     action_digest: Some(action_digest.into()),
                     digest_function: digest_function::Value::Sha256.into(),
                     ..Default::default()
@@ -771,7 +763,6 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     let mut start_execute = StartExecute {
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
-            skip_cache_lookup: true,
             action_digest: Some(action_digest.into()),
             digest_function: digest_function::Value::Sha256.into(),
             ..Default::default()
@@ -897,12 +888,6 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         }
     };
 
-    // let action_info_hash_key = ActionInfoHashKey {
-    //     instance_name: INSTANCE_NAME.to_string(),
-    //     digest_function: DigestHasherFunc::Sha256,
-    //     digest: action_digest,
-    //     salt: 0,
-    // };
     let action_result = ActionResult {
         output_files: vec![FileInfo {
             name_or_path: NameOrPath::Name("hello".to_string()),
@@ -1099,12 +1084,11 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     }
     let _ = setup_new_worker(&scheduler, rogue_worker_id, PlatformProperties::default()).await?;
 
-    let action_info_hash_key = ActionInfoHashKey {
+    let action_info_hash_key = ActionUniqueQualifier::Cachable(ActionUniqueKey {
         instance_name: INSTANCE_NAME.to_string(),
         digest_function: DigestHasherFunc::Sha256,
         digest: action_digest,
-        salt: 0,
-    };
+    });
     let action_result = ActionResult {
         output_files: Vec::default(),
         output_folders: Vec::default(),
@@ -1173,12 +1157,11 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let unique_qualifier = ActionInfoHashKey {
+    let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
         instance_name: "".to_string(),
         digest: DigestInfo::zero_digest(),
         digest_function: DigestHasherFunc::Sha256,
-        salt: 0,
-    };
+    });
     let id = OperationId::new(unique_qualifier);
     let mut expected_action_state = ActionState {
         id,
@@ -1202,7 +1185,6 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
             update: Some(update_for_worker::Update::StartAction(StartExecute {
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
-                    skip_cache_lookup: true,
                     action_digest: Some(action_digest.into()),
                     digest_function: digest_function::Value::Sha256.into(),
                     ..Default::default()

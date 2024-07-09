@@ -94,7 +94,7 @@ impl ActionScheduler for PropertyModifierScheduler {
         mut action_info: ActionInfo,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         let platform_property_manager = self
-            .get_platform_property_manager(&action_info.unique_qualifier.instance_name)
+            .get_platform_property_manager(action_info.unique_qualifier.instance_name())
             .await
             .err_tip(|| "In PropertyModifierScheduler::add_action")?;
         for modification in &self.modifications {
