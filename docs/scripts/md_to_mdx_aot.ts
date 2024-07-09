@@ -59,16 +59,6 @@ convertMarkdownToMdx(
   "NativeLink configuration guide",
 );
 convertMarkdownToMdx(
-  "../deployment-examples/chromium/README.md",
-  "src/content/docs/guides/chromium.mdx",
-  "NativeLink deployment example for Chromium",
-);
-convertMarkdownToMdx(
-  "../deployment-examples/kubernetes/README.md",
-  "src/content/docs/guides/kubernetes.mdx",
-  "NativeLink deployment example for Kubernetes",
-);
-convertMarkdownToMdx(
   "../CHANGELOG.md",
   "src/content/docs/reference/changelog.mdx",
   "NativeLink's Changelog",

@@ -29,7 +29,7 @@ Below, you will find a few different options for getting started with NativeLink
 
 ## 🚀 Example Deployments
 
-You can find a few example deployments in the [deployment-examples directory](./deployment-examples).
+You can find a few example deployments in the [Docs](https://docs.nativelink.com/guides/kubernetes).
 
 ### 📝 Clone the NativeLink repository
 1. Go to the [NativeLink](https://github.com/TraceMachina/nativelink) repository on GitHub. Clone the repository via SSH or HTTPS. In this example the repository is cloned via SSH:
