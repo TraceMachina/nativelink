@@ -30,7 +30,8 @@ use nativelink_scheduler::default_action_listener::DefaultActionListener;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
 use nativelink_util::action_messages::{
-    ActionInfoHashKey, ActionStage, ActionState, ClientOperationId, OperationId,
+    ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier, ClientOperationId,
+    OperationId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -69,7 +70,7 @@ async fn add_action_adds_property() -> Result<(), Error> {
             name: name.clone(),
             value: value.clone(),
         })]);
-    let action_info = make_base_action_info(UNIX_EPOCH);
+    let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
             id: OperationId::new(action_info.unique_qualifier.clone()),
@@ -112,7 +113,7 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
             name: name.clone(),
             value: replaced_value.clone(),
         })]);
-    let mut action_info = make_base_action_info(UNIX_EPOCH);
+    let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     action_info
         .platform_properties
         .properties
@@ -160,7 +161,7 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
             value: value.clone(),
         }),
     ]);
-    let action_info = make_base_action_info(UNIX_EPOCH);
+    let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
             id: OperationId::new(action_info.unique_qualifier.clone()),
@@ -204,7 +205,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
         }),
         PropertyModification::remove(name.clone()),
     ]);
-    let action_info = make_base_action_info(UNIX_EPOCH);
+    let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
             id: OperationId::new(action_info.unique_qualifier.clone()),
@@ -242,7 +243,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
     let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
-    let mut action_info = make_base_action_info(UNIX_EPOCH);
+    let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     action_info
         .platform_properties
         .properties
@@ -279,12 +280,11 @@ async fn add_action_property_remove() -> Result<(), Error> {
 #[nativelink_test]
 async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
     let context = make_modifier_scheduler(vec![]);
-    let operation_id = ClientOperationId::new(ActionInfoHashKey {
+    let operation_id = ClientOperationId::new(ActionUniqueQualifier::Uncachable(ActionUniqueKey {
         instance_name: "instance".to_string(),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new([8; 32], 1),
-        salt: 1000,
-    });
+    }));
     let (actual_result, actual_operation_id) = join!(
         context
             .modifier_scheduler

@@ -25,12 +25,13 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionStage, ActionState, ClientOperationId, OperationId,
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
+    ClientOperationId, OperationId,
 };
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::store_trait::Store;
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
 use tokio::sync::oneshot;
@@ -44,7 +45,7 @@ use crate::platform_property_manager::PlatformPropertyManager;
 /// being forwarded upstream.  Missing the skip_cache_check actions which are
 /// forwarded directly.
 type CheckActions = HashMap<
-    ActionInfoHashKey,
+    ActionUniqueKey,
     Vec<(
         ClientOperationId,
         oneshot::Sender<Result<Pin<Box<dyn ActionListener>>, Error>>,
@@ -67,7 +68,7 @@ async fn get_action_from_store(
     action_digest: DigestInfo,
     instance_name: String,
     digest_function: DigestHasherFunc,
-) -> Option<ProtoActionResult> {
+) -> Result<ProtoActionResult, Error> {
     // If we are a GrpcStore we shortcut here, as this is a special store.
     if let Some(grpc_store) = ac_store.downcast_ref::<GrpcStore>(Some(action_digest.into())) {
         let action_result_request = GetActionResultRequest {
@@ -82,11 +83,8 @@ async fn get_action_from_store(
             .get_action_result(Request::new(action_result_request))
             .await
             .map(|response| response.into_inner())
-            .ok()
     } else {
-        get_and_decode_digest::<ProtoActionResult>(ac_store, action_digest.into())
-            .await
-            .ok()
+        get_and_decode_digest::<ProtoActionResult>(ac_store, action_digest.into()).await
     }
 }
 
@@ -95,7 +93,7 @@ type ActionListenerOneshot = oneshot::Receiver<Result<Pin<Box<dyn ActionListener
 
 fn subscribe_to_existing_action(
     inflight_cache_checks: &mut MutexGuard<CheckActions>,
-    unique_qualifier: &ActionInfoHashKey,
+    unique_qualifier: &ActionUniqueKey,
     client_operation_id: &ClientOperationId,
 ) -> Option<ActionListenerOneshot> {
     inflight_cache_checks
@@ -149,26 +147,29 @@ impl ActionScheduler for CacheLookupScheduler {
         client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
-        if action_info.skip_cache_lookup {
-            // Cache lookup skipped, forward to the upstream.
-            return self
-                .action_scheduler
-                .add_action(client_operation_id, action_info)
-                .await;
-        }
+        let unique_key = match &action_info.unique_qualifier {
+            ActionUniqueQualifier::Cachable(unique_key) => unique_key.clone(),
+            ActionUniqueQualifier::Uncachable(_) => {
+                // Cache lookup skipped, forward to the upstream.
+                return self
+                    .action_scheduler
+                    .add_action(client_operation_id, action_info)
+                    .await;
+            }
+        };
+
         let cache_check_result = {
             // Check this isn't a duplicate request first.
             let mut inflight_cache_checks = self.inflight_cache_checks.lock();
-            let unique_qualifier = action_info.unique_qualifier.clone();
             subscribe_to_existing_action(
                 &mut inflight_cache_checks,
-                &unique_qualifier,
+                &unique_key,
                 &client_operation_id,
             )
             .ok_or_else(move || {
                 let (action_listener_tx, action_listener_rx) = oneshot::channel();
                 inflight_cache_checks.insert(
-                    unique_qualifier.clone(),
+                    unique_key.clone(),
                     vec![(client_operation_id, action_listener_tx)],
                 );
                 // In the event we loose the reference to our `scope_guard`, it will remove
@@ -177,7 +178,7 @@ impl ActionScheduler for CacheLookupScheduler {
                 (
                     action_listener_rx,
                     guard((), move |_| {
-                        inflight_cache_checks.lock().remove(&unique_qualifier);
+                        inflight_cache_checks.lock().remove(&unique_key);
                     }),
                 )
             })
@@ -203,54 +204,77 @@ impl ActionScheduler for CacheLookupScheduler {
             // If our spawn ever dies, we will remove the action from the inflight_cache_checks map.
             let _scope_guard = scope_guard;
 
+            let unique_key = match &action_info.unique_qualifier {
+                ActionUniqueQualifier::Cachable(unique_key) => unique_key,
+                ActionUniqueQualifier::Uncachable(unique_key) => {
+                    event!(
+                        Level::ERROR,
+                        ?action_info,
+                        "ActionInfo::unique_qualifier should be ActionUniqueQualifier::Cachable()"
+                    );
+                    unique_key
+                }
+            };
+
             // Perform cache check.
-            let instance_name = action_info.unique_qualifier.instance_name.clone();
-            if let Some(action_result) = get_action_from_store(
+            let instance_name = action_info.unique_qualifier.instance_name().clone();
+            let maybe_action_result = get_action_from_store(
                 &ac_store,
-                action_info.unique_qualifier.digest,
+                action_info.unique_qualifier.digest(),
                 instance_name,
-                action_info.unique_qualifier.digest_function,
+                action_info.unique_qualifier.digest_function(),
             )
-            .await
-            {
-                match ac_store.has(action_info.unique_qualifier.digest).await {
-                    Ok(Some(_)) => {
+            .await;
+            match maybe_action_result {
+                Ok(action_result) => {
+                    println!("{action_result:?}");
+                    let maybe_pending_txs = {
+                        let mut inflight_cache_checks = inflight_cache_checks.lock();
+                        // We are ready to resolve the in-flight actions. We remove the
+                        // in-flight actions from the map.
+                        inflight_cache_checks.remove(unique_key)
+                    };
+                    let Some(pending_txs) = maybe_pending_txs else {
+                        return; // Nobody is waiting for this action anymore.
+                    };
+                    let action_state = Arc::new(ActionState {
+                        id: OperationId::new(action_info.unique_qualifier.clone()),
+                        stage: ActionStage::CompletedFromCache(action_result),
+                    });
+                    for (client_operation_id, pending_tx) in pending_txs {
+                        // Ignore errors here, as the other end may have hung up.
+                        let _ = pending_tx.send(Ok(Box::pin(CachedActionListener {
+                            client_operation_id,
+                            action_state: action_state.clone(),
+                        })));
+                    }
+                    return;
+                }
+                Err(err) => {
+                    // NotFound errors just mean we need to execute our action.
+                    if err.code != Code::NotFound {
+                        let err = err.append("In CacheLookupScheduler::add_action");
                         let maybe_pending_txs = {
                             let mut inflight_cache_checks = inflight_cache_checks.lock();
                             // We are ready to resolve the in-flight actions. We remove the
                             // in-flight actions from the map.
-                            inflight_cache_checks.remove(&action_info.unique_qualifier)
+                            inflight_cache_checks.remove(unique_key)
                         };
                         let Some(pending_txs) = maybe_pending_txs else {
                             return; // Nobody is waiting for this action anymore.
                         };
-                        let action_state = Arc::new(ActionState {
-                            id: OperationId::new(action_info.unique_qualifier.clone()),
-                            stage: ActionStage::CompletedFromCache(action_result),
-                        });
-                        for (client_operation_id, pending_tx) in pending_txs {
+                        for (_client_operation_id, pending_tx) in pending_txs {
                             // Ignore errors here, as the other end may have hung up.
-                            let _ = pending_tx.send(Ok(Box::pin(CachedActionListener {
-                                client_operation_id,
-                                action_state: action_state.clone(),
-                            })));
+                            let _ = pending_tx.send(Err(err.clone()));
                         }
                         return;
                     }
-                    Err(err) => {
-                        event!(
-                            Level::WARN,
-                            ?err,
-                            "Error while calling `has` on `ac_store` in `CacheLookupScheduler`'s `add_action` function"
-                        );
-                    }
-                    _ => {}
                 }
             }
 
             let maybe_pending_txs = {
                 let mut inflight_cache_checks = inflight_cache_checks.lock();
-                inflight_cache_checks.remove(&action_info.unique_qualifier)
+                inflight_cache_checks.remove(unique_key)
             };
             let Some(pending_txs) = maybe_pending_txs else {
                 return; // Noone is waiting for this action anymore.

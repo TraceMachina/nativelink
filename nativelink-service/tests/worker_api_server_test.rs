@@ -37,7 +37,7 @@ use nativelink_scheduler::scheduler_state::workers::ApiWorkerScheduler;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionStage, OperationId, WorkerId,
+    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -374,12 +374,11 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
     let action_digest = DigestInfo::new([7u8; 32], 123);
     let instance_name = "instance_name".to_string();
 
-    let unique_qualifier = ActionInfoHashKey {
+    let unique_qualifier = ActionUniqueQualifier::Uncachable(ActionUniqueKey {
         instance_name: instance_name.clone(),
         digest_function: DigestHasherFunc::Sha256,
         digest: action_digest,
-        salt: 0,
-    };
+    });
     let action_info = Arc::new(ActionInfo {
         command_digest: DigestInfo::new([0u8; 32], 0),
         input_root_digest: DigestInfo::new([0u8; 32], 0),
@@ -391,7 +390,6 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
         load_timestamp: make_system_time(0),
         insert_timestamp: make_system_time(0),
         unique_qualifier,
-        skip_cache_lookup: true,
     });
     let expected_operation_id = OperationId::new(action_info.unique_qualifier.clone());
     test_context

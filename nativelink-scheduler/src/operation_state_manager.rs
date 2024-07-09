@@ -22,8 +22,7 @@ use bitflags::bitflags;
 use futures::Stream;
 use nativelink_error::Error;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionStage, ActionState, ClientOperationId, OperationId,
-    WorkerId,
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ClientOperationId, OperationId, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use tokio::sync::watch;
@@ -89,9 +88,10 @@ pub struct OperationFilter {
 
     // /// The operation must have it's last client update before this time.
     // NOTE: NOT PART OF ANY FILTERING!
+    // TODO!(cleanup)
     // pub last_client_update_before: Option<SystemTime>,
     /// The unique key for filtering specific action results.
-    pub unique_qualifier: Option<ActionInfoHashKey>,
+    pub unique_key: Option<ActionUniqueKey>,
 
     /// If the results should be ordered by priority and in which direction.
     pub order_by_priority_direction: Option<OrderDirection>,

@@ -29,8 +29,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionState, ClientOperationId, OperationId,
-    DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionState, ActionUniqueKey, ActionUniqueQualifier, ClientOperationId,
+    OperationId, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
@@ -126,13 +126,13 @@ impl GrpcScheduler {
             let client_operation_id =
                 ClientOperationId::from_raw_string(initial_response.name.clone());
             // Our operation_id is not needed here is just a place holder to recycle existing object.
-            // The only thing that actually matters is the client_operation_id.
-            let operation_id = OperationId::new(ActionInfoHashKey {
-                instance_name: "dummy_instance_name".to_string(),
-                digest_function: DigestHasherFunc::Sha256,
-                digest: DigestInfo::zero_digest(),
-                salt: 0,
-            });
+            // The only thing that actually matters is the operation_id.
+            let operation_id =
+                OperationId::new(ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+                    instance_name: "dummy_instance_name".to_string(),
+                    digest_function: DigestHasherFunc::Sha256,
+                    digest: DigestInfo::zero_digest(),
+                }));
             let action_state =
                 ActionState::try_from_operation(initial_response, operation_id.clone())
                     .err_tip(|| "In GrpcScheduler::stream_state")?;
@@ -250,16 +250,20 @@ impl ActionScheduler for GrpcScheduler {
                 priority: action_info.priority,
             })
         };
+        let skip_cache_lookup = match action_info.unique_qualifier {
+            ActionUniqueQualifier::Cachable(_) => false,
+            ActionUniqueQualifier::Uncachable(_) => true,
+        };
         let request = ExecuteRequest {
             instance_name: action_info.instance_name().clone(),
-            skip_cache_lookup: action_info.skip_cache_lookup,
+            skip_cache_lookup,
             action_digest: Some(action_info.digest().into()),
             execution_policy,
             // TODO: Get me from the original request, not very important as we ignore it.
             results_cache_policy: None,
             digest_function: action_info
                 .unique_qualifier
-                .digest_function
+                .digest_function()
                 .proto_digest_func()
                 .into(),
         };

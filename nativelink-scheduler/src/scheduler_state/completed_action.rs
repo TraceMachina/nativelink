@@ -17,7 +17,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use nativelink_util::action_messages::{ActionInfoHashKey, ActionState, OperationId};
+use nativelink_util::action_messages::{ActionState, ActionUniqueQualifier, OperationId};
 
 /// A completed action that has no listeners.
 pub struct CompletedAction {
@@ -49,9 +49,9 @@ impl Borrow<OperationId> for CompletedAction {
     }
 }
 
-impl Borrow<ActionInfoHashKey> for CompletedAction {
+impl Borrow<ActionUniqueQualifier> for CompletedAction {
     #[inline]
-    fn borrow(&self) -> &ActionInfoHashKey {
+    fn borrow(&self) -> &ActionUniqueQualifier {
         &self.state.id.unique_qualifier
     }
 }

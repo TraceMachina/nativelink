@@ -42,7 +42,8 @@ use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata, OperationId,
+    ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier,
+    ExecutionMetadata, OperationId,
 };
 use nativelink_util::common::{encode_stream_proto, fs, DigestInfo};
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -230,13 +231,11 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionInfoHashKey {
+        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,
-            salt: 0,
-        },
-        skip_cache_lookup: true,
+        }),
     };
 
     {
@@ -314,13 +313,11 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionInfoHashKey {
+        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
-            salt: 0,
-        },
-        skip_cache_lookup: true,
+        }),
     };
 
     {
@@ -578,13 +575,11 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionInfoHashKey {
+        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
-            salt: 0,
-        },
-        skip_cache_lookup: true,
+        }),
     };
 
     {
@@ -630,8 +625,6 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
 
 #[nativelink_test]
 async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Error>> {
-    const SALT: u64 = 1000;
-
     let mut test_context = setup_local_worker(HashMap::new()).await;
 
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
@@ -667,13 +660,11 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
-        unique_qualifier: ActionInfoHashKey {
+        unique_qualifier: ActionUniqueQualifier::Uncachable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,
-            salt: SALT,
-        },
-        skip_cache_lookup: true,
+        }),
     };
 
     let operation_id = OperationId::new(action_info.unique_qualifier.clone());

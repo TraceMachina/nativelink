@@ -18,7 +18,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId,
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
+    WorkerId,
 };
 use nativelink_util::evicting_map::InstantWrapper;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
@@ -98,11 +99,15 @@ impl AwaitedAction {
         AwaitedActionSortKey,
         watch::Receiver<Arc<ActionState>>,
     ) {
+        let unique_key = match &action_info.unique_qualifier {
+            ActionUniqueQualifier::Cachable(unique_key) => unique_key,
+            ActionUniqueQualifier::Uncachable(unique_key) => unique_key,
+        };
         let stage = ActionStage::Queued;
-        let sort_key = AwaitedActionSortKey::new_with_action_hash(
+        let sort_key = AwaitedActionSortKey::new_with_unique_key(
             action_info.priority,
             &action_info.insert_timestamp,
-            &action_info.unique_qualifier,
+            unique_key,
         );
         let sort_info = RwLock::new(SortInfo {
             priority: action_info.priority,
@@ -173,13 +178,17 @@ impl AwaitedAction {
         if sort_info_lock.priority >= new_priority {
             return None;
         }
+        let unique_key = match &self.action_info.unique_qualifier {
+            ActionUniqueQualifier::Cachable(unique_key) => unique_key,
+            ActionUniqueQualifier::Uncachable(unique_key) => unique_key,
+        };
         let mut sort_info_lock = RwLockUpgradableReadGuard::upgrade(sort_info_lock);
         let previous_sort_key = sort_info_lock.sort_key;
         sort_info_lock.priority = new_priority;
-        sort_info_lock.sort_key = AwaitedActionSortKey::new_with_action_hash(
+        sort_info_lock.sort_key = AwaitedActionSortKey::new_with_unique_key(
             new_priority,
             &self.action_info.insert_timestamp,
-            &self.action_info.unique_qualifier,
+            unique_key,
         );
         Some(SortInfoLock {
             previous_sort_key,
@@ -274,14 +283,14 @@ impl AwaitedActionSortKey {
         ]))
     }
 
-    fn new_with_action_hash(
+    fn new_with_unique_key(
         priority: i32,
         insert_timestamp: &SystemTime,
-        action_hash: &ActionInfoHashKey,
+        action_hash: &ActionUniqueKey,
     ) -> Self {
         let hash = {
             let mut hasher = DefaultHasher::new();
-            ActionInfoHashKey::hash(action_hash, &mut hasher);
+            ActionUniqueKey::hash(action_hash, &mut hasher);
             hasher.finish().to_le_bytes()[0..4].try_into().unwrap()
         };
         Self::new(priority, insert_timestamp.unix_timestamp(), hash)
