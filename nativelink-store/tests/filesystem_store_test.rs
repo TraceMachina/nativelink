@@ -32,13 +32,13 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{
-    digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
+    key_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -818,15 +818,14 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     let small_digest = DigestInfo::try_new(HASH1, SMALL_VALUE.len())?;
     let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
-    static UNREFED_DIGESTS: Lazy<Mutex<Vec<DigestInfo>>> = Lazy::new(|| Mutex::new(Vec::new()));
+    static UNREFED_KEYS: Mutex<Vec<StoreKey<'static>>> = Mutex::new(Vec::new());
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
         fn on_unref<Fe: FileEntry>(file_entry: &Fe) {
             block_on(file_entry.get_file_path_locked(move |path_str| async move {
                 let path = Path::new(&path_str);
-                let digest =
-                    digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
-                UNREFED_DIGESTS.lock().push(digest);
+                let key = key_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
+                UNREFED_KEYS.lock().push(key.borrow().into_owned());
                 Ok(())
             }))
             .unwrap();
@@ -856,13 +855,13 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
 
     {
         // Our first digest should have been unrefed exactly once.
-        let unrefed_digests = UNREFED_DIGESTS.lock();
+        let unrefed_keys = UNREFED_KEYS.lock();
+        assert_eq!(unrefed_keys.len(), 1, "Expected exactly 1 unrefed digest");
         assert_eq!(
-            unrefed_digests.len(),
-            1,
-            "Expected exactly 1 unrefed digest"
+            unrefed_keys[0],
+            small_digest.into(),
+            "Expected digest to match"
         );
-        assert_eq!(unrefed_digests[0], small_digest, "Expected digest to match");
     }
 
     Ok(())
