@@ -392,7 +392,7 @@ impl AwaitedActionDb {
         &mut self,
         state_manager_impl: &Weak<Mutex<StateManagerImpl>>,
         client_operation_id: ClientOperationId,
-        action_info: ActionInfo,
+        action_info: Arc<ActionInfo>,
     ) -> watch::Receiver<Arc<ActionState>> {
         // Check to see if the action is already known and subscribe if it is.
         let subscription_result = self
@@ -406,11 +406,12 @@ impl AwaitedActionDb {
             .await;
         let action_info = match subscription_result {
             Ok(subscription) => return subscription,
-            Err(_) => Arc::new(action_info),
+            Err(_) => action_info,
         };
 
+        let unique_qualifier = action_info.unique_qualifier.clone();
         let (awaited_action, sort_key, subscription) =
-            AwaitedAction::new_with_subscription(action_info.clone());
+            AwaitedAction::new_with_subscription(action_info);
         let awaited_action = Arc::new(awaited_action);
         self.client_operation_to_awaited_action
             .insert(
@@ -423,7 +424,7 @@ impl AwaitedActionDb {
             )
             .await;
         self.action_info_hash_key_to_awaited_action
-            .insert(action_info.unique_qualifier.clone(), awaited_action.clone());
+            .insert(unique_qualifier.clone(), awaited_action.clone());
         self.operation_id_to_awaited_action
             .insert(awaited_action.get_operation_id(), awaited_action.clone());
 
@@ -862,7 +863,7 @@ impl StateManagerImpl {
     async fn inner_add_operation(
         &mut self,
         new_client_operation_id: ClientOperationId,
-        action_info: ActionInfo,
+        action_info: Arc<ActionInfo>,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let rx = self
             .action_db
@@ -927,15 +928,16 @@ impl ClientStateManager for StateManager {
     async fn add_action(
         &self,
         client_operation_id: ClientOperationId,
-        action_info: ActionInfo,
+        action_info: Arc<ActionInfo>,
     ) -> Result<Arc<dyn ActionStateResult>, Error> {
         let mut inner = self.inner.lock().await;
         let rx = inner
-            .inner_add_operation(client_operation_id.clone(), action_info)
+            .inner_add_operation(client_operation_id.clone(), action_info.clone())
             .await?;
 
         let inner_weak = Arc::downgrade(&self.inner);
         Ok(Arc::new(ClientActionStateResult::new(
+            action_info,
             rx,
             Some(make_client_keepalive_spawn(client_operation_id, inner_weak)),
         )))
@@ -949,6 +951,7 @@ impl ClientStateManager for StateManager {
         let inner_weak = Arc::downgrade(&self.inner);
         self.inner_filter_operations(filter, move |awaited_action| {
             Arc::new(ClientActionStateResult::new(
+                awaited_action.get_action_info().clone(),
                 awaited_action.subscribe(),
                 maybe_client_operation_id
                     .as_ref()

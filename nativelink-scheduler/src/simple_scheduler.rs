@@ -141,7 +141,7 @@ impl SimpleScheduler {
     async fn add_action(
         &self,
         client_operation_id: ClientOperationId,
-        action_info: ActionInfo,
+        action_info: Arc<ActionInfo>,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         let add_action_result = self
             .client_state_manager
@@ -375,7 +375,8 @@ impl ActionScheduler for SimpleScheduler {
         client_operation_id: ClientOperationId,
         action_info: ActionInfo,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
-        self.add_action(client_operation_id, action_info).await
+        self.add_action(client_operation_id, Arc::new(action_info))
+            .await
     }
 
     async fn find_by_client_operation_id(
