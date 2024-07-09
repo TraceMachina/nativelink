@@ -1033,7 +1033,7 @@ impl RunningActionImpl {
             )
         };
         let cas_store = self.running_actions_manager.cas_store.as_ref();
-        let hasher = self.action_info.unique_qualifier.digest_function;
+        let hasher = self.action_info.unique_qualifier.digest_function();
         enum OutputType {
             None,
             File(FileInfo),
@@ -1731,10 +1731,9 @@ impl RunningActionsManagerImpl {
                 get_and_decode_digest::<Action>(self.cas_store.as_ref(), action_digest.into())
                     .await
                     .err_tip(|| "During start_action")?;
-            let action_info = ActionInfo::try_from_action_and_execute_request_with_salt(
+            let action_info = ActionInfo::try_from_action_and_execute_request(
                 execute_request,
                 action,
-                0, // TODO: salt is no longer needed.
                 load_start_timestamp,
                 queued_timestamp,
             )
