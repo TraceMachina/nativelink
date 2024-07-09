@@ -45,7 +45,7 @@ use crate::scheduler_state::matching_engine_action_state_result::MatchingEngineA
 
 /// How often the owning database will have the AwaitedAction touched
 /// to keep it from being evicted.
-const KEEPALIVE_DURATION: Duration = Duration::from_secs(10);
+const KEEPALIVE_DURATION_SECS: u64 = 10;
 
 #[derive(Debug, Clone)]
 struct SortedAwaitedAction {
@@ -902,7 +902,7 @@ fn make_client_keepalive_spawn(
 ) -> JoinHandleDropGuard<()> {
     spawn!("client_action_state_result_keepalive", async move {
         loop {
-            tokio::time::sleep(KEEPALIVE_DURATION).await;
+            tokio::time::sleep(Duration::from_secs(KEEPALIVE_DURATION_SECS)).await;
             let Some(inner) = inner_weak.upgrade() else {
                 return; // Nothing to do.
             };
