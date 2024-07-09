@@ -26,6 +26,9 @@ use tokio::sync::watch::Receiver;
 use crate::operation_state_manager::ActionStateResult;
 
 pub(crate) struct ClientActionStateResult {
+    /// The action info for the action.
+    action_info: Arc<ActionInfo>,
+
     /// The receiver for the action state updates.
     rx: Receiver<Arc<ActionState>>,
 
@@ -38,6 +41,7 @@ pub(crate) struct ClientActionStateResult {
 
 impl ClientActionStateResult {
     pub(crate) fn new(
+        action_info: Arc<ActionInfo>,
         mut rx: Receiver<Arc<ActionState>>,
         maybe_keepalive_spawn: Option<JoinHandleDropGuard<()>>,
     ) -> Self {
@@ -46,6 +50,7 @@ impl ClientActionStateResult {
         // without having to use an explicit notification.
         rx.mark_changed();
         Self {
+            action_info,
             rx,
             _maybe_keepalive_spawn: maybe_keepalive_spawn,
         }
@@ -63,6 +68,6 @@ impl ActionStateResult for ClientActionStateResult {
     }
 
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
-        todo!()
+        Ok(self.action_info.clone())
     }
 }
