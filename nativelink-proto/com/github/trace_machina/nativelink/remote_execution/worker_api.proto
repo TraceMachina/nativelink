@@ -102,17 +102,6 @@ message ExecuteResult {
     /// The operation ID that was executed.
     string operation_id = 8;
 
-    // The digest function that was used to compute the action digest
-    // and all related blobs.
-    //
-    // If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
-    // SHA384, SHA512, or VSO, the client MAY leave this field unset. In
-    // that case the server SHOULD infer the digest function using the
-    // length of the action digest hash and the digest functions announced
-    // in the server's capabilities.
-    // TODO!!! THIS IS UNUSED AFAIK.
-    build.bazel.remote.execution.v2.DigestFunction.Value digest_function = 7;
-
     /// The actual response data.
     oneof result {
         /// Result of the execution. See `build.bazel.remote.execution.v2.ExecuteResponse`
