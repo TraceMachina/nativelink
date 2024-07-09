@@ -17,10 +17,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::{
-    action_messages::{ActionInfo, ActionState},
-    task::JoinHandleDropGuard,
-};
+use nativelink_util::action_messages::{ActionInfo, ActionState};
+use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::watch::Receiver;
 
 use crate::operation_state_manager::ActionStateResult;
