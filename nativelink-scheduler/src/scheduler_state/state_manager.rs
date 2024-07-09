@@ -999,8 +999,4 @@ impl MatchingEngineStateManager for StateManager {
         };
         inner.inner_update_operation(operation_id, maybe_worker_id, stage_result)
     }
-
-    async fn remove_operation(&self, _operation_id: OperationId) -> Result<(), Error> {
-        todo!()
-    }
 }
