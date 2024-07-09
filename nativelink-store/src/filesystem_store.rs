@@ -398,13 +398,13 @@ pub fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
 const SIMULTANEOUS_METADATA_READS: usize = 200;
 
 async fn add_files_to_cache<Fe: FileEntry>(
-    evicting_map: &EvictingMap<DigestInfo, Arc<Fe>, SystemTime>,
+    evicting_map: &EvictingMap<StoreKey<'static>, Arc<Fe>, SystemTime>,
     anchor_time: &SystemTime,
     shared_context: &Arc<SharedContext>,
     block_size: u64,
 ) -> Result<(), Error> {
     async fn process_entry<Fe: FileEntry>(
-        evicting_map: &EvictingMap<DigestInfo, Arc<Fe>, SystemTime>,
+        evicting_map: &EvictingMap<StoreKey<'static>, Arc<Fe>, SystemTime>,
         file_name: &str,
         atime: SystemTime,
         data_size: u64,
@@ -428,7 +428,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
             .map_err(|_| make_input_err!("File access time newer than now"))?;
         evicting_map
             .insert_with_time(
-                digest,
+                digest.into(),
                 Arc::new(file_entry),
                 time_since_anchor.as_secs() as i32,
             )
@@ -516,7 +516,7 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
 
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     shared_context: Arc<SharedContext>,
-    evicting_map: Arc<EvictingMap<DigestInfo, Arc<Fe>, SystemTime>>,
+    evicting_map: Arc<EvictingMap<StoreKey<'static>, Arc<Fe>, SystemTime>>,
     block_size: u64,
     read_buffer_size: usize,
     weak_self: Weak<Self>,
@@ -585,7 +585,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
-        self.evicting_map.get(digest).await.ok_or_else(|| {
+        self.evicting_map.get(&digest.into()).await.ok_or_else(|| {
             make_err!(
                 Code::NotFound,
                 "{} not found in filesystem store",
@@ -598,7 +598,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self: Pin<&'a Self>,
         mut entry: Fe,
         mut resumeable_temp_file: fs::ResumeableFileSlot,
-        final_digest: DigestInfo,
+        final_key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
     ) -> Result<(), Error> {
         let mut data_size = 0;
@@ -643,10 +643,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         drop(resumeable_temp_file);
 
         *entry.data_size_mut() = data_size;
-        self.emplace_file(final_digest, Arc::new(entry)).await
+        self.emplace_file(final_key, Arc::new(entry)).await
     }
 
-    async fn emplace_file(&self, digest: DigestInfo, entry: Arc<Fe>) -> Result<(), Error> {
+    async fn emplace_file(&self, final_key: StoreKey<'_>, entry: Arc<Fe>) -> Result<(), Error> {
         // This sequence of events is quite ticky to understand due to the amount of triggers that
         // happen, async'ness of it and the locking. So here is a breakdown of what happens:
         // 1. Here will hold a write lock on any file operations of this FileEntry.
@@ -667,6 +667,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         let evicting_map = self.evicting_map.clone();
         let rename_fn = self.rename_fn;
 
+        // Take ownership to avoid lifetime issues.
+        // FIXME(jhpratt) Get rid of this eventually.
+        let final_key = final_key.borrow().into_owned();
+
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
         background_spawn!("filesystem_store_emplace_file", async move {
@@ -674,10 +678,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             let final_path = get_file_path_raw(
                 &PathType::Content,
                 encoded_file_path.shared_context.as_ref(),
-                &digest,
+                &final_key.borrow().into_digest(),
             );
 
-            evicting_map.insert(digest, entry.clone()).await;
+            evicting_map
+                .insert(final_key.borrow().into_owned(), entry.clone())
+                .await;
 
             let from_path = encoded_file_path.get_file_path();
             // Internally tokio spawns fs commands onto a blocking thread anyways.
@@ -704,12 +710,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 // It is possible that the item in our map is no longer the item we inserted,
                 // So, we need to conditionally remove it only if the pointers are the same.
                 evicting_map
-                    .remove_if(&digest, |map_entry| Arc::<Fe>::ptr_eq(map_entry, &entry))
+                    .remove_if(&final_key.borrow().into_owned(), |map_entry| {
+                        Arc::<Fe>::ptr_eq(map_entry, &entry)
+                    })
                     .await;
                 return Err(err);
             }
             encoded_file_path.path_type = PathType::Content;
-            encoded_file_path.digest = digest;
+            encoded_file_path.digest = final_key.into_digest();
             Ok(())
         })
         .await
@@ -725,23 +733,23 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
         // TODO(allada) This is a bit of a hack to get around the lifetime issues with the
-        // existence_cache. We need to convert the digests to owned values to be able to
+        // existence_cache. We need to convert the keys to owned values to be able to
         // insert them into the cache. In theory it should be able to elide this conversion
         // but it seems to be a bit tricky to get right.
-        let keys: Vec<_> = keys.iter().map(|v| v.borrow().into_digest()).collect();
+        let keys: Vec<_> = keys.iter().map(|v| v.borrow().into_owned()).collect();
         self.evicting_map.sizes_for_keys(&keys, results).await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to
         // create the file by spec.
-        for (digest, result) in keys.iter().zip(results.iter_mut()) {
-            if result.is_some() || !is_zero_digest(digest) {
+        for (key, result) in keys.iter().zip(results.iter_mut()) {
+            if result.is_some() || !is_zero_digest(key.borrow()) {
                 continue;
             }
             let (mut tx, rx) = make_buf_channel_pair();
             let send_eof_result = tx.send_eof();
-            self.update(digest.into(), rx, UploadSizeInfo::ExactSize(0))
+            self.update(key.borrow(), rx, UploadSizeInfo::ExactSize(0))
                 .await
-                .err_tip(|| format!("Failed to create zero file for key {digest:?}"))
+                .err_tip(|| format!("Failed to create zero file for key {key:?}"))
                 .merge(
                     send_eof_result
                         .err_tip(|| "Failed to send zero file EOF in filesystem store has"),
@@ -758,7 +766,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        let digest = key.into_digest();
+        let digest = key.borrow().into_digest();
         let mut temp_digest = digest;
         make_temp_digest(&mut temp_digest);
 
@@ -772,7 +780,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         )
         .await?;
 
-        self.update_file(entry, temp_file, digest, reader)
+        self.update_file(entry, temp_file, key, reader)
             .await
             .err_tip(|| format!("While processing with temp file {temp_full_path:?}"))
     }
@@ -787,7 +795,6 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         mut file: fs::ResumeableFileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<Option<fs::ResumeableFileSlot>, Error> {
-        let digest = key.into_digest();
         let path = file.get_path().as_os_str().to_os_string();
         let file_size = match upload_size {
             UploadSizeInfo::ExactSize(size) => size as u64,
@@ -810,13 +817,13 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             RwLock::new(EncodedFilePath {
                 shared_context: self.shared_context.clone(),
                 path_type: PathType::Custom(path),
-                digest,
+                digest: key.borrow().into_digest(),
             }),
         );
         // We are done with the file, if we hold a reference to the file here, it could
         // result in a deadlock if `emplace_file()` also needs file descriptors.
         drop(file);
-        self.emplace_file(digest, Arc::new(entry))
+        self.emplace_file(key, Arc::new(entry))
             .await
             .err_tip(|| "Could not move file into store in upload_file_to_store, maybe dest is on different volume?")?;
         return Ok(None);
@@ -829,9 +836,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        let digest = key.into_digest();
-        if is_zero_digest(digest) {
-            self.has(digest.into())
+        if is_zero_digest(key.borrow()) {
+            self.has(key)
                 .await
                 .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
             writer
@@ -840,13 +846,17 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             return Ok(());
         }
 
-        let entry = self.evicting_map.get(&digest).await.ok_or_else(|| {
-            make_err!(
-                Code::NotFound,
-                "{} not found in filesystem store",
-                digest.hash_str()
-            )
-        })?;
+        let entry = self
+            .evicting_map
+            .get(&key.borrow().into_owned())
+            .await
+            .ok_or_else(|| {
+                make_err!(
+                    Code::NotFound,
+                    "{} not found in filesystem store",
+                    key.into_digest().hash_str()
+                )
+            })?;
         let read_limit = length.unwrap_or(usize::MAX) as u64;
         let mut resumeable_temp_file = entry.read_file_part(offset as u64, read_limit).await?;
 
