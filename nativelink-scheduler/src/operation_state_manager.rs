@@ -144,9 +144,4 @@ pub trait MatchingEngineStateManager: Sync + Send + 'static {
         operation_id: &OperationId,
         worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error>;
-
-    /// Remove an operation from the state manager.
-    /// It is important to use this function to remove operations
-    /// that are no longer needed to prevent memory leaks.
-    async fn remove_operation(&self, operation_id: OperationId) -> Result<(), Error>;
 }
