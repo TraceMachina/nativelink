@@ -32,7 +32,6 @@ mod utils {
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
 use nativelink_error::{make_err, make_input_err, Code, Error};
 use nativelink_macro::nativelink_test;
-use nativelink_proto::build::bazel::remote::execution::v2::digest_function;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
@@ -397,7 +396,6 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
             worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
-            digest_function: digest_function::Value::Sha256.into(),
             result: Some(execute_result::Result::ExecuteResponse(
                 ActionStage::Completed(action_result).into()
             )),
@@ -621,7 +619,6 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
             worker_id: expected_worker_id,
             instance_name: INSTANCE_NAME.to_string(),
             operation_id: String::new(),
-            digest_function: digest_function::Value::Sha256.into(),
             result: Some(execute_result::Result::InternalError(
                 make_err!(Code::ResourceExhausted, "{}", EXPECTED_MSG,).into()
             )),

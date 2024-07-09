@@ -474,7 +474,6 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
         instance_name,
         worker_id: test_context.worker_id.to_string(),
         operation_id: expected_operation_id.to_string(),
-        digest_function: DigestHasherFunc::Sha256.proto_digest_func().into(),
         result: Some(execute_result::Result::ExecuteResponse(
             execute_response.clone(),
         )),

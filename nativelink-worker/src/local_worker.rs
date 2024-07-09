@@ -304,7 +304,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                                     worker_id,
                                                     instance_name,
                                                     operation_id,
-                                                    digest_function: digest_hasher.proto_digest_func().into(),
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
                                                 }
                                             )
@@ -316,7 +315,6 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                                 worker_id,
                                                 instance_name,
                                                 operation_id,
-                                                digest_function: digest_hasher.proto_digest_func().into(),
                                                 result: Some(execute_result::Result::InternalError(e.into())),
                                             }).await.err_tip(|| "Error calling execution_response with error")?;
                                         },
