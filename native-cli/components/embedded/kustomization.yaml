@@ -8,5 +8,6 @@ resources:
   - nix2container-image-info.yaml
   - trigger.yaml
   - update-image-tags.yaml
+  - capacitor.yaml
   # - nativelink-gateways.yaml  # Gateways are handled in Pulumi via the
                                 # NativeLinkGateways resource.
