@@ -86,10 +86,6 @@ pub struct OperationFilter {
     /// The operation must have been completed before this time.
     pub completed_before: Option<SystemTime>,
 
-    // /// The operation must have it's last client update before this time.
-    // NOTE: NOT PART OF ANY FILTERING!
-    // TODO!(cleanup)
-    // pub last_client_update_before: Option<SystemTime>,
     /// The unique key for filtering specific action results.
     pub unique_key: Option<ActionUniqueKey>,
 
