@@ -30,10 +30,9 @@ stats.html
 src/content/docs/contribute/docs.mdx
 src/content/docs/contribute/guidelines.mdx
 src/content/docs/explanations/lre.mdx
-src/content/docs/guides/chromium.mdx
-src/content/docs/guides/configuration.mdx
-src/content/docs/guides/kubernetes.mdx
-src/content/docs/guides/setup.md
+src/content/docs/deployment-examples/chromium.mdx
+src/content/docs/config/configuration-intro.mdx
+src/content/docs/deployment-examples/kubernetes.mdx
+src/content/docs/introduction/setup.md
 src/content/docs/reference/changelog.mdx
 src/content/docs/reference/nativelink-config.mdx
-src/content/docs/tutorials/setup.mdx
