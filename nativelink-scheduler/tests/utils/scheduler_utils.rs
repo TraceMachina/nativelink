@@ -15,14 +15,17 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey};
+use nativelink_util::action_messages::{ActionInfo, ActionUniqueKey, ActionUniqueQualifier};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformProperties;
 
 pub const INSTANCE_NAME: &str = "foobar_instance_name";
 
-pub fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
+pub fn make_base_action_info(
+    insert_timestamp: SystemTime,
+    action_digest: DigestInfo,
+) -> ActionInfo {
     ActionInfo {
         command_digest: DigestInfo::new([0u8; 32], 0),
         input_root_digest: DigestInfo::new([0u8; 32], 0),
@@ -33,12 +36,10 @@ pub fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
         priority: 0,
         load_timestamp: UNIX_EPOCH,
         insert_timestamp,
-        unique_qualifier: ActionInfoHashKey {
+        unique_qualifier: ActionUniqueQualifier::Cachable(ActionUniqueKey {
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
-            digest: DigestInfo::new([0u8; 32], 0),
-            salt: 0,
-        },
-        skip_cache_lookup: false,
+            digest: action_digest,
+        }),
     }
 }

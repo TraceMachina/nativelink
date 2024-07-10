@@ -291,7 +291,7 @@ impl MetricsComponent for Worker {
             vec![("worker_id".into(), format!("{}", self.id).into())],
         );
         for action_info in self.running_action_infos.values() {
-            let action_name = action_info.unique_qualifier.action_name().to_string();
+            let action_name = action_info.unique_qualifier.to_string();
             c.publish_with_labels(
                 "timeout",
                 &action_info.timeout,
@@ -314,12 +314,6 @@ impl MetricsComponent for Worker {
                 "insert_timestamp",
                 &action_info.insert_timestamp,
                 "When this action was created.",
-                vec![("digest".into(), action_name.clone().into())],
-            );
-            c.publish_with_labels(
-                "skip_cache_lookup",
-                &action_info.skip_cache_lookup,
-                "Weather this action should skip cache lookup.",
                 vec![("digest".into(), action_name.clone().into())],
             );
         }

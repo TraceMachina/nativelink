@@ -32,7 +32,8 @@ use nativelink_scheduler::action_scheduler::{ActionListener, ActionScheduler};
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ClientOperationId, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, ClientOperationId,
+    DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
@@ -137,6 +138,17 @@ impl InstanceInfo {
             }
         }
 
+        let action_key = ActionUniqueKey {
+            instance_name,
+            digest_function,
+            digest: action_digest,
+        };
+        let unique_qualifier = if skip_cache_lookup {
+            ActionUniqueQualifier::Uncachable(action_key)
+        } else {
+            ActionUniqueQualifier::Cachable(action_key)
+        };
+
         Ok(ActionInfo {
             command_digest,
             input_root_digest,
@@ -145,18 +157,7 @@ impl InstanceInfo {
             priority,
             load_timestamp: UNIX_EPOCH,
             insert_timestamp: SystemTime::now(),
-            unique_qualifier: ActionInfoHashKey {
-                instance_name,
-                digest_function,
-                digest: action_digest,
-                salt: 0, // TODO(allada) This can be removed!
-                         // if action.do_not_cache {
-                         //     thread_rng().gen::<u64>()
-                         // } else {
-                         //     0
-                         // },
-            },
-            skip_cache_lookup,
+            unique_qualifier,
         })
     }
 }

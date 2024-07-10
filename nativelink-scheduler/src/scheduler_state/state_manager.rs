@@ -25,8 +25,8 @@ use hashbrown::HashMap;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ClientOperationId,
-    ExecutionMetadata, OperationId, WorkerId,
+    ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
+    ClientOperationId, ExecutionMetadata, OperationId, WorkerId,
 };
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::task::JoinHandleDropGuard;
@@ -165,7 +165,7 @@ pub struct AwaitedActionDb {
     operation_id_to_awaited_action: HashMap<OperationId, Arc<AwaitedAction>>,
 
     /// A lookup table to lookup the state of an action by its unique qualifier.
-    action_info_hash_key_to_awaited_action: HashMap<ActionInfoHashKey, Arc<AwaitedAction>>,
+    action_info_hash_key_to_awaited_action: HashMap<ActionUniqueKey, Arc<AwaitedAction>>,
 
     /// A sorted set of [`AwaitedAction`]s. A wrapper is used to perform sorting
     /// based on the [`AwaitedActionSortKey`] of the [`AwaitedAction`].
@@ -237,18 +237,26 @@ impl AwaitedActionDb {
             );
         }
 
-        // Cleanup action_info_hash_key_to_awaited_action.
+        // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
         let action_info = awaited_action.get_action_info();
-        let maybe_awaited_action = self
-            .action_info_hash_key_to_awaited_action
-            .remove(&action_info.unique_qualifier);
-        if maybe_awaited_action.is_none() {
-            event!(
-                Level::ERROR,
-                ?operation_id,
-                ?awaited_action,
-                "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
-            );
+        match &action_info.unique_qualifier {
+            ActionUniqueQualifier::Cachable(action_key) => {
+                let maybe_awaited_action = self
+                    .action_info_hash_key_to_awaited_action
+                    .remove(action_key);
+                if maybe_awaited_action.is_none() {
+                    event!(
+                        Level::ERROR,
+                        ?operation_id,
+                        ?awaited_action,
+                        ?action_key,
+                        "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
+                    );
+                }
+            }
+            ActionUniqueQualifier::Uncachable(_action_key) => {
+                // This Operation should not be in the hash_key map.
+            }
         }
 
         // Cleanup sorted_awaited_action.
@@ -401,7 +409,6 @@ impl AwaitedActionDb {
                 &client_operation_id,
                 &action_info.unique_qualifier,
                 action_info.priority,
-                action_info.skip_cache_lookup,
             )
             .await;
         let action_info = match subscription_result {
@@ -409,7 +416,10 @@ impl AwaitedActionDb {
             Err(_) => action_info,
         };
 
-        let unique_qualifier = action_info.unique_qualifier.clone();
+        let maybe_unique_key = match &action_info.unique_qualifier {
+            ActionUniqueQualifier::Cachable(unique_key) => Some(unique_key.clone()),
+            ActionUniqueQualifier::Uncachable(_unique_key) => None,
+        };
         let (awaited_action, sort_key, subscription) =
             AwaitedAction::new_with_subscription(action_info);
         let awaited_action = Arc::new(awaited_action);
@@ -423,8 +433,11 @@ impl AwaitedActionDb {
                 )),
             )
             .await;
-        self.action_info_hash_key_to_awaited_action
-            .insert(unique_qualifier.clone(), awaited_action.clone());
+        // Note: We only put items in the map that are cachable.
+        if let Some(unique_key) = maybe_unique_key {
+            self.action_info_hash_key_to_awaited_action
+                .insert(unique_key, awaited_action.clone());
+        }
         self.operation_id_to_awaited_action
             .insert(awaited_action.get_operation_id(), awaited_action.clone());
 
@@ -442,23 +455,24 @@ impl AwaitedActionDb {
         &mut self,
         state_manager_impl: &Weak<Mutex<StateManagerImpl>>,
         client_operation_id: &ClientOperationId,
-        unique_qualifier: &ActionInfoHashKey,
+        unique_qualifier: &ActionUniqueQualifier,
         priority: i32,
-        skip_cache_lookup: bool,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-        if skip_cache_lookup {
-            return Err(make_err!(
-                Code::InvalidArgument,
-                "Cannot subscribe to an existing item when skip_cache_lookup is true."
-            ));
-        }
+        let unique_key = match unique_qualifier {
+            ActionUniqueQualifier::Cachable(unique_key) => unique_key,
+            ActionUniqueQualifier::Uncachable(_unique_key) => {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Cannot subscribe to an existing item when skip_cache_lookup is true."
+                ));
+            }
+        };
 
         let awaited_action = self
             .action_info_hash_key_to_awaited_action
-            .get(unique_qualifier)
+            .get(unique_key)
             .ok_or(make_input_err!(
-                "Could not find existing action with name: {}",
-                unique_qualifier.action_name()
+                "Could not find existing action with name: {unique_qualifier}"
             ))
             .err_tip(|| "In state_manager::try_subscribe")?;
 
@@ -710,13 +724,20 @@ fn filter_check(awaited_action: &AwaitedAction, filter: &OperationFilter) -> boo
 
     {
         let action_info = awaited_action.get_action_info();
-        if let Some(unique_qualifier) = &filter.unique_qualifier {
-            if unique_qualifier != &action_info.unique_qualifier {
-                return false;
+        if let Some(filter_unique_key) = &filter.unique_key {
+            match &action_info.unique_qualifier {
+                ActionUniqueQualifier::Cachable(unique_key) => {
+                    if filter_unique_key != unique_key {
+                        return false;
+                    }
+                }
+                ActionUniqueQualifier::Uncachable(_) => {
+                    return false;
+                }
             }
         }
         if let Some(action_digest) = filter.action_digest {
-            if &action_digest != action_info.digest() {
+            if action_digest != action_info.digest() {
                 return false;
             }
         }

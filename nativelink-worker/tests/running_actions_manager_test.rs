@@ -42,11 +42,10 @@ use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_mes
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
-use nativelink_util::action_messages::{ActionInfoHashKey, OperationId};
-#[cfg_attr(target_family = "windows", allow(unused_imports))]
 use nativelink_util::action_messages::{
-    ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
+    ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath,
 };
+use nativelink_util::action_messages::{ActionUniqueKey, ActionUniqueQualifier, OperationId};
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::{Store, StoreLike};
@@ -143,7 +142,7 @@ fn increment_clock(time: &mut SystemTime) -> SystemTime {
 }
 
 fn make_operation_id(execute_request: &ExecuteRequest) -> OperationId {
-    let unique_qualifier = ActionInfoHashKey {
+    let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
         instance_name: execute_request.instance_name.clone(),
         digest_function: execute_request.digest_function.try_into().unwrap(),
         digest: execute_request
@@ -152,8 +151,7 @@ fn make_operation_id(execute_request: &ExecuteRequest) -> OperationId {
             .unwrap()
             .try_into()
             .unwrap(),
-        salt: 0,
-    };
+    });
     OperationId::new(unique_qualifier)
 }
 
