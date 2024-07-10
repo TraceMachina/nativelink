@@ -12,8 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub(crate) mod awaited_action;
-pub(crate) mod client_action_state_result;
-pub(crate) mod matching_engine_action_state_result;
-pub mod state_manager;
-pub mod workers;
+pub(crate) use awaited_action::AwaitedAction;
+pub(crate) use awaited_action_db::AwaitedActionDb;
+pub(crate) use sorted_awaited_action::SortedAwaitedAction;
+
+mod awaited_action;
+#[allow(clippy::module_inception)]
+mod awaited_action_db;
+mod client_awaited_action;
+mod sorted_awaited_action;

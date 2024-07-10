@@ -31,9 +31,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     execute_result, update_for_worker, ExecuteResult, KeepAliveRequest, SupportedProperties,
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
-use nativelink_scheduler::operation_state_manager::WorkerStateManager;
+use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
-use nativelink_scheduler::scheduler_state::workers::ApiWorkerScheduler;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
 use nativelink_util::action_messages::{
@@ -41,6 +40,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::operation_state_manager::WorkerStateManager;
 use nativelink_util::platform_properties::PlatformProperties;
 use pretty_assertions::assert_eq;
 use tokio::join;

@@ -23,6 +23,10 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, ClientOperationId, OperationId, WorkerId,
 };
 use nativelink_util::metrics_utils::Registry;
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ClientStateManager, MatchingEngineStateManager, OperationFilter,
+    OperationStageFlags,
+};
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::{watch, Notify};
@@ -31,13 +35,9 @@ use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
 use crate::action_scheduler::{ActionListener, ActionScheduler};
-use crate::operation_state_manager::{
-    ActionStateResult, ClientStateManager, MatchingEngineStateManager, OperationFilter,
-    OperationStageFlags,
-};
+use crate::api_worker_scheduler::ApiWorkerScheduler;
+use crate::memory_scheduler_state::MemorySchedulerStateManager;
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::scheduler_state::state_manager::StateManager;
-use crate::scheduler_state::workers::ApiWorkerScheduler;
 use crate::worker::{Worker, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
 
@@ -308,7 +308,7 @@ impl SimpleScheduler {
         }
 
         let tasks_or_worker_change_notify = Arc::new(Notify::new());
-        let state_manager = Arc::new(StateManager::new(
+        let state_manager = Arc::new(MemorySchedulerStateManager::new(
             &EvictionPolicy {
                 max_seconds: CLIENT_EVICTION_SECONDS,
                 ..Default::default()
