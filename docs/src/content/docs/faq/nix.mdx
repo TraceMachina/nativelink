@@ -1,0 +1,43 @@
+---
+title: "What is Nix?"
+description: "Overview of Nix's role in the NativeLink Ecosystem"
+pagefind: true
+---
+
+Nix is a powerful, cross-platform package manager that offers a high
+'power-to-weight ratio'. It provides a range of features including
+reproducible development environments, system configuration,
+language-agnostic build-tool, continuous integration environment,
+deployment machine configuration, upgrade rollbacks, and package
+isolation (sandboxing).
+
+Nix's package isolation (sandboxing) and reproducible builds and
+environments are particularly important for enabling advanced remote
+execution setups. With Nix, you can define the dependencies needed to
+work on a project in any language(s) in a single file. This allows
+anyone with Nix installed to spawn a shell with the necessary
+dependencies installed in a single command.
+
+Nix's purely functional nature means that it makes changes in a very
+self-contained way. All packages installed by Nix live in the Nix store,
+usually the /nix/store directory. Packages are installed in folders with
+names that contain a hash of the package’s dependencies, and symlinks
+are created in paths like ~/.nix-profile/bin. This enables features like
+rollbacks and means that upgrading (or uninstalling) one package won’t
+affect your other packages.
+
+In the context of remote execution setups, this means that you can have
+a high degree of confidence that the environment in which your code is
+being executed is exactly as you specified it, regardless of where that
+execution is taking place. This hermeticity is crucial for ensuring the
+reliability and reproducibility of remote execution.
+
+To get started with Nix, you can install it seamlessly on most platforms.
+Once installed, you can start defining your project's dependencies in a
+shell.nix file and use the nix-shell command to spawn a shell with those
+dependencies installed.
+
+For a deeper understanding of the power of Nix, you may find the following references helpful:
+
+- [An Introduction to Nix](https://davidmyno.rs/blog/an-introduction-to-nix)
+- [First Steps with Nix](https://nix.dev/tutorials/first-steps/)

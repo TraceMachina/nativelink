@@ -1,0 +1,20 @@
+---
+title: "What are Toolchains?"
+description: "Toolchains overview"
+pagefind: true
+---
+
+**Toolchains in programming are a set of software development tools that help in
+project building.**
+
+They decouple rule logic from platform-based selection of tools,
+allowing for more flexible and efficient development. Toolchains are designed to
+solve the problem of needing different compilers for different targets depending
+on the platform they're being built for and on. The toolchain framework adds an
+extra level of indirection, declaring an abstract dependency on a family of targets
+(a toolchain type), and automatically resolving this to a particular target (a
+toolchain) based on the applicable platform constraints. This eliminates the need
+for the rule author or the target author to know the complete set of available
+platforms and toolchains.
+
+For more information on the toolchain framework, you can read the [Bazel guide on toolchains](https://docs.bazel.build/versions/main/toolchains.html).

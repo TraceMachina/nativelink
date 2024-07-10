@@ -81,6 +81,6 @@ convertMarkdownToMdx(
 );
 convertMarkdownToMdx(
   "../README.md",
-  "src/content/docs/tutorials/setup.mdx",
+  "src/content/docs/introduction/setup.mdx",
   "Get starget with NativeLink",
 );

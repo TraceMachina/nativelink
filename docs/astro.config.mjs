@@ -88,14 +88,43 @@ export default defineConfig({
         // The documentation structure follows the Diátaxis framework.
         // See https://diataxis.fr/ for details.
         {
+          label: "Getting Started",
+          items: [
+            {
+              label: "Introduction",
+              link: "/introduction/setup",
+            },
+            {
+              label: "NativeLink Cloud",
+              link: "/introduction/cloud",
+            },
+            {
+              label: "NativeLink On-Prem",
+              link: "/introduction/on-prem",
+            },
+            {
+              label: "Other Build Systems",
+              link: "/introduction/non-bre",
+            },
+          ],
+        },
+        {
           // Corresponds to https://diataxis.fr/tutorials/. Learning-oriented
           // content without elaborate explanations. Tutorials should have a
           // clear goal and a straightforward "follow-these-commands" structure.
-          label: "Tutorials",
+          label: "NativeLink Cloud",
           items: [
             {
-              label: "Setup",
-              link: "/tutorials/setup",
+              label: "Bazel",
+              link: "/nativelink-cloud/bazel/",
+            },
+            {
+              label: "Reclient",
+              link: "/nativelink-cloud/reclient/",
+            },
+            {
+              label: "Pants",
+              link: "/nativelink-cloud/pants/",
             },
           ],
         },
@@ -103,19 +132,39 @@ export default defineConfig({
           // Corresponds to https://diataxis.fr/how-to-guides/. Guides don't
           // need to be "complete". They should provide practical guidance for
           // real-world use-cases.
-          label: "Guides",
+          label: "Configuring NativeLink",
           items: [
             {
-              label: "Configuration examples",
-              link: "/guides/configuration",
+              label: "Configuration Introduction",
+              link: "/config/configuration-intro",
             },
             {
-              label: "Chromium example",
-              link: "/guides/chromium",
+              label: "Basic Configurations",
+              link: "/config/basic-configs",
             },
             {
-              label: "Kubernetes example",
-              link: "/guides/kubernetes",
+              label: "Production Configurations",
+              link: "/config/production-config",
+            },
+          ],
+        },
+        {
+          // Corresponds to https://diataxis.fr/how-to-guides/. Guides don't
+          // need to be "complete". They should provide practical guidance for
+          // real-world use-cases.
+          label: "Example On-Prem Deployments",
+          items: [
+            {
+              label: "On-Prem Overview",
+              link: "/deployment-examples/on-prem-overview/",
+            },
+            {
+              label: "Kubernetes",
+              link: "/deployment-examples/kubernetes/",
+            },
+            {
+              label: "Chromium",
+              link: "/deployment-examples/chromium/",
             },
           ],
         },
@@ -130,16 +179,59 @@ export default defineConfig({
               link: "/explanations/architecture/",
             },
             {
-              label: "Local Remote Execution",
-              link: "/explanations/lre/",
-            },
-            {
               label: "History",
               link: "/explanations/history/",
+            },
+            {
+              label: "Local Remote Execution",
+              link: "/explanations/lre/",
             },
           ],
         },
         {
+          // Corresponds to https://diataxis.fr/explanation/. Addresses
+          // common questions and confusions about esoteric tooling and
+          // concepts. It aims to help new users feel more at ease and
+          label: "FAQ",
+          items: [
+            {
+              label: "Is NativeLink Free?",
+              link: "/faq/cost",
+            },
+            {
+              label: "What is Remote Caching?",
+              link: "/faq/caching",
+            },
+            {
+              label: "What is Remote Execution?",
+              link: "/faq/remote-execution",
+            },
+            {
+              label: "What is LRE?",
+              link: "/faq/lre",
+            },
+            {
+              label: "What are Toolchains?",
+              link: "/faq/toolchains",
+            },
+            {
+              label: "How do I make my Bazel setup hermetic?",
+              link: "/faq/hermeticity",
+            },
+            {
+              label: "What is Nix?",
+              link: "/faq/nix",
+            },
+            {
+              label: "Why Rust?",
+              link: "/faq/rust",
+            },
+          ],
+        },
+        {
+          // Corresponds to https://diataxis.fr/how-to-guides/. Guides for
+          // contributors. They should provide practical guidance for
+          // real-world use-cases.
           label: "For Contributors",
           items: [
             {
@@ -178,14 +270,18 @@ export default defineConfig({
               label: "Changelog",
               link: "/reference/changelog/",
             },
+            {
+              label: "Configuration Reference",
+              link: "/reference/nativelink-config/",
+            },
           ],
         },
         // Navigation.
         {
           label: "leadingNavLinks",
           items: [
-            { label: "Docs", link: "/tutorials/setup/" },
-            { label: "NativeCloud", link: "https://app.nativelink.com/" },
+            { label: "Docs", link: "/introduction/setup/" },
+            { label: "NativeLink Cloud", link: "https://app.nativelink.com/" },
           ],
         },
       ],
