@@ -20,12 +20,12 @@ use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId, WorkerId};
 use nativelink_util::metrics_utils::Registry;
+use nativelink_util::operation_state_manager::WorkerStateManager;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::Notify;
 use tonic::async_trait;
 use tracing::{event, Level};
 
-use crate::operation_state_manager::WorkerStateManager;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
@@ -45,7 +45,7 @@ struct ApiWorkerSchedulerImpl {
 
 impl ApiWorkerSchedulerImpl {
     /// Refreshes the lifetime of the worker with the given timestamp.
-    pub(crate) fn refresh_lifetime(
+    fn refresh_lifetime(
         &mut self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
@@ -68,7 +68,7 @@ impl ApiWorkerSchedulerImpl {
 
     /// Adds a worker to the pool.
     /// Note: This function will not do any task matching.
-    pub(crate) fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
+    fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id;
         self.workers.put(worker_id, worker);
 
@@ -94,14 +94,14 @@ impl ApiWorkerSchedulerImpl {
     /// Removes worker from pool.
     /// Note: The caller is responsible for any rescheduling of any tasks that might be
     /// running.
-    pub(crate) fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
+    fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
         let result = self.workers.pop(worker_id);
         self.worker_change_notify.notify_one();
         result
     }
 
     /// Sets if the worker is draining or not.
-    pub async fn set_drain_worker(
+    async fn set_drain_worker(
         &mut self,
         worker_id: &WorkerId,
         is_draining: bool,
@@ -134,7 +134,7 @@ impl ApiWorkerSchedulerImpl {
         workers_iter.map(|(_, w)| &w.id).copied()
     }
 
-    pub async fn update_action(
+    async fn update_action(
         &mut self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
@@ -245,7 +245,7 @@ impl ApiWorkerSchedulerImpl {
     }
 
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
-    pub async fn immediate_evict_worker(
+    async fn immediate_evict_worker(
         &mut self,
         worker_id: &WorkerId,
         err: Error,
