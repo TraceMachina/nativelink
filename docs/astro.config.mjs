@@ -117,10 +117,6 @@ export default defineConfig({
               label: "Kubernetes example",
               link: "/guides/kubernetes",
             },
-            {
-              label: "Contributing",
-              link: "/guides/contributing",
-            },
           ],
         },
         {
@@ -130,12 +126,41 @@ export default defineConfig({
           label: "Understanding NativeLink",
           items: [
             {
+              label: "Architecture",
+              link: "/explanations/architecture/",
+            },
+            {
               label: "Local Remote Execution",
               link: "/explanations/lre/",
             },
             {
               label: "History",
               link: "/explanations/history/",
+            },
+          ],
+        },
+        {
+          label: "For Contributors",
+          items: [
+            {
+              label: "Contribution Guidelines",
+              link: "contribute/guidelines/",
+            },
+            {
+              label: "Working on documentation",
+              link: "contribute/docs/",
+            },
+            {
+              label: "Develop with Nix",
+              link: "contribute/nix/",
+            },
+            {
+              label: "Develop with Bazel",
+              link: "contribute/bazel/",
+            },
+            {
+              label: "Developing with Cargo",
+              link: "contribute/cargo/",
             },
           ],
         },

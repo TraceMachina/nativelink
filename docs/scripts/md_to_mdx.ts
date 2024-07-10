@@ -192,7 +192,7 @@ export function preProcessMarkdown(markdown: string): string {
 
     if (
       line.trim().startsWith(">") ||
-      /^\[!(TIP|NOTE|WARNING|IMPORTANT)\]/.test(line)
+      /^\[!(TIP|NOTE|WARNING|IMPORTANT|CAUTION)\]/.test(line)
     ) {
       processedLines.push(line);
       continue;
