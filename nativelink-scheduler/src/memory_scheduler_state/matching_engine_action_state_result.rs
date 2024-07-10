@@ -18,16 +18,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_util::action_messages::{ActionInfo, ActionState};
+use nativelink_util::operation_state_manager::ActionStateResult;
 use tokio::sync::watch;
 
-use super::awaited_action::AwaitedAction;
-use crate::operation_state_manager::ActionStateResult;
+use super::awaited_action_db::AwaitedAction;
 
-pub struct MatchingEngineActionStateResult {
+pub(crate) struct MatchingEngineActionStateResult {
     awaited_action: Arc<AwaitedAction>,
 }
 impl MatchingEngineActionStateResult {
-    pub(crate) fn new(awaited_action: Arc<AwaitedAction>) -> Self {
+    pub fn new(awaited_action: Arc<AwaitedAction>) -> Self {
         Self { awaited_action }
     }
 }

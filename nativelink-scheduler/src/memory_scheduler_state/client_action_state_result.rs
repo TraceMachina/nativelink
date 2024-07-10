@@ -18,10 +18,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_util::action_messages::{ActionInfo, ActionState};
+use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::watch::Receiver;
-
-use crate::operation_state_manager::ActionStateResult;
 
 pub(crate) struct ClientActionStateResult {
     /// The action info for the action.
@@ -38,7 +37,7 @@ pub(crate) struct ClientActionStateResult {
 }
 
 impl ClientActionStateResult {
-    pub(crate) fn new(
+    pub fn new(
         action_info: Arc<ActionInfo>,
         mut rx: Receiver<Arc<ActionState>>,
         maybe_keepalive_spawn: Option<JoinHandleDropGuard<()>>,
