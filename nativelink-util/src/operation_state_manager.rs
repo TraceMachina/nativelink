@@ -17,14 +17,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use crate::action_messages::{
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ClientOperationId, OperationId, WorkerId,
+};
+use crate::common::DigestInfo;
 use async_trait::async_trait;
 use bitflags::bitflags;
 use futures::Stream;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ClientOperationId, OperationId, WorkerId,
-};
-use nativelink_util::common::DigestInfo;
 use tokio::sync::watch;
 
 bitflags! {

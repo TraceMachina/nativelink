@@ -14,9 +14,8 @@
 
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_util::action_messages::{ActionResult, ActionStage};
+use nativelink_util::operation_state_manager::OperationStageFlags;
 use serde::{Deserialize, Serialize};
-
-use crate::operation_state_manager::OperationStageFlags;
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub enum RedisOperationStage {

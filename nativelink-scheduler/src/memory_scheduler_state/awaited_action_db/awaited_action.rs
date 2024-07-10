@@ -238,8 +238,7 @@ impl AwaitedAction {
     /// Sets the current state of the action and notifies subscribers.
     /// Returns true if the state was set, false if there are no subscribers.
     #[must_use]
-    // TODO(allada) IMPORTANT: This function should only be visible to ActionActionDb.
-    pub(crate) fn set_current_state(&self, state: Arc<ActionState>) -> bool {
+    pub fn set_current_state(&self, state: Arc<ActionState>) -> bool {
         self.update_worker_timestamp();
         // Note: Use `send_replace()`. Using `send()` will not change the value if
         // there are no subscribers.
