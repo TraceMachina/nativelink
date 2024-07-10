@@ -18,9 +18,8 @@
 
 NativeLink is an extremely (blazingly?) fast and efficient build cache and
 remote executor for systems that communicate using the [Remote execution
-protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/) and
-[Reclient](https://github.com/bazelbuild/reclient). NativeLink powers over one
-billion requests per month in production workloads.
+protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto) such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), and
+[Reclient](https://github.com/bazelbuild/reclient). NativeLink powers several billion requests per month in production workloads and powers operating systems deployed to over one billion edge devices and hundreds of thousands of data center servers in HPC environments.
 
 Supports Unix-based operating systems and Windows.
 
