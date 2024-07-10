@@ -34,10 +34,6 @@ jobs:
         bazel test \
           --remote_cache=${{ secrets.NATIVELINK_COM_REMOTE_CACHE_URL }} \
           --remote_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_backend=${{ secrets.NATIVELINK_COM_BES_URL }} \
-          --bes_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_results_url=${{ secrets.NATIVELINK_COM_BES_RESULTS_URL }} \
-          --remote_header=x-nativelink-project=nativelink-ci \
           //...
 
   docker-compose-compiles-nativelink:
