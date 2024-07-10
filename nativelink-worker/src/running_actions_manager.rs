@@ -608,7 +608,6 @@ struct RunningActionImplState {
     error: Option<Error>,
 }
 
-// TODO!(rename operation)
 pub struct RunningActionImpl {
     operation_id: OperationId,
     action_directory: String,

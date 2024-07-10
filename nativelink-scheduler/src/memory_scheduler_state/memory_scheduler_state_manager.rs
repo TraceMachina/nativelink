@@ -21,7 +21,7 @@ use async_lock::Mutex;
 use async_trait::async_trait;
 use futures::stream::{self, unfold};
 use nativelink_config::stores::EvictionPolicy;
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ClientOperationId,
     ExecutionMetadata, OperationId, WorkerId,
@@ -285,7 +285,8 @@ impl MemorySchedulerStateManagerImpl {
                 action_info,
                 &self.client_operation_drop_tx,
             )
-            .await;
+            .await
+            .err_tip(|| "In MemorySchedulerStateManager::add_operation")?;
         self.tasks_change_notify.notify_one();
         Ok(rx)
     }
