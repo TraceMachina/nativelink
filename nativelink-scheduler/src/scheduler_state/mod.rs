@@ -14,7 +14,6 @@
 
 pub(crate) mod awaited_action;
 pub(crate) mod client_action_state_result;
-pub(crate) mod completed_action;
 pub(crate) mod matching_engine_action_state_result;
 pub mod state_manager;
 pub mod workers;
