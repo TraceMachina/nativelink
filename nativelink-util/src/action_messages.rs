@@ -71,7 +71,6 @@ impl std::fmt::Display for ClientOperationId {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OperationId {
-    // TODO!(this should be for debugging only)
     pub unique_qualifier: ActionUniqueQualifier,
     pub id: Uuid,
 }
@@ -138,7 +137,7 @@ impl TryFrom<&str> for OperationId {
     ///
     /// ```no_run
     /// use nativelink_util::action_messages::OperationId;
-    /// let operation_id_str = "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52";
+    /// let operation_id_str = "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52";
     /// let operation_id = OperationId::try_from(operation_id_str);
     /// ```
     ///
@@ -170,8 +169,8 @@ impl TryFrom<&str> for OperationId {
         )
         .err_tip(|| format!("Invalid DigestInfo digest hash - {value}"))?;
         let cachable = match cachable {
-            "0" => false,
-            "1" => true,
+            "u" => false,
+            "c" => true,
             _ => {
                 return Err(make_input_err!(
                     "Invalid UniqueQualifier cachable value fragment - {value}"
@@ -286,8 +285,7 @@ impl std::fmt::Display for ActionUniqueQualifier {
             unique_key.digest_function,
             unique_key.digest.hash_str(),
             unique_key.digest.size_bytes,
-            // TODO!(maybe make this a different value?)
-            cachable as i32, // Convert to 0 or 1.
+            if cachable { 'c' } else { 'u' },
         ))
     }
 }
