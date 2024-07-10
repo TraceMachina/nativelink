@@ -1,0 +1,30 @@
+---
+title: "Migrating from Unsupported Build Systems"
+description: "How to migrate to a build system that supports NativeLink"
+pagefind: true
+---
+
+To use NativeLink, you need to migrate to a build system that supports the
+[remote execution protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto).
+
+Many common build systems, such as CMake and Gradle, don't support
+remote execution. The most common reasons people move off them is to set up
+a monorepo, but NativeLink combined with the build systems mentioned below
+can be a powerful alternative to these traditional build systems.
+
+You have several choices, including:
+
+- [Bazel](https://bazel.build/migrate) (most common)
+- [Buck2](https://buck2.build/docs/getting_started/)
+- [Pants](https://www.pantsbuild.org/2.21/docs/getting-started/incremental-adoption)
+  (less common than the others but frequently used for Python)
+
+Please refer to the migration guides linked above for each build system.
+
+## I migrated, now what?
+
+After successfully migrating to a Remote Execution API/NativeLink compatible
+build system, you can now proceed to try out NativeLink with your new setup.
+The simplest and fastest way to do this is by using the cloud. Please refer
+to the [Getting Started with NativeLink Cloud](../nativelink-cloud/bazel)
+guide for detailed instructions.
