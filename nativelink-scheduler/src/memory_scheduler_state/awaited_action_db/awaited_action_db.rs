@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use nativelink_config::stores::EvictionPolicy;
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
     ClientOperationId, OperationId,
@@ -288,7 +288,7 @@ impl AwaitedActionDb {
         client_operation_id: ClientOperationId,
         action_info: Arc<ActionInfo>,
         client_operation_drop_tx: &mpsc::UnboundedSender<Arc<AwaitedAction>>,
-    ) -> watch::Receiver<Arc<ActionState>> {
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         // Check to see if the action is already known and subscribe if it is.
         let subscription_result = self
             .try_subscribe(
@@ -297,12 +297,13 @@ impl AwaitedActionDb {
                 action_info.priority,
                 client_operation_drop_tx,
             )
-            .await;
-        let action_info = match subscription_result {
-            Ok(subscription) => return subscription,
-            // TODO!(we should not ignore the error here.)
-            Err(_) => action_info,
-        };
+            .await
+            .err_tip(|| "In AwaitedActionDb::subscribe_or_add_action");
+        match subscription_result {
+            Err(err) => return Err(err),
+            Ok(Some(subscription)) => return Ok(subscription),
+            Ok(None) => { /* Add item to queue. */ }
+        }
 
         let maybe_unique_key = match &action_info.unique_qualifier {
             ActionUniqueQualifier::Cachable(unique_key) => Some(unique_key.clone()),
@@ -335,7 +336,7 @@ impl AwaitedActionDb {
                 awaited_action,
             },
         );
-        subscription
+        Ok(subscription)
     }
 
     async fn try_subscribe(
@@ -344,31 +345,23 @@ impl AwaitedActionDb {
         unique_qualifier: &ActionUniqueQualifier,
         priority: i32,
         client_operation_drop_tx: &mpsc::UnboundedSender<Arc<AwaitedAction>>,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error> {
         let unique_key = match unique_qualifier {
             ActionUniqueQualifier::Cachable(unique_key) => unique_key,
-            ActionUniqueQualifier::Uncachable(_unique_key) => {
-                return Err(make_err!(
-                    Code::InvalidArgument,
-                    "Cannot subscribe to an existing item when skip_cache_lookup is true."
-                ));
-            }
+            ActionUniqueQualifier::Uncachable(_unique_key) => return Ok(None),
         };
 
-        let awaited_action = self
-            .action_info_hash_key_to_awaited_action
-            .get(unique_key)
-            .ok_or(make_input_err!(
-                "Could not find existing action with name: {unique_qualifier}"
-            ))
-            .err_tip(|| "In state_manager::try_subscribe")?;
+        let Some(awaited_action) = self.action_info_hash_key_to_awaited_action.get(unique_key)
+        else {
+            return Ok(None); // Not currently running.
+        };
 
         // Do not subscribe if the action is already completed,
         // this is the responsibility of the CacheLookupScheduler.
+        // TODO(allad) Once we land the new scheduler onto main, we can remove this check.
+        // It makes sense to allow users to subscribe to already completed items.
         if awaited_action.get_current_state().stage.is_finished() {
-            return Err(make_input_err!(
-                "Subscribing an item that is already completed should be handled by CacheLookupScheduler."
-            ));
+            return Ok(None); // Already completed.
         }
         let awaited_action = awaited_action.clone();
         if let Some(sort_info_lock) = awaited_action.upgrade_priority(priority) {
@@ -380,12 +373,10 @@ impl AwaitedActionDb {
                         awaited_action: awaited_action.clone(),
                     });
             let Some(mut sorted_awaited_action) = maybe_sorted_awaited_action else {
-                // TODO!(Either use event on all of the above error here, but both is overkill).
-                let err = make_err!(
+                return Err(make_err!(
                     Code::Internal,
-                    "sorted_action_info_hash_keys and action_info_hash_key_to_awaited_action are out of sync");
-                event!(Level::ERROR, ?unique_qualifier, ?awaited_action, "{err:?}",);
-                return Err(err);
+                    "sorted_action_info_hash_keys and action_info_hash_key_to_awaited_action are out of sync"
+                ));
             };
             sorted_awaited_action.sort_key = sort_info_lock.get_new_sort_key();
             self.insert_sort_map_for_stage(&state.stage, sorted_awaited_action);
@@ -403,6 +394,6 @@ impl AwaitedActionDb {
             )
             .await;
 
-        Ok(subscription)
+        Ok(Some(subscription))
     }
 }

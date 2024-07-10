@@ -67,9 +67,6 @@ pub struct AwaitedAction {
     /// The action that is being awaited on.
     action_info: Arc<ActionInfo>,
 
-    // The unique identifier of the operation.
-    // TODO!(operation_id should be stored here).
-    // operation_id: OperationId,
     /// The data that is used to sort the action in the queue.
     /// The first item in the tuple is the current priority,
     /// the second item is the sort key.
