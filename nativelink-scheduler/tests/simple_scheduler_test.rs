@@ -72,8 +72,8 @@ fn update_eq(expected: UpdateForWorker, actual: UpdateForWorker, ignore_id: bool
             }
             _ => false,
         },
-        update_for_worker::Update::KillActionRequest(actual_update) => match expected_update {
-            update_for_worker::Update::KillActionRequest(expected_update) => {
+        update_for_worker::Update::KillOperationRequest(actual_update) => match expected_update {
+            update_for_worker::Update::KillOperationRequest(expected_update) => {
                 expected_update == actual_update
             }
             _ => false,

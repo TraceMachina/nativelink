@@ -35,14 +35,14 @@ use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ConnectionResult, ExecuteResult, KillActionRequest, StartExecute,
+    execute_result, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
     SupportedProperties, UpdateForWorker,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata,
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ExecutionMetadata, OperationId,
 };
 use nativelink_util::common::{encode_stream_proto, fs, DigestInfo};
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -676,13 +676,14 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
         skip_cache_lookup: true,
     };
 
+    let operation_id = OperationId::new(action_info.unique_qualifier.clone());
     {
         // Send execution request.
         tx_stream
             .send_data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
                     execute_request: Some(action_info.clone().into()),
-                    operation_id: String::new(),
+                    operation_id: operation_id.to_string(),
                     queued_timestamp: None,
                 })),
             })?)
@@ -697,23 +698,22 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    let action_id = action_info.unique_qualifier.get_hash();
     {
         // Send kill request.
         tx_stream
             .send_data(encode_stream_proto(&UpdateForWorker {
-                update: Some(Update::KillActionRequest(KillActionRequest {
-                    action_id: hex::encode(action_id),
+                update: Some(Update::KillOperationRequest(KillOperationRequest {
+                    operation_id: operation_id.to_string(),
                 })),
             })?)
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
 
-    let killed_action_id = test_context.actions_manager.expect_kill_action().await;
+    let killed_operation_id = test_context.actions_manager.expect_kill_operation().await;
 
     // Make sure that the killed action is the one we intended
-    assert_eq!(killed_action_id, action_id);
+    assert_eq!(killed_operation_id, operation_id);
 
     Ok(())
 }
