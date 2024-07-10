@@ -1,0 +1,49 @@
+---
+title: "What is hermiticity?"
+description: "Hermitic build overview"
+pagefind: true
+---
+
+## Overview of hermeticity
+
+Hermeticity in the context of build systems refers to the principle of isolation
+from changes to the host system. This means that given the same input source
+code and product configuration, a hermetic build system will always produce the
+same output. This is achieved by making the build process insensitive to
+libraries and other software installed on the host machine. Instead, hermetic
+builds depend on specific versions of build tools and dependencies, making the
+build process self-contained and independent of external services.
+
+## How to achieve hermeticity
+
+Isolation and source identity are the two key aspects of hermeticity. Isolation
+is achieved by treating tools as source code, downloading copies of tools, and
+managing their storage and use within managed file trees. This creates a
+separation between the host machine and the local user, including installed
+versions of languages. Source identity ensures the sameness of inputs by using
+unique hash codes to identify changes to the build's input.
+
+Isolation is crucial as it ensures that the build process isn't affected by
+changes in the host system, leading to consistent and predictable build outputs.
+On the other hand, non-isolation can lead to unpredictable build outputs and
+potential security risks as the build process could be influenced by potentially
+malicious software installed on the host system.
+
+Hermetic builds offer several benefits including speed, parallel execution,
+ability to build multiple builds on the same machine using different tools and
+versions, and reproducibility. However, it's important to identify and address
+non-hermeticity in your builds.
+
+## Non-hermeticity causes
+
+Common sources of non-hermeticity include
+arbitrary processing in .mk files, actions or tooling that create files
+non-deterministically, system binaries that differ across hosts, and writing to
+the source tree during the build. To troubleshoot non-hermetic builds, you can
+ensure null sequential builds, debug local cache hits from a variety of potential
+client machines, execute a build within a docker container, and enable strict
+sandboxing at the per-action level.
+
+For more detailed information about hermeticity
+refer to the
+[Bazel Hermeticity Guide](https://bazel.build/versions/6.1.0/basics/hermeticity?hl=en).

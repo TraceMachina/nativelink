@@ -1,0 +1,483 @@
+---
+title: "Production Configuration"
+description: "NativeLink production CAS Configuration"
+pagefind: true
+---
+
+## Introduction
+Below is an overview of an actual production CAS used by NativeLink.
+
+We included an overview of the infrastructure we use and an actual Configuration
+which both provide helpful reference for customers looking to deploy NativeLink On-Prem.
+
+## Production CAS Overview
+At NativeLink we offer CAS-as-a-Service running on all the major cloud providers (AWS, GCP, Azure, etc). This allows our customers to get started with NativeLink to improve build & test performance with minimal effort. Behind the scenes, each CAS service runs in a Kubernetes namespace with a dedicated ActionCache store and a shared CAS store. In this article, we take a deep dive into how we Configure the CAS service in our cloud. Even if you’re not using our hosted CAS service, the insights covered here will help you Configure your own CAS to achieve high performance and scalability.
+
+To run NativeLink, you just pass the path to a single JSON Configuration file, such as:
+
+/bin/NativeLink /etc/Config/cas.json
+
+The entire JSON file we use for the cloud service is included at the end of this document.
+NativeLink Servers
+
+At the top level of the CAS Config, we've stores and servers. Each server defines a listener and a set of services. The listener defines the network interface and port to accept requests on. With this basic construct, a single NativeLink binary supports any of the NativeLink services. In our cloud platform, we run CAS and scheduler services in different processes, but you could run all NativeLink services in a single process as well.
+
+Specifically, under servers, we've two separate servers defined:
+
+```json
+"servers": [
+ {
+   "listener": {
+     "http": {
+       "socket_address": "0.0.0.0:50051"
+     }
+   },
+   "services": {
+     "cas": {
+       "main": {
+         "cas_store": "cas_STORE"
+       }
+     },
+     "ac": {
+       "main": {
+         "ac_store": "AC_STORE"
+       }
+     },
+     "capabilities": {},
+     "bytestream": {
+       "cas_stores": {
+         "main": "cas_STORE",
+         "": "cas_STORE"
+       }
+     }
+   }
+ },
+ {
+   "listener": {
+     "http": {
+       "socket_address": "0.0.0.0:50061"
+     }
+   },
+   "services": {
+     "experimental_prometheus": {
+       "path": "/metrics"
+     }
+   }
+ }
+]
+
+```
+
+We’ll cover the metrics service (`experimental_prometheus`) in NativeLink another time. For now, let’s focus on the main server that exposes the CAS and ActionCache services.
+```json
+ {
+   "listener": {
+     "http": {
+       "socket_address": "0.0.0.0:50051"
+     }
+   },
+   "services": {
+     "cas": {
+       "main": {
+         "cas_store": "cas_STORE"
+       }
+     },
+     "ac": {
+       "main": {
+         "ac_store": "AC_STORE"
+       }
+     },
+     "capabilities": {},
+     "bytestream": {
+       "cas_stores": {
+         "main": "cas_STORE"
+       }
+     }
+   }
+ }
+```
+
+From this definition, we see that an HTTP listener binds to port 50051 on all network interfaces on the server. You can also Configure advanced HTTP settings on the listener, such as TLS, compression, and timeouts. In our cloud, we terminate TLS in our ingress controller, so we don't define a TLS listener, but NativeLink can be Configured to terminate TLS if so desired.
+
+This server hosts four services: CAS, ac, capabilities, and bytestream. The capabilities service is needed for supporting the Bazel protocol. The bytestream service is used to stream data to and from the CAS and is recommended for handling large objects.
+
+You might be wondering what the “main” object under "CAS" and “AC” services means. In this case, it indicates the instance name, which means you need to pass --remote_instance_name=main. Alternatively, you can use the following Configuration so your Bazel clients don’t have to pass the --remote_instance_name parameter:
+```json
+     "cas": {
+       "": {
+         "cas_store": "cas_STORE"
+       }
+     },
+     "ac": {
+       "": {
+         "ac_store": "AC_STORE"
+       }
+     }
+```
+
+Now let’s turn our attention to the stores section of the CAS Configuration, starting with the ActionCache.
+
+The main idea around NativeLink stores is you can chain them together to build complex behavior from basic constructs. At the end of the chain, there is a final store that persists the bytes on some durable storage medium, for example, a filesystem, S3, or Redis. Before we dive into the details of the various stores, take a moment to review the following diagram that depicts the CAS Configuration we use in our cloud platform.
+
+![Architecture](src/assets/architecture.svg)
+
+ActionCache
+
+The ActionCache service Implements the ActionCache API defined by the Bazel Remote Execution proto (https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto). You can read the details in the proto but to keep things basic, the ActionCache gives you ActionResults (the cached value) for a given Action digest (the key).
+
+There exist a number of interesting hints about how the ActionCache should behave, such as assuming “more recently used entries are more likely to be used again,” that's some LRU eviction scheme is most appropriate for bounded ActionCache implementations.
+
+If we look at the ac service, we see it references a store named ac_STORE. The AC_STORE is defined as:
+
+```json5
+"AC_STORE": {
+ "completeness_checking": {
+   "backend": {
+     "ref_store": {
+       "name": "AC_FAST_SLOW_STORE"
+     }
+   },
+   "cas_store": {
+     "ref_store": {
+       "name": "cas_STORE"
+     }
+   }
+ }
+}
+```
+
+From this definition, we can tell that AC_STORE is a `completeness_checking` store. This is our first example of a wrapper store that performs some operation and then forwards on to other stores. From the reference documentation (https://docs.NativeLink.com/Configuration/Reference):
+
+Completeness checking store verifies if the output files & folders exist in the CAS before forwarding the request to the underlying store.
+
+Effectively, this store ensures the CAS and ActionCache are in a consistent state for a given Action digest (key). If not, then the requested Action digest is treated as a cache miss and needs to be re-computed. As mentioned above, the Remote execution proto gives hints about the behavior of the ActionCache, such as this comment for the GetActionResult endpoint:
+
+```json
+  // Implementations SHOULD ensure that any blobs referenced from the
+  // [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage]
+  // are available at the time of returning the
+  // [ActionResult][build.bazel.remote.execution.v2.ActionResult] and will be
+  // for some period of time afterwards. The lifetimes of the referenced blobs SHOULD be increased
+  // if necessary and applicable.
+
+```
+
+The back-end points to a store named AC_FAST_SLOW_STORE via a `ref_store`, which we’ll cover in the next section. The `cas_store` points to a store named cas_STORE covered below. As the `completeness_checking` store needs to verify directories and files exist in the CAS, it makes sense that it needs a reference to a CAS store.
+
+As you might expect, the AC_FAST_SLOW_STORE is a `fast_slow` store. From the reference guide, a `fast_slow` store:
+
+FastSlow store will first try to fetch the data from the fast store and then if it doesn't exist try the slow store.
+
+Intuitively, a `fast_slow` store has two stores, where the fast store is smaller (and bounded on size) than the slow (thus needs to support evictions) and is well suited for frequently accessed items (LRU eviction scheme). In contrast, the slow store can be much larger and has a less aggressive eviction policy. If a key isn't present in the fast store, then the slow store is checked. If found in the slow store, the object is stored in the fast store for the next time it’s requested. Writes are sent to both the fast and slow stores with both writes having to succeed before the write request is considered successful.
+
+The slow side of the Action Cache `fast_slow` in our cloud platform uses the Redis store:
+
+```
+"slow": {
+ "redis_store": {
+   "addresses": [
+     "${REDIS_STORE_URL:-redis://redis-headless:6379}"
+   ]
+ }
+}
+```
+Notice that we pull the actual address of Redis from the REDIS_STORE_URL environment variable, which helps keep the Config structure free of environment specific settings.
+
+The fast side of the Action Cache `fast_slow` store is a `size_partitioning` store:
+```json
+"size_partitioning":{
+ "size": 1000,
+ "lower_store": {
+   "memory": {
+     "eviction_policy": {
+       "max_bytes": 100000000,
+       "max_count": 150000
+     }
+   }
+ },
+ "upper_store": {
+   "noop": {}
+ }
+}
+```
+
+Notice there is a lower and upper store for the `size_partitioning` store. Action cache objects are typically very small (\<1 KB) as they only hold references to objects in the CAS and metadata. The following chart shows quantiles for object sizes stored in the Action Cache after running a Chromium build.
+
+![Grafana](src/assets/grafana.svg)
+
+Notice the size threshold is set to 1000 bytes, meaning that any object less than this size is sent to the `lower_store` and any object larger is sent to the upper. Since we’re backed by a slow store with durable storage (Redis), we just no-op the upper store (the objects are discarded). as mentioned above, the fast store should be fast and bounded to some maximum size; it should evict objects based on an LRU policy. thus, we use a memory store with a maximum of 100,000,000 bytes (100mb) or 150,000 objects, whichever is reached first. the actual values here depend on the environment where you’re running NativeLink, feel free to increase them as needed.
+
+That covers the stores for the ActionCache, now let’s look at the CAS service and store.
+CAS
+
+The NativeLink CAS service stores content using a cryptographic hash of the content itself as the cache key, known as Content Addressable Storage. From a distributed build system perspective, it makes sense to use a CAS since we can avoid rebuilding outputs during the build process because the CAS guarantees stored content hasn't changed for any given hash key. However, we’re not here to learn how Bazel remote caching works with CAS, as there are plenty of resources about that on the Web, so let’s turn our attention to how the NativeLink CAS store works. In the Config JSON, we define the top-level cas_STORE:
+```json
+"cas_STORE": {
+ "existence_cache": {
+   "backend": {
+     "ref_store": {
+       "name": "cas_FAST_SLOW_STORE"
+     }
+   },
+   "eviction_policy": {
+     "max_count": 10000000,
+     "max_seconds": 1800
+   }
+ }
+}
+```
+
+The CAS_STORE is an `existence_cache`:
+
+Existence store will wrap around another store and cache calls to has so that subsequent `has_with_results` calls will be faster. Note: This store should only be used on CAS stores.
+
+Intuitively, this store is an optimization that helps speed up requests for the same key that occur within a Configurable time period (`max_seconds`). However, it has an underlying back-end store, which in our Config is a cas_FAST_SLOW_STORE.
+```json5
+"cas_FAST_SLOW_STORE": {
+ "verify": {
+   "backend": { ... }
+ },
+ "verify_size": true
+}
+```
+Here we’re using a verify store which verifies the size of the data being uploaded into the CAS. This store helps ensure the integrity of your CAS. In this case, we chose to not have a store named cas_VERIFY_STORE that references the cas_FAST_SLOW_STORE but that would be an acceptable Configuration if you wanted to avoid nesting stores within stores in your Configuration.
+
+The back-end for the verify store is a `fast_slow` store. Let’s look at the slow store first.
+```json
+"slow": {
+ "size_partitioning":{
+   "size": 1500000,
+   "lower_store": {
+     "redis_store": {
+       "addresses": [
+         "${SHARED_REDIS_URL}"
+       ]
+     }
+   },
+   "upper_store": {
+     "shard": {
+       "stores": [
+         {
+           "store": {
+             "experimental_s3_store": {
+               "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
+               "bucket": "${SHARED_cas_BUCKET:-not_set}",
+               "key_prefix": "cas/{{ $i }}/",
+               "retry": {
+                 "max_retries": 10,
+                 "delay": 0.3,
+                 "jitter": 0.5
+               }
+             }
+           }
+         },
+         ...
+       ]
+     }
+   }
+```
+As we learned in the Action Cache section, a `size_partitioning` store allows us to partition objects into different stores based on their size. From this Config, we see that any objects less than 1,500,000 (1.5 MB) are sent to a Redis store, otherwise they're sent to the `upper_store`. The `upper_store` is a shard store that distributes objects across multiple stores, which in our case are different paths in an S3 bucket. We do this to work-around S3 rate limits on requests for a specific path (see: https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html). In our cloud, we use 100 shards. Also notice that we pull the actual S3 bucket and AWS region from environment variables instead of embedding in the JSON.
+
+To recap, for our CAS slow store, we send smaller objects to Redis and larger to S3 by leveraging several of NativeLink’s wrapper stores to enhance performance and scalability.
+
+On the fast side, we use a similar approach we did for ActionCache using `size_partitioning` scheme with a memory store.
+
+```json
+"fast": {
+ "size_partitioning":{
+   "size": 64000,
+   "upper_store": {
+     "noop": {}
+   },
+   "lower_store": {
+     "memory": {
+       "eviction_policy": {
+         "max_bytes": 1000000000,
+         "max_count": 100000
+       }
+     }
+   }
+ }
+}
+```
+
+In this case, all objects less than 64KB are sent to the memory store, otherwise they're dropped from the fast store using no-op.
+CAS Config JSON
+
+Here is the final CAS Config JSON without the 99 extra shards for writing to S3.
+
+## Production CAS JSON
+```json
+{
+ "stores": {
+   "AC_FAST_SLOW_STORE": {
+     "fast_slow": {
+       "fast": {
+         "size_partitioning": {
+           "size": 1000,
+           "lower_store": {
+             "memory": {
+               "eviction_policy": {
+                 "max_bytes": 100000000,
+                 "max_count": 150000
+               }
+             }
+           },
+           "upper_store": {
+             "noop": {}
+           }
+         }
+       },
+       "slow": {
+         "redis_store": {
+           "addresses": [
+             "${REDIS_STORE_URL:-redis://redis-headless:6379}"
+           ]
+         }
+       }
+     }
+   },
+   "AC_STORE": {
+     "completeness_checking": {
+       "backend": {
+         "ref_store": {
+           "name": "AC_FAST_SLOW_STORE"
+         }
+       },
+       "cas_store": {
+         "ref_store": {
+           "name": "cas_STORE"
+         }
+       }
+     }
+   },
+   "cas_FAST_SLOW_STORE": {
+     "verify": {
+       "backend": {
+         "fast_slow": {
+           "fast": {
+             "size_partitioning": {
+               "size": 64000,
+               "upper_store": {
+                 "noop": {}
+               },
+               "lower_store": {
+                 "memory": {
+                   "eviction_policy": {
+                     "max_bytes": 1000000000,
+                     "max_count": 100000
+                   }
+                 }
+               }
+             }
+           },
+           "slow": {
+             "size_partitioning": {
+               "size": 1500000,
+               "lower_store": {
+                 "redis_store": {
+                   "addresses": [
+                     "${SHARED_REDIS_URL}"
+                   ]
+                 }
+               },
+               "upper_store": {
+                 "shard": {
+                   "stores": [
+                     {
+                       "store": {
+                         "experimental_s3_store": {
+                           "region": "${NATIVE_LINK_AWS_REGION:-us-east-1}",
+                           "bucket": "${SHARED_cas_BUCKET:-not_set}",
+                           "key_prefix": "cas/0/",
+                           "retry": {
+                             "max_retries": 10,
+                             "delay": 0.3,
+                             "jitter": 0.5
+                           }
+                         }
+                       }
+                     }
+                   ]
+                 }
+               }
+             }
+           }
+         }
+       }
+     },
+     "verify_size": true,
+     "hash_verification_function": "sha256"
+   },
+   "cas_STORE": {
+     "existence_cache": {
+       "backend": {
+         "ref_store": {
+           "name": "cas_FAST_SLOW_STORE"
+         }
+       },
+       "eviction_policy": {
+         "max_count": 10000000,
+         "max_seconds": 1800
+       }
+     }
+   },
+   "BEP_STORE": {
+     "redis_store": {
+       "addresses": [
+         "${BEP_REDIS_STORE_URL:-redis://redis-headless:6379/2}"
+       ]
+     }
+   }
+ },
+ "servers": [
+   {
+     "listener": {
+       "http": {
+         "socket_address": "0.0.0.0:50051",
+         "compression": {
+           "send_compression_algorithm": "gzip",
+           "accepted_compression_algorithms": [
+             "gzip"
+           ]
+         },
+         "advanced_http": {
+           "experimental_http2_keep_alive_timeout": 1200
+         }
+       }
+     },
+     "services": {
+       "cas": {
+         "main": {
+           "cas_store": "cas_STORE"
+         }
+       },
+       "ac": {
+         "main": {
+           "ac_store": "AC_STORE"
+         }
+       },
+       "capabilities": {},
+       "bytestream": {
+         "cas_stores": {
+           "main": "cas_STORE"
+         }
+       }
+     }
+   },
+   {
+     "listener": {
+       "http": {
+         "socket_address": "0.0.0.0:50061"
+       }
+     },
+     "services": {
+       "experimental_prometheus": {
+         "path": "/metrics"
+       },
+       "health": {}
+     }
+   }
+ ]
+}
+```

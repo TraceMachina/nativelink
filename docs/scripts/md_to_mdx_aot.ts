@@ -60,17 +60,17 @@ convertMarkdownToMdx(
 );
 convertMarkdownToMdx(
   "../nativelink-config/README.md",
-  "src/content/docs/guides/configuration.mdx",
+  "src/content/docs/config/configuration-intro.mdx",
   "NativeLink configuration guide",
 );
 convertMarkdownToMdx(
   "../deployment-examples/chromium/README.md",
-  "src/content/docs/guides/chromium.mdx",
+  "src/content/docs/deployment-examples/chromium.mdx",
   "NativeLink deployment example for Chromium",
 );
 convertMarkdownToMdx(
   "../deployment-examples/kubernetes/README.md",
-  "src/content/docs/guides/kubernetes.mdx",
+  "src/content/docs/deployment-examples/kubernetes.mdx",
   "NativeLink deployment example for Kubernetes",
 );
 convertMarkdownToMdx(
@@ -81,6 +81,6 @@ convertMarkdownToMdx(
 );
 convertMarkdownToMdx(
   "../README.md",
-  "src/content/docs/tutorials/setup.mdx",
+  "src/content/docs/introduction/setup.mdx",
   "Get starget with NativeLink",
 );
