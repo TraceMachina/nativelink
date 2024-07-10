@@ -227,7 +227,6 @@ impl ActionScheduler for CacheLookupScheduler {
             .await;
             match maybe_action_result {
                 Ok(action_result) => {
-                    println!("{action_result:?}");
                     let maybe_pending_txs = {
                         let mut inflight_cache_checks = inflight_cache_checks.lock();
                         // We are ready to resolve the in-flight actions. We remove the
