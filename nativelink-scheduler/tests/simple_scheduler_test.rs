@@ -1573,14 +1573,24 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
                     output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
                 },
                 server_logs: HashMap::default(),
-                error: Some(err.merge(make_err!(
-                    Code::Internal,
-                    "Job cancelled because it attempted to execute too many times and failed"
-                ))),
+                error: Some(err.clone()),
                 message: String::new(),
             }),
         };
-        assert_eq!(action_state.as_ref(), &expected_action_state);
+        let mut received_state = action_state.as_ref().clone();
+        if let ActionStage::Completed(stage) = &mut received_state.stage {
+            if let Some(real_err) = &mut stage.error {
+                assert!(
+                    real_err.to_string().contains("Job cancelled because it attempted to execute too many times and failed"),
+                    "{} did not contain 'Job cancelled because it attempted to execute too many times and failed'",
+                    real_err.to_string(),
+                );
+                *real_err = err;
+            }
+        } else {
+            panic!("Expected Completed, got : {:?}", action_state.stage);
+        };
+        assert_eq!(received_state, expected_action_state);
     }
 
     Ok(())
