@@ -16,30 +16,84 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  nativelink-dot-com-build-on-main-test:
+  nativelink-dot-com-cloud-rbe-main-legacy-dockerfile-test:
     runs-on: ubuntu-22.04
     environment: production
-    # Only run on main branch.
+    name: NativeLink.com Cloud / RBE on Main (Legacy Dockerfile Test)
     if: github.ref == 'refs/heads/main'
     steps:
     - name: Checkout
       uses: >- # v4.1.1
         actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+    - name: Set up AWS CLI
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.RBE_ECR_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.RBE_ECR_AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}
+
+    - name: Calculate Dockerfile hash and Retrieve Image URI for RBE
+      run: |
+        DOCKERFILE_HASH=$(sha256sum "${GITHUB_WORKSPACE}/tools/toolchain-nativelink/Dockerfile" | awk '{print $1}')
+        IMAGE_DETAILS=$(aws ecr describe-images --repository-name ${{ secrets.RBE_ECR_REPOSITORY_NAME }} --image-ids imageTag=$DOCKERFILE_HASH)
+        if [ $? -ne 0 ]; then
+          exit 1;
+        fi
+        echo "RBE_IMAGE=${{ secrets.RBE_ECR_AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.RBE_ECR_AWS_ACCOUNT_REGION }}.amazonaws.com/${{ secrets.RBE_ECR_REPOSITORY_NAME }}:$DOCKERFILE_HASH" >> $GITHUB_ENV
+
     - name: Setup Bazelisk
       uses: >- # v0.8.1
         bazel-contrib/setup-bazel@b388b84bb637e50cdae241d0f255670d4bd79f29
       with:
         bazelisk-cache: true
+
     - name: Run Bazel tests
       shell: bash
       run: |
         bazel test \
-          --remote_cache=${{ vars.NATIVELINK_COM_REMOTE_CACHE_URL }} \
-          --remote_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_backend=${{ vars.NATIVELINK_COM_BES_URL }} \
-          --bes_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_results_url=${{ vars.NATIVELINK_COM_BES_RESULTS_URL }} \
+          --remote_cache=grpcs://cas-tracemachina-shared.build-faster.nativelink.net \
+          --remote_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+          --remote_instance_name=main \
+          --bes_backend=grpcs://bes-tracemachina-shared.build-faster.nativelink.net \
+          --bes_header=x-nativelink-api-key=${{ secrets.NATIVELINK_COM_API_HEADER }} \
+          --bes_results_url=https://app.nativelink.com/a/e3b1e0e0-4b73-45d6-85bc-5cb7b02edea5/build \
           --remote_header=x-nativelink-project=nativelink-ci \
+          --remote_executor=grpcs://scheduler-tracemachina-shared.build-faster.nativelink.net:443 \
+          --remote_default_exec_properties="container-image=docker://${RBE_IMAGE}" \
+          --jobs=200 \
+          //...
+
+  nativelink-dot-com-cloud-cache-legacy-dockerfile-test:
+    runs-on: ubuntu-22.04
+    environment: production
+    name: NativeLink.com Cloud / Remote Cache (Legacy Dockerfile Test)
+    env:
+      NL_COM_API_KEY: ${{ secrets.NATIVELINK_COM_API_HEADER || '065f02f53f26a12331d5cfd00a778fb243bfb4e857b8fcd4c99273edfb15deae' }}
+    steps:
+    - name: Checkout
+      uses: >- # v4.1.1
+        actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+    - name: Setup Bazelisk
+      uses: >- # v0.8.1
+        bazel-contrib/setup-bazel@b388b84bb637e50cdae241d0f255670d4bd79f29
+      with:
+        bazelisk-cache: true
+
+    - name: Run Bazel tests
+      shell: bash
+      run: |
+        bazel test \
+          --remote_cache=grpcs://cas-tracemachina-shared.build-faster.nativelink.net \
+          --remote_header=x-nativelink-api-key=${NL_COM_API_KEY} \
+          --remote_instance_name=main \
+          --bes_backend=grpcs://bes-tracemachina-shared.build-faster.nativelink.net \
+          --bes_header=x-nativelink-api-key=${NL_COM_API_KEY} \
+          --bes_results_url=https://app.nativelink.com/a/e3b1e0e0-4b73-45d6-85bc-5cb7b02edea5/build \
+          --remote_header=x-nativelink-project=nativelink-ci \
+          --jobs=200 \
+          ${{ github.ref == 'refs/heads/main' && ' ' || '--nogenerate_json_trace_profile --remote_upload_local_results=false' }} \
           //...
 
   docker-compose-compiles-nativelink:
