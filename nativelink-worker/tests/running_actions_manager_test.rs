@@ -42,10 +42,12 @@ use nativelink_store::ac_utils::{get_and_decode_digest, serialize_and_upload_mes
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
+#[cfg_attr(target_family = "windows", allow(unused_imports))]
+use nativelink_util::action_messages::SymlinkInfo;
 use nativelink_util::action_messages::{
-    ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath,
+    ActionResult, ActionUniqueKey, ActionUniqueQualifier, DirectoryInfo, ExecutionMetadata,
+    FileInfo, NameOrPath, OperationId,
 };
-use nativelink_util::action_messages::{ActionUniqueKey, ActionUniqueQualifier, OperationId};
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::{Store, StoreLike};

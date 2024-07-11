@@ -424,11 +424,15 @@ impl WorkerScheduler for SimpleScheduler {
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        self.worker_scheduler.remove_timedout_workers(now_timestamp).await
+        self.worker_scheduler
+            .remove_timedout_workers(now_timestamp)
+            .await
     }
 
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
-        self.worker_scheduler.set_drain_worker(worker_id, is_draining).await
+        self.worker_scheduler
+            .set_drain_worker(worker_id, is_draining)
+            .await
     }
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
