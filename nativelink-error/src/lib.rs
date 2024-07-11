@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use fred::error::RedisError;
 use prost_types::TimestampError;
 use serde::{Deserialize, Serialize};
 
@@ -192,8 +193,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<redis::RedisError> for Error {
-    fn from(err: redis::RedisError) -> Self {
+impl From<RedisError> for Error {
+    fn from(err: RedisError) -> Self {
         make_err!(Code::Internal, "{}", err.to_string())
     }
 }

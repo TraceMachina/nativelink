@@ -13,238 +13,39 @@
 // limitations under the License.
 
 use std::borrow::Cow;
-use std::cell::{OnceCell, UnsafeCell};
-use std::fmt::Display;
+use std::cell::OnceCell;
 use std::pin::Pin;
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::future::{ErrInto, FutureExt, Shared};
+use fred::prelude::*;
 use futures::stream::FuturesOrdered;
-use futures::{Future, TryFutureExt, TryStreamExt};
-use nativelink_config::stores::RedisMode;
+use futures::TryStreamExt;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
-use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
-use redis::aio::{ConnectionLike, ConnectionManager};
-use redis::cluster_async::ClusterConnection;
-use redis::{AsyncCommands, ToRedisArgs};
-use tokio::task::JoinHandle;
 
 use crate::cas_utils::is_zero_digest;
 
 const READ_CHUNK_SIZE: isize = 64 * 1024;
 
-/// A wrapper type containing the different Redis clients we support.
-//
-// Typically we would use `dyn ConnectionLike` instead of creating a wrapper type, but these clients are cheaply
-// cloneable; you're meant to clone a client in order to get mutable access.
-// [`Clone`] has a [`Sized`] bound, which means that any supertrait we constructed with a `Clone` bound
-// wouldn't be object safe -- in short, this won't compile:
-//
-// ```compile_fail
-// trait CloneableConnectionHandle: ConnectionLike + Clone {}
-//
-// impl <C: ConnectionLike + Clone> CloneableConnectionHandle for C {}
-// ```
-#[derive(Clone)]
-pub enum ConnectionKind {
-    Cluster(ClusterConnection),
-    Single(ConnectionManager),
+trait ClientLikeExt: ClientLike + KeysInterface + TransactionInterface + PubsubInterface {}
+
+impl<C> ClientLikeExt for C where
+    C: ClientLike + KeysInterface + TransactionInterface + PubsubInterface
+{
 }
-
-impl From<ClusterConnection> for ConnectionKind {
-    fn from(value: ClusterConnection) -> Self {
-        Self::Cluster(value)
-    }
-}
-
-impl From<ConnectionManager> for ConnectionKind {
-    fn from(value: ConnectionManager) -> Self {
-        Self::Single(value)
-    }
-}
-
-// delegate to the inner impl's
-impl ConnectionLike for ConnectionKind {
-    fn req_packed_command<'a>(
-        &'a mut self,
-        cmd: &'a redis::Cmd,
-    ) -> redis::RedisFuture<'a, redis::Value> {
-        match self {
-            ConnectionKind::Cluster(inner) => inner.req_packed_command(cmd),
-            ConnectionKind::Single(inner) => inner.req_packed_command(cmd),
-        }
-    }
-
-    fn req_packed_commands<'a>(
-        &'a mut self,
-        cmd: &'a redis::Pipeline,
-        offset: usize,
-        count: usize,
-    ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
-        match self {
-            ConnectionKind::Cluster(inner) => inner.req_packed_commands(cmd, offset, count),
-            ConnectionKind::Single(inner) => inner.req_packed_commands(cmd, offset, count),
-        }
-    }
-
-    fn get_db(&self) -> i64 {
-        match self {
-            ConnectionKind::Cluster(inner) => inner.get_db(),
-            ConnectionKind::Single(inner) => inner.get_db(),
-        }
-    }
-}
-
-/// Type alias for a [`Shared`] [`JoinHandle`] that has had its [`JoinError`](`tokio::task::JoinError`) mapped to an [`Error`]
-type RedisConnectionFuture<C> = Shared<ErrInto<JoinHandle<Result<C, Error>>, Error>>;
-
-/// Represents the possible states of a Redis connection.
-enum ConnectionState<C> {
-    /// Contains a future that must be polled to connect to Redis
-    Connecting(RedisConnectionFuture<C>),
-
-    /// Contains a connection that was made successfully
-    Connected(C),
-
-    /// Contains an error that occurred while connecting
-    Errored(Error),
-}
-
-/// Represents a connection to Redis.
-pub struct BackgroundConnection<C> {
-    /// Synchronization primitive used for tracking if `self.state` has been changed from `ConnectionState::Connecting`
-    /// to `ConnectionState::Error` or `ConnectionState::Connected`. Once it's been changed exactly once,
-    /// [`Once::is_completed`] will return `true`.
-    once: Once,
-
-    /// Contains the current state of the connection.
-    // Invariant: the state must be mutated exactly once.
-    state: UnsafeCell<ConnectionState<C>>,
-}
-
-impl BackgroundConnection<ConnectionKind> {
-    /// Connect to a single Redis instance.
-    ///
-    /// ## Errors
-    ///
-    /// Some cursory checks are performed on the given connection info that can fail before a connection is established.
-    /// Errors that occur during the connection process are surfaced when the connection is first used.
-    pub fn single<T: redis::IntoConnectionInfo>(params: T) -> Result<Self, Error> {
-        let client = redis::Client::open(params).map_err(from_redis_err)?;
-        let init = async move { client.get_connection_manager().await };
-        Ok(Self::with_initializer(init))
-    }
-
-    /// Connect to multiple Redis instances configured in cluster mode
-    ///
-    /// ## Errors
-    ///
-    /// Some cursory checks are performed on the given connection info that can fail before a connection is established.
-    /// Errors that occur during the connection are surfaced when the connection is first used.
-    pub fn cluster<T: redis::IntoConnectionInfo>(
-        params: impl IntoIterator<Item = T>,
-    ) -> Result<Self, Error> {
-        let client = redis::cluster::ClusterClient::new(params).map_err(from_redis_err)?;
-        let init = async move { client.get_async_connection().await };
-        Ok(Self::with_initializer(init))
-    }
-}
-
-impl<C: Clone + Send + 'static> BackgroundConnection<C> {
-    /// Initialize a new connection by spawning a background task to run the provided future to completion.
-    ///
-    /// Outside of testing, you will probably want to use [`BackgroundConnection::single`] or [`BackgroundConnection::cluster`].
-    pub fn with_initializer<Fut, T, E>(init: Fut) -> Self
-    where
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-        C: From<T>,
-        T: Send + 'static,
-        Error: From<E>,
-        E: Send + 'static,
-    {
-        let handle = background_spawn!("redis_initial_connection", init.err_into().ok_into());
-        let state = ConnectionState::Connecting(handle.err_into().shared());
-        Self {
-            once: Once::new(),
-            state: UnsafeCell::new(state),
-        }
-    }
-
-    /// Retrieve the underlying connection. If the connection hasn't been established yet, the current task will
-    /// wait until the connection has been made.
-    ///
-    /// ## Errors
-    ///
-    /// Returns an error if there was an issue establishing a connection to Redis.
-    async fn get(&self) -> Result<C, Error> {
-        // Safety: we don't mutate state here, so normal borrowck rules are followed and the invariant is upheld
-        let state_ref = unsafe { &*self.state.get() };
-        let connection_future = match state_ref {
-            ConnectionState::Connecting(handle) => Shared::clone(handle),
-            ConnectionState::Connected(connection) => return Ok(connection.clone()),
-            ConnectionState::Errored(error) => return Err(error.clone()),
-        };
-
-        let connection_result = connection_future.await.and_then(|conn| conn);
-        self.once.call_once(|| {
-            // Safety: This part is `unsafe` because we break borrowck's rules of aliasing XOR mutability;
-            // calling `LazyConnection::get` takes `&self`, but now we're going to take `&mut self.state`.
-            // This means that if multiple tasks call `LazyConnection::get` at once, they could potentially
-            // attempt to mutate `self.state` simultaneously, which is `unsafe` -- it's a data race.
-            //
-            // The synchronization primitive we're using here to manually enforce borrowck's rules is [`Once`],
-            // which allows for executing closures exactly once. We use this guarantee to ensure that we only
-            // mutate `self.state` exactly once, despite having multiple tasks awaiting the same connection.
-            //
-            // Put another way: we only mutate state exactly once, inside this closure (exclusive). Outside of
-            // the closure, multiple tasks can read state simultaneously (aliasing).
-            //
-            // More specifically, the `Once` can be in one of three states:
-            //
-            // 1. Uninitialized
-            //  In this state, borrowck rules are followed because nobody has attempted to mutate `self.state` yet.
-            // 2. Initializing
-            //  In this state, borrowck rules are followed because exactly one thread has exclusive mutable access
-            //  to `self.state`, while all other threads block -- i.e. they will not read or write state.
-            // 3. Initialized
-            //  In this state, borrowck rules are followed because this closure will never get called.
-            //
-            // Put a third way: we've essentially recreated a `RwLock` that always prioritizes writes, and only allows
-            // one write. The invariant is upheld.
-            let state_mut = unsafe { &mut *self.state.get() };
-            *state_mut = match connection_result.clone() {
-                Ok(connection) => ConnectionState::Connected(connection),
-                Err(error) => ConnectionState::Errored(error),
-            };
-        });
-
-        connection_result
-    }
-}
-
-// Safety: We don't hold any raw pointers or `!Send` types except `UnsafeCell`.
-// Why do we need `C: Send`?
-// Task A creates a `BackgroundConnection` and shares it with task B,
-// which mutates the cell, which is then destroyed by A.
-// That is, destructor observes a sent value.
-unsafe impl<C: Sync + Send> Send for BackgroundConnection<C> {}
-
-// Safety: We ensure that exactly one task will mutate state exactly once.
-unsafe impl<C: Sync> Sync for BackgroundConnection<C> {}
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
-pub struct RedisStore<C: ConnectionLike + Clone = ConnectionKind> {
-    /// The connection to the underlying Redis instance(s).
-    connection: BackgroundConnection<C>,
+pub struct RedisStore<C = RedisClient, F = fn() -> String> {
+    /// The client for the underlying Redis instance(s).
+    client: C,
 
     /// A function used to generate names for temporary keys.
-    temp_name_generator_fn: fn() -> String,
+    temp_name_generator_fn: F,
     pub_sub_channel: Option<String>,
 
     /// A common prefix to append to all keys before they are sent to Redis.
@@ -253,40 +54,14 @@ pub struct RedisStore<C: ConnectionLike + Clone = ConnectionKind> {
     key_prefix: String,
 }
 
-impl RedisStore<ConnectionKind> {
+impl RedisStore<RedisClient, fn() -> String> {
     pub fn new(config: &nativelink_config::stores::RedisStore) -> Result<Arc<Self>, Error> {
-        if config.addresses.is_empty() {
-            return Err(Error::new(
-                Code::InvalidArgument,
-                "At least one address must be specified to connect to Redis".to_string(),
-            ));
-        };
-        let connection =
-            match config.mode {
-                RedisMode::Cluster => {
-                    let addrs = config.addresses.iter().map(String::as_str);
-                    BackgroundConnection::cluster(addrs)?
-                }
-                RedisMode::Standard if config.addresses.len() > 1 => return Err(Error::new(
-                    Code::InvalidArgument,
-                    "Attempted to connect to multiple addresses without setting `cluster = true`"
-                        .to_string(),
-                )),
-                RedisMode::Standard => {
-                    let addr = config.addresses[0].as_str();
-                    BackgroundConnection::single(addr)?
-                }
-                RedisMode::Sentinel => {
-                    return Err(Error::new(
-                        Code::Unimplemented,
-                        "Sentinel mode is currently not supported.".to_string(),
-                    ))
-                }
-            };
+        let client = Builder::from_config(RedisConfig::from_url(&config.url)?).build()?;
+        client.connect();
 
         Ok(Arc::new(
-            RedisStore::new_with_conn_and_name_generator_and_prefix(
-                connection,
+            RedisStore::new_with_client_and_name_generator_and_prefix(
+                client,
                 || uuid::Uuid::new_v4().to_string(),
                 config.experimental_pub_sub_channel.clone(),
                 config.key_prefix.clone(),
@@ -295,14 +70,11 @@ impl RedisStore<ConnectionKind> {
     }
 }
 
-impl<C: ConnectionLike + Clone + Send + 'static> RedisStore<C> {
+impl<C: ClientLike, F: Fn() -> String> RedisStore<C, F> {
     #[inline]
-    pub fn new_with_conn_and_name_generator(
-        connection: BackgroundConnection<C>,
-        temp_name_generator_fn: fn() -> String,
-    ) -> Self {
-        RedisStore::new_with_conn_and_name_generator_and_prefix(
-            connection,
+    pub fn new_with_client_and_name_generator(client: C, temp_name_generator_fn: F) -> Self {
+        RedisStore::new_with_client_and_name_generator_and_prefix(
+            client,
             temp_name_generator_fn,
             None,
             String::new(),
@@ -310,14 +82,14 @@ impl<C: ConnectionLike + Clone + Send + 'static> RedisStore<C> {
     }
 
     #[inline]
-    pub fn new_with_conn_and_name_generator_and_prefix(
-        connection: BackgroundConnection<C>,
-        temp_name_generator_fn: fn() -> String,
+    pub fn new_with_client_and_name_generator_and_prefix(
+        client: C,
+        temp_name_generator_fn: F,
         pub_sub_channel: Option<String>,
         key_prefix: String,
     ) -> Self {
         RedisStore {
-            connection,
+            client,
             temp_name_generator_fn,
             pub_sub_channel,
             key_prefix,
@@ -325,39 +97,34 @@ impl<C: ConnectionLike + Clone + Send + 'static> RedisStore<C> {
     }
 
     #[inline]
-    pub async fn get_conn(&self) -> Result<C, Error> {
-        self.connection.get().await
+    pub async fn client(&self) -> Result<C, Error> {
+        if self.client.is_connected() {
+            Ok(self.client.clone())
+        } else {
+            self.client.wait_for_connect().await?;
+            self.client().await
+        }
     }
 
     /// Encode a [`StoreKey`] so it can be sent to Redis.
-    fn encode_key<'a>(&self, key: StoreKey<'a>) -> impl ToRedisArgs + Display + Send + Sync + 'a {
-        // TODO(caass): Once https://github.com/redis-rs/redis-rs/pull/1219 makes it into a release,
-        // this can be changed to
-        // ```rust
-        // if self.key_prefix.is_empty() {
-        //   key.as_str()
-        // } else {
-        //   let mut encoded_key = String::with_capacity(self.key_prefix.len() + key_body.len());
-        //   encoded_key.push_str(&self.key_prefix);
-        //   encoded_key.push_str(&key_body);
-        //   Cow::Owned(encoded_key)
-        // }
-        //```
-        // and the return type changed to `Cow<'a, str>`
+    fn encode_key(&self, key: StoreKey<'_>) -> String {
         let key_body = key.as_str();
-
-        let mut encoded_key = String::with_capacity(self.key_prefix.len() + key_body.len());
-        encoded_key.push_str(&self.key_prefix);
-        encoded_key.push_str(&key_body);
-
-        encoded_key
+        if self.key_prefix.is_empty() {
+            key_body.into_owned()
+        } else {
+            let mut encoded_key = String::with_capacity(self.key_prefix.len() + key_body.len());
+            encoded_key.push_str(&self.key_prefix);
+            encoded_key.push_str(&key_body);
+            encoded_key
+        }
     }
 }
 
 #[async_trait]
-impl<C> StoreDriver for RedisStore<C>
+impl<C, F> StoreDriver for RedisStore<C, F>
 where
-    C: ConnectionLike + Clone + Send + Sync + Unpin + 'static,
+    C: ClientLikeExt + Unpin + 'static,
+    F: Fn() -> String + Unpin + Send + Sync + 'static,
 {
     async fn has_with_results(
         self: Pin<&Self>,
@@ -381,13 +148,12 @@ where
                     let encoded_key = self.encode_key(key.borrow());
 
                     async {
-                        let mut conn = self.get_conn().await.err_tip(|| {
+                        let client = self.client().await.err_tip(|| {
                             "Error: Could not get connection handle in has_with_results"
                         })?;
 
-                        conn.strlen::<_, usize>(encoded_key)
+                        KeysInterface::strlen::<usize, _>(&client, encoded_key)
                             .await
-                            .map_err(from_redis_err)
                             .err_tip(|| "Error: Could not call strlen in has_with_results")
                     }
                 })
@@ -442,9 +208,8 @@ where
             )
         };
 
-        let mut conn = self.get_conn().await?;
-        let mut pipe = redis::pipe();
-        pipe.atomic();
+        let client = self.client().await?;
+        let trx = client.multi();
 
         'outer: loop {
             let mut force_recv = true;
@@ -460,18 +225,17 @@ where
                         return Ok(());
                     }
                     if force_recv {
-                        conn.append(&final_key, &chunk[..])
+                        trx.append(&final_key, &chunk[..])
                             .await
-                            .map_err(from_redis_err)
                             .err_tip(|| "In RedisStore::update() single chunk")?;
                     }
 
                     break 'outer;
                 }
 
-                pipe.cmd("APPEND")
-                    .arg(temp_key.get_or_init(make_temp_name))
-                    .arg(&chunk[..]);
+                trx.append(temp_key.get_or_init(make_temp_name), &chunk[..])
+                    .await?;
+
                 force_recv = false;
 
                 // Give other tasks a chance to run to populate the reader's
@@ -479,27 +243,20 @@ where
                 tokio::task::yield_now().await;
             }
 
-            pipe.query_async(&mut conn)
+            trx.exec(false)
                 .await
-                .map_err(from_redis_err)
                 .err_tip(|| "In RedisStore::update::query_async")?;
-
-            pipe.clear();
         }
 
-        pipe.cmd("RENAME")
-            .arg(temp_key.get_or_init(make_temp_name))
-            .arg(&final_key);
-
-        pipe.query_async(&mut conn)
+        client
+            .rename(temp_key.get_or_init(make_temp_name), &final_key)
             .await
-            .map_err(from_redis_err)
             .err_tip(|| "In RedisStore::update")?;
 
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            conn.publish(pub_sub_channel, &final_key)
+            client
+                .publish(pub_sub_channel, &final_key)
                 .await
-                .map_err(from_redis_err)
                 .err_tip(|| "Failed to publish temp key value to configured channel")?
         }
 
@@ -522,12 +279,11 @@ where
             return Ok(());
         }
 
-        let mut conn = self.get_conn().await?;
+        let client = self.client().await?;
         if length == Some(0) {
-            let exists = conn
-                .exists::<_, bool>(self.encode_key(key.borrow()))
+            let exists: bool = client
+                .exists(self.encode_key(key.borrow()))
                 .await
-                .map_err(from_redis_err)
                 .err_tip(|| "In RedisStore::get_part::zero_exists")?;
             if !exists {
                 return Err(make_err!(
@@ -541,20 +297,19 @@ where
             return Ok(());
         }
 
-        let mut current_start = isize::try_from(offset)
-            .err_tip(|| "Cannot convert offset to isize in RedisStore::get_part()")?;
-        let max_length = isize::try_from(length.unwrap_or(isize::MAX as usize))
-            .err_tip(|| "Cannot convert length to isize in RedisStore::get_part()")?;
+        let mut current_start = offset;
+        let max_length = length.unwrap_or(usize::MAX);
         let end_position = current_start.saturating_add(max_length);
 
         loop {
             // Note: Redis getrange is inclusive, so we need to subtract 1 from the end.
-            let current_end =
-                std::cmp::min(current_start.saturating_add(READ_CHUNK_SIZE), end_position) - 1;
-            let chunk = conn
-                .getrange::<_, Bytes>(self.encode_key(key.borrow()), current_start, current_end)
+            let current_end = std::cmp::min(
+                current_start.saturating_add(READ_CHUNK_SIZE as usize),
+                end_position,
+            ) - 1;
+            let chunk = client
+                .getrange::<Bytes, _>(self.encode_key(key.borrow()), current_start, current_end)
                 .await
-                .map_err(from_redis_err)
                 .err_tip(|| "In RedisStore::get_part::getrange")?;
 
             if chunk.is_empty() {
@@ -565,15 +320,15 @@ where
             }
 
             // Note: Redis getrange is inclusive, so we need to add 1 to the end.
-            let was_partial_data = chunk.len() as isize != current_end - current_start + 1;
-            current_start += chunk.len() as isize;
+            let was_partial_data = chunk.len() != current_end - current_start + 1;
+            current_start += chunk.len();
             writer
                 .send(chunk)
                 .await
                 .err_tip(|| "Failed to write data in Redis store")?;
 
             // If we got partial data or the exact requested number of bytes, we are done.
-            if writer.get_bytes_written() as isize == max_length || was_partial_data {
+            if writer.get_bytes_written() as usize == max_length || was_partial_data {
                 writer
                     .send_eof()
                     .err_tip(|| "Failed to write EOF in redis store get_part")?;
@@ -582,7 +337,7 @@ where
             }
 
             error_if!(
-                writer.get_bytes_written() as isize > max_length,
+                writer.get_bytes_written() as usize > max_length,
                 "Data received exceeds requested length"
             );
         }
@@ -611,17 +366,18 @@ where
     }
 }
 
-impl<C> MetricsComponent for RedisStore<C>
+impl<C, F> MetricsComponent for RedisStore<C, F>
 where
-    C: ConnectionLike + Clone + Send + 'static,
+    C: ClientLike,
 {
     fn gather_metrics(&self, _c: &mut CollectorState) {}
 }
 
 #[async_trait]
-impl<C> HealthStatusIndicator for RedisStore<C>
+impl<C, F> HealthStatusIndicator for RedisStore<C, F>
 where
-    C: ConnectionLike + Clone + Send + Sync + Unpin + 'static,
+    C: ClientLikeExt + Unpin + 'static,
+    F: Fn() -> String + Unpin + Send + Sync + 'static,
 {
     fn get_name(&self) -> &'static str {
         "RedisStore"
@@ -630,8 +386,4 @@ where
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
         StoreDriver::check_health(Pin::new(self), namespace).await
     }
-}
-
-fn from_redis_err(call_res: redis::RedisError) -> Error {
-    make_err!(Code::Internal, "Redis Error: {call_res}")
 }

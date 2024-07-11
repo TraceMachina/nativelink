@@ -109,7 +109,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
         .cmd("GETRANGE", &[&packed_hash_hex, "0", "1"], Ok("14"))
         .build();
 
-    let store = MockRedisStore::new_with_conn_and_name_generator(
+    let store = MockRedisStore::new_with_client_and_name_generator(
         BackgroundConnection::with_initializer(async move { Ok::<_, Error>(redis_connection) }),
         mock_uuid_generator,
     );
@@ -154,7 +154,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
         .cmd("GETRANGE", &[&packed_hash_hex, "0", "1"], Ok("14"))
         .build();
 
-    let store = MockRedisStore::new_with_conn_and_name_generator_and_prefix(
+    let store = MockRedisStore::new_with_client_and_name_generator_and_prefix(
         BackgroundConnection::with_initializer(async move { Ok::<_, Error>(redis_connection) }),
         mock_uuid_generator,
         None,
@@ -186,7 +186,7 @@ async fn upload_empty_data() -> Result<(), Error> {
 
     let redis_connection = MockRedisConnectionBuilder::new().build();
 
-    let store = MockRedisStore::new_with_conn_and_name_generator(
+    let store = MockRedisStore::new_with_client_and_name_generator(
         BackgroundConnection::with_initializer(async move { Ok::<_, Error>(redis_connection) }),
         mock_uuid_generator,
     );
@@ -211,7 +211,7 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
 
     let redis_connection = MockRedisConnectionBuilder::new().build();
 
-    let store = MockRedisStore::new_with_conn_and_name_generator_and_prefix(
+    let store = MockRedisStore::new_with_client_and_name_generator_and_prefix(
         BackgroundConnection::with_initializer(async move { Ok::<_, Error>(redis_connection) }),
         mock_uuid_generator,
         None,
@@ -269,7 +269,7 @@ async fn test_uploading_large_data() -> Result<(), Error> {
         )
         .build();
 
-    let store = MockRedisStore::new_with_conn_and_name_generator(
+    let store = MockRedisStore::new_with_client_and_name_generator(
         BackgroundConnection::with_initializer(async move { Ok::<_, Error>(redis_connection) }),
         mock_uuid_generator,
     );
@@ -332,7 +332,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
         )
         .build();
 
-    let store = MockRedisStore::new_with_conn_and_name_generator(
+    let store = MockRedisStore::new_with_client_and_name_generator(
         BackgroundConnection::with_initializer(async move { Ok::<_, Error>(redis_connection) }),
         mock_uuid_generator,
     );

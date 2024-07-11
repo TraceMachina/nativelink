@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::serde_utils::{
     convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_numeric_with_shellexpand, convert_optional_string_with_shellexpand,
-    convert_string_with_shellexpand, convert_vec_string_with_shellexpand,
+    convert_string_with_shellexpand,
 };
 
 /// Name of the store. This type will be used when referencing a store
@@ -861,12 +861,6 @@ pub enum ErrorCode {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RedisStore {
-    /// The hostname or IP address of the Redis server.
-    /// Ex: ["redis://username:password@redis-server-url:6380/99"]
-    /// 99 Represents database ID, 6380 represents the port.
-    #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
-    pub addresses: Vec<String>,
-
     /// The response timeout for the Redis connection in seconds.
     ///
     /// Default: 10
@@ -899,25 +893,18 @@ pub struct RedisStore {
     #[serde(default)]
     pub key_prefix: String,
 
-    /// Set the mode Redis is operating in.
-    ///
-    /// Available options are "cluster" for
-    /// [cluster mode](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/),
-    /// "sentinel" for [sentinel mode](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/),
-    /// or "standard" if Redis is operating in neither cluster nor sentinel mode.
-    ///
-    /// Default: standard,
-    #[serde(default)]
-    pub mode: RedisMode,
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub url: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RedisMode {
-    Cluster,
+    Centralized,
+    Clustered,
     Sentinel,
     #[default]
-    Standard,
+    Detect,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration
