@@ -58,6 +58,16 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		os.Exit(1)
 	}
 
+	flux, err := components.AddComponent(
+		ctx,
+		"flux",
+		&components.Flux{Version: "2.3.0"},
+	)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
 	tektonPipelines, err := components.AddComponent(
 		ctx,
 		"tekton-pipelines",
@@ -83,6 +93,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		"tekton-dashboard",
 		&components.TektonDashboard{Version: "0.45.0"},
 	))
+
 	components.Check(components.AddComponent(
 		ctx,
 		"rebuild-nativelink",
@@ -93,6 +104,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 				tektonTriggers,
 				localSources,
 				nixStore,
+				flux,
 			),
 		},
 	))
@@ -143,6 +155,17 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		},
 	}
 
+	capacitorGateway := components.Gateway{
+		ExternalPort: 9000, //nolint:mnd
+		InternalPort: 9000, //nolint:mnd
+		Routes: []components.RouteConfig{
+			{
+				Prefix:  "/",
+				Cluster: "capacitor-gateway",
+			},
+		},
+	}
+
 	nativelinkGateway := components.Gateway{
 		ExternalPort: 8082, //nolint:mnd
 		InternalPort: 8089, //nolint:mnd
@@ -172,6 +195,7 @@ func ProgramForLocalCluster(ctx *pulumi.Context) error {
 		"kind-loadbalancer",
 		&components.Loadbalancer{
 			Gateways: []components.Gateway{
+				capacitorGateway,
 				nativelinkGateway,
 				hubbleGateway,
 				tknGateway,

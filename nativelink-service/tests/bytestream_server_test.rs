@@ -14,12 +14,17 @@
 
 use std::sync::Arc;
 
-use futures::poll;
+use bytes::Bytes;
 use futures::task::Poll;
+use futures::{poll, Future};
 use hyper::body::Sender;
+use hyper::server::conn::Http;
+use hyper::Uri;
 use maplit::hashmap;
+use nativelink_config::cas_server::ByteStreamConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
 use nativelink_proto::google::bytestream::{
     QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, WriteRequest, WriteResponse,
@@ -28,16 +33,20 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::{encode_stream_proto, DigestInfo};
-use nativelink_util::spawn;
 use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
+use nativelink_util::{background_spawn, spawn};
 use pretty_assertions::assert_eq;
 use prometheus_client::registry::Registry;
+use tokio::io::DuplexStream;
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::yield_now;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
-use tonic::transport::Body;
+use tonic::transport::{Body, Channel, Endpoint};
 use tonic::{Request, Response, Streaming};
+use tower::service_fn;
 
 const INSTANCE_NAME: &str = "foo_instance_name";
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
@@ -59,42 +68,116 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     Ok(store_manager)
 }
 
-fn make_bytestream_server(store_manager: &StoreManager) -> Result<ByteStreamServer, Error> {
-    ByteStreamServer::new(
-        &nativelink_config::cas_server::ByteStreamConfig {
-            cas_stores: hashmap! {
-                "foo_instance_name".to_string() => "main_cas".to_string(),
-            },
-            persist_stream_on_disconnect_timeout: 0,
-            max_bytes_per_stream: 1024,
+fn make_bytestream_server(
+    store_manager: &StoreManager,
+    config: Option<ByteStreamConfig>,
+) -> Result<ByteStreamServer, Error> {
+    let config = config.unwrap_or(nativelink_config::cas_server::ByteStreamConfig {
+        cas_stores: hashmap! {
+            "foo_instance_name".to_string() => "main_cas".to_string(),
         },
-        store_manager,
+        persist_stream_on_disconnect_timeout: 0,
+        max_bytes_per_stream: 1024,
+        max_decoding_message_size: 0,
+    });
+    ByteStreamServer::new(&config, store_manager)
+}
+
+fn make_stream(encoding: Option<CompressionEncoding>) -> (Sender, Streaming<WriteRequest>) {
+    let (tx, body) = Body::channel();
+    let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
+    let stream = Streaming::new_request(codec.decoder(), body, encoding, None);
+    (tx, stream)
+}
+
+fn make_stream_and_writer_spawn(
+    bs_server: Arc<ByteStreamServer>,
+    encoding: Option<CompressionEncoding>,
+) -> (
+    Sender,
+    JoinHandleDropGuard<Result<Response<WriteResponse>, tonic::Status>>,
+) {
+    let (tx, stream) = make_stream(encoding);
+    let join_handle = spawn!("bs_server_write", async move {
+        bs_server.write(Request::new(stream)).await
+    },);
+    (tx, join_handle)
+}
+
+fn make_resource_name(data_len: impl std::fmt::Display) -> String {
+    format!(
+        "{}/uploads/{}/blobs/{}/{}",
+        INSTANCE_NAME,
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
+        HASH1,
+        data_len,
     )
+}
+
+async fn server_and_client_stub(
+    bs_server: ByteStreamServer,
+) -> (JoinHandleDropGuard<()>, ByteStreamClient<Channel>) {
+    let (tx, rx) = unbounded_channel::<Result<DuplexStream, Error>>();
+    let mut rx = UnboundedReceiverStream::new(rx);
+
+    #[derive(Clone)]
+    struct Executor;
+    impl<F> hyper::rt::Executor<F> for Executor
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        fn execute(&self, fut: F) {
+            background_spawn!("executor_spawn", fut);
+        }
+    }
+
+    let server_spawn = spawn!("grpc_server", async move {
+        let http = Http::new().with_executor(Executor);
+        let bs_service = bs_server.into_service();
+
+        while let Some(stream) = rx.next().await {
+            let stream = stream.expect("Failed to get stream");
+            http.serve_connection(stream, bs_service.clone())
+                .await
+                .expect("Connection failed");
+        }
+    });
+
+    // Note: This is a dummy address, it will not actually connect to it,
+    // instead it will be connecting via mpsc.
+    let channel = Endpoint::try_from("http://[::]:50051")
+        .unwrap()
+        .executor(Executor)
+        .connect_with_connector(service_fn(move |_: Uri| {
+            let tx = tx.clone();
+            async move {
+                const MAX_BUFFER_SIZE: usize = 4096;
+                let (client, server) = tokio::io::duplex(MAX_BUFFER_SIZE);
+                tx.send(Ok(server)).unwrap();
+                Result::<_, Error>::Ok(client)
+            }
+        }))
+        .await
+        .unwrap();
+
+    let client = ByteStreamClient::new(channel);
+
+    (server_spawn, client)
 }
 
 #[nativelink_test]
 pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
     let store = store_manager.get_store("main_cas").unwrap();
 
     // Setup stream.
-    let (mut tx, join_handle) = {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
 
-        let join_handle = spawn!(
-            "chunked_stream_receives_all_data_write_stream",
-            async move {
-                let response_future = bs_server.write(Request::new(stream));
-                response_future.await
-            },
-        );
-        (tx, join_handle)
-    };
     // Send data.
     let raw_data = {
         let raw_data = "12456789abcdefghijk".as_bytes();
@@ -136,7 +219,10 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
     // Check results of server.
     {
         // One for spawn() future and one for result.
-        let server_result = join_handle.await??;
+        let server_result = join_handle
+            .await
+            .expect("Failed to join")
+            .expect("Failed write");
         let committed_size = usize::try_from(server_result.into_inner().committed_size)
             .or(Err("Cant convert i64 to usize"))?;
         assert_eq!(committed_size, raw_data.len());
@@ -164,34 +250,13 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
 #[nativelink_test]
 pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
     let store = store_manager.get_store("main_cas").unwrap();
 
-    async fn setup_stream(
-        bs_server: ByteStreamServer,
-    ) -> Result<
-        (
-            Sender,
-            JoinHandleDropGuard<(
-                Result<Response<WriteResponse>, tonic::Status>,
-                ByteStreamServer,
-            )>,
-        ),
-        Error,
-    > {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
-
-        let join_handle = spawn!("resume_write_success_write_stream", async move {
-            let response_future = bs_server.write(Request::new(stream));
-            (response_future.await, bs_server)
-        });
-        Ok((tx, join_handle))
-    }
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -217,15 +282,15 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
         tx.send_data(encode_stream_proto(&write_request)?).await?;
     }
-    let bs_server = {
+    {
         // Now disconnect our stream.
         drop(tx);
-        let (result, bs_server) = join_handle.await?;
+        let result = join_handle.await.expect("Failed to join");
         assert_eq!(result.is_err(), true, "Expected error to be returned");
-        bs_server
-    };
+    }
     // Now reconnect.
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     {
         // Write the remainder of our data.
         write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
@@ -236,8 +301,10 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
     {
         // Now disconnect our stream.
         drop(tx);
-        let (result, _bs_server) = join_handle.await?;
-        result?;
+        join_handle
+            .await
+            .expect("Failed to join")
+            .expect("Failed write");
     }
     {
         // Check to make sure our store recorded the data properly.
@@ -254,34 +321,13 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
 #[nativelink_test]
 pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
     let store = store_manager.get_store("main_cas").unwrap();
 
-    async fn setup_stream(
-        bs_server: ByteStreamServer,
-    ) -> Result<
-        (
-            Sender,
-            JoinHandleDropGuard<(
-                Result<Response<WriteResponse>, tonic::Status>,
-                ByteStreamServer,
-            )>,
-        ),
-        Error,
-    > {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
-
-        let join_handle = spawn!("restart_write_success_write_stream", async move {
-            let response_future = bs_server.write(Request::new(stream));
-            (response_future.await, bs_server)
-        });
-        Ok((tx, join_handle))
-    }
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -307,15 +353,15 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
         tx.send_data(encode_stream_proto(&write_request)?).await?;
     }
-    let bs_server = {
+    {
         // Now disconnect our stream.
         drop(tx);
-        let (result, bs_server) = join_handle.await?;
+        let result = join_handle.await.expect("Failed to join");
         assert_eq!(result.is_err(), true, "Expected error to be returned");
-        bs_server
-    };
+    }
     // Now reconnect.
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     {
         // Write first chunk of data again.
         write_request.write_offset = 0;
@@ -332,7 +378,7 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
     {
         // Now disconnect our stream.
         drop(tx);
-        let (result, _bs_server) = join_handle.await?;
+        let result = join_handle.await.expect("Failed to join");
         assert!(result.is_ok(), "Expected success to be returned");
     }
     {
@@ -350,37 +396,13 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
 #[nativelink_test]
 pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
     let store = store_manager.get_store("main_cas").unwrap();
 
-    async fn setup_stream(
-        bs_server: ByteStreamServer,
-    ) -> Result<
-        (
-            Sender,
-            JoinHandleDropGuard<(
-                Result<Response<WriteResponse>, tonic::Status>,
-                ByteStreamServer,
-            )>,
-        ),
-        Error,
-    > {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
-
-        let join_handle = spawn!(
-            "restart_mid_stream_write_success_write_stream",
-            async move {
-                let response_future = bs_server.write(Request::new(stream));
-                (response_future.await, bs_server)
-            },
-        );
-        Ok((tx, join_handle))
-    }
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
@@ -406,15 +428,15 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
         tx.send_data(encode_stream_proto(&write_request)?).await?;
     }
-    let bs_server = {
+    {
         // Now disconnect our stream.
         drop(tx);
-        let (result, bs_server) = join_handle.await?;
+        let result = join_handle.await.expect("Failed to join");
         assert_eq!(result.is_err(), true, "Expected error to be returned");
-        bs_server
-    };
+    }
     // Now reconnect.
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     {
         // Write some of the first chunk of data again.
         write_request.write_offset = 2;
@@ -431,7 +453,7 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
     {
         // Now disconnect our stream.
         drop(tx);
-        let (result, _bs_server) = join_handle.await?;
+        let result = join_handle.await.expect("Failed to join");
         assert!(result.is_ok(), "Expected success to be returned");
     }
     {
@@ -450,27 +472,17 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
 pub async fn ensure_write_is_not_done_until_write_request_is_set(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
     let store = store_manager.get_store("main_cas").unwrap();
 
     // Setup stream.
-    let (mut tx, mut write_fut) = {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+    let (mut tx, stream) = make_stream(Some(CompressionEncoding::Gzip));
+    let mut write_fut = bs_server.write(Request::new(stream));
 
-        (tx, bs_server.write(Request::new(stream)))
-    };
     const WRITE_DATA: &str = "12456789abcdefghijk";
-    let resource_name = format!(
-        "{}/uploads/{}/blobs/{}/{}",
-        INSTANCE_NAME,
-        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
-        HASH1,
-        WRITE_DATA.len()
-    );
+    let resource_name = make_resource_name(WRITE_DATA.len());
     let mut write_request = WriteRequest {
         resource_name,
         write_offset: 0,
@@ -534,46 +546,19 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set(
 #[nativelink_test]
 pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
 
-    async fn setup_stream(
-        bs_server: ByteStreamServer,
-    ) -> Result<
-        (
-            Sender,
-            JoinHandleDropGuard<(
-                Result<Response<WriteResponse>, tonic::Status>,
-                ByteStreamServer,
-            )>,
-        ),
-        Error,
-    > {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
-
-        let join_handle = spawn!("out_of_order_data_fails_write_stream", async move {
-            let response_future = bs_server.write(Request::new(stream));
-            (response_future.await, bs_server)
-        });
-        Ok((tx, join_handle))
-    }
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
     // Chunk our data into two chunks to simulate something a client
     // might do.
     const BYTE_SPLIT_OFFSET: usize = 8;
 
-    let resource_name = format!(
-        "{}/uploads/{}/blobs/{}/{}",
-        INSTANCE_NAME,
-        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
-        HASH1,
-        WRITE_DATA.len()
-    );
+    let resource_name = make_resource_name(WRITE_DATA.len());
     let mut write_request = WriteRequest {
         resource_name,
         write_offset: 0,
@@ -593,7 +578,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
         tx.send_data(encode_stream_proto(&write_request)?).await?;
     }
     assert!(
-        join_handle.await?.0.is_err(),
+        join_handle.await.expect("Failed to join").is_err(),
         "Expected error to be returned"
     );
     {
@@ -613,42 +598,15 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
 #[nativelink_test]
 pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
     let store = store_manager.get_store("main_cas").unwrap();
 
-    async fn setup_stream(
-        bs_server: ByteStreamServer,
-    ) -> Result<
-        (
-            Sender,
-            JoinHandleDropGuard<(
-                Result<Response<WriteResponse>, tonic::Status>,
-                ByteStreamServer,
-            )>,
-        ),
-        Error,
-    > {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
 
-        let join_handle = spawn!("upload_zero_byte_chunk_write_stream", async move {
-            let response_future = bs_server.write(Request::new(stream));
-            (response_future.await, bs_server)
-        });
-        Ok((tx, join_handle))
-    }
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
-
-    let resource_name = format!(
-        "{}/uploads/{}/blobs/{}/{}",
-        INSTANCE_NAME,
-        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
-        HASH1,
-        0
-    );
+    let resource_name = make_resource_name(0);
     let write_request = WriteRequest {
         resource_name,
         write_offset: 0,
@@ -660,7 +618,10 @@ pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> 
         // Write our zero byte data.
         tx.send_data(encode_stream_proto(&write_request)?).await?;
         // Wait for stream to finish.
-        join_handle.await?.0?;
+        join_handle
+            .await
+            .expect("Failed to join")
+            .expect("Failed write");
     }
     {
         // Check to make sure our store recorded the data properly.
@@ -675,41 +636,14 @@ pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> 
 #[nativelink_test]
 pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
-
-    async fn setup_stream(
-        bs_server: ByteStreamServer,
-    ) -> Result<
-        (
-            Sender,
-            JoinHandleDropGuard<(
-                Result<Response<WriteResponse>, tonic::Status>,
-                ByteStreamServer,
-            )>,
-        ),
-        Error,
-    > {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
-
-        let join_handle = spawn!("disallow_negative_write_offset_write_stream", async move {
-            let response_future = bs_server.write(Request::new(stream));
-            (response_future.await, bs_server)
-        });
-        Ok((tx, join_handle))
-    }
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
-
-    let resource_name = format!(
-        "{}/uploads/{}/blobs/{}/{}",
-        INSTANCE_NAME,
-        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
-        HASH1,
-        0
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
+
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
+
+    let resource_name = make_resource_name(0);
     let write_request = WriteRequest {
         resource_name,
         write_offset: -1,
@@ -721,7 +655,7 @@ pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::
         // Write our zero byte data.
         tx.send_data(encode_stream_proto(&write_request)?).await?;
         // Expect the write command to fail.
-        assert!(join_handle.await?.0.is_err());
+        assert!(join_handle.await.expect("Failed to join").is_err());
     }
     Ok(())
 }
@@ -729,41 +663,14 @@ pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::
 #[nativelink_test]
 pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
-
-    async fn setup_stream(
-        bs_server: ByteStreamServer,
-    ) -> Result<
-        (
-            Sender,
-            JoinHandleDropGuard<(
-                Result<Response<WriteResponse>, tonic::Status>,
-                ByteStreamServer,
-            )>,
-        ),
-        Error,
-    > {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
-
-        let join_handle = spawn!("out_of_sequence_write_write_stream", async move {
-            let response_future = bs_server.write(Request::new(stream));
-            (response_future.await, bs_server)
-        });
-        Ok((tx, join_handle))
-    }
-    let (mut tx, join_handle) = setup_stream(bs_server).await?;
-
-    let resource_name = format!(
-        "{}/uploads/{}/blobs/{}/{}",
-        INSTANCE_NAME,
-        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
-        HASH1,
-        100
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
+
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
+
+    let resource_name = make_resource_name(100);
     let write_request = WriteRequest {
         resource_name,
         write_offset: 10,
@@ -775,7 +682,7 @@ pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
         // Write our zero byte data.
         tx.send_data(encode_stream_proto(&write_request)?).await?;
         // Expect the write command to fail.
-        assert!(join_handle.await?.0.is_err());
+        assert!(join_handle.await.expect("Failed to join").is_err());
     }
     Ok(())
 }
@@ -783,7 +690,9 @@ pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
 #[nativelink_test]
 pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
     let store = store_manager.get_store("main_cas").unwrap();
 
     const VALUE1: &str = "12456789abcdefghijk";
@@ -817,7 +726,9 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn std:
 #[nativelink_test]
 pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn std::error::Error>> {
     let store_manager = make_store_manager().await?;
-    let bs_server = make_bytestream_server(store_manager.as_ref())?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
     let store = store_manager.get_store("main_cas").unwrap();
 
     const DATA_SIZE: usize = 10_000_000;
@@ -869,8 +780,8 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
         .await
         .err_tip(|| "Couldn't get store manager")?;
     let mut read_stream = {
-        let bs_server =
-            make_bytestream_server(store_manager.as_ref()).err_tip(|| "Couldn't make store")?;
+        let bs_server = make_bytestream_server(store_manager.as_ref(), None)
+            .err_tip(|| "Couldn't make store")?;
         let read_request = ReadRequest {
             resource_name: format!(
                 "{}/blobs/{}/{}",
@@ -908,17 +819,15 @@ pub async fn read_with_not_found_does_not_deadlock() -> Result<(), Error> {
 
 #[nativelink_test]
 pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::error::Error>> {
-    let store_manager = make_store_manager().await?;
-    let bs_server = Arc::new(make_bytestream_server(store_manager.as_ref())?);
+    let store_manager = make_store_manager()
+        .await
+        .expect("Failed to make store manager");
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
 
     let raw_data = "12456789abcdefghijk".as_bytes();
-    let resource_name = format!(
-        "{}/uploads/{}/blobs/{}/{}",
-        INSTANCE_NAME,
-        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", // Randomly generated.
-        HASH1,
-        raw_data.len()
-    );
+    let resource_name = make_resource_name(raw_data.len());
 
     {
         let response = bs_server
@@ -937,20 +846,8 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
     }
 
     // Setup stream.
-    let (mut tx, join_handle) = {
-        let (tx, body) = Body::channel();
-        let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
-        // Note: This is an undocumented function.
-        let stream =
-            Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
-
-        let bs_server_clone = bs_server.clone();
-        let join_handle = spawn!("query_write_status_smoke_test_write_stream", async move {
-            let response_future = bs_server_clone.write(Request::new(stream));
-            response_future.await
-        });
-        (tx, join_handle)
-    };
+    let (mut tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
 
     const BYTE_SPLIT_OFFSET: usize = 8;
 
@@ -1005,7 +902,78 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
     }
     join_handle
         .await
-        .err_tip(|| "Failed to join")?
-        .err_tip(|| "Failed write")?;
+        .expect("Failed to join")
+        .expect("Failed write");
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn std::error::Error>> {
+    const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB.
+    let store_manager = make_store_manager().await?;
+    let config = ByteStreamConfig {
+        cas_stores: hashmap! {
+            INSTANCE_NAME.to_string() => "main_cas".to_string(),
+        },
+        max_decoding_message_size: MAX_MESSAGE_SIZE,
+        ..Default::default()
+    };
+    let bs_server = make_bytestream_server(store_manager.as_ref(), Some(config))
+        .expect("Failed to make server");
+    let (server_join_handle, mut bs_client) = server_and_client_stub(bs_server).await;
+
+    // This is the size of the wrapper proto around the data.
+    const WRITE_REQUEST_MSG_WRAPPER_SIZE: usize = 150;
+    {
+        // Test to ensure if we send exactly our max message size, it will succeed.
+        let data = Bytes::from(vec![0u8; MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE]);
+        let write_request = WriteRequest {
+            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            write_offset: 0,
+            finish_write: true,
+            data,
+        };
+
+        let (tx, rx) = unbounded_channel();
+        let rx = UnboundedReceiverStream::new(rx);
+
+        tx.send(write_request).expect("Failed to send data");
+
+        let result = bs_client.write(Request::new(rx)).await;
+        assert!(result.is_ok(), "Expected success, got {result:?}");
+    }
+    {
+        // Test to ensure if we send exactly our max message size plus one, it will fail.
+        let data = Bytes::from(vec![
+            0u8;
+            MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE + 1
+        ]);
+        let write_request = WriteRequest {
+            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            write_offset: 0,
+            finish_write: true,
+            data,
+        };
+
+        let (tx, rx) = unbounded_channel();
+        let rx = UnboundedReceiverStream::new(rx);
+
+        tx.send(write_request).expect("Failed to send data");
+
+        let result = bs_client.write(Request::new(rx)).await;
+        assert!(result.is_err(), "Expected error, got {result:?}");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Error, message length too large"),
+            "Message should be too large message"
+        );
+    }
+
+    drop(bs_client);
+    // Wait for server to shutdown. This should happen when `bs_client` is dropped.
+    server_join_handle.await.expect("Failed to join");
+
     Ok(())
 }

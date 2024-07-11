@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/apiextensions"
 	helmv3 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/helm/v3"
@@ -134,7 +134,7 @@ func kindIPv4Subnet() (string, error) {
 		return "", fmt.Errorf("%w: %w", errPulumi, err)
 	}
 
-	networks, err := cli.NetworkList(dockerCtx, types.NetworkListOptions{})
+	networks, err := cli.NetworkList(dockerCtx, network.ListOptions{})
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", errPulumi, err)
 	}

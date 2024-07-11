@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"text/template"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	git "github.com/go-git/go-git/v5"
 	"sigs.k8s.io/kind/pkg/cluster"
@@ -210,7 +210,7 @@ func createRegistryConfigInNode(
 ) error {
 	config := fmt.Sprintf("[host.\"http://%s:%d\"]", regName, internalPort)
 	regDir := fmt.Sprintf("/etc/containerd/certs.d/localhost:%d", externalPort)
-	execConfig := types.ExecConfig{
+	execConfig := container.ExecOptions{
 		Cmd: []string{
 			"sh",
 			"-c",
@@ -232,7 +232,7 @@ func createRegistryConfigInNode(
 		)
 	}
 
-	if err := cli.ContainerExecStart(ctx, execID.ID, types.ExecStartCheck{}); err != nil {
+	if err := cli.ContainerExecStart(ctx, execID.ID, container.ExecAttachOptions{}); err != nil {
 		return fmt.Errorf(
 			"error starting exec command on node %s: %w",
 			nodeName,

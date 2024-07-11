@@ -192,13 +192,18 @@ export function preProcessMarkdown(markdown: string): string {
 
     if (
       line.trim().startsWith(">") ||
-      /^\[!(TIP|NOTE|WARNING|IMPORTANT)\]/.test(line)
+      /^\[!(TIP|NOTE|WARNING|IMPORTANT|CAUTION)\]/.test(line)
     ) {
       processedLines.push(line);
       continue;
     }
 
-    processedLines.push(line.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+    const htmlTagPattern = /^[<\s][^>]*>/g;
+    if (htmlTagPattern.test(line)) {
+      processedLines.push(line);
+    } else {
+      processedLines.push(line.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+    }
   }
 
   return processedLines.join("\n");

@@ -71,7 +71,7 @@ pub struct HttpCompressionConfig {
     /// will consume a lot of CPU and add a lot of latency.
     /// see: <https://github.com/tracemachina/nativelink/issues/109>
     ///
-    /// Defaults: {no supported compression}
+    /// Default: {no supported compression}
     pub accepted_compression_algorithms: Vec<HttpCompressionAlgorithm>,
 }
 
@@ -129,7 +129,7 @@ pub struct ExecutionConfig {
     pub scheduler: SchedulerRefName,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ByteStreamConfig {
     /// Name of the store in the "stores" configuration.
@@ -139,16 +139,22 @@ pub struct ByteStreamConfig {
     /// According to <https://github.com/grpc/grpc.github.io/issues/371>
     /// 16KiB - 64KiB is optimal.
     ///
-    /// Defaults: 64KiB
+    ///
+    /// Default: 64KiB
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub max_bytes_per_stream: usize,
+
+    /// Maximum number of bytes to decode on each grpc stream chunk.
+    /// Default: 4 MiB
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_decoding_message_size: usize,
 
     /// In the event a client disconnects while uploading a blob, we will hold
     /// the internal stream open for this many seconds before closing it.
     /// This allows clients that disconnect to reconnect and continue uploading
     /// the same blob.
     ///
-    /// Defaults: 10 (seconds)
+    /// Default: 10 (seconds)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub persist_stream_on_disconnect_timeout: usize,
 }

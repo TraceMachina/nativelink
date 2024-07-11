@@ -1,0 +1,51 @@
+---
+title: Building NativeLink with Nix
+description: Instructions on building NativeLink with Nix.
+---
+
+These instructions contain information on how to work with NativeLink for Nix
+users.
+
+You'll need a recent version of Nix with flakes enabled, for instance installed
+via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-installer).
+
+This build doesn't require cloning the repository, but you need to provide a
+configuration file, for instance the one at [`https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas.json`](./nativelink-config/examples/basic_cas.json).
+
+The following command builds and runs NativeLink in release (optimized) mode:
+
+```sh
+nix run github:TraceMachina/nativelink ./basic_cas.json
+```
+
+You can build a specific PR or branch like so:
+
+```sh
+nix run github:TraceMachina/nativelink?ref=pull/<PR_NUMBER>/head
+```
+
+## Working with container images
+
+View the flake outputs to list available images:
+
+```sh
+nix flake show
+```
+
+The main `nativelink` container image is the `image` output. Other images follow
+the pattern `nativelink-worker-*`.
+
+Images use [nix2container](https://github.com/nlewo/nix2container) as builder
+and get tagged with nix derivation hashes.
+
+To build an image locally and make it available to your container runtime:
+
+```sh
+nix run github:TraceMachina/nativelink#image.copyToDockerDaemon
+```
+
+To view the tag of an image
+
+```sh
+nix eval github:TraceMachina/nativelink#image.imageTag --raw
+```
