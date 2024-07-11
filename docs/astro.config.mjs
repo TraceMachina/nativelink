@@ -63,7 +63,7 @@ export default defineConfig({
     sitemap(),
     starlight({
       components: {
-        PagekFrame: "./src/components/PageFrame.astro",
+        PageFrame: "./src/components/PageFrame.astro",
       },
       logo: {
         light: "/src/assets/logo-light.svg",
