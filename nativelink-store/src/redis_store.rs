@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use fred::clients::SubscriberClient;
 use fred::prelude::*;
 use futures::stream::FuturesOrdered;
 use futures::TryStreamExt;
@@ -26,13 +27,16 @@ use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
-use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreSubscription, UploadSizeInfo};
 
 use crate::cas_utils::is_zero_digest;
 
 const READ_CHUNK_SIZE: isize = 64 * 1024;
 
-trait ClientLikeExt: ClientLike + KeysInterface + TransactionInterface + PubsubInterface {}
+pub trait ClientLikeExt:
+    ClientLike + KeysInterface + TransactionInterface + PubsubInterface
+{
+}
 
 impl<C> ClientLikeExt for C where
     C: ClientLike + KeysInterface + TransactionInterface + PubsubInterface
@@ -40,12 +44,12 @@ impl<C> ClientLikeExt for C where
 }
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
-pub struct RedisStore<C = RedisClient, F = fn() -> String> {
+pub struct RedisStore {
     /// The client for the underlying Redis instance(s).
-    client: C,
+    client: RedisClient,
 
     /// A function used to generate names for temporary keys.
-    temp_name_generator_fn: F,
+    temp_name_generator_fn: fn() -> String,
     pub_sub_channel: Option<String>,
 
     /// A common prefix to append to all keys before they are sent to Redis.
@@ -54,7 +58,7 @@ pub struct RedisStore<C = RedisClient, F = fn() -> String> {
     key_prefix: String,
 }
 
-impl RedisStore<RedisClient, fn() -> String> {
+impl RedisStore {
     pub fn new(config: &nativelink_config::stores::RedisStore) -> Result<Arc<Self>, Error> {
         let client = Builder::from_config(RedisConfig::from_url(&config.url)?).build()?;
         client.connect();
@@ -70,9 +74,12 @@ impl RedisStore<RedisClient, fn() -> String> {
     }
 }
 
-impl<C: ClientLike, F: Fn() -> String> RedisStore<C, F> {
+impl RedisStore {
     #[inline]
-    pub fn new_with_client_and_name_generator(client: C, temp_name_generator_fn: F) -> Self {
+    pub fn new_with_client_and_name_generator(
+        client: RedisClient,
+        temp_name_generator_fn: fn() -> String,
+    ) -> Self {
         RedisStore::new_with_client_and_name_generator_and_prefix(
             client,
             temp_name_generator_fn,
@@ -83,8 +90,8 @@ impl<C: ClientLike, F: Fn() -> String> RedisStore<C, F> {
 
     #[inline]
     pub fn new_with_client_and_name_generator_and_prefix(
-        client: C,
-        temp_name_generator_fn: F,
+        client: RedisClient,
+        temp_name_generator_fn: fn() -> String,
         pub_sub_channel: Option<String>,
         key_prefix: String,
     ) -> Self {
@@ -97,12 +104,12 @@ impl<C: ClientLike, F: Fn() -> String> RedisStore<C, F> {
     }
 
     #[inline]
-    pub async fn client(&self) -> Result<C, Error> {
+    pub async fn client(&self) -> Result<RedisClient, Error> {
         if self.client.is_connected() {
             Ok(self.client.clone())
         } else {
             self.client.wait_for_connect().await?;
-            self.client().await
+            Ok(self.client.clone())
         }
     }
 
@@ -121,11 +128,7 @@ impl<C: ClientLike, F: Fn() -> String> RedisStore<C, F> {
 }
 
 #[async_trait]
-impl<C, F> StoreDriver for RedisStore<C, F>
-where
-    C: ClientLikeExt + Unpin + 'static,
-    F: Fn() -> String + Unpin + Send + Sync + 'static,
-{
+impl StoreDriver for RedisStore {
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -345,6 +348,20 @@ where
         Ok(())
     }
 
+    async fn subscribe(self: Arc<Self>, key: StoreKey<'_>) -> Box<dyn StoreSubscription> {
+        let config = self.client.client_config();
+        let client = SubscriberClient::new(config, None, None, None);
+        // client.init().await
+        todo!()
+        // https://redis.io/docs/latest/develop/use/keyspace-notifications/
+        // client.subscribe(format!(
+        //     "__keyspace@{}__:{}",
+        //     config.database.unwrap_or_default(),
+        //     self.encode_key(key)
+        // ));
+        // client.on_message(|msg| )
+    }
+
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
@@ -366,19 +383,12 @@ where
     }
 }
 
-impl<C, F> MetricsComponent for RedisStore<C, F>
-where
-    C: ClientLike,
-{
+impl MetricsComponent for RedisStore {
     fn gather_metrics(&self, _c: &mut CollectorState) {}
 }
 
 #[async_trait]
-impl<C, F> HealthStatusIndicator for RedisStore<C, F>
-where
-    C: ClientLikeExt + Unpin + 'static,
-    F: Fn() -> String + Unpin + Send + Sync + 'static,
-{
+impl HealthStatusIndicator for RedisStore {
     fn get_name(&self) -> &'static str {
         "RedisStore"
     }

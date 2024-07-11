@@ -20,6 +20,7 @@ fred = { version = "9.0.3", features = [
   "custom-reconnect-errors",
   "sentinel-client",
   "sentinel-auth",
+  "subscriber-client",
 ] }
 serde = { version = "1.0.201", features = ["derive"] }
 tokio = { version = "1.37.0" }
