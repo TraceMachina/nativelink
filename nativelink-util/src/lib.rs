@@ -14,6 +14,7 @@
 
 pub mod action_messages;
 pub mod buf_channel;
+pub mod channel_body_for_tests;
 pub mod chunked_stream;
 pub mod common;
 pub mod connection_manager;
