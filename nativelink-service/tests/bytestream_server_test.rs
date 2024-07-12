@@ -17,9 +17,12 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::task::Poll;
 use futures::{poll, Future};
-use hyper::body::Sender;
-use hyper::server::conn::Http;
+use http_body_util::BodyExt;
+use hyper::body::Frame;
+use hyper::server::conn::http2;
 use hyper::Uri;
+use hyper_util::rt::TokioIo;
+use hyper_util::service::TowerToHyperService;
 use maplit::hashmap;
 use nativelink_config::cas_server::ByteStreamConfig;
 use nativelink_error::{make_err, Code, Error, ResultExt};
@@ -32,6 +35,7 @@ use nativelink_proto::google::bytestream::{
 use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::channel_body::ChannelBody;
 use nativelink_util::common::{encode_stream_proto, DigestInfo};
 use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -44,7 +48,7 @@ use tokio::task::yield_now;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::codec::{Codec, CompressionEncoding, ProstCodec};
-use tonic::transport::{Body, Channel, Endpoint};
+use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Streaming};
 use tower::service_fn;
 
@@ -83,24 +87,28 @@ fn make_bytestream_server(
     ByteStreamServer::new(&config, store_manager)
 }
 
-fn make_stream(encoding: Option<CompressionEncoding>) -> (Sender, Streaming<WriteRequest>) {
-    let (tx, body) = Body::channel();
+fn make_stream(
+    encoding: Option<CompressionEncoding>,
+) -> (
+    tokio::sync::mpsc::Sender<Frame<Bytes>>,
+    Streaming<WriteRequest>,
+) {
+    let (tx, body) = ChannelBody::new();
     let mut codec = ProstCodec::<WriteRequest, WriteRequest>::default();
     let stream = Streaming::new_request(codec.decoder(), body, encoding, None);
     (tx, stream)
 }
 
+type JoinHandle = JoinHandleDropGuard<Result<Response<WriteResponse>, tonic::Status>>;
+
 fn make_stream_and_writer_spawn(
     bs_server: Arc<ByteStreamServer>,
     encoding: Option<CompressionEncoding>,
-) -> (
-    Sender,
-    JoinHandleDropGuard<Result<Response<WriteResponse>, tonic::Status>>,
-) {
+) -> (tokio::sync::mpsc::Sender<Frame<Bytes>>, JoinHandle) {
     let (tx, stream) = make_stream(encoding);
     let join_handle = spawn!("bs_server_write", async move {
         bs_server.write(Request::new(stream)).await
-    },);
+    });
     (tx, join_handle)
 }
 
@@ -133,12 +141,25 @@ async fn server_and_client_stub(
     }
 
     let server_spawn = spawn!("grpc_server", async move {
-        let http = Http::new().with_executor(Executor);
-        let bs_service = bs_server.into_service();
+        let http = http2::Builder::new(Executor);
+        let grpc_service = tonic::service::Routes::new(bs_server.into_service());
+
+        let adapted_service = tower::ServiceBuilder::new()
+            .map_request(|req: hyper::Request<hyper::body::Incoming>| {
+                let (parts, body) = req.into_parts();
+                let body = body
+                    .map_err(|e| tonic::Status::internal(e.to_string()))
+                    .boxed_unsync();
+                hyper::Request::from_parts(parts, body)
+            })
+            .service(grpc_service);
+
+        let hyper_service = TowerToHyperService::new(adapted_service);
 
         while let Some(stream) = rx.next().await {
             let stream = stream.expect("Failed to get stream");
-            http.serve_connection(stream, bs_service.clone())
+            let wrapped_stream = TokioIo::new(stream);
+            http.serve_connection(wrapped_stream, hyper_service.clone())
                 .await
                 .expect("Connection failed");
         }
@@ -155,7 +176,7 @@ async fn server_and_client_stub(
                 const MAX_BUFFER_SIZE: usize = 4096;
                 let (client, server) = tokio::io::duplex(MAX_BUFFER_SIZE);
                 tx.send(Ok(server)).unwrap();
-                Result::<_, Error>::Ok(client)
+                Result::<_, Error>::Ok(TokioIo::new(client))
             }
         }))
         .await
@@ -175,7 +196,7 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
     let store = store_manager.get_store("main_cas").unwrap();
 
     // Setup stream.
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
 
     // Send data.
@@ -201,18 +222,21 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn std::error
         // Write first chunk of data.
         write_request.write_offset = 0;
         write_request.data = raw_data[..BYTE_SPLIT_OFFSET].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
 
         // Write empty set of data (clients are allowed to do this.
         write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
         write_request.data = vec![].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
 
         // Write final bit of data.
         write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
         write_request.data = raw_data[BYTE_SPLIT_OFFSET..].into();
         write_request.finish_write = true;
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
 
         raw_data
     };
@@ -255,7 +279,7 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
     );
     let store = store_manager.get_store("main_cas").unwrap();
 
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
@@ -280,7 +304,8 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
         // Write first chunk of data.
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     {
         // Now disconnect our stream.
@@ -289,14 +314,15 @@ pub async fn resume_write_success() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(result.is_err(), true, "Expected error to be returned");
     }
     // Now reconnect.
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     {
         // Write the remainder of our data.
         write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     {
         // Now disconnect our stream.
@@ -326,7 +352,7 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
     );
     let store = store_manager.get_store("main_cas").unwrap();
 
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
@@ -351,7 +377,8 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
         // Write first chunk of data.
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     {
         // Now disconnect our stream.
@@ -360,20 +387,22 @@ pub async fn restart_write_success() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(result.is_err(), true, "Expected error to be returned");
     }
     // Now reconnect.
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     {
         // Write first chunk of data again.
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     {
         // Write the remainder of our data.
         write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     {
         // Now disconnect our stream.
@@ -401,7 +430,7 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
     );
     let store = store_manager.get_store("main_cas").unwrap();
 
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
@@ -426,7 +455,8 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
         // Write first chunk of data.
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     {
         // Now disconnect our stream.
@@ -435,20 +465,22 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn std::error
         assert_eq!(result.is_err(), true, "Expected error to be returned");
     }
     // Now reconnect.
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     {
         // Write some of the first chunk of data again.
         write_request.write_offset = 2;
         write_request.data = WRITE_DATA[2..BYTE_SPLIT_OFFSET].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     {
         // Write the remainder of our data.
         write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     {
         // Now disconnect our stream.
@@ -478,7 +510,7 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set(
     let store = store_manager.get_store("main_cas").unwrap();
 
     // Setup stream.
-    let (mut tx, stream) = make_stream(Some(CompressionEncoding::Gzip));
+    let (tx, stream) = make_stream(Some(CompressionEncoding::Gzip));
     let mut write_fut = bs_server.write(Request::new(stream));
 
     const WRITE_DATA: &str = "12456789abcdefghijk";
@@ -493,7 +525,8 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set(
         // Write our data.
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     // Note: We have to pull multiple times because there are multiple futures
     // joined onto this one future and we need to ensure we run the state machine as
@@ -509,7 +542,8 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set(
         write_request.write_offset = WRITE_DATA.len() as i64;
         write_request.finish_write = true;
         write_request.data.clear();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     let mut result = None;
     for _ in 0..100 {
@@ -550,7 +584,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
 
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     const WRITE_DATA: &str = "12456789abcdefghijk";
 
@@ -569,13 +603,15 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
         // Write first chunk of data.
         write_request.write_offset = 0;
         write_request.data = WRITE_DATA[..BYTE_SPLIT_OFFSET].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     {
         // Write data it already has.
         write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
         write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
     }
     assert!(
         join_handle.await.expect("Failed to join").is_err(),
@@ -586,7 +622,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn std::error::Error>>
         write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
         write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
         assert!(
-            tx.send_data(encode_stream_proto(&write_request)?)
+            tx.send(Frame::data(encode_stream_proto(&write_request)?))
                 .await
                 .is_err(),
             "Expected error to be returned"
@@ -603,7 +639,7 @@ pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> 
     );
     let store = store_manager.get_store("main_cas").unwrap();
 
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
 
     let resource_name = make_resource_name(0);
@@ -616,7 +652,8 @@ pub async fn upload_zero_byte_chunk() -> Result<(), Box<dyn std::error::Error>> 
 
     {
         // Write our zero byte data.
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
         // Wait for stream to finish.
         join_handle
             .await
@@ -640,7 +677,7 @@ pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
 
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
 
     let resource_name = make_resource_name(0);
@@ -653,7 +690,8 @@ pub async fn disallow_negative_write_offset() -> Result<(), Box<dyn std::error::
 
     {
         // Write our zero byte data.
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
         // Expect the write command to fail.
         assert!(join_handle.await.expect("Failed to join").is_err());
     }
@@ -667,7 +705,7 @@ pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
         make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
     );
 
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
 
     let resource_name = make_resource_name(100);
@@ -680,7 +718,8 @@ pub async fn out_of_sequence_write() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         // Write our zero byte data.
-        tx.send_data(encode_stream_proto(&write_request)?).await?;
+        tx.send(Frame::data(encode_stream_proto(&write_request)?))
+            .await?;
         // Expect the write command to fail.
         assert!(join_handle.await.expect("Failed to join").is_err());
     }
@@ -846,7 +885,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
     }
 
     // Setup stream.
-    let (mut tx, join_handle) =
+    let (tx, join_handle) =
         make_stream_and_writer_spawn(bs_server.clone(), Some(CompressionEncoding::Gzip));
 
     const BYTE_SPLIT_OFFSET: usize = 8;
@@ -861,7 +900,8 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
     // Write first chunk of data.
     write_request.write_offset = 0;
     write_request.data = raw_data[..BYTE_SPLIT_OFFSET].into();
-    tx.send_data(encode_stream_proto(&write_request)?).await?;
+    tx.send(Frame::data(encode_stream_proto(&write_request)?))
+        .await?;
 
     {
         // Check to see if our request is active.
@@ -884,7 +924,8 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn std::err
     write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
     write_request.data = raw_data[BYTE_SPLIT_OFFSET..].into();
     write_request.finish_write = true;
-    tx.send_data(encode_stream_proto(&write_request)?).await?;
+    tx.send(Frame::data(encode_stream_proto(&write_request)?))
+        .await?;
 
     {
         // Now that it's done uploading, ensure it returns a success when requested again.
@@ -966,7 +1007,7 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn std::error::
             result
                 .unwrap_err()
                 .to_string()
-                .contains("Error, message length too large"),
+                .contains("Error, decoded message length too large"),
             "Message should be too large message"
         );
     }

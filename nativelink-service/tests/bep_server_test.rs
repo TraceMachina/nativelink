@@ -16,7 +16,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use hyper::Body;
+use hyper::body::Frame;
 use nativelink_config::cas_server::BepConfig;
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
@@ -36,6 +36,7 @@ use nativelink_service::bep_server::BepServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::channel_body::ChannelBody;
 use nativelink_util::common::encode_stream_proto;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use pretty_assertions::assert_eq;
@@ -155,9 +156,9 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
     let bep_server = make_bep_server(&store_manager)?;
     let bep_store = get_bep_store(&store_manager)?;
 
-    let (mut request_tx, mut response_stream) = async {
+    let (request_tx, mut response_stream) = async {
         // Set up the request and response streams.
-        let (tx, body) = Body::channel();
+        let (tx, body) = ChannelBody::new();
         let mut codec = ProstCodec::<PublishBuildToolEventStreamRequest, _>::default();
         let stream = Streaming::new_request(codec.decoder(), body, None, None);
         let stream = bep_server
@@ -302,7 +303,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn std::error
             (i as i64 + 1, req)
         }) {
             let encoded_request = encode_stream_proto(request)?;
-            request_tx.send_data(encoded_request).await?;
+            request_tx.send(Frame::data(encoded_request)).await?;
 
             let response = response_stream
                 .next()
