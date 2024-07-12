@@ -146,6 +146,12 @@ impl From<prost::EncodeError> for Error {
     }
 }
 
+impl From<prost::UnknownEnumValue> for Error {
+    fn from(err: prost::UnknownEnumValue) -> Self {
+        make_err!(Code::Internal, "{}", err.to_string())
+    }
+}
+
 impl From<std::num::TryFromIntError> for Error {
     fn from(err: std::num::TryFromIntError) -> Self {
         make_err!(Code::InvalidArgument, "{}", err.to_string())

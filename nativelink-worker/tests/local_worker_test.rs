@@ -29,6 +29,7 @@ mod utils {
     pub(crate) mod mock_running_actions_manager;
 }
 
+use hyper::body::Frame;
 use nativelink_config::cas_server::{LocalWorkerConfig, WorkerProperty};
 use nativelink_error::{make_err, make_input_err, Code, Error};
 use nativelink_macro::nativelink_test;
@@ -142,7 +143,7 @@ async fn reconnect_on_server_disconnect_test() -> Result<(), Box<dyn std::error:
     }
 
     // Disconnect our grpc stream.
-    test_context.maybe_tx_stream.take().unwrap().abort();
+    drop(test_context.maybe_tx_stream.take().unwrap());
 
     {
         // Client should try to auto reconnect and check our properties again.
@@ -172,20 +173,20 @@ async fn kill_all_called_on_disconnect() -> Result<(), Box<dyn std::error::Error
     }
 
     // Handle registration (kill_all not called unless registered).
-    let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
     {
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: "foobar".to_string(),
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
 
     // Disconnect our grpc stream.
-    tx_stream.abort();
+    drop(tx_stream);
 
     // Check that kill_all is called.
     test_context.actions_manager.expect_kill_all().await;
@@ -211,15 +212,15 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
 
     let expected_worker_id = "foobar".to_string();
 
-    let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
     {
         // First initialize our worker by sending the response to the connection request.
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: expected_worker_id.clone(),
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -245,13 +246,13 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
     {
         // Send execution request.
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
                     execute_request: Some(action_info.into()),
                     salt: SALT,
                     queued_timestamp: None,
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -297,15 +298,15 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
 
     let expected_worker_id = "foobar".to_string();
 
-    let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
     {
         // First initialize our worker by sending the response to the connection request.
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: expected_worker_id.clone(),
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -331,13 +332,13 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
     {
         // Send execution request.
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
                     execute_request: Some(action_info.into()),
                     salt: SALT,
                     queued_timestamp: None,
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -563,15 +564,15 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
 
     let expected_worker_id = "foobar".to_string();
 
-    let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
     {
         // First initialize our worker by sending the response to the connection request.
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: expected_worker_id.clone(),
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -598,13 +599,13 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
     {
         // Send execution request.
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
                     execute_request: Some(action_info.into()),
                     salt: SALT,
                     queued_timestamp: None,
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -656,14 +657,14 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
     }
 
     // Handle registration (kill_all not called unless registered).
-    let mut tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
     {
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: "foobar".to_string(),
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -689,13 +690,13 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
     {
         // Send execution request.
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
                     execute_request: Some(action_info.clone().into()),
                     salt: SALT,
                     queued_timestamp: None,
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
@@ -711,11 +712,11 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
     {
         // Send kill request.
         tx_stream
-            .send_data(encode_stream_proto(&UpdateForWorker {
+            .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::KillActionRequest(KillActionRequest {
                     action_id: hex::encode(action_id),
                 })),
-            })?)
+            })?))
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
