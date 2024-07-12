@@ -333,7 +333,7 @@ const generateTypeDescription = (type: Type): string => {
       case "Box":
         return `(box of ${getInnerType(0)})`;
       case "String":
-        return "(String)";
+        return "";
       case "HashMap":
         return `(list of objects ${getInnerType(0)}: ${getInnerType(1)})`;
       default: {
@@ -545,6 +545,11 @@ export const generateAstroContent = (crate: Crate): string => {
 title: NativeLink Configuration
 description: The NativeLink Configuration Reference
 ---
+
+:::caution
+This page is auto-generated and may contain some minor formatting errors.
+If you find any, please feel free to open an issue in our [open-source repository](https://github.com/TraceMachina/nativelink/issues).
+:::
 
 This page documents the configuration options for NativeLink.
 
