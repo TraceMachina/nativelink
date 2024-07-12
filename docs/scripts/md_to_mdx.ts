@@ -15,7 +15,7 @@ import remarkStringify from "remark-stringify";
 import { visit } from "unist-util-visit";
 
 const DEFAULT_TITLE = "Default Title";
-const BLOCK_TYPES = ["warning", "note", "tip"];
+const BLOCK_TYPES = ["caution", "note", "tip"];
 
 export function parseMarkdown(markdown: string): Root {
   return remark().use(remarkParse).parse(markdown) as Root;
@@ -98,6 +98,7 @@ function transformBlockquote(blockquote: Blockquote): RootContent | null {
     const cleanedContentText = cleanBlockTypeFromContent(
       contentText,
       blockType,
+      firstText.match(/^\[\!(\w+)\]/)?.[1] || "",
     );
 
     return {
@@ -111,7 +112,11 @@ function transformBlockquote(blockquote: Blockquote): RootContent | null {
 function extractBlockType(firstText: string): string | null {
   const match = firstText.match(/^\[\!(\w+)\]/);
   if (match?.[1]) {
-    const blockType = match[1].toLowerCase();
+    let blockType = match[1];
+    if (blockType.toUpperCase() === "WARNING") {
+      blockType = "caution";
+    }
+    blockType = blockType.toLowerCase();
     if (BLOCK_TYPES.includes(blockType)) {
       return blockType;
     }
@@ -146,8 +151,12 @@ function extractBlockquoteContent(blockquote: Blockquote): string {
 function cleanBlockTypeFromContent(
   contentText: string,
   blockType: string,
+  originalBlockType: string,
 ): string {
-  return contentText.replace(`[!${blockType.toUpperCase()}]`, "").trim();
+  return contentText
+    .replace(`[!${blockType.toUpperCase()}]`, "")
+    .replace(`[!${originalBlockType.toUpperCase()}]`, "")
+    .trim();
 }
 
 export function preserveInlineCode(content: RootContent[]): RootContent[] {
