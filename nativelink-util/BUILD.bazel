@@ -11,6 +11,7 @@ rust_library(
     srcs = [
         "src/action_messages.rs",
         "src/buf_channel.rs",
+        "src/channel_body_for_tests.rs",
         "src/common.rs",
         "src/connection_manager.rs",
         "src/default_store_key_subscribe.rs",
@@ -45,7 +46,7 @@ rust_library(
         "@crates//:console-subscriber",
         "@crates//:futures",
         "@crates//:hex",
-        "@crates//:hyper",
+        "@crates//:hyper-1.4.1",
         "@crates//:hyper-util",
         "@crates//:lru",
         "@crates//:parking_lot",
@@ -70,6 +71,7 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/buf_channel_test.rs",
+        "tests/channel_body_for_tests_test.rs",
         "tests/evicting_map_test.rs",
         "tests/fastcdc_test.rs",
         "tests/fs_test.rs",
@@ -94,6 +96,8 @@ rust_test_suite(
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hex",
+        "@crates//:http-body-util",
+        "@crates//:hyper-1.4.1",
         "@crates//:mock_instant",
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
@@ -102,6 +106,7 @@ rust_test_suite(
         "@crates//:tokio",
         "@crates//:tokio-stream",
         "@crates//:tokio-util",
+        "@crates//:tonic",
     ],
 )
 

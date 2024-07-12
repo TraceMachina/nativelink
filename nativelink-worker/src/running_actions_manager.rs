@@ -1789,7 +1789,6 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .wrap(async move {
                 let queued_timestamp = start_execute
                     .queued_timestamp
-                    .clone()
                     .and_then(|time| time.try_into().ok())
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 let action_info = self.create_action_info(start_execute, queued_timestamp).await?;

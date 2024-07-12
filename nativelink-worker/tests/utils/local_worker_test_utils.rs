@@ -16,12 +16,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_lock::Mutex;
-use hyper::body::Sender as HyperSender;
+use bytes::Bytes;
+use hyper::body::Frame;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use nativelink_error::Error;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ExecuteResult, GoingAwayRequest, KeepAliveRequest, SupportedProperties, UpdateForWorker,
 };
+use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_worker::local_worker::LocalWorker;
@@ -32,7 +34,6 @@ use tonic::{
     codec::Codec, // Needed for .decoder().
     codec::CompressionEncoding,
     codec::ProstCodec,
-    transport::Body,
     Response,
     Streaming,
 };
@@ -169,10 +170,12 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
     }
 }
 
-pub fn setup_grpc_stream() -> (HyperSender, Response<Streaming<UpdateForWorker>>) {
-    let (tx, body) = Body::channel();
+pub fn setup_grpc_stream() -> (
+    mpsc::Sender<Frame<Bytes>>,
+    Response<Streaming<UpdateForWorker>>,
+) {
+    let (tx, body) = ChannelBody::new();
     let mut codec = ProstCodec::<UpdateForWorker, UpdateForWorker>::default();
-    // Note: This is an undocumented function.
     let stream =
         Streaming::new_request(codec.decoder(), body, Some(CompressionEncoding::Gzip), None);
     (tx, Response::new(stream))
@@ -225,7 +228,7 @@ pub struct TestContext {
     pub actions_manager: Arc<MockRunningActionsManager>,
 
     pub maybe_streaming_response: Option<Response<Streaming<UpdateForWorker>>>,
-    pub maybe_tx_stream: Option<HyperSender>,
+    pub maybe_tx_stream: Option<mpsc::Sender<Frame<Bytes>>>,
 
     _drop_guard: JoinHandleDropGuard<Result<(), Error>>,
 }

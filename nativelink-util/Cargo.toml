@@ -8,35 +8,40 @@ nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }
 nativelink-proto = { path = "../nativelink-proto" }
 
-async-lock = "3.3.0"
-async-trait = "0.1.80"
-blake3 = { version = "1.5.1", features = ["mmap"] }
-bytes = "1.6.0"
-console-subscriber = { version = "0.3.0" }
+async-lock = "3.4.0"
+async-trait = "0.1.81"
+blake3 = { version = "1.5.2", features = ["mmap"] }
+bytes = "1.6.1"
+# TODO(aaronmondal): This is the commit that migrates tonic 0.11 to 0.12. Use a
+#                    regular version once console-subscriber 0.4.0 is released.
+#                    Commit: https://github.com/tokio-rs/console/commit/5f6faa2
+#                    Release PR: https://github.com/tokio-rs/console/pull/576
+console-subscriber = { git = "https://github.com/tokio-rs/console", rev = "5f6faa2" }
 futures = "0.3.30"
 hex = "0.4.3"
-hyper = "0.14.28"
+hyper = "1.4.1"
 hyper-util = { version = "0.1.6", features = ["tokio"] }
 lru = "0.12.3"
-parking_lot = "0.12.2"
+parking_lot = "0.12.3"
 pin-project-lite = "0.2.14"
 prometheus-client = "0.21.2"
-prost = "0.12.4"
-prost-types = "0.12.4"
+prost = "0.13.1"
+prost-types = "0.13.1"
 rand = "0.8.5"
-serde = { version = "1.0.201", features = ["derive"] }
+serde = { version = "1.0.204", features = ["derive"] }
 sha2 = "0.10.8"
-tokio = { version = "1.37.0", features = [ "sync", "fs", "rt", "time", "io-util", "macros" ] }
+tokio = { version = "1.38.0", features = [ "sync", "fs", "rt", "time", "io-util", "macros" ] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { version = "0.7.11" }
-tonic = { version = "0.11.0", features = ["tls"] }
+tonic = { version = "0.12.0", features = ["tls"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
-uuid = { version = "1.8.0", features = ["v4", "serde"] }
+uuid = { version = "1.10.0", features = ["v4", "serde"] }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
+http-body-util = "0.1.2"
+mock_instant = "0.3.2"
 pretty_assertions = "1.4.0"
 rand = "0.8.5"
-mock_instant = "0.3.2"
