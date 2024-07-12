@@ -107,8 +107,8 @@ See the [contribution docs](https://docs.nativelink.com/contribute/nix) for furt
 
 ## ✍️ Authors
 
-<a href="https://github.com/tracemachina/nativelink/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=tracemachina/nativelink" />
+<a href="https://github.com/tracemachina/nativelink/graphs/contributors" aria-label="View contributors of the NativeLink project on GitHub">
+  <img src="https://contrib.rocks/image?repo=tracemachina/nativelink" alt="NativeLink contributors" loading="lazy" />
 </a>
 
 ## 🤝 Contributing
