@@ -14,6 +14,7 @@
 
 pub mod action_messages;
 pub mod buf_channel;
+pub mod chunked_stream;
 pub mod common;
 pub mod connection_manager;
 pub mod default_store_key_subscribe;
