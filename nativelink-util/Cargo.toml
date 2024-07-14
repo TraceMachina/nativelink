@@ -13,6 +13,7 @@ async-trait = "0.1.80"
 bitflags = "2.5.0"
 blake3 = { version = "1.5.1", features = ["mmap"] }
 bytes = "1.6.0"
+pin-project = "1.1.5"
 console-subscriber = { version = "0.3.0" }
 futures = "0.3.30"
 hex = "0.4.3"
