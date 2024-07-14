@@ -1582,8 +1582,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             if let Some(real_err) = &mut stage.error {
                 assert!(
                     real_err.to_string().contains("Job cancelled because it attempted to execute too many times and failed"),
-                    "{} did not contain 'Job cancelled because it attempted to execute too many times and failed'",
-                    real_err.to_string(),
+                    "{real_err} did not contain 'Job cancelled because it attempted to execute too many times and failed'",
                 );
                 *real_err = err;
             }

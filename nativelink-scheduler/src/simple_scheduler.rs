@@ -16,28 +16,29 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::{Future, Stream};
+use futures::Future;
 use nativelink_config::stores::EvictionPolicy;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_error::{Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, ClientOperationId, OperationId, WorkerId,
 };
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, MatchingEngineStateManager, OperationFilter,
-    OperationStageFlags,
+    ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
+    OperationFilter, OperationStageFlags, OrderDirection,
 };
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::{watch, Notify};
+use tokio::sync::Notify;
 use tokio::time::Duration;
 use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
 use crate::action_scheduler::{ActionListener, ActionScheduler};
 use crate::api_worker_scheduler::ApiWorkerScheduler;
-use crate::memory_scheduler_state::MemorySchedulerStateManager;
+use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
 use crate::worker::{Worker, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
 
@@ -55,19 +56,17 @@ const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
 struct SimpleSchedulerActionListener {
     client_operation_id: ClientOperationId,
-    action_state_result: Arc<dyn ActionStateResult>,
-    maybe_receiver: Option<watch::Receiver<Arc<ActionState>>>,
+    action_state_result: Box<dyn ActionStateResult>,
 }
 
 impl SimpleSchedulerActionListener {
     fn new(
         client_operation_id: ClientOperationId,
-        action_state_result: Arc<dyn ActionStateResult>,
+        action_state_result: Box<dyn ActionStateResult>,
     ) -> Self {
         Self {
             client_operation_id,
             action_state_result,
-            maybe_receiver: None,
         }
     }
 }
@@ -80,29 +79,13 @@ impl ActionListener for SimpleSchedulerActionListener {
     fn changed(
         &mut self,
     ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + '_>> {
-        let action_state_result = self.action_state_result.clone();
         Box::pin(async move {
-            let receiver = match &mut self.maybe_receiver {
-                Some(receiver) => receiver,
-                None => {
-                    let mut receiver = action_state_result
-                        .as_receiver()
-                        .await
-                        .err_tip(|| "In SimpleSchedulerActionListener::changed getting receiver")?
-                        .into_owned();
-                    receiver.mark_changed();
-                    self.maybe_receiver = Some(receiver.clone());
-                    self.maybe_receiver.as_mut().unwrap()
-                }
-            };
-            receiver.changed().await.map_err(|_| {
-                make_err!(
-                    Code::Internal,
-                    "Sender hungup in SimpleSchedulerActionListener::changed()"
-                )
-            })?;
-            let result = receiver.borrow().clone();
-            Ok(result)
+            let action_state = self
+                .action_state_result
+                .changed()
+                .await
+                .err_tip(|| "In SimpleSchedulerActionListener::changed getting receiver")?;
+            Ok(action_state)
         })
     }
 }
@@ -111,27 +94,32 @@ impl ActionListener for SimpleSchedulerActionListener {
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
 pub struct SimpleScheduler {
+    /// Manager for matching engine side of the state manager.
     matching_engine_state_manager: Arc<dyn MatchingEngineStateManager>,
+
+    /// Manager for client state of this scheduler.
     client_state_manager: Arc<dyn ClientStateManager>,
 
+    /// Manager for platform of this scheduler.
     platform_property_manager: Arc<PlatformPropertyManager>,
-
-    /// Background task that tries to match actions to workers. If this struct
-    /// is dropped the spawn will be cancelled as well.
-    _task_worker_matching_spawn: JoinHandleDropGuard<()>,
 
     /// A `Workers` pool that contains all workers that are available to execute actions in a priority
     /// order based on the allocation strategy.
     worker_scheduler: Arc<ApiWorkerScheduler>,
+
+    /// Background task that tries to match actions to workers. If this struct
+    /// is dropped the spawn will be cancelled as well.
+    _task_worker_matching_spawn: JoinHandleDropGuard<()>,
 }
 
 impl SimpleScheduler {
     /// Attempts to find a worker to execute an action and begins executing it.
-    /// If an action is already running that is cacheable it may merge this action
-    /// with the results and state changes of the already running action.
-    /// If the task cannot be executed immediately it will be queued for execution
-    /// based on priority and other metrics.
-    /// All further updates to the action will be provided through `listener`.
+    /// If an action is already running that is cacheable it may merge this
+    /// action with the results and state changes of the already running
+    /// action. If the task cannot be executed immediately it will be queued
+    /// for execution based on priority and other metrics.
+    /// All further updates to the action will be provided through the returned
+    /// value.
     async fn add_action(
         &self,
         client_operation_id: ClientOperationId,
@@ -152,13 +140,11 @@ impl SimpleScheduler {
         &self,
         client_operation_id: &ClientOperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
-        let filter_result = self
-            .client_state_manager
-            .filter_operations(&OperationFilter {
-                client_operation_id: Some(client_operation_id.clone()),
-                ..Default::default()
-            })
-            .await;
+        let filter = OperationFilter {
+            client_operation_id: Some(client_operation_id.clone()),
+            ..Default::default()
+        };
+        let filter_result = self.client_state_manager.filter_operations(filter).await;
 
         let mut stream = filter_result
             .err_tip(|| "In SimpleScheduler::find_by_client_operation_id getting filter result")?;
@@ -171,22 +157,21 @@ impl SimpleScheduler {
         ))))
     }
 
-    async fn get_queued_operations(
-        &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult + 'static>> + Send>>, Error>
-    {
+    async fn get_queued_operations(&self) -> Result<ActionStateResultStream, Error> {
+        let filter = OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        };
         self.matching_engine_state_manager
-            .filter_operations(&OperationFilter {
-                stages: OperationStageFlags::Queued,
-                ..Default::default()
-            })
+            .filter_operations(filter)
             .await
             .err_tip(|| "In SimpleScheduler::get_queued_operations getting filter result")
     }
 
-    // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we can create a map
-    // of capabilities of each worker and then try and match the actions to the worker using
-    // the map lookup (ie. map reduce).
+    // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we
+    // can create a map of capabilities of each worker and then try and match
+    // the actions to the worker using the map lookup (ie. map reduce).
     async fn do_try_match(&self) -> Result<(), Error> {
         async fn match_action_to_worker(
             action_state_result: &dyn ActionStateResult,
@@ -262,12 +247,13 @@ impl SimpleScheduler {
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         Self::new_with_callback(scheduler_cfg, || {
             // The cost of running `do_try_match()` is very high, but constant
-            // in relation to the number of changes that have happened. This means
-            // that grabbing this lock to process `do_try_match()` should always
-            // yield to any other tasks that might want the lock. The easiest and
-            // most fair way to do this is to sleep for a small amount of time.
-            // Using something like tokio::task::yield_now() does not yield as
-            // aggresively as we'd like if new futures are scheduled within a future.
+            // in relation to the number of changes that have happened. This
+            // means that grabbing this lock to process `do_try_match()` should
+            // always yield to any other tasks that might want the lock. The
+            // easiest and most fair way to do this is to sleep for a small
+            // amount of time. Using something like tokio::task::yield_now()
+            // does not yield as aggresively as we'd like if new futures are
+            // scheduled within a future.
             tokio::time::sleep(Duration::from_millis(1))
         })
     }
@@ -302,13 +288,13 @@ impl SimpleScheduler {
         }
 
         let tasks_or_worker_change_notify = Arc::new(Notify::new());
-        let state_manager = Arc::new(MemorySchedulerStateManager::new(
-            &EvictionPolicy {
-                max_seconds: retain_completed_for_s,
-                ..Default::default()
-            },
+        let state_manager = Arc::new(SimpleSchedulerStateManager::new(
             tasks_or_worker_change_notify.clone(),
             max_job_retries,
+            MemoryAwaitedActionDb::new(&EvictionPolicy {
+                max_seconds: retain_completed_for_s,
+                ..Default::default()
+            }),
         ));
 
         let worker_scheduler = ApiWorkerScheduler::new(
