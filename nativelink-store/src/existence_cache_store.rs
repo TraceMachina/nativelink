@@ -219,7 +219,7 @@ impl StoreDriver for ExistenceCacheStore {
 
 impl MetricsComponent for ExistenceCacheStore {
     fn gather_metrics(&self, c: &mut CollectorState) {
-        self.existence_cache.gather_metrics(c)
+        self.existence_cache.gather_metrics(c);
     }
 }
 

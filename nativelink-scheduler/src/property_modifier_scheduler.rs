@@ -122,7 +122,7 @@ impl ActionScheduler for PropertyModifierScheduler {
     }
 
     async fn clean_recently_completed_actions(&self) {
-        self.scheduler.clean_recently_completed_actions().await
+        self.scheduler.clean_recently_completed_actions().await;
     }
 
     // Register metrics for the underlying ActionScheduler.

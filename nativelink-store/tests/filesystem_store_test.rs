@@ -154,7 +154,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<H
 
     async fn unref(&self) {
         Hooks::on_unref(self);
-        self.inner.as_ref().unwrap().unref().await
+        self.inner.as_ref().unwrap().unref().await;
     }
 }
 

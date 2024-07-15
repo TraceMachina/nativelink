@@ -492,7 +492,7 @@ async fn inner_main(
                         },
                     )
                 }),
-            )
+            );
         }
 
         if let Some(admin_config) = services.admin {
@@ -547,7 +547,7 @@ async fn inner_main(
                         },
                     ),
                 ),
-            )
+            );
         }
 
         // Configure our TLS acceptor if we have TLS configured.
@@ -753,7 +753,7 @@ async fn inner_main(
                                             Level::DEBUG,
                                             ?remote_addr,
                                             "Dropped new_future_receiver",
-                                        )
+                                        );
                                     });
                                 },
                                 result = &mut http_svc_fut => {

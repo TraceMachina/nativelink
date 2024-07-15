@@ -550,7 +550,7 @@ impl ActionScheduler for SimpleScheduler {
         self.get_inner_lock()
             .await
             .clean_recently_completed_actions();
-        self.metrics.clean_recently_completed_actions.inc()
+        self.metrics.clean_recently_completed_actions.inc();
     }
 
     fn register_metrics(self: Arc<Self>, registry: &mut Registry) {

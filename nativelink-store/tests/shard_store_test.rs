@@ -87,7 +87,7 @@ async fn verify_weights(
             assert_eq!(
                 *expected_hit, total_hits,
                 "Index {index} failed with expected_hit: {expected_hit} != total_hits: {total_hits}"
-            )
+            );
         }
     }
     Ok(())

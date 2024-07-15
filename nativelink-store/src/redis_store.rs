@@ -500,7 +500,7 @@ where
             conn.publish(pub_sub_channel, &final_key)
                 .await
                 .map_err(from_redis_err)
-                .err_tip(|| "Failed to publish temp key value to configured channel")?
+                .err_tip(|| "Failed to publish temp key value to configured channel")?;
         }
 
         Ok(())

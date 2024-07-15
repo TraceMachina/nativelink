@@ -86,7 +86,7 @@ impl RedisOperationState {
                             .err_tip(|| "Error while Publishing RedisSubscription")
                     })
                     .map(|redis_operation| {
-                        tx.send_modify(move |cur_state| *cur_state = redis_operation.as_state())
+                        tx.send_modify(move |cur_state| *cur_state = redis_operation.as_state());
                     });
                 if let Err(e) = res {
                     // TODO: Refactor API to allow error to be propogated to client.

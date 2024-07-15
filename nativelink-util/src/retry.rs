@@ -163,7 +163,7 @@ impl Retrier {
                             iter.next()
                                 .ok_or(err.append(format!("On attempt {attempt}")))?,
                         )
-                        .await
+                        .await;
                     }
                 }
             }
