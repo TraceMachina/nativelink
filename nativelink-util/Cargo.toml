@@ -31,7 +31,7 @@ tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { version = "0.7.11" }
 tonic = { version = "0.11.0", features = ["tls"] }
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
 
 [dev-dependencies]

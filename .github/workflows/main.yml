@@ -6,6 +6,8 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - 'docs/**'
 
 permissions: read-all
 
@@ -32,11 +34,11 @@ jobs:
       shell: bash
       run: |
         bazel test \
-          --remote_cache=${{ secrets.NATIVELINK_COM_REMOTE_CACHE_URL }} \
+          --remote_cache=${{ vars.NATIVELINK_COM_REMOTE_CACHE_URL }} \
           --remote_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_backend=${{ secrets.NATIVELINK_COM_BES_URL }} \
+          --bes_backend=${{ vars.NATIVELINK_COM_BES_URL }} \
           --bes_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_results_url=${{ secrets.NATIVELINK_COM_BES_RESULTS_URL }} \
+          --bes_results_url=${{ vars.NATIVELINK_COM_BES_RESULTS_URL }} \
           --remote_header=x-nativelink-project=nativelink-ci \
           //...
 

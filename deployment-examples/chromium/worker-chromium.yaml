@@ -37,6 +37,8 @@ spec:
             - name: worker-config
               mountPath: /worker.json
               subPath: worker.json
+            - name: shared
+              mountPath: /shared
           command: ["/shared/nativelink"]
           args: ["/worker.json"]
       volumes:
