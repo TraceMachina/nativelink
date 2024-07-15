@@ -28,6 +28,9 @@ fn main() -> std::io::Result<()> {
 
     let mut config = Config::new();
     config.bytes(["."]);
+
+    config.message_attribute(".", "#[derive(Serialize, Deserialize)]");
+    config.enum_attribute(".", "#[derive(Serialize, Deserialize)]");
     tonic_build::configure()
         .out_dir(output_dir)
         .compile_with_config(config, &paths, &["nativelink-proto"])?;

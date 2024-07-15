@@ -34,6 +34,7 @@
 /// to understand the caching behaviour. Ideally, all `Action`s will be
 /// reproducible so that serving a result from cache is always desirable and
 /// correct.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Action {
@@ -107,6 +108,7 @@ pub struct Action {
 /// Except as otherwise required, the environment (such as which system
 /// libraries or binaries are available, and what filesystems are mounted where)
 /// is defined by and specific to the implementation of the remote execution API.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Command {
@@ -262,6 +264,7 @@ pub struct Command {
 pub mod command {
     /// An `EnvironmentVariable` is one variable to set in the running program's
     /// environment.
+    #[derive(Serialize, Deserialize)]
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct EnvironmentVariable {
@@ -278,6 +281,7 @@ pub mod command {
 /// [Action][build.bazel.remote.execution.v2.Action]'s execution
 /// environment. A `Platform` is represented as a series of key-value pairs
 /// representing the properties that are required of the platform.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Platform {
@@ -312,6 +316,7 @@ pub mod platform {
     /// is implicitly part of the action digest, so even tiny changes in the names
     /// or values (like changing case) may result in different action cache
     /// entries.
+    #[derive(Serialize, Deserialize)]
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Property {
@@ -399,6 +404,7 @@ pub mod platform {
 ///    ]
 /// }
 /// ```
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Directory {
@@ -419,6 +425,7 @@ pub struct Directory {
 /// [SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode]. The server is
 /// responsible for specifying the property `name`s that it accepts. If
 /// permitted by the server, the same `name` may occur multiple times.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeProperty {
@@ -434,6 +441,7 @@ pub struct NodeProperty {
 /// [SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode]. The server is
 /// responsible for specifying the properties that it accepts.
 ///
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NodeProperties {
@@ -449,6 +457,7 @@ pub struct NodeProperties {
     pub unix_mode: ::core::option::Option<u32>,
 }
 /// A `FileNode` represents a single file and associated metadata.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FileNode {
@@ -467,6 +476,7 @@ pub struct FileNode {
 /// A `DirectoryNode` represents a child of a
 /// [Directory][build.bazel.remote.execution.v2.Directory] which is itself
 /// a `Directory` and its associated metadata.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DirectoryNode {
@@ -481,6 +491,7 @@ pub struct DirectoryNode {
     pub digest: ::core::option::Option<Digest>,
 }
 /// A `SymlinkNode` represents a symbolic link.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SymlinkNode {
@@ -532,6 +543,7 @@ pub struct SymlinkNode {
 /// Most protocol buffer implementations will always follow these rules when
 /// serializing, but care should be taken to avoid shortcuts. For instance,
 /// concatenating two messages to merge them may produce duplicate fields.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Digest {
@@ -544,6 +556,7 @@ pub struct Digest {
     pub size_bytes: i64,
 }
 /// ExecutedActionMetadata contains details about a completed execution.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutedActionMetadata {
@@ -613,6 +626,7 @@ pub struct ExecutedActionMetadata {
 /// `ActionResult.execution_metadata.Worker`) have a non-default value, to
 /// ensure that the serialized value is non-empty, which can then be used
 /// as a basic data sanity check.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActionResult {
@@ -790,6 +804,7 @@ pub struct ActionResult {
 /// [FileNode][build.bazel.remote.execution.v2.FileNode], but it is used as an
 /// output in an `ActionResult`. It allows a full file path rather than
 /// only a name.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OutputFile {
@@ -818,6 +833,7 @@ pub struct OutputFile {
 /// A `Tree` contains all the
 /// [Directory][build.bazel.remote.execution.v2.Directory] protos in a
 /// single directory Merkle tree, compressed into one message.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Tree {
@@ -836,6 +852,7 @@ pub struct Tree {
 }
 /// An `OutputDirectory` is the output in an `ActionResult` corresponding to a
 /// directory's full contents rather than a single file.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OutputDirectory {
@@ -893,6 +910,7 @@ pub struct OutputDirectory {
 /// output in an `ActionResult`.
 ///
 /// `OutputSymlink` is binary-compatible with `SymlinkNode`.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OutputSymlink {
@@ -912,6 +930,7 @@ pub struct OutputSymlink {
     pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// An `ExecutionPolicy` can be used to control the scheduling of the action.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionPolicy {
@@ -929,6 +948,7 @@ pub struct ExecutionPolicy {
 }
 /// A `ResultsCachePolicy` is used for fine-grained control over how action
 /// outputs are stored in the CAS and Action Cache.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResultsCachePolicy {
@@ -945,6 +965,7 @@ pub struct ResultsCachePolicy {
 }
 /// A request message for
 /// [Execution.Execute][build.bazel.remote.execution.v2.Execution.Execute].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteRequest {
@@ -994,6 +1015,7 @@ pub struct ExecuteRequest {
     pub digest_function: i32,
 }
 /// A `LogFile` is a log stored in the CAS.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LogFile {
@@ -1013,6 +1035,7 @@ pub struct LogFile {
 /// which will be contained in the [response
 /// field][google.longrunning.Operation.response] of the
 /// [Operation][google.longrunning.Operation].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteResponse {
@@ -1065,11 +1088,13 @@ pub struct ExecuteResponse {
 /// has reached the COMPLETED stage, it MUST set the [done
 /// field][google.longrunning.Operation.done] of the
 /// [Operation][google.longrunning.Operation] and terminate the stream.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionStage {}
 /// Nested message and enum types in `ExecutionStage`.
 pub mod execution_stage {
+    #[derive(Serialize, Deserialize)]
     #[derive(
         Clone,
         Copy,
@@ -1126,6 +1151,7 @@ pub mod execution_stage {
 /// will be contained in the [metadata
 /// field][google.longrunning.Operation.response] of the
 /// [Operation][google.longrunning.Operation].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteOperationMetadata {
@@ -1153,6 +1179,7 @@ pub struct ExecuteOperationMetadata {
 }
 /// A request message for
 /// [WaitExecution][build.bazel.remote.execution.v2.Execution.WaitExecution].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WaitExecutionRequest {
@@ -1163,6 +1190,7 @@ pub struct WaitExecutionRequest {
 }
 /// A request message for
 /// [ActionCache.GetActionResult][build.bazel.remote.execution.v2.ActionCache.GetActionResult].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetActionResultRequest {
@@ -1203,6 +1231,7 @@ pub struct GetActionResultRequest {
 }
 /// A request message for
 /// [ActionCache.UpdateActionResult][build.bazel.remote.execution.v2.ActionCache.UpdateActionResult].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateActionResultRequest {
@@ -1238,6 +1267,7 @@ pub struct UpdateActionResultRequest {
 }
 /// A request message for
 /// [ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FindMissingBlobsRequest {
@@ -1264,6 +1294,7 @@ pub struct FindMissingBlobsRequest {
 }
 /// A response message for
 /// [ContentAddressableStorage.FindMissingBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.FindMissingBlobs].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FindMissingBlobsResponse {
@@ -1273,6 +1304,7 @@ pub struct FindMissingBlobsResponse {
 }
 /// A request message for
 /// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchUpdateBlobsRequest {
@@ -1300,6 +1332,7 @@ pub struct BatchUpdateBlobsRequest {
 /// Nested message and enum types in `BatchUpdateBlobsRequest`.
 pub mod batch_update_blobs_request {
     /// A request corresponding to a single blob that the client wants to upload.
+    #[derive(Serialize, Deserialize)]
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Request {
@@ -1320,6 +1353,7 @@ pub mod batch_update_blobs_request {
 }
 /// A response message for
 /// [ContentAddressableStorage.BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchUpdateBlobsResponse {
@@ -1330,6 +1364,7 @@ pub struct BatchUpdateBlobsResponse {
 /// Nested message and enum types in `BatchUpdateBlobsResponse`.
 pub mod batch_update_blobs_response {
     /// A response corresponding to a single blob that the client tried to upload.
+    #[derive(Serialize, Deserialize)]
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Response {
@@ -1345,6 +1380,7 @@ pub mod batch_update_blobs_response {
 }
 /// A request message for
 /// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchReadBlobsRequest {
@@ -1375,6 +1411,7 @@ pub struct BatchReadBlobsRequest {
 }
 /// A response message for
 /// [ContentAddressableStorage.BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchReadBlobsResponse {
@@ -1385,6 +1422,7 @@ pub struct BatchReadBlobsResponse {
 /// Nested message and enum types in `BatchReadBlobsResponse`.
 pub mod batch_read_blobs_response {
     /// A response corresponding to a single blob that the client tried to download.
+    #[derive(Serialize, Deserialize)]
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Response {
@@ -1407,6 +1445,7 @@ pub mod batch_read_blobs_response {
 }
 /// A request message for
 /// [ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetTreeRequest {
@@ -1448,6 +1487,7 @@ pub struct GetTreeRequest {
 }
 /// A response message for
 /// [ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetTreeResponse {
@@ -1463,6 +1503,7 @@ pub struct GetTreeResponse {
 }
 /// A request message for
 /// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetCapabilitiesRequest {
@@ -1476,6 +1517,7 @@ pub struct GetCapabilitiesRequest {
 }
 /// A response message for
 /// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerCapabilities {
@@ -1499,11 +1541,13 @@ pub struct ServerCapabilities {
 }
 /// The digest function used for converting values into keys for CAS and Action
 /// Cache.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DigestFunction {}
 /// Nested message and enum types in `DigestFunction`.
 pub mod digest_function {
+    #[derive(Serialize, Deserialize)]
     #[derive(
         Clone,
         Copy,
@@ -1637,6 +1681,7 @@ pub mod digest_function {
     }
 }
 /// Describes the server/instance capabilities for updating the action cache.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActionCacheUpdateCapabilities {
@@ -1647,6 +1692,7 @@ pub struct ActionCacheUpdateCapabilities {
 /// [ResultsCachePolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy] and
 /// [ExecutionPolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy]
 /// Used for querying both cache and execution valid priority ranges.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PriorityCapabilities {
@@ -1656,6 +1702,7 @@ pub struct PriorityCapabilities {
 /// Nested message and enum types in `PriorityCapabilities`.
 pub mod priority_capabilities {
     /// Supported range of priorities, including boundaries.
+    #[derive(Serialize, Deserialize)]
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct PriorityRange {
@@ -1670,11 +1717,13 @@ pub mod priority_capabilities {
     }
 }
 /// Describes how the server treats absolute symlink targets.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SymlinkAbsolutePathStrategy {}
 /// Nested message and enum types in `SymlinkAbsolutePathStrategy`.
 pub mod symlink_absolute_path_strategy {
+    #[derive(Serialize, Deserialize)]
     #[derive(
         Clone,
         Copy,
@@ -1723,11 +1772,13 @@ pub mod symlink_absolute_path_strategy {
     }
 }
 /// Compression formats which may be supported.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Compressor {}
 /// Nested message and enum types in `Compressor`.
 pub mod compressor {
+    #[derive(Serialize, Deserialize)]
     #[derive(
         Clone,
         Copy,
@@ -1782,6 +1833,7 @@ pub mod compressor {
     }
 }
 /// Capabilities of the remote cache system.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CacheCapabilities {
@@ -1821,6 +1873,7 @@ pub struct CacheCapabilities {
     pub supported_batch_update_compressors: ::prost::alloc::vec::Vec<i32>,
 }
 /// Capabilities of the remote execution system.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionCapabilities {
@@ -1857,6 +1910,7 @@ pub struct ExecutionCapabilities {
     pub digest_functions: ::prost::alloc::vec::Vec<i32>,
 }
 /// Details for the tool used to call the API.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolDetails {
@@ -1879,6 +1933,7 @@ pub struct ToolDetails {
 /// Therefore, if the gRPC library is used to pass/retrieve this
 /// metadata, the user may ignore the base64 encoding and assume it is simply
 /// serialized as a binary message.
+#[derive(Serialize, Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RequestMetadata {
