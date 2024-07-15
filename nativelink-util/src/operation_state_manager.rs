@@ -12,20 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
+
+use async_trait::async_trait;
+use bitflags::bitflags;
+use futures::Stream;
+use nativelink_error::Error;
 
 use crate::action_messages::{
     ActionInfo, ActionStage, ActionState, ActionUniqueKey, ClientOperationId, OperationId, WorkerId,
 };
 use crate::common::DigestInfo;
-use async_trait::async_trait;
-use bitflags::bitflags;
-use futures::Stream;
-use nativelink_error::Error;
-use tokio::sync::watch;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,8 +47,8 @@ impl Default for OperationStageFlags {
 pub trait ActionStateResult: Send + Sync + 'static {
     // Provides the current state of the action.
     async fn as_state(&self) -> Result<Arc<ActionState>, Error>;
-    // Subscribes to the state of the action, receiving updates as they are published.
-    async fn as_receiver(&self) -> Result<Cow<'_, watch::Receiver<Arc<ActionState>>>, Error>;
+    // Waits for the state of the action to change.
+    async fn changed(&mut self) -> Result<Arc<ActionState>, Error>;
     // Provide result as action info. This behavior will not be supported by all implementations.
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error>;
 }
@@ -93,26 +92,27 @@ pub struct OperationFilter {
     pub order_by_priority_direction: Option<OrderDirection>,
 }
 
-pub type ActionStateResultStream = Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>;
+pub type ActionStateResultStream<'a> =
+    Pin<Box<dyn Stream<Item = Box<dyn ActionStateResult>> + Send + 'a>>;
 
 #[async_trait]
-pub trait ClientStateManager: Sync + Send + 'static {
+pub trait ClientStateManager: Sync + Send {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
         &self,
         client_operation_id: ClientOperationId,
         action_info: Arc<ActionInfo>,
-    ) -> Result<Arc<dyn ActionStateResult>, Error>;
+    ) -> Result<Box<dyn ActionStateResult>, Error>;
 
     /// Returns a stream of operations that match the filter.
-    async fn filter_operations(
-        &self,
-        filter: &OperationFilter,
-    ) -> Result<ActionStateResultStream, Error>;
+    async fn filter_operations<'a>(
+        &'a self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream<'a>, Error>;
 }
 
 #[async_trait]
-pub trait WorkerStateManager: Sync + Send + 'static {
+pub trait WorkerStateManager: Sync + Send {
     /// Update that state of an operation.
     /// The worker must also send periodic updates even if the state
     /// did not change with a modified timestamp in order to prevent
@@ -126,12 +126,12 @@ pub trait WorkerStateManager: Sync + Send + 'static {
 }
 
 #[async_trait]
-pub trait MatchingEngineStateManager: Sync + Send + 'static {
+pub trait MatchingEngineStateManager: Sync + Send {
     /// Returns a stream of operations that match the filter.
-    async fn filter_operations(
-        &self,
-        filter: &OperationFilter,
-    ) -> Result<ActionStateResultStream, Error>;
+    async fn filter_operations<'a>(
+        &'a self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream<'a>, Error>;
 
     /// Assign an operation to a worker or unassign it.
     async fn assign_operation(

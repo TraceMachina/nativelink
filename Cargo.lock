@@ -2053,6 +2053,7 @@ dependencies = [
  "nativelink-macro",
  "nativelink-proto",
  "parking_lot",
+ "pin-project",
  "pin-project-lite",
  "pretty_assertions",
  "prometheus-client",

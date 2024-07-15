@@ -104,7 +104,7 @@ impl Hash for OperationId {
 impl OperationId {
     pub fn new(unique_qualifier: ActionUniqueQualifier) -> Self {
         Self {
-            id: uuid::Uuid::new_v4(),
+            id: Uuid::new_v4(),
             unique_qualifier,
         }
     }
