@@ -203,6 +203,10 @@ export default defineConfig({
               link: "/faq/remote-execution",
             },
             {
+              label: "Why do I need this if I already have Bazel or Buck2?",
+              link: "/faq/why-nativelink",
+            },
+            {
               label: "What is LRE?",
               link: "/faq/lre",
             },
