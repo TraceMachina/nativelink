@@ -469,23 +469,25 @@ async fn inner_main(
                                     &root_metrics_registry_guard,
                                 )
                                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                                .map(|_| {
-                                    // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
-                                    buf = buf.replace("nativelink_nativelink_stores_", "");
-                                    buf = buf.replace("nativelink_nativelink_workers_", "");
-                                    let mut response = Response::new(buf);
-                                    // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
-                                    // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
-                                    // However, this makes debugging more difficult, so we use the old text/plain instead.
-                                    response.headers_mut().insert(
-                                        hyper::header::CONTENT_TYPE,
-                                        hyper::header::HeaderValue::from_static(
-                                            "text/plain; version=0.0.4; charset=utf-8",
-                                        ),
-                                    );
-                                    response
-                                })
-                                .unwrap_or_else(error_to_response)
+                                .map_or_else(
+                                    error_to_response,
+                                    |_| {
+                                        // This is a hack to get around this bug: https://github.com/prometheus/client_rust/issues/155
+                                        buf = buf.replace("nativelink_nativelink_stores_", "");
+                                        buf = buf.replace("nativelink_nativelink_workers_", "");
+                                        let mut response = Response::new(buf);
+                                        // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
+                                        // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
+                                        // However, this makes debugging more difficult, so we use the old text/plain instead.
+                                        response.headers_mut().insert(
+                                            hyper::header::CONTENT_TYPE,
+                                            hyper::header::HeaderValue::from_static(
+                                                "text/plain; version=0.0.4; charset=utf-8",
+                                            ),
+                                        );
+                                        response
+                                    },
+                                )
                             })
                             .await
                             .unwrap_or_else(error_to_response)
@@ -747,14 +749,14 @@ async fn inner_main(
                         loop {
                             tokio::select! {
                                 maybe_new_future = rx.recv() => {
-                                    maybe_new_future.map(|fut| futures.push(fut.left_future())).unwrap_or_else(|| {
+                                    maybe_new_future.map_or_else(|| {
                                         event!(
                                             target: "nativelink::services",
                                             Level::DEBUG,
                                             ?remote_addr,
                                             "Dropped new_future_receiver",
                                         )
-                                    });
+                                    }, |fut| futures.push(fut.left_future()));
                                 },
                                 result = &mut http_svc_fut => {
                                     if let Err(err) = result.or_else(|err| {

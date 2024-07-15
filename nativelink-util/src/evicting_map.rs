@@ -527,25 +527,16 @@ impl<K: Ord + Hash + Eq + Clone + Debug, T: LenEntry + Debug, I: InstantWrapper>
             );
             c.publish(
                 "oldest_item_timestamp",
-                &state
-                    .lru
-                    .peek_lru()
-                    .map(|(_, v)| {
-                        self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64
-                    })
-                    .unwrap_or(-1),
+                &state.lru.peek_lru().map_or(-1, |(_, v)| {
+                    self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64
+                }),
                 "Timestamp of the oldest item in the store",
             );
             c.publish(
                 "newest_item_timestamp",
-                &state
-                    .lru
-                    .iter()
-                    .next()
-                    .map(|(_, v)| {
-                        self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64
-                    })
-                    .unwrap_or(-1),
+                &state.lru.iter().next().map_or(-1, |(_, v)| {
+                    self.anchor_time.unix_timestamp() as i64 - v.seconds_since_anchor as i64
+                }),
                 "Timestamp of the newest item in the store",
             );
             c.publish(
