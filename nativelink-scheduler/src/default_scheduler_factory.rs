@@ -105,7 +105,6 @@ fn inner_scheduler_factory(
                 visited_schedulers.insert(worker_scheduler_uintptr);
                 worker_scheduler.clone().register_metrics(scheduler_metrics);
             }
-            worker_scheduler.clone().register_metrics(scheduler_metrics);
         }
     }
 

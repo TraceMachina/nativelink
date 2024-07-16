@@ -22,6 +22,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ClientOperationId,
     ExecutionMetadata, OperationId, WorkerId,
 };
+use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, WorkerStateManager,
@@ -139,12 +140,16 @@ pub struct SimpleSchedulerStateManager<T: AwaitedActionDb> {
 }
 
 impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
-    pub fn new(tasks_change_notify: Arc<Notify>, max_job_retries: usize, action_db: T) -> Self {
-        Self {
+    pub fn new(
+        tasks_change_notify: Arc<Notify>,
+        max_job_retries: usize,
+        action_db: T,
+    ) -> Arc<Self> {
+        Arc::new(Self {
             action_db,
             tasks_change_notify,
             max_job_retries,
-        }
+        })
     }
 
     async fn inner_update_operation(
@@ -458,5 +463,18 @@ impl<T: AwaitedActionDb> MatchingEngineStateManager for SimpleSchedulerStateMana
         };
         self.inner_update_operation(operation_id, maybe_worker_id, stage_result)
             .await
+    }
+
+    /// Register metrics with the registry.
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        // TODO(allada) We only register the metrics in one of the components instead of
+        // all three because it's a bit tricky to separate the metrics for each component.
+        registry.register_collector(Box::new(Collector::new(&self)));
+    }
+}
+
+impl<T: AwaitedActionDb> MetricsComponent for SimpleSchedulerStateManager<T> {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish("", &self.action_db, "");
     }
 }

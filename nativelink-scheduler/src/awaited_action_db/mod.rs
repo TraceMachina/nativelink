@@ -20,6 +20,7 @@ pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
 use futures::{Future, Stream};
 use nativelink_error::Error;
 use nativelink_util::action_messages::{ActionInfo, ClientOperationId, OperationId};
+use nativelink_util::metrics_utils::MetricsComponent;
 
 mod awaited_action;
 
@@ -71,7 +72,7 @@ pub trait AwaitedActionSubscriber: Send + Sync + Sized + 'static {
 }
 
 /// A trait that defines the interface for an AwaitedActionDb.
-pub trait AwaitedActionDb: Send + Sync {
+pub trait AwaitedActionDb: Send + Sync + MetricsComponent + 'static {
     type Subscriber: AwaitedActionSubscriber;
 
     /// Get the AwaitedAction by the client operation id.

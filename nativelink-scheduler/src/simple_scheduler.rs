@@ -288,14 +288,14 @@ impl SimpleScheduler {
         }
 
         let tasks_or_worker_change_notify = Arc::new(Notify::new());
-        let state_manager = Arc::new(SimpleSchedulerStateManager::new(
+        let state_manager = SimpleSchedulerStateManager::new(
             tasks_or_worker_change_notify.clone(),
             max_job_retries,
             MemoryAwaitedActionDb::new(&EvictionPolicy {
                 max_seconds: retain_completed_for_s,
                 ..Default::default()
             }),
-        ));
+        );
 
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
@@ -371,7 +371,12 @@ impl ActionScheduler for SimpleScheduler {
         Ok(maybe_receiver)
     }
 
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        self.client_state_manager.clone().register_metrics(registry);
+        self.matching_engine_state_manager
+            .clone()
+            .register_metrics(registry);
+    }
 }
 
 #[async_trait]
@@ -419,9 +424,5 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler
             .set_drain_worker(worker_id, is_draining)
             .await
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        self.worker_scheduler.clone().register_metrics(registry);
     }
 }

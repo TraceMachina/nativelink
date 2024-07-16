@@ -28,6 +28,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::metrics_utils::{CollectorState, MetricsComponent};
 use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -939,5 +940,48 @@ impl AwaitedActionDb for MemoryAwaitedActionDb {
             .await
             .add_action(client_operation_id, action_info)
             .await
+    }
+}
+
+impl MetricsComponent for MemoryAwaitedActionDb {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        let inner = self.inner.lock_blocking();
+        c.publish(
+            "action_state_unknown_total",
+            &inner.sorted_action_info_hash_keys.unknown.len(),
+            "Number of actions wih the current state of unknown.",
+        );
+        c.publish(
+            "action_state_cache_check_total",
+            &inner.sorted_action_info_hash_keys.cache_check.len(),
+            "Number of actions wih the current state of cache_check.",
+        );
+        c.publish(
+            "action_state_queued_total",
+            &inner.sorted_action_info_hash_keys.queued.len(),
+            "Number of actions wih the current state of queued.",
+        );
+        c.publish(
+            "action_state_executing_total",
+            &inner.sorted_action_info_hash_keys.executing.len(),
+            "Number of actions wih the current state of executing.",
+        );
+        c.publish(
+            "action_state_completed_total",
+            &inner.sorted_action_info_hash_keys.completed.len(),
+            "Number of actions wih the current state of completed.",
+        );
+        // TODO(allada) This is legacy and should be removed in the future.
+        c.publish(
+            "active_actions_total",
+            &inner.sorted_action_info_hash_keys.executing.len(),
+            "(LEGACY) The number of running actions.",
+        );
+        // TODO(allada) This is legacy and should be removed in the future.
+        c.publish(
+            "queued_actions_total",
+            &inner.sorted_action_info_hash_keys.queued.len(),
+            "(LEGACY) The number actions in the queue.",
+        );
     }
 }

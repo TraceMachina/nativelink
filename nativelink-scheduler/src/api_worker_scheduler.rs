@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -19,9 +20,9 @@ use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId, WorkerId};
-use nativelink_util::metrics_utils::Registry;
+use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::operation_state_manager::WorkerStateManager;
-use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::Notify;
 use tonic::async_trait;
 use tracing::{event, Level};
@@ -437,8 +438,40 @@ impl WorkerScheduler for ApiWorkerScheduler {
         inner.set_drain_worker(worker_id, is_draining).await
     }
 
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
-        // We do not register anything here because we only want to register metrics
-        // once and we rely on the `ActionScheduler::register_metrics()` to do that.
+    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
+        self.inner
+            .lock_blocking()
+            .worker_state_manager
+            .clone()
+            .register_metrics(registry);
+        registry.register_collector(Box::new(Collector::new(&self)));
+    }
+}
+
+impl MetricsComponent for ApiWorkerScheduler {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        let inner = self.inner.lock_blocking();
+        let mut props = HashMap::<&String, u64>::new();
+        for (_worker_id, worker) in inner.workers.iter() {
+            c.publish_with_labels(
+                "workers",
+                worker,
+                "",
+                vec![("worker_id".into(), worker.id.to_string().into())],
+            );
+            for (property, prop_value) in &worker.platform_properties.properties {
+                let current_value = props.get(&property).unwrap_or(&0);
+                if let PlatformPropertyValue::Minimum(worker_value) = prop_value {
+                    props.insert(property, *current_value + *worker_value);
+                }
+            }
+        }
+        for (property, prop_value) in props {
+            c.publish(
+                &format!("{property}_available_properties"),
+                &prop_value,
+                format!("Total sum of available properties for {property}"),
+            );
+        }
     }
 }
