@@ -505,7 +505,6 @@ impl AwaitedActionDbImpl {
             .map(|tx| MemoryAwaitedActionSubscriber::new(tx.subscribe()))
     }
 
-    // TODO!(rename)
     fn get_range_of_actions<'a, 'b>(
         &'a self,
         state: SortedAwaitedActionState,
@@ -595,6 +594,26 @@ impl AwaitedActionDbImpl {
             // Note: It's important to drop old_awaited_action before we call
             // send_replace or we will have a deadlock.
             let old_awaited_action = tx.borrow();
+
+            // Do not process changes if the action version is not in sync with
+            // what the sender based the update on.
+            if old_awaited_action.version() + 1 != new_awaited_action.version() {
+                return Err(make_err!(
+                    // From: https://grpc.github.io/grpc/core/md_doc_statuscodes.html
+                    // Use ABORTED if the client should retry at a higher level
+                    // (e.g., when a client-specified test-and-set fails,
+                    // indicating the client should restart a read-modify-write
+                    // sequence)
+                    Code::Aborted,
+                    "{} Expected {:?} but got {:?} for operation_id {:?} - {:?}",
+                    "Tried to update an awaited action with an incorrect version.",
+                    old_awaited_action.version() + 1,
+                    new_awaited_action.version(),
+                    old_awaited_action,
+                    new_awaited_action,
+                ));
+            }
+
             error_if!(
                 old_awaited_action.action_info().unique_qualifier
                     != new_awaited_action.action_info().unique_qualifier,
@@ -608,7 +627,6 @@ impl AwaitedActionDbImpl {
                 .stage
                 .is_same_stage(&new_awaited_action.state().stage);
 
-            // TODO!(Handle priority changes here).
             if !is_same_stage {
                 self.sorted_action_info_hash_keys
                     .process_state_changes(&old_awaited_action, &new_awaited_action)?;
@@ -725,7 +743,9 @@ impl AwaitedActionDbImpl {
         &mut self,
         client_operation_id: &ClientOperationId,
         unique_qualifier: &ActionUniqueQualifier,
-        // TODO!()
+        // TODO(allada) To simplify the scheduler 2024 refactor, we
+        // removed the ability to upgrade priorities of actions.
+        // we should add priority upgrades back in.
         _priority: i32,
     ) -> Result<Option<MemoryAwaitedActionSubscriber>, Error> {
         let unique_key = match unique_qualifier {
