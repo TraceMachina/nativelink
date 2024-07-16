@@ -99,25 +99,8 @@ message ExecuteResult {
     /// that initially sent the job as part of the BRE protocol.
     string instance_name = 6;
 
-    /// The original execution digest request for this response. The scheduler knows what it
-    /// should be, but we do safety checks to ensure it really is the request we expected.
-    build.bazel.remote.execution.v2.Digest action_digest = 2;
-
-    /// The salt originally sent along with the StartExecute request. This salt is used
-    /// as a seed for cases where the execution digest should never be cached or merged
-    /// with other jobs. This salt is added to the hash function used to compute jobs that
-    /// are running or cached.
-    uint64 salt = 3;
-
-    // The digest function that was used to compute the action digest
-    // and all related blobs.
-    //
-    // If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
-    // SHA384, SHA512, or VSO, the client MAY leave this field unset. In
-    // that case the server SHOULD infer the digest function using the
-    // length of the action digest hash and the digest functions announced
-    // in the server's capabilities.
-    build.bazel.remote.execution.v2.DigestFunction.Value digest_function = 7;
+    /// The operation ID that was executed.
+    string operation_id = 8;
 
     /// The actual response data.
     oneof result {
@@ -131,7 +114,7 @@ message ExecuteResult {
         google.rpc.Status internal_error = 5;
     }
 
-    reserved 8; // NextId.
+    reserved 9; // NextId.
 }
 
 /// Result sent back from the server when a node connects.
@@ -141,10 +124,10 @@ message ConnectionResult {
     reserved 2; // NextId.
 }
 
-/// Request to kill a running action sent from the scheduler to a worker.
-message KillActionRequest {
-    /// The the hex encoded unique qualifier for the action to be killed.
-    string action_id = 1;
+/// Request to kill a running operation sent from the scheduler to a worker.
+message KillOperationRequest {
+    /// The the operation id for the operation to be killed.
+    string operation_id = 1;
     reserved 2; // NextId.
 }
 /// Communication from the scheduler to the worker.
@@ -169,8 +152,8 @@ message UpdateForWorker {
         /// The worker may discard any outstanding work that is being executed.
         google.protobuf.Empty disconnect = 4;
 
-        /// Instructs the worker to kill a specific running action.
-        KillActionRequest kill_action_request = 5;
+        /// Instructs the worker to kill a specific running operation.
+        KillOperationRequest kill_operation_request = 5;
     }
     reserved 6; // NextId.
 }
@@ -179,14 +162,14 @@ message StartExecute {
     /// The action information used to execute job.
     build.bazel.remote.execution.v2.ExecuteRequest execute_request = 1;
 
-    /// See documentation in ExecuteResult::salt.
-    uint64 salt = 2;
+    /// Id of the operation.
+    string operation_id = 4;
 
     /// The time at which the command was added to the queue to allow population
     /// of the ActionResult.
     google.protobuf.Timestamp queued_timestamp = 3;
 
-    reserved 4; // NextId.
+    reserved 5; // NextId.
 }
 
 /// This is a special message used to save actions into the CAS that can be used

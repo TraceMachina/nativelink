@@ -43,8 +43,10 @@ use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
+use nativelink_util::action_messages::SymlinkInfo;
 use nativelink_util::action_messages::{
-    ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, SymlinkInfo,
+    ActionResult, ActionUniqueKey, ActionUniqueQualifier, DirectoryInfo, ExecutionMetadata,
+    FileInfo, NameOrPath, OperationId,
 };
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
@@ -139,6 +141,20 @@ fn increment_clock(time: &mut SystemTime) -> SystemTime {
     let previous_time = *time;
     *time = previous_time.checked_add(Duration::from_secs(1)).unwrap();
     previous_time
+}
+
+fn make_operation_id(execute_request: &ExecuteRequest) -> OperationId {
+    let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
+        instance_name: execute_request.instance_name.clone(),
+        digest_function: execute_request.digest_function.try_into().unwrap(),
+        digest: execute_request
+            .action_digest
+            .clone()
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    });
+    OperationId::new(unique_qualifier)
 }
 
 #[nativelink_test]
@@ -443,7 +459,6 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
         },
     )?);
     {
-        const SALT: u64 = 55;
         let command = Command {
             arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
             output_files: vec!["some/path/test.txt".to_string()],
@@ -487,16 +502,18 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
         )
         .await?;
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         let running_action = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
-                    salt: SALT,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -557,7 +574,6 @@ async fn ensure_output_files_full_directories_are_created_test(
         },
     )?);
     {
-        const SALT: u64 = 55;
         let working_directory = "some_cwd";
         let command = Command {
             arguments: vec!["touch".to_string(), "./some/path/test.txt".to_string()],
@@ -603,16 +619,18 @@ async fn ensure_output_files_full_directories_are_created_test(
         )
         .await?;
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         let running_action = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
-                    salt: SALT,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -673,7 +691,6 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?);
     let action_result = {
-        const SALT: u64 = 55;
         #[cfg(target_family = "unix")]
         let arguments = vec![
             "sh".to_string(),
@@ -734,16 +751,19 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Blake3.into(),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         let running_action_impl = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Blake3.into(),
-                        ..Default::default()
-                    }),
-                    salt: SALT,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -844,7 +864,6 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
         },
     )?);
     let action_result = {
-        const SALT: u64 = 55;
         #[cfg(target_family = "unix")]
         let arguments = vec![
             "sh".to_string(),
@@ -905,16 +924,18 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
         )
         .await?;
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         let running_action_impl = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
-                    salt: SALT,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -1018,7 +1039,6 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
     )?);
     let queued_timestamp = make_system_time(1000);
     let action_result = {
-        const SALT: u64 = 55;
         let command = Command {
             arguments: vec![
                 "sh".to_string(),
@@ -1060,16 +1080,18 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
         )
         .await?;
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         let running_action_impl = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
-                    salt: SALT,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: Some(queued_timestamp.into()),
                 },
             )
@@ -1223,7 +1245,6 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
     let arguments = vec!["cmd".to_string(), "/C".to_string(), "exit 33".to_string()];
 
     let action_result = {
-        const SALT: u64 = 55;
         let command = Command {
             arguments,
             output_paths: vec![],
@@ -1254,16 +1275,18 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
         )
         .await?;
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         let running_action_impl = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
-                    salt: SALT,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: Some(queued_timestamp.into()),
                 },
             )
@@ -1316,7 +1339,6 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
 #[nativelink_test]
 async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 55;
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
     let root_action_directory = make_temp_path("root_action_directory");
@@ -1383,17 +1405,19 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+    let operation_id = make_operation_id(&execute_request).to_string();
+
     let running_action_impl = running_actions_manager
         .clone()
         .create_and_add_action(
             WORKER_ID.to_string(),
             StartExecute {
-                execute_request: Some(ExecuteRequest {
-                    action_digest: Some(action_digest.into()),
-                    digest_function: ProtoDigestFunction::Sha256.into(),
-                    ..Default::default()
-                }),
-                salt: SALT,
+                execute_request: Some(execute_request),
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -1445,7 +1469,6 @@ echo | set /p=\"Wrapper script did run\" 1>&2
 exit 0
 ";
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 66;
     const EXPECTED_STDOUT: &str = "Action did run";
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -1528,17 +1551,19 @@ exit 0
     )
     .await?;
 
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+    let operation_id = make_operation_id(&execute_request).to_string();
+
     let running_action_impl = running_actions_manager
         .clone()
         .create_and_add_action(
             WORKER_ID.to_string(),
             StartExecute {
-                execute_request: Some(ExecuteRequest {
-                    action_digest: Some(action_digest.into()),
-                    digest_function: ProtoDigestFunction::Sha256.into(),
-                    ..Default::default()
-                }),
-                salt: SALT,
+                execute_request: Some(execute_request),
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -1587,7 +1612,6 @@ echo | set /p=\"Wrapper script did run with property %PROPERTY% %VALUE% %INNER_T
 exit 0
 ";
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 66;
     const EXPECTED_STDOUT: &str = "Action did run";
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -1694,17 +1718,19 @@ exit 0
     )
     .await?;
 
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+    let operation_id = make_operation_id(&execute_request).to_string();
+
     let running_action_impl = running_actions_manager
         .clone()
         .create_and_add_action(
             WORKER_ID.to_string(),
             StartExecute {
-                execute_request: Some(ExecuteRequest {
-                    action_digest: Some(action_digest.into()),
-                    digest_function: ProtoDigestFunction::Sha256.into(),
-                    ..Default::default()
-                }),
-                salt: SALT,
+                execute_request: Some(execute_request),
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -1751,7 +1777,6 @@ echo | set /p={\"failure\":\"timeout\"} 1>&2 > %SIDE_CHANNEL_FILE%
 exit 1
 ";
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 66;
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
     let root_action_directory = make_temp_path("root_action_directory");
@@ -1833,17 +1858,19 @@ exit 1
     )
     .await?;
 
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+    let operation_id = make_operation_id(&execute_request).to_string();
+
     let running_action_impl = running_actions_manager
         .clone()
         .create_and_add_action(
             WORKER_ID.to_string(),
             StartExecute {
-                execute_request: Some(ExecuteRequest {
-                    action_digest: Some(action_digest.into()),
-                    digest_function: ProtoDigestFunction::Sha256.into(),
-                    ..Default::default()
-                }),
-                salt: SALT,
+                execute_request: Some(execute_request),
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -2346,16 +2373,18 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
             },
         )?);
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
-                    salt: 0,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
                 },
             )
@@ -2424,16 +2453,18 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
             },
         )?);
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
-                    salt: 0,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
                 },
             )
@@ -2502,16 +2533,18 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
             },
         )?);
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         let result = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
-                    salt: 0,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
                 },
             )
@@ -2623,16 +2656,18 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+    let operation_id = make_operation_id(&execute_request).to_string();
+
     let execute_results_fut = running_actions_manager
         .create_and_add_action(
             WORKER_ID.to_string(),
             StartExecute {
-                execute_request: Some(ExecuteRequest {
-                    action_digest: Some(action_digest.into()),
-                    digest_function: ProtoDigestFunction::Sha256.into(),
-                    ..Default::default()
-                }),
-                salt: 0,
+                execute_request: Some(execute_request),
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -2740,18 +2775,20 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
     )
     .await?;
 
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+    let operation_id = make_operation_id(&execute_request).to_string();
+
     let (cleanup_tx, cleanup_rx) = oneshot::channel();
     let cleanup_was_requested = AtomicBool::new(false);
     let action = running_actions_manager
         .create_and_add_action(
             WORKER_ID.to_string(),
             StartExecute {
-                execute_request: Some(ExecuteRequest {
-                    action_digest: Some(action_digest.into()),
-                    digest_function: ProtoDigestFunction::Sha256.into(),
-                    ..Default::default()
-                }),
-                salt: 0,
+                execute_request: Some(execute_request),
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )
@@ -2890,15 +2927,18 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         let running_action_impl = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
+                    execute_request: Some(execute_request),
+                    operation_id,
                     ..Default::default()
                 },
             )
@@ -2946,7 +2986,6 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
     #[cfg(target_family = "windows")]
     let arguments = vec!["cmd".to_string(), "/C".to_string(), "exit 0".to_string()];
 
-    const SALT: u64 = 55;
     let command = Command {
         arguments,
         output_paths: vec![],
@@ -2977,16 +3016,18 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
     )
     .await?;
 
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+    let operation_id = make_operation_id(&execute_request).to_string();
+
     let running_action_impl = running_actions_manager
         .create_and_add_action(
             WORKER_ID.to_string(),
             StartExecute {
-                execute_request: Some(ExecuteRequest {
-                    action_digest: Some(action_digest.into()),
-                    digest_function: ProtoDigestFunction::Sha256.into(),
-                    ..Default::default()
-                }),
-                salt: SALT,
+                execute_request: Some(execute_request),
+                operation_id,
                 queued_timestamp: Some(queued_timestamp.into()),
             },
         )
@@ -3049,7 +3090,6 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?);
     let action_result = {
-        const SALT: u64 = 55;
         #[cfg(target_family = "unix")]
             let arguments = vec![
                 "sh".to_string(),
@@ -3110,16 +3150,18 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        };
+        let operation_id = make_operation_id(&execute_request).to_string();
+
         let running_action_impl = running_actions_manager
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
-                    execute_request: Some(ExecuteRequest {
-                        action_digest: Some(action_digest.into()),
-                        digest_function: ProtoDigestFunction::Sha256.into(),
-                        ..Default::default()
-                    }),
-                    salt: SALT,
+                    execute_request: Some(execute_request),
+                    operation_id,
                     queued_timestamp: None,
                 },
             )
@@ -3196,7 +3238,6 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
 async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn std::error::Error>>
 {
     const WORKER_ID: &str = "foo_worker_id";
-    const SALT: u64 = 66;
 
     let (_, _, cas_store, ac_store) = setup_stores().await?;
     let root_action_directory = make_temp_path("root_work_directory");
@@ -3282,17 +3323,19 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
     )
     .await?;
 
+    let execute_request = ExecuteRequest {
+        action_digest: Some(action_digest.into()),
+        ..Default::default()
+    };
+    let operation_id = make_operation_id(&execute_request).to_string();
+
     let running_action_impl = running_actions_manager
         .clone()
         .create_and_add_action(
             WORKER_ID.to_string(),
             StartExecute {
-                execute_request: Some(ExecuteRequest {
-                    action_digest: Some(action_digest.into()),
-                    digest_function: ProtoDigestFunction::Sha256.into(),
-                    ..Default::default()
-                }),
-                salt: SALT,
+                execute_request: Some(execute_request),
+                operation_id,
                 queued_timestamp: Some(make_system_time(1000).into()),
             },
         )

@@ -529,7 +529,7 @@ async fn inner_main(
                                     })?
                                     .clone()
                                     .set_drain_worker(
-                                        WorkerId::try_from(worker_id.clone())?,
+                                        &WorkerId::try_from(worker_id.clone())?,
                                         is_draining,
                                     )
                                     .await?;

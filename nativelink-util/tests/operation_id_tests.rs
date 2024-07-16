@@ -19,22 +19,28 @@ use pretty_assertions::assert_eq;
 
 #[nativelink_test]
 async fn parse_operation_id() -> Result<(), Error> {
-    let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").unwrap();
-    assert_eq!(
-        operation_id.to_string(),
-        "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
-    assert_eq!(
-        operation_id.action_name(),
-        "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0"
-    );
-    assert_eq!(
-        operation_id.id.to_string(),
-        "19b16cf8-a1ad-4948-aaac-b6f4eb7fca52"
-    );
-    assert_eq!(
-        hex::encode(operation_id.get_hash()),
-        "5a36f0db39e27667c4b91937cd29c1df8799ba468f2de6810c6865be05517644"
-    );
+    {
+        // Check no cached.
+        let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").unwrap();
+        assert_eq!(
+            operation_id.to_string(),
+            "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
+        assert_eq!(
+            operation_id.id.to_string(),
+            "19b16cf8-a1ad-4948-aaac-b6f4eb7fca52"
+        );
+    }
+    {
+        // Check cached.
+        let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/c/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").unwrap();
+        assert_eq!(
+            operation_id.to_string(),
+            "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/c/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
+        assert_eq!(
+            operation_id.id.to_string(),
+            "19b16cf8-a1ad-4948-aaac-b6f4eb7fca52"
+        );
+    }
     Ok(())
 }
 
@@ -53,7 +59,7 @@ async fn parse_empty_failure() -> Result<(), Error> {
     assert_eq!(operation_id.messages.len(), 1);
     assert_eq!(
         operation_id.messages[0],
-        "Invalid ActionInfoHashKey instance name fragment - /"
+        "Invalid UniqueQualifier instance name fragment - /"
     );
 
     let operation_id = OperationId::try_from("main").err().unwrap();
@@ -64,7 +70,7 @@ async fn parse_empty_failure() -> Result<(), Error> {
         "Invalid OperationId unique_qualifier / id fragment - main"
     );
 
-    let operation_id = OperationId::try_from("main/nohashfn/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").err().unwrap();
+    let operation_id = OperationId::try_from("main/nohashfn/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").err().unwrap();
     assert_eq!(operation_id.code, Code::InvalidArgument);
     assert_eq!(operation_id.messages.len(), 1);
     assert_eq!(
@@ -73,7 +79,7 @@ async fn parse_empty_failure() -> Result<(), Error> {
     );
 
     let operation_id =
-        OperationId::try_from("main/SHA256/badhash-211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52")
+        OperationId::try_from("main/SHA256/badhash-211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52")
             .err()
             .unwrap();
     assert_eq!(operation_id.messages.len(), 3);
@@ -82,37 +88,35 @@ async fn parse_empty_failure() -> Result<(), Error> {
     assert_eq!(operation_id.messages[1], "Invalid sha256 hash: badhash");
     assert_eq!(
         operation_id.messages[2],
-        "Invalid DigestInfo digest hash - main/SHA256/badhash-211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52"
+        "Invalid DigestInfo digest hash - main/SHA256/badhash-211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52"
     );
 
-    let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").err().unwrap();
+    let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").err().unwrap();
     assert_eq!(operation_id.messages.len(), 2);
     assert_eq!(operation_id.code, Code::InvalidArgument);
     assert_eq!(
         operation_id.messages[0],
         "cannot parse integer from empty string"
     );
-    assert_eq!(operation_id.messages[1], "Invalid ActionInfoHashKey size value fragment - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
+    assert_eq!(operation_id.messages[1], "Invalid UniqueQualifier size value fragment - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
 
-    let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f--211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").err().unwrap();
+    let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f--211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").err().unwrap();
     assert_eq!(operation_id.code, Code::InvalidArgument);
     assert_eq!(operation_id.messages.len(), 2);
     assert_eq!(operation_id.messages[0], "invalid digit found in string");
-    assert_eq!(operation_id.messages[1], "Invalid ActionInfoHashKey size value fragment - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f--211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
+    assert_eq!(operation_id.messages[1], "Invalid UniqueQualifier size value fragment - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f--211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
 
     let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/x/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").err().unwrap();
-    assert_eq!(operation_id.messages.len(), 2);
+    assert_eq!(operation_id.messages.len(), 1);
     assert_eq!(operation_id.code, Code::InvalidArgument);
-    assert_eq!(operation_id.messages[0], "invalid digit found in string");
-    assert_eq!(operation_id.messages[1], "Invalid ActionInfoHashKey salt hex conversion - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/x/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
+    assert_eq!(operation_id.messages[0], "Invalid UniqueQualifier cachable value fragment - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/x/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
 
     let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/-10/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52").err().unwrap();
-    assert_eq!(operation_id.messages.len(), 2);
+    assert_eq!(operation_id.messages.len(), 1);
     assert_eq!(operation_id.code, Code::InvalidArgument);
-    assert_eq!(operation_id.messages[0], "invalid digit found in string");
-    assert_eq!(operation_id.messages[1], "Invalid ActionInfoHashKey salt hex conversion - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/-10/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
+    assert_eq!(operation_id.messages[0], "Invalid UniqueQualifier cachable value fragment - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/-10/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52");
 
-    let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0/baduuid").err().unwrap();
+    let operation_id = OperationId::try_from("main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/u/baduuid").err().unwrap();
     assert_eq!(operation_id.messages.len(), 1);
     assert_eq!(operation_id.code, Code::InvalidArgument);
     assert_eq!(operation_id.messages[0], "Failed to parse invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `u` at 4 as uuid");
@@ -124,7 +128,7 @@ async fn parse_empty_failure() -> Result<(), Error> {
     .unwrap();
     assert_eq!(operation_id.messages.len(), 1);
     assert_eq!(operation_id.code, Code::Internal);
-    assert_eq!(operation_id.messages[0], "Invalid ActionInfoHashKey digest size fragment - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0");
+    assert_eq!(operation_id.messages[0], "Invalid UniqueQualifier digest size fragment - main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0");
 
     Ok(())
 }

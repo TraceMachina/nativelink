@@ -12,14 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use blake3::Hasher as Blake3Hasher;
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata,
@@ -43,38 +40,73 @@ use crate::platform_properties::PlatformProperties;
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
-pub type WorkerTimestamp = u64;
+/// Exit code sent if there is an internal error.
+pub const INTERNAL_ERROR_EXIT_CODE: i32 = -178;
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Holds an id that is unique to the client for a requested operation.
+/// Each client should be issued a unique id even if they are attached
+/// to the same underlying operation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClientOperationId(String);
+
+impl ClientOperationId {
+    pub fn new(unique_qualifier: ActionUniqueQualifier) -> Self {
+        Self(OperationId::new(unique_qualifier).to_string())
+    }
+
+    pub fn from_raw_string(name: String) -> Self {
+        Self(name)
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Display for ClientOperationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}", self.0.clone()))
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OperationId {
-    pub unique_qualifier: ActionInfoHashKey,
+    pub unique_qualifier: ActionUniqueQualifier,
     pub id: Uuid,
 }
 
-// TODO: Eventually we should make this it's own hash rather than delegate to ActionInfoHashKey.
+impl PartialEq for OperationId {
+    fn eq(&self, other: &Self) -> bool {
+        self.id.eq(&other.id)
+    }
+}
+
+impl Eq for OperationId {}
+
+impl PartialOrd for OperationId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OperationId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
 impl Hash for OperationId {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        ActionInfoHashKey::hash(&self.unique_qualifier, state)
+        self.id.hash(state)
     }
 }
 
 impl OperationId {
-    pub fn new(unique_qualifier: ActionInfoHashKey) -> Self {
+    pub fn new(unique_qualifier: ActionUniqueQualifier) -> Self {
         Self {
-            id: uuid::Uuid::new_v4(),
+            id: Uuid::new_v4(),
             unique_qualifier,
         }
-    }
-
-    /// Utility function used to make a unique hash of the digest including the salt.
-    pub fn get_hash(&self) -> [u8; 32] {
-        self.unique_qualifier.get_hash()
-    }
-
-    /// Returns the salt used for cache busting/hashing.
-    #[inline]
-    pub fn action_name(&self) -> String {
-        self.unique_qualifier.action_name()
     }
 }
 
@@ -84,7 +116,7 @@ impl TryFrom<&str> for OperationId {
     /// Attempts to convert a string slice into an `OperationId`.
     ///
     /// The input string `value` is expected to be in the format:
-    /// `<instance_name>/<digest_function>/<digest_hash>-<digest_size>/<salt>/<id>`.
+    /// `<instance_name>/<digest_function>/<digest_hash>-<digest_size>/<cached>/<id>`.
     ///
     /// # Parameters
     ///
@@ -105,7 +137,7 @@ impl TryFrom<&str> for OperationId {
     ///
     /// ```no_run
     /// use nativelink_util::action_messages::OperationId;
-    /// let operation_id_str = "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/0/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52";
+    /// let operation_id_str = "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52";
     /// let operation_id = OperationId::try_from(operation_id_str);
     /// ```
     ///
@@ -119,30 +151,41 @@ impl TryFrom<&str> for OperationId {
             .err_tip(|| format!("Invalid OperationId unique_qualifier / id fragment - {value}"))?;
         let (instance_name, rest) = unique_qualifier
             .split_once('/')
-            .err_tip(|| format!("Invalid ActionInfoHashKey instance name fragment - {value}"))?;
+            .err_tip(|| format!("Invalid UniqueQualifier instance name fragment - {value}"))?;
         let (digest_function, rest) = rest
             .split_once('/')
-            .err_tip(|| format!("Invalid ActionInfoHashKey digest function fragment - {value}"))?;
+            .err_tip(|| format!("Invalid UniqueQualifier digest function fragment - {value}"))?;
         let (digest_hash, rest) = rest
             .split_once('-')
-            .err_tip(|| format!("Invalid ActionInfoHashKey digest hash fragment - {value}"))?;
-        let (digest_size, salt) = rest
+            .err_tip(|| format!("Invalid UniqueQualifier digest hash fragment - {value}"))?;
+        let (digest_size, cachable) = rest
             .split_once('/')
-            .err_tip(|| format!("Invalid ActionInfoHashKey digest size fragment - {value}"))?;
+            .err_tip(|| format!("Invalid UniqueQualifier digest size fragment - {value}"))?;
         let digest = DigestInfo::try_new(
             digest_hash,
             digest_size
                 .parse::<u64>()
-                .err_tip(|| format!("Invalid ActionInfoHashKey size value fragment - {value}"))?,
+                .err_tip(|| format!("Invalid UniqueQualifier size value fragment - {value}"))?,
         )
         .err_tip(|| format!("Invalid DigestInfo digest hash - {value}"))?;
-        let salt = u64::from_str_radix(salt, 16)
-            .err_tip(|| format!("Invalid ActionInfoHashKey salt hex conversion - {value}"))?;
-        let unique_qualifier = ActionInfoHashKey {
+        let cachable = match cachable {
+            "u" => false,
+            "c" => true,
+            _ => {
+                return Err(make_input_err!(
+                    "Invalid UniqueQualifier cachable value fragment - {value}"
+                ));
+            }
+        };
+        let unique_key = ActionUniqueKey {
             instance_name: instance_name.to_string(),
             digest_function: digest_function.try_into()?,
             digest,
-            salt,
+        };
+        let unique_qualifier = if cachable {
+            ActionUniqueQualifier::Cachable(unique_key)
+        } else {
+            ActionUniqueQualifier::Uncachable(unique_key)
         };
         let id = Uuid::parse_str(id).map_err(|e| make_input_err!("Failed to parse {e} as uuid"))?;
         Ok(Self {
@@ -154,26 +197,18 @@ impl TryFrom<&str> for OperationId {
 
 impl std::fmt::Display for OperationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{}/{}",
-            self.unique_qualifier.action_name(),
-            self.id
-        ))
+        f.write_fmt(format_args!("{}/{}", self.unique_qualifier, self.id))
     }
 }
 
 impl std::fmt::Debug for OperationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{}:{}",
-            self.unique_qualifier.action_name(),
-            self.id
-        ))
+        std::fmt::Display::fmt(&self, f)
     }
 }
 
 /// Unique id of worker.
-#[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
+#[derive(Default, Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
 pub struct WorkerId(pub Uuid);
 
 impl std::fmt::Display for WorkerId {
@@ -186,9 +221,7 @@ impl std::fmt::Display for WorkerId {
 
 impl std::fmt::Debug for WorkerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut buf = Uuid::encode_buffer();
-        let worker_id_str = self.0.hyphenated().encode_lower(&mut buf);
-        f.write_fmt(format_args!("{worker_id_str}"))
+        std::fmt::Display::fmt(&self, f)
     }
 }
 
@@ -197,58 +230,76 @@ impl TryFrom<String> for WorkerId {
     fn try_from(s: String) -> Result<Self, Self::Error> {
         match Uuid::parse_str(&s) {
             Err(e) => Err(make_input_err!(
-                "Failed to convert string to WorkerId : {} : {:?}",
-                s,
-                e
+                "Failed to convert string to WorkerId : {s} : {e:?}",
             )),
             Ok(my_uuid) => Ok(WorkerId(my_uuid)),
         }
     }
 }
+
+/// Holds the information needed to uniquely identify an action
+/// and if it is cachable or not.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActionUniqueQualifier {
+    /// The action is cachable.
+    Cachable(ActionUniqueKey),
+    /// The action is uncachable.
+    Uncachable(ActionUniqueKey),
+}
+
+impl ActionUniqueQualifier {
+    /// Get the instance_name of the action.
+    pub const fn instance_name(&self) -> &String {
+        match self {
+            Self::Cachable(action) => &action.instance_name,
+            Self::Uncachable(action) => &action.instance_name,
+        }
+    }
+
+    /// Get the digest function of the action.
+    pub const fn digest_function(&self) -> DigestHasherFunc {
+        match self {
+            Self::Cachable(action) => action.digest_function,
+            Self::Uncachable(action) => action.digest_function,
+        }
+    }
+
+    /// Get the digest of the action.
+    pub const fn digest(&self) -> DigestInfo {
+        match self {
+            Self::Cachable(action) => action.digest,
+            Self::Uncachable(action) => action.digest,
+        }
+    }
+}
+
+impl std::fmt::Display for ActionUniqueQualifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (cachable, unique_key) = match self {
+            Self::Cachable(action) => (true, action),
+            Self::Uncachable(action) => (false, action),
+        };
+        f.write_fmt(format_args!(
+            "{}/{}/{}-{}/{}",
+            unique_key.instance_name,
+            unique_key.digest_function,
+            unique_key.digest.hash_str(),
+            unique_key.digest.size_bytes,
+            if cachable { 'c' } else { 'u' },
+        ))
+    }
+}
+
 /// This is a utility struct used to make it easier to match `ActionInfos` in a
 /// `HashMap` without needing to construct an entire `ActionInfo`.
-/// Since the hashing only needs the digest and salt we can just alias them here
-/// and point the original `ActionInfo` structs to reference these structs for
-/// it's hashing functions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionInfoHashKey {
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct ActionUniqueKey {
     /// Name of instance group this action belongs to.
     pub instance_name: String,
     /// The digest function this action expects.
     pub digest_function: DigestHasherFunc,
     /// Digest of the underlying `Action`.
     pub digest: DigestInfo,
-    /// Salt that can be filled with a random number to ensure no `ActionInfo` will be a match
-    /// to another `ActionInfo` in the scheduler. When caching is wanted this value is usually
-    /// zero.
-    pub salt: u64,
-}
-
-impl ActionInfoHashKey {
-    /// Utility function used to make a unique hash of the digest including the salt.
-    pub fn get_hash(&self) -> [u8; 32] {
-        Blake3Hasher::new()
-            .update(self.instance_name.as_bytes())
-            .update(&i32::from(self.digest_function.proto_digest_func()).to_le_bytes())
-            .update(&self.digest.packed_hash[..])
-            .update(&self.digest.size_bytes.to_le_bytes())
-            .update(&self.salt.to_le_bytes())
-            .finalize()
-            .into()
-    }
-
-    /// Returns the salt used for cache busting/hashing.
-    #[inline]
-    pub fn action_name(&self) -> String {
-        format!(
-            "{}/{}/{}-{}/{:X}",
-            self.instance_name,
-            self.digest_function,
-            self.digest.hash_str(),
-            self.digest.size_bytes,
-            self.salt
-        )
-    }
 }
 
 /// Information needed to execute an action. This struct is used over bazel's proto `Action`
@@ -272,47 +323,43 @@ pub struct ActionInfo {
     pub load_timestamp: SystemTime,
     /// When this action was created.
     pub insert_timestamp: SystemTime,
-
-    /// Info used to uniquely identify this ActionInfo. Normally the hash function would just
-    /// use the fields it needs and you wouldn't need to separate them, however we have a use
-    /// case where we sometimes want to lookup an entry in a HashMap, but we don't have the
-    /// info to construct an entire ActionInfo. In such case we construct only a ActionInfoHashKey
-    /// then use that object to lookup the entry in the map. The root problem is that HashMap
-    /// requires `ActionInfo :Borrow<ActionInfoHashKey>` in order for this to work, which means
-    /// we need to be able to return a &ActionInfoHashKey from ActionInfo, but since we cannot
-    /// return a temporary reference we must have an object tied to ActionInfo's lifetime and
-    /// return it's reference.
-    pub unique_qualifier: ActionInfoHashKey,
-
-    /// Whether to try looking up this action in the cache.
-    pub skip_cache_lookup: bool,
+    /// Info used to uniquely identify this ActionInfo and if it is cachable.
+    /// This is primarily used to join actions/operations together using this key.
+    pub unique_qualifier: ActionUniqueQualifier,
 }
 
 impl ActionInfo {
     #[inline]
     pub const fn instance_name(&self) -> &String {
-        &self.unique_qualifier.instance_name
+        self.unique_qualifier.instance_name()
     }
 
     /// Returns the underlying digest of the `Action`.
     #[inline]
-    pub const fn digest(&self) -> &DigestInfo {
-        &self.unique_qualifier.digest
+    pub const fn digest(&self) -> DigestInfo {
+        self.unique_qualifier.digest()
     }
 
-    /// Returns the salt used for cache busting/hashing.
-    #[inline]
-    pub const fn salt(&self) -> &u64 {
-        &self.unique_qualifier.salt
-    }
-
-    pub fn try_from_action_and_execute_request_with_salt(
+    pub fn try_from_action_and_execute_request(
         execute_request: ExecuteRequest,
         action: Action,
-        salt: u64,
         load_timestamp: SystemTime,
         queued_timestamp: SystemTime,
     ) -> Result<Self, Error> {
+        let unique_key = ActionUniqueKey {
+            instance_name: execute_request.instance_name,
+            digest_function: DigestHasherFunc::try_from(execute_request.digest_function)
+                .err_tip(|| format!("Could not find digest_function in try_from_action_and_execute_request {:?}", execute_request.digest_function))?,
+            digest: execute_request
+                .action_digest
+                .err_tip(|| "Expected action_digest to exist on ExecuteRequest")?
+                .try_into()?,
+        };
+        let unique_qualifier = if execute_request.skip_cache_lookup {
+            ActionUniqueQualifier::Uncachable(unique_key)
+        } else {
+            ActionUniqueQualifier::Cachable(unique_key)
+        };
         Ok(Self {
             command_digest: action
                 .command_digest
@@ -328,20 +375,13 @@ impl ActionInfo {
                 .try_into()
                 .map_err(|_| make_input_err!("Failed convert proto duration to system duration"))?,
             platform_properties: action.platform.unwrap_or_default().into(),
-            priority: execute_request.execution_policy.unwrap_or_default().priority,
+            priority: execute_request
+                .execution_policy
+                .unwrap_or_default()
+                .priority,
             load_timestamp,
             insert_timestamp: queued_timestamp,
-            unique_qualifier: ActionInfoHashKey {
-                instance_name: execute_request.instance_name,
-                digest_function: DigestHasherFunc::try_from(execute_request.digest_function)
-                    .err_tip(|| format!("Could not find digest_function in try_from_action_and_execute_request_with_salt {:?}", execute_request.digest_function))?,
-                digest: execute_request
-                    .action_digest
-                    .err_tip(|| "Expected action_digest to exist on ExecuteRequest")?
-                    .try_into()?,
-                salt,
-            },
-            skip_cache_lookup: execute_request.skip_cache_lookup,
+            unique_qualifier,
         })
     }
 }
@@ -349,91 +389,20 @@ impl ActionInfo {
 impl From<ActionInfo> for ExecuteRequest {
     fn from(val: ActionInfo) -> Self {
         let digest = val.digest().into();
+        let (skip_cache_lookup, unique_qualifier) = match val.unique_qualifier {
+            ActionUniqueQualifier::Cachable(unique_qualifier) => (false, unique_qualifier),
+            ActionUniqueQualifier::Uncachable(unique_qualifier) => (true, unique_qualifier),
+        };
         Self {
-            instance_name: val.unique_qualifier.instance_name,
+            instance_name: unique_qualifier.instance_name,
             action_digest: Some(digest),
-            skip_cache_lookup: true, // The worker should never cache lookup.
-            execution_policy: None,  // Not used in the worker.
+            skip_cache_lookup,
+            execution_policy: None,     // Not used in the worker.
             results_cache_policy: None, // Not used in the worker.
-            digest_function: val
-                .unique_qualifier
-                .digest_function
-                .proto_digest_func()
-                .into(),
+            digest_function: unique_qualifier.digest_function.proto_digest_func().into(),
         }
     }
 }
-
-// Note: Hashing, Eq, and Ord matching on this struct is unique. Normally these functions
-// must play well with each other, but in our case the following rules apply:
-// * Hash - Hashing must be unique on the exact command being run and must never match
-//          when do_not_cache is enabled, but must be consistent between identical data
-//          hashes.
-// * Eq   - Same as hash.
-// * Ord  - Used when sorting `ActionInfo` together. The only major sorting is priority and
-//          insert_timestamp, everything else is undefined, but must be deterministic.
-impl Hash for ActionInfo {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        ActionInfoHashKey::hash(&self.unique_qualifier, state);
-    }
-}
-
-impl PartialEq for ActionInfo {
-    fn eq(&self, other: &Self) -> bool {
-        ActionInfoHashKey::eq(&self.unique_qualifier, &other.unique_qualifier)
-    }
-}
-
-impl Eq for ActionInfo {}
-
-impl Ord for ActionInfo {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Want the highest priority on top, but the lowest insert_timestamp.
-        self.priority
-            .cmp(&other.priority)
-            .then_with(|| other.insert_timestamp.cmp(&self.insert_timestamp))
-            .then_with(|| self.salt().cmp(other.salt()))
-            .then_with(|| self.digest().size_bytes.cmp(&other.digest().size_bytes))
-            .then_with(|| self.digest().packed_hash.cmp(&other.digest().packed_hash))
-            .then_with(|| {
-                self.unique_qualifier
-                    .digest_function
-                    .cmp(&other.unique_qualifier.digest_function)
-            })
-    }
-}
-
-impl PartialOrd for ActionInfo {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Borrow<ActionInfoHashKey> for Arc<ActionInfo> {
-    #[inline]
-    fn borrow(&self) -> &ActionInfoHashKey {
-        &self.unique_qualifier
-    }
-}
-
-impl Hash for ActionInfoHashKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Digest is unique, so hashing it is all we need.
-        self.digest_function.hash(state);
-        self.digest.hash(state);
-        self.salt.hash(state);
-    }
-}
-
-impl PartialEq for ActionInfoHashKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.digest == other.digest
-            && self.salt == other.salt
-            && self.digest_function == other.digest_function
-    }
-}
-
-impl Eq for ActionInfoHashKey {}
 
 /// Simple utility struct to determine if a string is representing a full path or
 /// just the name of the file.
@@ -728,9 +697,6 @@ impl TryFrom<ExecutedActionMetadata> for ExecutionMetadata {
     }
 }
 
-/// Exit code sent if there is an internal error.
-pub const INTERNAL_ERROR_EXIT_CODE: i32 = -178;
-
 /// Represents the results of an execution.
 /// This struct must be 100% compatible with `ActionResult` in `remote_execution.proto`.
 #[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
@@ -812,6 +778,20 @@ impl ActionStage {
     //       "finished" with "has a result".
     pub const fn is_finished(&self) -> bool {
         self.has_action_result()
+    }
+
+    /// Returns if the stage enum is the same as the other stage enum, but
+    /// does not compare the values of the enum.
+    pub const fn is_same_stage(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Unknown, Self::Unknown)
+                | (Self::CacheCheck, Self::CacheCheck)
+                | (Self::Queued, Self::Queued)
+                | (Self::Executing, Self::Executing)
+                | (Self::Completed(_), Self::Completed(_))
+                | (Self::CompletedFromCache(_), Self::CompletedFromCache(_))
+        )
     }
 }
 
@@ -1093,10 +1073,19 @@ where
     }
 }
 
-impl TryFrom<Operation> for ActionState {
-    type Error = Error;
+/// Current state of the action.
+/// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
+#[derive(PartialEq, Debug, Clone)]
+pub struct ActionState {
+    pub stage: ActionStage,
+    pub id: OperationId,
+}
 
-    fn try_from(operation: Operation) -> Result<ActionState, Error> {
+impl ActionState {
+    pub fn try_from_operation(
+        operation: Operation,
+        operation_id: OperationId,
+    ) -> Result<Self, Error> {
         let metadata = from_any::<ExecuteOperationMetadata>(
             &operation
                 .metadata
@@ -1135,51 +1124,23 @@ impl TryFrom<Operation> for ActionState {
             }
         };
 
-        // NOTE: This will error if we are forwarding an operation from
-        // one remote execution system to another that does not use our operation name
-        // format (ie: very unlikely, but possible).
-        let id = OperationId::try_from(operation.name.as_str())?;
-        Ok(Self { id, stage })
+        Ok(Self {
+            id: operation_id,
+            stage,
+        })
     }
-}
 
-/// Current state of the action.
-/// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone)]
-pub struct ActionState {
-    pub stage: ActionStage,
-    pub id: OperationId,
-}
+    pub fn as_operation(&self, client_operation_id: ClientOperationId) -> Operation {
+        let stage = Into::<execution_stage::Value>::into(&self.stage) as i32;
+        let name = client_operation_id.into_string();
 
-impl ActionState {
-    #[inline]
-    pub fn unique_qualifier(&self) -> &ActionInfoHashKey {
-        &self.id.unique_qualifier
-    }
-    #[inline]
-    pub fn action_digest(&self) -> &DigestInfo {
-        &self.id.unique_qualifier.digest
-    }
-}
-
-impl MetricsComponent for ActionState {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish("stage", &self.stage, "");
-    }
-}
-
-impl From<ActionState> for Operation {
-    fn from(val: ActionState) -> Self {
-        let stage = Into::<execution_stage::Value>::into(&val.stage) as i32;
-        let name = val.id.to_string();
-
-        let result = if val.stage.has_action_result() {
-            let execute_response: ExecuteResponse = val.stage.into();
+        let result = if self.stage.has_action_result() {
+            let execute_response: ExecuteResponse = self.stage.clone().into();
             Some(LongRunningResult::Response(to_any(&execute_response)))
         } else {
             None
         };
-        let digest = Some(val.id.unique_qualifier.digest.into());
+        let digest = Some(self.id.unique_qualifier.digest().into());
 
         let metadata = ExecuteOperationMetadata {
             stage,
@@ -1190,11 +1151,17 @@ impl From<ActionState> for Operation {
             partial_execution_metadata: None,
         };
 
-        Self {
+        Operation {
             name,
             metadata: Some(to_any(&metadata)),
             done: result.is_some(),
             result,
         }
+    }
+}
+
+impl MetricsComponent for ActionState {
+    fn gather_metrics(&self, c: &mut CollectorState) {
+        c.publish("stage", &self.stage, "");
     }
 }
