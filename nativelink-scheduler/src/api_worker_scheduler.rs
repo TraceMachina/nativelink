@@ -111,7 +111,6 @@ impl ApiWorkerSchedulerImpl {
             .get_mut(worker_id)
             .err_tip(|| format!("Worker {worker_id} doesn't exist in the pool"))?;
         worker.is_draining = is_draining;
-        // TODO(allada) This should move to inside the Workers struct.
         self.worker_change_notify.notify_one();
         Ok(())
     }
@@ -254,8 +253,6 @@ impl ApiWorkerSchedulerImpl {
         if let Some(mut worker) = self.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
-            // We create a temporary Vec to avoid doubt about a possible code
-            // path touching the worker.running_action_infos elsewhere.
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager

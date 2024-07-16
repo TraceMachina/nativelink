@@ -66,7 +66,6 @@ impl ActionListener for DefaultActionListener {
 }
 
 impl Clone for DefaultActionListener {
-    /// Clones the current action state and marks the receiver as changed.
     fn clone(&self) -> Self {
         let mut action_state = self.action_state.clone();
         action_state.mark_changed();
