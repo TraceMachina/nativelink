@@ -23,9 +23,18 @@ use nativelink_util::action_messages::{
 use nativelink_util::evicting_map::InstantWrapper;
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
+/// The version of the awaited action.
+/// This number will always increment by one each time
+/// the action is updated.
+#[derive(Debug, Clone, Copy)]
+struct AwaitedActionVersion(u64);
+
 /// An action that is being awaited on and last known state.
 #[derive(Debug, Clone)]
 pub struct AwaitedAction {
+    /// The current version of the action.
+    version: AwaitedActionVersion,
+
     /// The action that is being awaited on.
     action_info: Arc<ActionInfo>,
 
@@ -65,6 +74,7 @@ impl AwaitedAction {
             id: operation_id.clone(),
         });
         Self {
+            version: AwaitedActionVersion(0),
             action_info,
             operation_id,
             sort_key,
@@ -73,6 +83,14 @@ impl AwaitedAction {
             worker_id: None,
             state,
         }
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version.0
+    }
+
+    pub fn increment_version(&mut self) {
+        self.version = AwaitedActionVersion(self.version.0 + 1);
     }
 
     pub fn action_info(&self) -> &Arc<ActionInfo> {
