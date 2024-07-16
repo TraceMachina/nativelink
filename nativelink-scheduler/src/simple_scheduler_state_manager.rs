@@ -34,6 +34,10 @@ use super::awaited_action_db::{
 };
 use crate::memory_awaited_action_db::{ClientActionStateResult, MatchingEngineActionStateResult};
 
+/// Maximum number of times an update to the database
+/// can fail before giving up.
+const MAX_UPDATE_RETRIES: usize = 5;
+
 /// Simple struct that implements the ActionStateResult trait and always returns an error.
 struct ErrorActionStateResult(Error);
 
@@ -149,101 +153,126 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
         maybe_worker_id: Option<&WorkerId>,
         action_stage_result: Result<ActionStage, Error>,
     ) -> Result<(), Error> {
-        let maybe_awaited_action_subscriber = self
-            .action_db
-            .get_by_operation_id(operation_id)
-            .await
-            .err_tip(|| "In MemorySchedulerStateManager::update_operation")?;
-        let awaited_action_subscriber = match maybe_awaited_action_subscriber {
-            Some(sub) => sub,
-            // No action found. It is ok if the action was not found. It probably
-            // means that the action was dropped, but worker was still processing
-            // it.
-            None => return Ok(()),
-        };
+        let mut last_err = None;
+        for _ in 0..MAX_UPDATE_RETRIES {
+            let maybe_awaited_action_subscriber = self
+                .action_db
+                .get_by_operation_id(operation_id)
+                .await
+                .err_tip(|| "In MemorySchedulerStateManager::update_operation")?;
+            let awaited_action_subscriber = match maybe_awaited_action_subscriber {
+                Some(sub) => sub,
+                // No action found. It is ok if the action was not found. It probably
+                // means that the action was dropped, but worker was still processing
+                // it.
+                None => return Ok(()),
+            };
 
-        let mut awaited_action = awaited_action_subscriber.borrow();
+            let mut awaited_action = awaited_action_subscriber.borrow();
 
-        // Make sure we don't update an action that is already completed.
-        if awaited_action.state().stage.is_finished() {
-            return Err(make_err!(
-                Code::Internal,
-                "Action {operation_id:?} is already completed with state {:?} - maybe_worker_id: {:?}",
-                awaited_action.state().stage,
-                maybe_worker_id,
-            ));
-        }
+            // Make sure we don't update an action that is already completed.
+            if awaited_action.state().stage.is_finished() {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Action {operation_id:?} is already completed with state {:?} - maybe_worker_id: {:?}",
+                    awaited_action.state().stage,
+                    maybe_worker_id,
+                ));
+            }
 
-        // Make sure the worker id matches the awaited action worker id.
-        // This might happen if the worker sending the update is not the
-        // worker that was assigned.
-        if awaited_action.worker_id().is_some()
-            && maybe_worker_id.is_some()
-            && maybe_worker_id != awaited_action.worker_id().as_ref()
-        {
-            let err = make_err!(
-                Code::Internal,
-                "Worker ids do not match - {:?} != {:?} for {:?}",
-                maybe_worker_id,
-                awaited_action.worker_id(),
-                awaited_action,
-            );
-            event!(
-                Level::ERROR,
-                ?operation_id,
-                ?maybe_worker_id,
-                ?awaited_action,
-                "{}",
-                err.to_string(),
-            );
-            return Err(err);
-        }
+            // Make sure the worker id matches the awaited action worker id.
+            // This might happen if the worker sending the update is not the
+            // worker that was assigned.
+            if awaited_action.worker_id().is_some()
+                && maybe_worker_id.is_some()
+                && maybe_worker_id != awaited_action.worker_id().as_ref()
+            {
+                let err = make_err!(
+                    Code::Internal,
+                    "Worker ids do not match - {:?} != {:?} for {:?}",
+                    maybe_worker_id,
+                    awaited_action.worker_id(),
+                    awaited_action,
+                );
+                event!(
+                    Level::ERROR,
+                    ?operation_id,
+                    ?maybe_worker_id,
+                    ?awaited_action,
+                    "{}",
+                    err.to_string(),
+                );
+                return Err(err);
+            }
 
-        let stage = match action_stage_result {
-            Ok(stage) => stage,
-            Err(err) => {
-                // Don't count a backpressure failure as an attempt for an action.
-                let due_to_backpressure = err.code == Code::ResourceExhausted;
-                if !due_to_backpressure {
-                    awaited_action.attempts += 1;
+            let stage = match &action_stage_result {
+                Ok(stage) => stage.clone(),
+                Err(err) => {
+                    // Don't count a backpressure failure as an attempt for an action.
+                    let due_to_backpressure = err.code == Code::ResourceExhausted;
+                    if !due_to_backpressure {
+                        awaited_action.attempts += 1;
+                    }
+
+                    if awaited_action.attempts > self.max_job_retries {
+                        ActionStage::Completed(ActionResult {
+                            execution_metadata: ExecutionMetadata {
+                                worker: maybe_worker_id.map_or_else(String::default, |v| v.to_string()),
+                                ..ExecutionMetadata::default()
+                            },
+                            error: Some(err.clone().merge(make_err!(
+                                Code::Internal,
+                                "Job cancelled because it attempted to execute too many times and failed {}",
+                                format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
+                            ))),
+                            ..ActionResult::default()
+                        })
+                    } else {
+                        ActionStage::Queued
+                    }
                 }
+            };
+            if matches!(stage, ActionStage::Queued) {
+                // If the action is queued, we need to unset the worker id regardless of
+                // which worker sent the update.
+                awaited_action.set_worker_id(None);
+            } else {
+                awaited_action.set_worker_id(maybe_worker_id.copied());
+            }
+            awaited_action.set_state(Arc::new(ActionState {
+                stage,
+                id: operation_id.clone(),
+            }));
+            awaited_action.increment_version();
 
-                if awaited_action.attempts > self.max_job_retries {
-                    ActionStage::Completed(ActionResult {
-                        execution_metadata: ExecutionMetadata {
-                            worker: maybe_worker_id.map_or_else(String::default, |v| v.to_string()),
-                            ..ExecutionMetadata::default()
-                        },
-                        error: Some(err.clone().merge(make_err!(
-                            Code::Internal,
-                            "Job cancelled because it attempted to execute too many times and failed {}",
-                            format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
-                        ))),
-                        ..ActionResult::default()
-                    })
+            let update_action_result = self
+                .action_db
+                .update_awaited_action(awaited_action)
+                .await
+                .err_tip(|| "In MemorySchedulerStateManager::update_operation");
+            if let Err(err) = update_action_result {
+                // We use Aborted to signal that the action was not
+                // updated due to the data being set was not the latest
+                // but can be retried.
+                if err.code == Code::Aborted {
+                    last_err = Some(err);
+                    continue;
                 } else {
-                    ActionStage::Queued
+                    return Err(err);
                 }
             }
-        };
-        if matches!(stage, ActionStage::Queued) {
-            // If the action is queued, we need to unset the worker id regardless of
-            // which worker sent the update.
-            awaited_action.set_worker_id(None);
-        } else {
-            awaited_action.set_worker_id(maybe_worker_id.copied());
-        }
-        awaited_action.set_state(Arc::new(ActionState {
-            stage,
-            id: operation_id.clone(),
-        }));
-        self.action_db
-            .update_awaited_action(awaited_action)
-            .await
-            .err_tip(|| "In MemorySchedulerStateManager::update_operation")?;
 
-        self.tasks_change_notify.notify_one();
-        Ok(())
+            self.tasks_change_notify.notify_one();
+            return Ok(());
+        }
+        match last_err {
+            Some(err) => Err(err),
+            None => Err(make_err!(
+                Code::Internal,
+                "Failed to update action after {} retries with no error set",
+                MAX_UPDATE_RETRIES,
+            )),
+        }
     }
 
     async fn inner_add_operation(
