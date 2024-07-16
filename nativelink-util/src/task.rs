@@ -18,11 +18,10 @@ use std::task::{Context, Poll};
 
 use futures::Future;
 use hyper::rt::Executor;
-use tokio::sync::mpsc::UnboundedSender;
+use hyper_util::rt::tokio::TokioExecutor;
 use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 pub use tracing::error_span as __error_span;
-use tracing::instrument::Instrumented;
-use tracing::{event, info_span, Instrument, Level, Span};
+use tracing::{Instrument, Span};
 
 use crate::origin_context::{ActiveOriginContext, ContextAwareFuture, OriginContext};
 
@@ -132,35 +131,27 @@ impl<T> Drop for JoinHandleDropGuard<T> {
     }
 }
 
-pub struct TaskExecutor<F>(UnboundedSender<Instrumented<F>>);
+#[derive(Clone)]
+pub struct TaskExecutor(TokioExecutor);
 
-impl<T> Clone for TaskExecutor<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
+impl TaskExecutor {
+    pub fn new() -> Self {
+        Self(TokioExecutor::new())
     }
 }
 
-impl<F> TaskExecutor<F> {
-    pub fn new(tx: UnboundedSender<Instrumented<F>>) -> Self {
-        Self(tx)
+impl Default for TaskExecutor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl<F> Executor<F> for TaskExecutor<F>
+impl<F> Executor<F> for TaskExecutor
 where
-    Self: Send + Sync,
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
     fn execute(&self, fut: F) {
-        let _ = self
-            .0
-            .send(fut.instrument(info_span!("http_executor")))
-            .inspect_err(|_| {
-                event!(
-                    Level::ERROR,
-                    "Could not dispatch future from TaskExecutor(hyper) to parent spawn."
-                );
-            });
+        background_spawn!("http_executor", fut);
     }
 }

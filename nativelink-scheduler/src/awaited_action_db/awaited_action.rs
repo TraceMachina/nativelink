@@ -16,8 +16,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionState, OperationId,
-    WorkerId,
+    ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
@@ -155,11 +154,11 @@ impl AwaitedActionSortKey {
         ]))
     }
 
-    fn new_with_unique_key(
-        priority: i32,
-        insert_timestamp: &SystemTime,
-    ) -> Self {
-        let timestamp = insert_timestamp.duration_since(UNIX_EPOCH).unwrap().as_secs() as u32;
+    fn new_with_unique_key(priority: i32, insert_timestamp: &SystemTime) -> Self {
+        let timestamp = insert_timestamp
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
         Self::new(priority, timestamp)
     }
 }
@@ -178,30 +177,15 @@ const_assert_eq!(
 );
 // Ensure the priority is used as the sort key first.
 const_assert!(
-    AwaitedActionSortKey::new(i32::MAX, 0).0
-        > AwaitedActionSortKey::new(i32::MAX - 1, 0).0
+    AwaitedActionSortKey::new(i32::MAX, 0).0 > AwaitedActionSortKey::new(i32::MAX - 1, 0).0
 );
+const_assert!(AwaitedActionSortKey::new(i32::MAX - 1, 0).0 > AwaitedActionSortKey::new(1, 0).0);
+const_assert!(AwaitedActionSortKey::new(1, 0).0 > AwaitedActionSortKey::new(0, 0).0);
+const_assert!(AwaitedActionSortKey::new(0, 0).0 > AwaitedActionSortKey::new(-1, 0).0);
+const_assert!(AwaitedActionSortKey::new(-1, 0).0 > AwaitedActionSortKey::new(i32::MIN + 1, 0).0);
 const_assert!(
-    AwaitedActionSortKey::new(i32::MAX - 1, 0).0
-        > AwaitedActionSortKey::new(1, 0).0
-);
-const_assert!(
-    AwaitedActionSortKey::new(1, 0).0 > AwaitedActionSortKey::new(0, 0).0
-);
-const_assert!(
-    AwaitedActionSortKey::new(0, 0).0 > AwaitedActionSortKey::new(-1, 0).0
-);
-const_assert!(
-    AwaitedActionSortKey::new(-1, 0).0
-        > AwaitedActionSortKey::new(i32::MIN + 1, 0).0
-);
-const_assert!(
-    AwaitedActionSortKey::new(i32::MIN + 1, 0).0
-        > AwaitedActionSortKey::new(i32::MIN, 0).0
+    AwaitedActionSortKey::new(i32::MIN + 1, 0).0 > AwaitedActionSortKey::new(i32::MIN, 0).0
 );
 
 // Ensure the insert timestamp is used as the sort key second.
-const_assert!(
-    AwaitedActionSortKey::new(0, u32::MIN).0
-        > AwaitedActionSortKey::new(0, u32::MAX).0
-);
+const_assert!(AwaitedActionSortKey::new(0, u32::MIN).0 > AwaitedActionSortKey::new(0, u32::MAX).0);
