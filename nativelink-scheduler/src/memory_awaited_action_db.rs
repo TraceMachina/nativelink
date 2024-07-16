@@ -348,6 +348,7 @@ pub struct AwaitedActionDbImpl {
     /// The number of connected clients for each operation id.
     connected_clients_for_operation_id: HashMap<OperationId, usize>,
 
+    /// Where to send notifications about important events related to actions.
     action_event_tx: mpsc::UnboundedSender<ActionEvent>,
 }
 
