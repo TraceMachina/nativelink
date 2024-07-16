@@ -20,9 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
-use futures::future::{select_all, BoxFuture, OptionFuture, TryFutureExt};
-use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt};
+use futures::future::{select_all, BoxFuture, Either, OptionFuture, TryFutureExt};
 use hyper::server::conn::Http;
 use hyper::{Response, StatusCode};
 use mimalloc::MiMalloc;
@@ -633,7 +631,8 @@ async fn inner_main(
 
         let socket_addr = http_config.socket_address.parse::<SocketAddr>()?;
         let tcp_listener = TcpListener::bind(&socket_addr).await?;
-        let mut http = Http::new();
+        let mut http = Http::new().with_executor(TaskExecutor::default());
+
         let http_config = &http_config.advanced_http;
         if let Some(value) = http_config.http2_keep_alive_interval {
             http.http2_keep_alive_interval(Duration::from_secs(u64::from(value)));
@@ -712,6 +711,7 @@ async fn inner_main(
                         }
                     },
                 );
+
                 let (http, svc, maybe_tls_acceptor) =
                     (http.clone(), svc.clone(), maybe_tls_acceptor.clone());
                 Arc::new(OriginContext::new()).background_spawn(
@@ -728,57 +728,31 @@ async fn inner_main(
                     fut: async move {
                         // Move it into our spawn, so if our spawn dies the cleanup happens.
                         let _guard = scope_guard;
-                        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-                        let http = http.with_executor(TaskExecutor::new(tx));
-                        let mut http_svc_fut = if let Some(tls_acceptor) = maybe_tls_acceptor {
-                            let tls_stream = match tls_acceptor.accept(tcp_stream).await {
-                                Ok(result) => result,
+                        let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
+                            match tls_acceptor.accept(tcp_stream).await {
+                                Ok(tls_stream) => Either::Left(http.serve_connection(
+                                    tls_stream,
+                                    svc,
+                                )),
                                 Err(err) => {
                                     event!(Level::ERROR, ?err, "Failed to accept tls stream");
                                     return;
                                 }
-                            };
-                            http.serve_connection(tls_stream, svc).left_future()
+                            }
                         } else {
-                            http.serve_connection(tcp_stream, svc).right_future()
+                            Either::Right(http.serve_connection(
+                                tcp_stream,
+                                svc,
+                            ))
                         };
-                        let mut futures = FuturesUnordered::new();
-                        futures.push(futures::future::pending().right_future());
-                        loop {
-                            tokio::select! {
-                                maybe_new_future = rx.recv() => {
-                                    maybe_new_future.map(|fut| futures.push(fut.left_future())).unwrap_or_else(|| {
-                                        event!(
-                                            target: "nativelink::services",
-                                            Level::DEBUG,
-                                            ?remote_addr,
-                                            "Dropped new_future_receiver",
-                                        )
-                                    });
-                                },
-                                result = &mut http_svc_fut => {
-                                    if let Err(err) = result.or_else(|err| {
-                                        use std::error::Error;
-                                        if let Some(inner_err) = err.source() {
-                                            if let Some(io_err) = inner_err.downcast_ref::<std::io::Error>() {
-                                                if io_err.kind() == std::io::ErrorKind::NotConnected {
-                                                    return Ok(());
-                                                }
-                                            }
-                                        }
-                                        Err(err)
-                                    }) {
-                                        event!(
-                                            target: "nativelink::services",
-                                            Level::ERROR,
-                                            ?err,
-                                            "Failed running service"
-                                        );
-                                    }
-                                    return; // Once the service is done, we don't have any more work to do.
-                                },
-                                _ = futures.next() => { /* This just pulls a pool of futures. */ },
-                            };
+
+                        if let Err(err) = serve_connection.await {
+                            event!(
+                                target: "nativelink::services",
+                                Level::ERROR,
+                                ?err,
+                                "Failed running service"
+                            );
                         }
                     },
                     target: "nativelink::services",
