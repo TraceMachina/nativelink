@@ -1,0 +1,51 @@
+---
+title: "Pants Cloud Quickstart"
+description: "Connect your Pants project to NativeLink Cloud"
+pagefind: true
+---
+
+This guide shows how to connect your [Pantsbuild](https://www.pantsbuild.org/)
+project to [NativeLink Cloud](https://app.nativelink.com).
+
+import { Steps } from "@astrojs/starlight/components";
+import { FileTree } from "@astrojs/starlight/components";
+
+<Steps>
+
+1. If you can't find a `pants.toml` file, create one in the root directory of
+   your Pantsbuild project:
+
+   <FileTree>
+   - project/
+       - get-pants.sh
+       - BUILD
+       - **pants.toml**
+   </FileTree>
+
+2. Copy the following lines into your `pants.toml`:
+
+    ```toml
+    # pants.toml
+    [GLOBAL]
+    remote_cache_read = true
+    remote_cache_write = true
+    remote_store_address = "[REMOTE_STORE_ADDRESS]"
+
+    [GLOBAL.remote_store_headers]
+    x-nativelink-api-key = "[API_KEY]"
+    ```
+
+   :::note
+   Fill in the `REMOTE_STORE_ADDRESS` and `API_KEY` from the [NativeLink Cloud](https://app.nativelink.com).
+   :::
+
+3. Run a pants build with the following flags:
+
+   ```bash
+   pants --no-pantsd --level=trace --no-local-cache test ::
+   ```
+
+4. You'll see remote cache use on the [Dashboard](https://app.nativelink.com)
+   page.
+
+</Steps>

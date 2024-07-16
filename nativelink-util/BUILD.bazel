@@ -49,6 +49,7 @@ rust_library(
         "@crates//:futures",
         "@crates//:hex",
         "@crates//:hyper",
+        "@crates//:hyper-util",
         "@crates//:lru",
         "@crates//:parking_lot",
         "@crates//:pin-project",

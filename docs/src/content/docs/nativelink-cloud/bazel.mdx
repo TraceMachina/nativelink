@@ -1,0 +1,44 @@
+---
+title: "Bazel Cloud Quickstart"
+description: "Connect your Bazel project to NativeLink Cloud"
+pagefind: true
+---
+
+This guide shows how to connect your [Bazel](https://bazel.build/) project to
+[NativeLink Cloud](https://app.nativelink.com).
+
+import { Steps } from "@astrojs/starlight/components";
+import { FileTree } from "@astrojs/starlight/components";
+
+<Steps>
+
+1. If you can't find a `.bazelrc` file create one in your project root:
+
+   <FileTree>
+   - project/
+       - WORKSPACE.bazel
+       - MODULE.bazel
+       - BUILD.bazel
+       - **.bazelrc**
+   </FileTree>
+
+2. Copy the following lines into your `.bazelrc`:
+
+    ```bash
+    # .bazelrc
+    build --remote_cache=[CLAIM_CAS_URL]
+    build --remote_header=x-nativelink-api-key=[API_KEY]
+    build --remote_timeout=600
+    build --bes_backend=[CLAIM_BES_URL]
+    build --bes_header=x-nativelink-api-key=[API_KEY]
+    build --remote_timeout=600
+    ```
+
+   :::note
+   Fill in the `CLAIM_CAS_URL`, `CLAIM_BES_URL` and `API_KEY` from [NativeLink Cloud](https://app.nativelink.com).
+   :::
+
+3. Run a Bazel build and you'll see remote cache use on the
+   [Dashboard](https://app.nativelink.com) page.
+
+</Steps>
