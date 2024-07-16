@@ -46,9 +46,6 @@ pub struct AwaitedAction {
 
     /// Number of attempts the job has been tried.
     pub attempts: usize,
-
-    /// Number of clients listening to the state of the action.
-    pub connected_clients: usize,
 }
 
 impl AwaitedAction {
@@ -73,7 +70,6 @@ impl AwaitedAction {
             sort_key,
             attempts: 0,
             last_worker_updated_timestamp: SystemTime::now(),
-            connected_clients: 1,
             worker_id: None,
             state,
         }
