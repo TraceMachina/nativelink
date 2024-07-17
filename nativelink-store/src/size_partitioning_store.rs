@@ -142,9 +142,8 @@ impl StoreDriver for SizePartitioningStore {
         let Some(key) = key else {
             return self;
         };
-        let digest = match key {
-            StoreKey::Digest(digest) => digest,
-            _ => return self,
+        let StoreKey::Digest(digest) = key else {
+            return self;
         };
         if digest.size_bytes < self.partition_size {
             return self.lower_store.inner_store(Some(digest));

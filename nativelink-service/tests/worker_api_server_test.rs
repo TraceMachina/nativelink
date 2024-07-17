@@ -411,12 +411,10 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
         // Check the result that the client would have received.
         client_action_state_receiver.changed().await?;
         let client_given_state = client_action_state_receiver.borrow();
-        let execute_response =
-            if let execute_result::Result::ExecuteResponse(v) = result.result.unwrap() {
-                v
-            } else {
-                panic!("Expected type to be ExecuteResponse");
-            };
+        let execute_result::Result::ExecuteResponse(execute_response) = result.result.unwrap()
+        else {
+            panic!("Expected type to be ExecuteResponse");
+        };
 
         assert_eq!(
             client_given_state.stage,
