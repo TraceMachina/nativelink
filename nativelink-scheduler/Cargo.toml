@@ -28,11 +28,11 @@ tokio = { version = "1.37.0", features = ["sync", "rt", "parking_lot"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tonic = { version = "0.11.0", features = ["gzip", "tls"] }
 tracing = "0.1.40"
-bitflags = "2.5.0"
 redis = { version = "0.25.2", features = ["aio", "tokio", "json"] }
 serde = "1.0.203"
 redis-macros = "0.3.0"
 serde_json = "1.0.117"
+static_assertions = "1.1.0"
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

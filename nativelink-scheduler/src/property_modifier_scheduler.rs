@@ -14,17 +14,17 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
+use nativelink_util::action_messages::{ActionInfo, ClientOperationId};
 use nativelink_util::metrics_utils::Registry;
 use parking_lot::Mutex;
-use tokio::sync::watch;
 
-use crate::action_scheduler::ActionScheduler;
+use crate::action_scheduler::{ActionListener, ActionScheduler};
 use crate::platform_property_manager::PlatformPropertyManager;
 
 pub struct PropertyModifierScheduler {
@@ -90,10 +90,11 @@ impl ActionScheduler for PropertyModifierScheduler {
 
     async fn add_action(
         &self,
+        client_operation_id: ClientOperationId,
         mut action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         let platform_property_manager = self
-            .get_platform_property_manager(&action_info.unique_qualifier.instance_name)
+            .get_platform_property_manager(action_info.unique_qualifier.instance_name())
             .await
             .err_tip(|| "In PropertyModifierScheduler::add_action")?;
         for modification in &self.modifications {
@@ -111,18 +112,18 @@ impl ActionScheduler for PropertyModifierScheduler {
                 }
             };
         }
-        self.scheduler.add_action(action_info).await
+        self.scheduler
+            .add_action(client_operation_id, action_info)
+            .await
     }
 
-    async fn find_existing_action(
+    async fn find_by_client_operation_id(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
-    ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        self.scheduler.find_existing_action(unique_qualifier).await
-    }
-
-    async fn clean_recently_completed_actions(&self) {
-        self.scheduler.clean_recently_completed_actions().await
+        client_operation_id: &ClientOperationId,
+    ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
+        self.scheduler
+            .find_by_client_operation_id(client_operation_id)
+            .await
     }
 
     // Register metrics for the underlying ActionScheduler.

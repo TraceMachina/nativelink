@@ -14,6 +14,7 @@
 
 pub mod action_messages;
 pub mod buf_channel;
+pub mod chunked_stream;
 pub mod common;
 pub mod connection_manager;
 pub mod default_store_key_subscribe;
@@ -23,6 +24,7 @@ pub mod fastcdc;
 pub mod fs;
 pub mod health_utils;
 pub mod metrics_utils;
+pub mod operation_state_manager;
 pub mod origin_context;
 pub mod platform_properties;
 pub mod proto_stream_utils;

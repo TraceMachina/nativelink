@@ -20,14 +20,15 @@ use async_trait::async_trait;
 use bitflags::bitflags;
 use futures::Stream;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId,
+use prometheus_client::registry::Registry;
+
+use crate::action_messages::{
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ClientOperationId, OperationId, WorkerId,
 };
-use nativelink_util::common::DigestInfo;
-use tokio::sync::watch;
+use crate::common::DigestInfo;
 
 bitflags! {
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct OperationStageFlags: u32 {
         const CacheCheck = 1 << 1;
         const Queued     = 1 << 2;
@@ -37,23 +38,38 @@ bitflags! {
     }
 }
 
+impl Default for OperationStageFlags {
+    fn default() -> Self {
+        Self::Any
+    }
+}
+
 #[async_trait]
 pub trait ActionStateResult: Send + Sync + 'static {
     // Provides the current state of the action.
     async fn as_state(&self) -> Result<Arc<ActionState>, Error>;
-    // Subscribes to the state of the action, receiving updates as they are published.
-    async fn as_receiver(&self) -> Result<&'_ watch::Receiver<Arc<ActionState>>, Error>;
+    // Waits for the state of the action to change.
+    async fn changed(&mut self) -> Result<Arc<ActionState>, Error>;
     // Provide result as action info. This behavior will not be supported by all implementations.
-    // TODO(adams): Expectation is this to experimental and removed in the future.
     async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error>;
 }
 
+/// The direction in which the results are ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OrderDirection {
+    Asc,
+    Desc,
+}
+
 /// The filters used to query operations from the state manager.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OperationFilter {
     // TODO(adams): create rust builder pattern?
     /// The stage(s) that the operation must be in.
     pub stages: OperationStageFlags,
+
+    /// The client operation id.
+    pub client_operation_id: Option<ClientOperationId>,
 
     /// The operation id.
     pub operation_id: Option<OperationId>,
@@ -70,80 +86,67 @@ pub struct OperationFilter {
     /// The operation must have been completed before this time.
     pub completed_before: Option<SystemTime>,
 
-    /// The operation must have it's last client update before this time.
-    pub last_client_update_before: Option<SystemTime>,
-
     /// The unique key for filtering specific action results.
-    pub unique_qualifier: Option<ActionInfoHashKey>,
+    pub unique_key: Option<ActionUniqueKey>,
 
-    /// The order by in which results are returned by the filter operation.
-    pub order_by: Option<OrderBy>,
+    /// If the results should be ordered by priority and in which direction.
+    pub order_by_priority_direction: Option<OrderDirection>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum OperationFields {
-    Priority,
-    Timestamp,
-}
-
-/// The order in which results are returned by the filter operation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct OrderBy {
-    /// The fields to order by, each field is ordered in the order they are provided.
-    pub fields: Vec<OperationFields>,
-    /// The order of the fields, true for descending, false for ascending.
-    pub desc: bool,
-}
-
-pub type ActionStateResultStream = Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>;
+pub type ActionStateResultStream<'a> =
+    Pin<Box<dyn Stream<Item = Box<dyn ActionStateResult>> + Send + 'a>>;
 
 #[async_trait]
-pub trait ClientStateManager {
+pub trait ClientStateManager: Sync + Send {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
-        &mut self,
-        action_info: ActionInfo,
-    ) -> Result<Arc<dyn ActionStateResult>, Error>;
+        &self,
+        client_operation_id: ClientOperationId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<Box<dyn ActionStateResult>, Error>;
 
     /// Returns a stream of operations that match the filter.
-    async fn filter_operations(
-        &self,
+    async fn filter_operations<'a>(
+        &'a self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error>;
+    ) -> Result<ActionStateResultStream<'a>, Error>;
+
+    /// Register metrics with the registry.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }
 
 #[async_trait]
-pub trait WorkerStateManager {
+pub trait WorkerStateManager: Sync + Send {
     /// Update that state of an operation.
     /// The worker must also send periodic updates even if the state
     /// did not change with a modified timestamp in order to prevent
     /// the operation from being considered stale and being rescheduled.
     async fn update_operation(
-        &mut self,
-        operation_id: OperationId,
-        worker_id: WorkerId,
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error>;
+
+    /// Register metrics with the registry.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }
 
 #[async_trait]
-pub trait MatchingEngineStateManager {
+pub trait MatchingEngineStateManager: Sync + Send {
     /// Returns a stream of operations that match the filter.
-    async fn filter_operations(
-        &self,
+    async fn filter_operations<'a>(
+        &'a self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream, Error>;
+    ) -> Result<ActionStateResultStream<'a>, Error>;
 
-    /// Update that state of an operation.
-    async fn update_operation(
-        &mut self,
-        operation_id: OperationId,
-        worker_id: Option<WorkerId>,
-        action_stage: Result<ActionStage, Error>,
+    /// Assign an operation to a worker or unassign it.
+    async fn assign_operation(
+        &self,
+        operation_id: &OperationId,
+        worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error>;
 
-    /// Remove an operation from the state manager.
-    /// It is important to use this function to remove operations
-    /// that are no longer needed to prevent memory leaks.
-    async fn remove_operation(&self, operation_id: OperationId) -> Result<(), Error>;
+    /// Register metrics with the registry.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }

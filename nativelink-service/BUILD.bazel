@@ -55,6 +55,7 @@ rust_test_suite(
     ],
     proc_macro_deps = [
         "//nativelink-macro",
+        "@crates//:async-trait",
     ],
     deps = [
         "//nativelink-config",
@@ -64,6 +65,7 @@ rust_test_suite(
         "//nativelink-service",
         "//nativelink-store",
         "//nativelink-util",
+        "@crates//:async-lock",
         "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hyper",

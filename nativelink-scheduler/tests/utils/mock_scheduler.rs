@@ -12,26 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error};
-use nativelink_scheduler::action_scheduler::ActionScheduler;
+use nativelink_scheduler::action_scheduler::{ActionListener, ActionScheduler};
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
-use tokio::sync::{mpsc, watch, Mutex};
+use nativelink_util::action_messages::{ActionInfo, ClientOperationId};
+use tokio::sync::{mpsc, Mutex};
 
 #[allow(clippy::large_enum_variant)]
 enum ActionSchedulerCalls {
     GetPlatformPropertyManager(String),
-    AddAction(ActionInfo),
-    FindExistingAction(ActionInfoHashKey),
+    AddAction((ClientOperationId, ActionInfo)),
+    FindExistingAction(ClientOperationId),
 }
 
 enum ActionSchedulerReturns {
     GetPlatformPropertyManager(Result<Arc<PlatformPropertyManager>, Error>),
-    AddAction(Result<watch::Receiver<Arc<ActionState>>, Error>),
-    FindExistingAction(Option<watch::Receiver<Arc<ActionState>>>),
+    AddAction(Result<Pin<Box<dyn ActionListener>>, Error>),
+    FindExistingAction(Result<Option<Pin<Box<dyn ActionListener>>>, Error>),
 }
 
 pub struct MockActionScheduler {
@@ -81,8 +82,8 @@ impl MockActionScheduler {
 
     pub async fn expect_add_action(
         &self,
-        result: Result<watch::Receiver<Arc<ActionState>>, Error>,
-    ) -> ActionInfo {
+        result: Result<Pin<Box<dyn ActionListener>>, Error>,
+    ) -> (ClientOperationId, ActionInfo) {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::AddAction(req) = rx_call_lock
             .recv()
@@ -98,17 +99,17 @@ impl MockActionScheduler {
         req
     }
 
-    pub async fn expect_find_existing_action(
+    pub async fn expect_find_by_client_operation_id(
         &self,
-        result: Option<watch::Receiver<Arc<ActionState>>>,
-    ) -> ActionInfoHashKey {
+        result: Result<Option<Pin<Box<dyn ActionListener>>>, Error>,
+    ) -> ClientOperationId {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::FindExistingAction(req) = rx_call_lock
             .recv()
             .await
             .expect("Could not receive msg in mpsc")
         else {
-            panic!("Got incorrect call waiting for find_existing_action")
+            panic!("Got incorrect call waiting for find_by_client_operation_id")
         };
         self.tx_resp
             .send(ActionSchedulerReturns::FindExistingAction(result))
@@ -142,10 +143,14 @@ impl ActionScheduler for MockActionScheduler {
 
     async fn add_action(
         &self,
+        client_operation_id: ClientOperationId,
         action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         self.tx_call
-            .send(ActionSchedulerCalls::AddAction(action_info))
+            .send(ActionSchedulerCalls::AddAction((
+                client_operation_id,
+                action_info,
+            )))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock
@@ -158,13 +163,13 @@ impl ActionScheduler for MockActionScheduler {
         }
     }
 
-    async fn find_existing_action(
+    async fn find_by_client_operation_id(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
-    ) -> Option<watch::Receiver<Arc<ActionState>>> {
+        client_operation_id: &ClientOperationId,
+    ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         self.tx_call
             .send(ActionSchedulerCalls::FindExistingAction(
-                unique_qualifier.clone(),
+                client_operation_id.clone(),
             ))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
@@ -174,9 +179,7 @@ impl ActionScheduler for MockActionScheduler {
             .expect("Could not receive msg in mpsc")
         {
             ActionSchedulerReturns::FindExistingAction(result) => result,
-            _ => panic!("Expected find_existing_action return value"),
+            _ => panic!("Expected find_by_client_operation_id return value"),
         }
     }
-
-    async fn clean_recently_completed_actions(&self) {}
 }

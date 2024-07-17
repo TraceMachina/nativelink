@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage, WorkerId};
+use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
 use nativelink_util::metrics_utils::Registry;
 
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -36,7 +36,7 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     async fn update_action(
         &self,
         worker_id: &WorkerId,
-        action_info_hash_key: ActionInfoHashKey,
+        operation_id: &OperationId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error>;
 
@@ -48,14 +48,14 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     ) -> Result<(), Error>;
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
-    async fn remove_worker(&self, worker_id: WorkerId);
+    async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error>;
 
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error>;
 
     /// Sets if the worker is draining or not.
-    async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error>;
+    async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error>;
 
     /// Register the metrics for the worker scheduler.
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}

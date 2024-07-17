@@ -98,7 +98,7 @@ pub struct SimpleScheduler {
     /// a WaitExecution is called after the action has completed.
     /// Default: 60 (seconds)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
-    pub retain_completed_for_s: u64,
+    pub retain_completed_for_s: u32,
 
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds.

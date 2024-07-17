@@ -60,31 +60,9 @@ pub struct ExecuteResult {
     /// / that initially sent the job as part of the BRE protocol.
     #[prost(string, tag = "6")]
     pub instance_name: ::prost::alloc::string::String,
-    /// / The original execution digest request for this response. The scheduler knows what it
-    /// / should be, but we do safety checks to ensure it really is the request we expected.
-    #[prost(message, optional, tag = "2")]
-    pub action_digest: ::core::option::Option<
-        super::super::super::super::super::build::bazel::remote::execution::v2::Digest,
-    >,
-    /// / The salt originally sent along with the StartExecute request. This salt is used
-    /// / as a seed for cases where the execution digest should never be cached or merged
-    /// / with other jobs. This salt is added to the hash function used to compute jobs that
-    /// / are running or cached.
-    #[prost(uint64, tag = "3")]
-    pub salt: u64,
-    /// The digest function that was used to compute the action digest
-    /// and all related blobs.
-    ///
-    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
-    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
-    /// that case the server SHOULD infer the digest function using the
-    /// length of the action digest hash and the digest functions announced
-    /// in the server's capabilities.
-    #[prost(
-        enumeration = "super::super::super::super::super::build::bazel::remote::execution::v2::digest_function::Value",
-        tag = "7"
-    )]
-    pub digest_function: i32,
+    /// / The operation ID that was executed.
+    #[prost(string, tag = "8")]
+    pub operation_id: ::prost::alloc::string::String,
     /// / The actual response data.
     #[prost(oneof = "execute_result::Result", tags = "4, 5")]
     pub result: ::core::option::Option<execute_result::Result>,
@@ -116,13 +94,13 @@ pub struct ConnectionResult {
     #[prost(string, tag = "1")]
     pub worker_id: ::prost::alloc::string::String,
 }
-/// / Request to kill a running action sent from the scheduler to a worker.
+/// / Request to kill a running operation sent from the scheduler to a worker.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct KillActionRequest {
-    /// / The the hex encoded unique qualifier for the action to be killed.
+pub struct KillOperationRequest {
+    /// / The the operation id for the operation to be killed.
     #[prost(string, tag = "1")]
-    pub action_id: ::prost::alloc::string::String,
+    pub operation_id: ::prost::alloc::string::String,
 }
 /// / Communication from the scheduler to the worker.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -155,9 +133,9 @@ pub mod update_for_worker {
         /// / The worker may discard any outstanding work that is being executed.
         #[prost(message, tag = "4")]
         Disconnect(()),
-        /// / Instructs the worker to kill a specific running action.
+        /// / Instructs the worker to kill a specific running operation.
         #[prost(message, tag = "5")]
-        KillActionRequest(super::KillActionRequest),
+        KillOperationRequest(super::KillOperationRequest),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -168,9 +146,9 @@ pub struct StartExecute {
     pub execute_request: ::core::option::Option<
         super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteRequest,
     >,
-    /// / See documentation in ExecuteResult::salt.
-    #[prost(uint64, tag = "2")]
-    pub salt: u64,
+    /// / Id of the operation.
+    #[prost(string, tag = "4")]
+    pub operation_id: ::prost::alloc::string::String,
     /// / The time at which the command was added to the queue to allow population
     /// / of the ActionResult.
     #[prost(message, optional, tag = "3")]

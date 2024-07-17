@@ -56,7 +56,7 @@ use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     to_execute_response, ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo,
-    NameOrPath, SymlinkInfo,
+    NameOrPath, OperationId, SymlinkInfo,
 };
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
@@ -77,8 +77,6 @@ use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
 use tracing::{enabled, event, Level};
 use uuid::Uuid;
-
-pub type ActionId = [u8; 32];
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
 /// due to a signal.
@@ -531,7 +529,7 @@ async fn process_side_channel_file(
 
 async fn do_cleanup(
     running_actions_manager: &RunningActionsManagerImpl,
-    action_id: &ActionId,
+    operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
     event!(Level::INFO, "Worker cleaning up");
@@ -539,10 +537,10 @@ async fn do_cleanup(
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
         .err_tip(|| format!("Could not remove working directory {action_directory}"));
-    if let Err(err) = running_actions_manager.cleanup_action(action_id) {
+    if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         event!(
             Level::ERROR,
-            action_id = hex::encode(action_id),
+            ?operation_id,
             ?err,
             "Error cleaning up action"
         );
@@ -551,7 +549,7 @@ async fn do_cleanup(
     if let Err(err) = remove_dir_result {
         event!(
             Level::ERROR,
-            action_id = hex::encode(action_id),
+            ?operation_id,
             ?err,
             "Error removing working directory"
         );
@@ -562,7 +560,7 @@ async fn do_cleanup(
 
 pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     /// Returns the action id of the action.
-    fn get_action_id(&self) -> &ActionId;
+    fn get_operation_id(&self) -> &OperationId;
 
     /// Anything that needs to execute before the actions is actually executed should happen here.
     fn prepare_action(self: Arc<Self>) -> impl Future<Output = Result<Arc<Self>, Error>> + Send;
@@ -611,7 +609,7 @@ struct RunningActionImplState {
 }
 
 pub struct RunningActionImpl {
-    action_id: ActionId,
+    operation_id: OperationId,
     action_directory: String,
     work_directory: String,
     action_info: ActionInfo,
@@ -624,7 +622,7 @@ pub struct RunningActionImpl {
 impl RunningActionImpl {
     fn new(
         execution_metadata: ExecutionMetadata,
-        action_id: ActionId,
+        operation_id: OperationId,
         action_directory: String,
         action_info: ActionInfo,
         timeout: Duration,
@@ -633,7 +631,7 @@ impl RunningActionImpl {
         let work_directory = format!("{}/{}", action_directory, "work");
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
         Self {
-            action_id,
+            operation_id,
             action_directory,
             work_directory,
             action_info,
@@ -988,14 +986,14 @@ impl RunningActionImpl {
                     if let Err(err) = child_process_guard.start_kill() {
                         event!(
                             Level::ERROR,
-                            action_id = hex::encode(self.action_id),
+                            operation_id = ?self.operation_id,
                             ?err,
                             "Could not kill process",
                         );
                     } else {
                         event!(
                             Level::ERROR,
-                            action_id = hex::encode(self.action_id),
+                            operation_id = ?self.operation_id,
                             "Could not get child process id, maybe already dead?",
                         );
                     }
@@ -1034,7 +1032,7 @@ impl RunningActionImpl {
             )
         };
         let cas_store = self.running_actions_manager.cas_store.as_ref();
-        let hasher = self.action_info.unique_qualifier.digest_function;
+        let hasher = self.action_info.unique_qualifier.digest_function();
         enum OutputType {
             None,
             File(FileInfo),
@@ -1250,23 +1248,23 @@ impl Drop for RunningActionImpl {
         if self.did_cleanup.load(Ordering::Acquire) {
             return;
         }
+        let operation_id = self.operation_id.clone();
         event!(
             Level::ERROR,
-            action_id = hex::encode(self.action_id),
+            ?operation_id,
             "RunningActionImpl did not cleanup. This is a violation of the requirements, will attempt to do it in the background."
         );
         let running_actions_manager = self.running_actions_manager.clone();
-        let action_id = self.action_id;
         let action_directory = self.action_directory.clone();
         background_spawn!("running_action_impl_drop", async move {
             let Err(err) =
-                do_cleanup(&running_actions_manager, &action_id, &action_directory).await
+                do_cleanup(&running_actions_manager, &operation_id, &action_directory).await
             else {
                 return;
             };
             event!(
                 Level::ERROR,
-                action_id = hex::encode(action_id),
+                ?operation_id,
                 ?action_directory,
                 ?err,
                 "Error cleaning up action"
@@ -1276,8 +1274,8 @@ impl Drop for RunningActionImpl {
 }
 
 impl RunningAction for RunningActionImpl {
-    fn get_action_id(&self) -> &ActionId {
-        &self.action_id
+    fn get_operation_id(&self) -> &OperationId {
+        &self.operation_id
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
@@ -1311,7 +1309,7 @@ impl RunningAction for RunningActionImpl {
             .wrap(async move {
                 let result = do_cleanup(
                     &self.running_actions_manager,
-                    &self.action_id,
+                    &self.operation_id,
                     &self.action_directory,
                 )
                 .await;
@@ -1352,7 +1350,10 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
 
     fn kill_all(&self) -> impl Future<Output = ()> + Send;
 
-    fn kill_action(&self, action_id: ActionId) -> impl Future<Output = Result<(), Error>> + Send;
+    fn kill_operation(
+        &self,
+        operation_id: &OperationId,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn metrics(&self) -> &Arc<Metrics>;
 }
@@ -1643,7 +1644,7 @@ pub struct RunningActionsManagerImpl {
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
     timeout_handled_externally: bool,
-    running_actions: Mutex<HashMap<ActionId, Weak<RunningActionImpl>>>,
+    running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
     action_done_tx: watch::Sender<()>,
@@ -1699,11 +1700,10 @@ impl RunningActionsManagerImpl {
 
     fn make_action_directory<'a>(
         &'a self,
-        action_id: &'a ActionId,
+        operation_id: &'a OperationId,
     ) -> impl Future<Output = Result<String, Error>> + 'a {
         self.metrics.make_action_directory.wrap(async move {
-            let action_directory =
-                format!("{}/{}", self.root_action_directory, hex::encode(action_id));
+            let action_directory = format!("{}/{}", self.root_action_directory, operation_id.id);
             fs::create_dir(&action_directory)
                 .await
                 .err_tip(|| format!("Error creating action directory {action_directory}"))?;
@@ -1730,10 +1730,9 @@ impl RunningActionsManagerImpl {
                 get_and_decode_digest::<Action>(self.cas_store.as_ref(), action_digest.into())
                     .await
                     .err_tip(|| "During start_action")?;
-            let action_info = ActionInfo::try_from_action_and_execute_request_with_salt(
+            let action_info = ActionInfo::try_from_action_and_execute_request(
                 execute_request,
                 action,
-                start_execute.salt,
                 load_start_timestamp,
                 queued_timestamp,
             )
@@ -1742,10 +1741,10 @@ impl RunningActionsManagerImpl {
         })
     }
 
-    fn cleanup_action(&self, action_id: &ActionId) -> Result<(), Error> {
+    fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
         let mut running_actions = self.running_actions.lock();
-        let result = running_actions.remove(action_id).err_tip(|| {
-            format!("Expected action id '{action_id:?}' to exist in RunningActionsManagerImpl")
+        let result = running_actions.remove(operation_id).err_tip(|| {
+            format!("Expected action id '{operation_id:?}' to exist in RunningActionsManagerImpl")
         });
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|_| {});
@@ -1754,11 +1753,11 @@ impl RunningActionsManagerImpl {
 
     // Note: We do not capture metrics on this call, only `.kill_all()`.
     // Important: When the future returns the process may still be running.
-    async fn kill_action(action: Arc<RunningActionImpl>) {
+    async fn kill_operation(action: Arc<RunningActionImpl>) {
         event!(
             Level::WARN,
-            action_id = ?hex::encode(action.action_id),
-            "Sending kill to running action",
+            operation_id = ?action.operation_id,
+            "Sending kill to running operation",
         );
         let kill_channel_tx = {
             let mut action_state = action.state.lock();
@@ -1768,8 +1767,8 @@ impl RunningActionsManagerImpl {
             if kill_channel_tx.send(()).is_err() {
                 event!(
                     Level::ERROR,
-                    action_id = ?hex::encode(action.action_id),
-                    "Error sending kill to running action",
+                    operation_id = ?action.operation_id,
+                    "Error sending kill to running operation",
                 );
             }
         }
@@ -1792,14 +1791,18 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     .clone()
                     .and_then(|time| time.try_into().ok())
                     .unwrap_or(SystemTime::UNIX_EPOCH);
+                let operation_id: OperationId = start_execute
+                    .operation_id
+                    .as_str()
+                    .try_into()
+                    .err_tip(|| "Could not convert to operation_id in RunningActionsManager::create_and_add_action")?;
                 let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
                 event!(
                     Level::INFO,
                     ?action_info,
                     "Worker received action",
                 );
-                let action_id = action_info.unique_qualifier.get_hash();
-                let action_directory = self.make_action_directory(&action_id).await?;
+                let action_directory = self.make_action_directory(&operation_id).await?;
                 let execution_metadata = ExecutionMetadata {
                     worker: worker_id,
                     queued_timestamp: action_info.insert_timestamp,
@@ -1827,7 +1830,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 }
                 let running_action = Arc::new(RunningActionImpl::new(
                     execution_metadata,
-                    action_id,
+                    operation_id.clone(),
                     action_directory,
                     action_info,
                     timeout,
@@ -1835,7 +1838,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 ));
                 {
                     let mut running_actions = self.running_actions.lock();
-                    running_actions.insert(action_id, Arc::downgrade(&running_action));
+                    running_actions.insert(operation_id, Arc::downgrade(&running_action));
                 }
                 Ok(running_action)
             })
@@ -1858,17 +1861,15 @@ impl RunningActionsManager for RunningActionsManagerImpl {
             .await
     }
 
-    async fn kill_action(&self, action_id: ActionId) -> Result<(), Error> {
+    async fn kill_operation(&self, operation_id: &OperationId) -> Result<(), Error> {
         let running_action = {
             let running_actions = self.running_actions.lock();
             running_actions
-                .get(&action_id)
+                .get(operation_id)
                 .and_then(|action| action.upgrade())
-                .ok_or_else(|| {
-                    make_input_err!("Failed to get running action {}", hex::encode(action_id))
-                })?
+                .ok_or_else(|| make_input_err!("Failed to get running action {operation_id}"))?
         };
-        Self::kill_action(running_action).await;
+        Self::kill_operation(running_action).await;
         Ok(())
     }
 
@@ -1877,15 +1878,15 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         self.metrics
             .kill_all
             .wrap_no_capture_result(async move {
-                let kill_actions: Vec<Arc<RunningActionImpl>> = {
+                let kill_operations: Vec<Arc<RunningActionImpl>> = {
                     let running_actions = self.running_actions.lock();
                     running_actions
                         .iter()
-                        .filter_map(|(_action_id, action)| action.upgrade())
+                        .filter_map(|(_operation_id, action)| action.upgrade())
                         .collect()
                 };
-                for action in kill_actions {
-                    Self::kill_action(action).await;
+                for action in kill_operations {
+                    Self::kill_operation(action).await;
                 }
             })
             .await;

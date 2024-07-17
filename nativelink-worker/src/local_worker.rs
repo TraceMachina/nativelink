@@ -211,20 +211,29 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                         Update::KeepAlive(()) => {
                             self.metrics.keep_alives_received.inc();
                         }
-                        Update::KillActionRequest(kill_action_request) => {
-                            let mut action_id = [0u8; 32];
-                            hex::decode_to_slice(kill_action_request.action_id, &mut action_id as &mut [u8])
-                                .map_err(|e| make_input_err!(
-                                  "KillActionRequest failed to decode ActionId hex with error {}",
-                                  e
-                                ))?;
-
-                            if let Err(err) = self.running_actions_manager.kill_action(action_id).await {
+                        Update::KillOperationRequest(kill_operation_request) => {
+                            let operation_id_res = kill_operation_request
+                                .operation_id
+                                .as_str()
+                                .try_into();
+                            let operation_id = match operation_id_res {
+                                Ok(operation_id) => operation_id,
+                                Err(err) => {
+                                    event!(
+                                        Level::ERROR,
+                                        ?kill_operation_request,
+                                        ?err,
+                                        "Failed to convert string to operation_id"
+                                    );
+                                    continue;
+                                }
+                            };
+                            if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
                                 event!(
                                     Level::ERROR,
-                                    action_id = hex::encode(action_id),
+                                    ?operation_id,
                                     ?err,
-                                    "Failed to send kill request for action"
+                                    "Failed to send kill request for operation"
                                 );
                             };
                         }
@@ -232,7 +241,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             self.metrics.start_actions_received.inc();
 
                             let execute_request = start_execute.execute_request.as_ref();
-                            let salt = start_execute.salt;
+                            let operation_id = start_execute.operation_id.clone();
                             let maybe_instance_name = execute_request.map(|v| v.instance_name.clone());
                             let action_digest = execute_request.and_then(|v| v.action_digest.clone());
                             let digest_hasher = execute_request
@@ -257,7 +266,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                     .and_then(|action| {
                                         event!(
                                             Level::INFO,
-                                            action_id = hex::encode(action.get_action_id()),
+                                            operation_id = ?action.get_operation_id(),
                                             "Received request to run action"
                                         );
                                         action
@@ -303,9 +312,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                                 ExecuteResult{
                                                     worker_id,
                                                     instance_name,
-                                                    action_digest,
-                                                    salt,
-                                                    digest_function: digest_hasher.proto_digest_func().into(),
+                                                    operation_id,
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
                                                 }
                                             )
@@ -316,9 +323,7 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                             grpc_client.execution_response(ExecuteResult{
                                                 worker_id,
                                                 instance_name,
-                                                action_digest,
-                                                salt,
-                                                digest_function: digest_hasher.proto_digest_func().into(),
+                                                operation_id,
                                                 result: Some(execute_result::Result::InternalError(e.into())),
                                             }).await.err_tip(|| "Error calling execution_response with error")?;
                                         },

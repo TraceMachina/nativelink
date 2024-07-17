@@ -16,7 +16,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_lock::Mutex as AsyncMutex;
+use async_trait::async_trait;
 use nativelink_config::cas_server::WorkerApiConfig;
+use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -28,23 +31,99 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     execute_result, update_for_worker, ExecuteResult, KeepAliveRequest, SupportedProperties,
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
-use nativelink_scheduler::action_scheduler::ActionScheduler;
-use nativelink_scheduler::simple_scheduler::SimpleScheduler;
+use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
+use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, WorkerId};
+use nativelink_util::action_messages::{
+    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::operation_state_manager::WorkerStateManager;
 use nativelink_util::platform_properties::PlatformProperties;
 use pretty_assertions::assert_eq;
+use tokio::join;
+use tokio::sync::{mpsc, Notify};
 use tokio_stream::StreamExt;
 use tonic::Request;
 
 const BASE_NOW_S: u64 = 10;
 const BASE_WORKER_TIMEOUT_S: u64 = 100;
 
+#[derive(Debug)]
+enum WorkerStateManagerCalls {
+    UpdateOperation((OperationId, WorkerId, Result<ActionStage, Error>)),
+}
+
+#[derive(Debug)]
+enum WorkerStateManagerReturns {
+    UpdateOperation(Result<(), Error>),
+}
+
+struct MockWorkerStateManager {
+    rx_call: Arc<AsyncMutex<mpsc::UnboundedReceiver<WorkerStateManagerCalls>>>,
+    tx_call: mpsc::UnboundedSender<WorkerStateManagerCalls>,
+    rx_resp: Arc<AsyncMutex<mpsc::UnboundedReceiver<WorkerStateManagerReturns>>>,
+    tx_resp: mpsc::UnboundedSender<WorkerStateManagerReturns>,
+}
+
+impl MockWorkerStateManager {
+    pub fn new() -> Self {
+        let (tx_call, rx_call) = mpsc::unbounded_channel();
+        let (tx_resp, rx_resp) = mpsc::unbounded_channel();
+        Self {
+            rx_call: Arc::new(AsyncMutex::new(rx_call)),
+            tx_call,
+            rx_resp: Arc::new(AsyncMutex::new(rx_resp)),
+            tx_resp,
+        }
+    }
+
+    pub async fn expect_update_operation(
+        &self,
+        result: Result<(), Error>,
+    ) -> (OperationId, WorkerId, Result<ActionStage, Error>) {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let recv = rx_call_lock.recv();
+        let WorkerStateManagerCalls::UpdateOperation(req) =
+            recv.await.expect("Could not receive msg in mpsc");
+        self.tx_resp
+            .send(WorkerStateManagerReturns::UpdateOperation(result))
+            .expect("Could not send request to mpsc");
+        req
+    }
+}
+
+#[async_trait]
+impl WorkerStateManager for MockWorkerStateManager {
+    async fn update_operation(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+        action_stage: Result<ActionStage, Error>,
+    ) -> Result<(), Error> {
+        self.tx_call
+            .send(WorkerStateManagerCalls::UpdateOperation((
+                operation_id.clone(),
+                *worker_id,
+                action_stage,
+            )))
+            .expect("Could not send request to mpsc");
+        let mut rx_resp_lock = self.rx_resp.lock().await;
+        match rx_resp_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerStateManagerReturns::UpdateOperation(result) => result,
+        }
+    }
+}
+
 struct TestContext {
-    scheduler: Arc<SimpleScheduler>,
+    scheduler: Arc<ApiWorkerScheduler>,
+    state_manager: Arc<MockWorkerStateManager>,
     worker_api_server: WorkerApiServer,
     connection_worker_stream: ConnectWorkerStream,
     worker_id: WorkerId,
@@ -57,12 +136,16 @@ fn static_now_fn() -> Result<Duration, Error> {
 async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
-    let scheduler = Arc::new(SimpleScheduler::new(
-        &nativelink_config::schedulers::SimpleScheduler {
-            worker_timeout_s: worker_timeout,
-            ..Default::default()
-        },
-    ));
+    let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
+    let tasks_or_worker_change_notify = Arc::new(Notify::new());
+    let state_manager = Arc::new(MockWorkerStateManager::new());
+    let scheduler = ApiWorkerScheduler::new(
+        state_manager.clone(),
+        platform_property_manager,
+        WorkerAllocationStrategy::default(),
+        tasks_or_worker_change_notify,
+        worker_timeout,
+    );
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
     schedulers.insert(SCHEDULER_NAME.to_string(), scheduler.clone());
@@ -107,6 +190,7 @@ async fn setup_api_server(worker_timeout: u64, now_fn: NowFn) -> Result<TestCont
 
     Ok(TestContext {
         scheduler,
+        state_manager,
         worker_api_server,
         connection_worker_stream,
         worker_id: worker_id.try_into()?,
@@ -263,8 +347,9 @@ pub async fn going_away_removes_worker_test() -> Result<(), Box<dyn std::error::
 
     test_context
         .scheduler
-        .remove_worker(test_context.worker_id)
-        .await;
+        .remove_worker(&test_context.worker_id)
+        .await
+        .unwrap();
 
     let worker_exists = test_context
         .scheduler
@@ -284,13 +369,17 @@ fn make_system_time(time: u64) -> SystemTime {
 
 #[nativelink_test]
 pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error::Error>> {
-    let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    let mut test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
 
-    const SALT: u64 = 5;
     let action_digest = DigestInfo::new([7u8; 32], 123);
     let instance_name = "instance_name".to_string();
 
-    let action_info = ActionInfo {
+    let unique_qualifier = ActionUniqueQualifier::Uncachable(ActionUniqueKey {
+        instance_name: instance_name.clone(),
+        digest_function: DigestHasherFunc::Sha256,
+        digest: action_digest,
+    });
+    let action_info = Arc::new(ActionInfo {
         command_digest: DigestInfo::new([0u8; 32], 0),
         input_root_digest: DigestInfo::new([0u8; 32], 0),
         timeout: Duration::MAX,
@@ -300,15 +389,18 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
         priority: 0,
         load_timestamp: make_system_time(0),
         insert_timestamp: make_system_time(0),
-        unique_qualifier: ActionInfoHashKey {
-            instance_name: instance_name.clone(),
-            digest_function: DigestHasherFunc::Sha256,
-            digest: action_digest,
-            salt: SALT,
-        },
-        skip_cache_lookup: true,
-    };
-    let mut client_action_state_receiver = test_context.scheduler.add_action(action_info).await?;
+        unique_qualifier,
+    });
+    let expected_operation_id = OperationId::new(action_info.unique_qualifier.clone());
+    test_context
+        .scheduler
+        .worker_notify_run_action(
+            test_context.worker_id,
+            expected_operation_id.clone(),
+            action_info.clone(),
+        )
+        .await
+        .unwrap();
 
     let mut server_logs = HashMap::new();
     server_logs.insert(
@@ -318,114 +410,99 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
             human_readable: false, // We only support non-human readable.
         },
     );
+    let execute_response = ExecuteResponse {
+        result: Some(ProtoActionResult {
+            output_files: vec![OutputFile {
+                path: "some path1".to_string(),
+                digest: Some(DigestInfo::new([8u8; 32], 124).into()),
+                is_executable: true,
+                contents: Default::default(), // We don't implement this.
+                node_properties: None,
+            }],
+            output_file_symlinks: vec![OutputSymlink {
+                path: "some path3".to_string(),
+                target: "some target3".to_string(),
+                node_properties: None,
+            }],
+            output_symlinks: vec![OutputSymlink {
+                path: "some path3".to_string(),
+                target: "some target3".to_string(),
+                node_properties: None,
+            }],
+            output_directories: vec![OutputDirectory {
+                path: "some path4".to_string(),
+                tree_digest: Some(DigestInfo::new([12u8; 32], 124).into()),
+                is_topologically_sorted: false,
+            }],
+            output_directory_symlinks: Default::default(), // Bazel deprecated this.
+            exit_code: 5,
+            stdout_raw: Default::default(), // We don't implement this.
+            stdout_digest: Some(DigestInfo::new([10u8; 32], 124).into()),
+            stderr_raw: Default::default(), // We don't implement this.
+            stderr_digest: Some(DigestInfo::new([11u8; 32], 124).into()),
+            execution_metadata: Some(ExecutedActionMetadata {
+                worker: test_context.worker_id.to_string(),
+                queued_timestamp: Some(make_system_time(1).into()),
+                worker_start_timestamp: Some(make_system_time(2).into()),
+                worker_completed_timestamp: Some(make_system_time(3).into()),
+                input_fetch_start_timestamp: Some(make_system_time(4).into()),
+                input_fetch_completed_timestamp: Some(make_system_time(5).into()),
+                execution_start_timestamp: Some(make_system_time(6).into()),
+                execution_completed_timestamp: Some(make_system_time(7).into()),
+                output_upload_start_timestamp: Some(make_system_time(8).into()),
+                output_upload_completed_timestamp: Some(make_system_time(9).into()),
+                virtual_execution_duration: Some(prost_types::Duration {
+                    seconds: 1,
+                    nanos: 0,
+                }),
+                auxiliary_metadata: vec![],
+            }),
+        }),
+        cached_result: false,
+        status: Some(ProtoStatus {
+            code: 9,
+            message: "foo".to_string(),
+            details: Default::default(),
+        }),
+        server_logs,
+        message: "TODO(blaise.bruer) We should put a reference something like bb_browser"
+            .to_string(),
+    };
     let result = ExecuteResult {
         instance_name,
         worker_id: test_context.worker_id.to_string(),
-        action_digest: Some(action_digest.into()),
-        salt: SALT,
-        digest_function: DigestHasherFunc::Sha256.proto_digest_func().into(),
-        result: Some(execute_result::Result::ExecuteResponse(ExecuteResponse {
-            result: Some(ProtoActionResult {
-                output_files: vec![OutputFile {
-                    path: "some path1".to_string(),
-                    digest: Some(DigestInfo::new([8u8; 32], 124).into()),
-                    is_executable: true,
-                    contents: Default::default(), // We don't implement this.
-                    node_properties: None,
-                }],
-                output_file_symlinks: vec![OutputSymlink {
-                    path: "some path3".to_string(),
-                    target: "some target3".to_string(),
-                    node_properties: None,
-                }],
-                output_symlinks: vec![OutputSymlink {
-                    path: "some path3".to_string(),
-                    target: "some target3".to_string(),
-                    node_properties: None,
-                }],
-                output_directories: vec![OutputDirectory {
-                    path: "some path4".to_string(),
-                    tree_digest: Some(DigestInfo::new([12u8; 32], 124).into()),
-                    is_topologically_sorted: false,
-                }],
-                output_directory_symlinks: Default::default(), // Bazel deprecated this.
-                exit_code: 5,
-                stdout_raw: Default::default(), // We don't implement this.
-                stdout_digest: Some(DigestInfo::new([10u8; 32], 124).into()),
-                stderr_raw: Default::default(), // We don't implement this.
-                stderr_digest: Some(DigestInfo::new([11u8; 32], 124).into()),
-                execution_metadata: Some(ExecutedActionMetadata {
-                    worker: test_context.worker_id.to_string(),
-                    queued_timestamp: Some(make_system_time(1).into()),
-                    worker_start_timestamp: Some(make_system_time(2).into()),
-                    worker_completed_timestamp: Some(make_system_time(3).into()),
-                    input_fetch_start_timestamp: Some(make_system_time(4).into()),
-                    input_fetch_completed_timestamp: Some(make_system_time(5).into()),
-                    execution_start_timestamp: Some(make_system_time(6).into()),
-                    execution_completed_timestamp: Some(make_system_time(7).into()),
-                    output_upload_start_timestamp: Some(make_system_time(8).into()),
-                    output_upload_completed_timestamp: Some(make_system_time(9).into()),
-                    virtual_execution_duration: Some(prost_types::Duration {
-                        seconds: 1,
-                        nanos: 0,
-                    }),
-                    auxiliary_metadata: vec![],
-                }),
-            }),
-            cached_result: false,
-            status: Some(ProtoStatus {
-                code: 9,
-                message: "foo".to_string(),
-                details: Default::default(),
-            }),
-            server_logs,
-            message: "TODO(blaise.bruer) We should put a reference something like bb_browser"
-                .to_string(),
-        })),
+        operation_id: expected_operation_id.to_string(),
+        result: Some(execute_result::Result::ExecuteResponse(
+            execute_response.clone(),
+        )),
     };
-    {
-        // Ensure our client thinks we are executing.
-        client_action_state_receiver.changed().await?;
-        let action_state = client_action_state_receiver.borrow();
-        let action_state = match action_state.stage {
-            ActionStage::Queued => {
-                drop(action_state);
-                // Note: `.changed()` might be triggered twice, since the first trigger
-                // might be Queued and the second will always be Executing, but there's no
-                // guarantee that the first trigger will be Queued.
-                client_action_state_receiver.changed().await?;
-                client_action_state_receiver.borrow()
-            }
-            _ => client_action_state_receiver.borrow(),
-        };
-        assert_eq!(action_state.stage, ActionStage::Executing);
-    }
 
-    // Now send the result of our execution to the scheduler.
-    test_context
-        .worker_api_server
-        .execution_response(Request::new(result.clone()))
-        .await?;
+    let update_for_worker = test_context
+        .connection_worker_stream
+        .next()
+        .await
+        .expect("Worker stream ended early")?
+        .update
+        .expect("Expected update field to be populated");
+    let update_for_worker::Update::StartAction(start_execute) = update_for_worker else {
+        panic!("Expected StartAction message");
+    };
+    assert_eq!(result.operation_id, start_execute.operation_id);
 
     {
-        // Check the result that the client would have received.
-        client_action_state_receiver.changed().await?;
-        let client_given_state = client_action_state_receiver.borrow();
-        let execute_response =
-            if let execute_result::Result::ExecuteResponse(v) = result.result.unwrap() {
-                v
-            } else {
-                panic!("Expected type to be ExecuteResponse");
-            };
-
-        assert_eq!(
-            client_given_state.stage,
-            execute_response.clone().try_into()?
+        // Ensure our state manager got the same result as the server.
+        let (execution_response_result, (operation_id, worker_id, client_given_state)) = join!(
+            test_context
+                .worker_api_server
+                .execution_response(Request::new(result.clone())),
+            test_context.state_manager.expect_update_operation(Ok(())),
         );
+        execution_response_result.unwrap();
 
-        // We just checked if conversion from ExecuteResponse into ActionStage was an exact mach.
-        // Now check if we cast the ActionStage into an ExecuteResponse we get the exact same struct.
-        assert_eq!(execute_response, client_given_state.stage.clone().into());
+        assert_eq!(operation_id, expected_operation_id);
+        assert_eq!(worker_id, test_context.worker_id);
+        assert_eq!(client_given_state, Ok(execute_response.clone().try_into()?));
+        assert_eq!(execute_response, client_given_state.unwrap().into());
     }
     Ok(())
 }
