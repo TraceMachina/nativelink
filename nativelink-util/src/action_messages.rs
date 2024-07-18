@@ -765,6 +765,22 @@ pub enum ActionStage {
     CompletedFromCache(ProtoActionResult),
 }
 
+impl Serialize for ActionStage {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+        S: serde::Serializer {
+            todo!()
+    }
+}
+
+impl<'de> Deserialize<'de> for ActionStage {
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+        where
+        D: serde::Deserializer<'de> {
+            todo!()
+    }
+}
+
 impl ActionStage {
     pub const fn has_action_result(&self) -> bool {
         match self {
@@ -1075,7 +1091,7 @@ where
 
 /// Current state of the action.
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct ActionState {
     pub stage: ActionStage,
     pub id: OperationId,
