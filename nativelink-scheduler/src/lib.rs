@@ -22,6 +22,7 @@ pub mod grpc_scheduler;
 mod memory_awaited_action_db;
 pub mod platform_property_manager;
 pub mod property_modifier_scheduler;
+mod redis_awaited_action_db;
 pub mod simple_scheduler;
 mod simple_scheduler_state_manager;
 pub mod worker;
