@@ -86,7 +86,7 @@ please raise an issue so that we can clarify this document.
 
 ## Local development setup
 
-NativeLink ships almost all of it's tooling in a nix flake which is configured
+NativeLink ships almost all of its tooling in a nix flake which is configured
 via a [`flake.nix`](./flake.nix) file in the root of the repository. While it's
 possible to work on some parts of the codebase without this environment, it'll
 make your life much easier since it lets you reproduce most of CI locally.
@@ -390,7 +390,7 @@ bazel test doctests
 
 NativeLink largely follows the [Microsoft Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/).
 
-NativeLink implements it's documentation style guide via Vale. The pre-commit
+NativeLink implements its documentation style guide via Vale. The pre-commit
 hooks forbid errors but permit warnings and suggestions. To view all of Vale's
 suggestions invoke it directly:
 

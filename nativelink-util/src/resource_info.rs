@@ -78,7 +78,7 @@ const SLASH_SIZE: usize = 1;
 //                 uploads/{uuid}/blobs/                                          {hash}/{size}
 //
 
-// Useful utility struct for converting bazel's (uri-like path) into it's parts.
+// Useful utility struct for converting bazel's (uri-like path) into its parts.
 #[derive(Debug, Default)]
 pub struct ResourceInfo<'a> {
     pub instance_name: Cow<'a, str>,

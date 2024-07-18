@@ -87,7 +87,7 @@ pub struct SimpleScheduler {
     /// The property names here must match the property keys provided by the
     /// worker nodes when they join the pool. In other words, the workers will
     /// publish their capabilities to the scheduler when they join the worker
-    /// pool. If the worker fails to notify the scheduler of it's (for example)
+    /// pool. If the worker fails to notify the scheduler of its (for example)
     /// "cpu_arch", the scheduler will never send any jobs to it, if all jobs
     /// have the "cpu_arch" label. There is no special treatment of any platform
     /// property labels other and entirely driven by worker configs and this
