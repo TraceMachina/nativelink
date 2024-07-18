@@ -15,19 +15,23 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use futures::sink::Buffer;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
+use redis::{FromRedisValue, ToRedisArgs};
+use redis_macros::{FromRedisValue, ToRedisArgs};
+use serde::{Deserialize, Serialize};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
 /// The version of the awaited action.
 /// This number will always increment by one each time
 /// the action is updated.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct AwaitedActionVersion(u64);
 
 /// An action that is being awaited on and last known state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct AwaitedAction {
     /// The current version of the action.
     version: AwaitedActionVersion,
@@ -54,6 +58,25 @@ pub struct AwaitedAction {
     pub attempts: usize,
 }
 
+impl AwaitedAction {
+    pub fn as_bytes(&self) -> Vec<u8> {
+        // TODO!: Serialize as bytes
+        todo!()
+    }
+    pub fn from_bytes(_bytes: &[u8]) -> Result<Self, nativelink_error::Error> {
+        todo!()
+    }
+
+    pub fn from_bytes_vec(_bytes_vec: Vec<u8>) -> Result<Self, nativelink_error::Error> {
+        todo!()
+    }
+}
+impl TryFrom<&[u8]> for AwaitedAction {
+    type Error = nativelink_error::Error;
+    fn try_from(_value: &[u8]) -> Result<Self, Self::Error> {
+        todo!()
+    }
+}
 impl AwaitedAction {
     pub fn new(operation_id: OperationId, action_info: Arc<ActionInfo>) -> Self {
         let stage = ActionStage::Queued;
@@ -131,7 +154,7 @@ impl AwaitedAction {
 /// 1. priority of the action
 /// 2. insert order of the action (lower = higher priority)
 /// 3. (mostly random hash based on the action info)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct AwaitedActionSortKey(u64);
 
