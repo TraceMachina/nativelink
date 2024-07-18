@@ -989,7 +989,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     // Delete may happen on another thread, so wait for it.
     FILE_DELETED_BARRIER.wait().await;
 
-    // Now it should have cleaned up it's temp files.
+    // Now it should have cleaned up its temp files.
     {
         // Ensure `temp_path` is empty.
         let (_permit, dir_handle) = fs::read_dir(&temp_path).await?.into_inner();

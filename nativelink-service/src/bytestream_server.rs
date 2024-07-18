@@ -246,7 +246,7 @@ impl ByteStreamServer {
         let (tx, rx) = make_buf_channel_pair();
         let store_update_fut = Box::pin(async move {
             // We need to wrap `Store::update()` in a another future because we need to capture
-            // `store` to ensure it's lifetime follows the future and not the caller.
+            // `store` to ensure its lifetime follows the future and not the caller.
             store
                 // Bytestream always uses digest size as the actual byte size.
                 .update(
