@@ -14,6 +14,7 @@
 
 use std::pin::Pin;
 
+use futures::future::pending;
 use futures::try_join;
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
@@ -143,12 +144,11 @@ async fn verify_size_true_suceeds_on_multi_chunk_stream_update() -> Result<(), E
     let (mut tx, rx) = make_buf_channel_pair();
 
     let digest = DigestInfo::try_new(VALID_HASH1, 6).unwrap();
-    let digest_clone = digest;
     let future = spawn!(
         "verify_size_true_suceeds_on_multi_chunk_stream_update",
         async move {
             Pin::new(&store)
-                .update(digest_clone, rx, UploadSizeInfo::ExactSize(6))
+                .update(digest, rx, UploadSizeInfo::ExactSize(6))
                 .await
         },
     );
@@ -296,6 +296,53 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
     assert!(
         err.contains(&expected_err),
         "Error should contain '{expected_err}', got: {err:?}"
+    );
+    assert_eq!(
+        inner_store.has(digest).await,
+        Ok(None),
+        "Expected data to not exist in store after update"
+    );
+    Ok(())
+}
+
+// A potential bug could happen if the down stream component ignores the EOF but will
+// stop receiving data when the expected size is reached. We should ensure this edge
+// case is double protected.
+#[nativelink_test]
+async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), Error> {
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let store = VerifyStore::new(
+        &nativelink_config::stores::VerifyStore {
+            backend: nativelink_config::stores::StoreConfig::memory(
+                nativelink_config::stores::MemoryStore::default(),
+            ),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+
+    const VALUE: &str = "123";
+    let digest = DigestInfo::try_new(VALID_HASH1, 4).unwrap();
+    let (mut tx, rx) = make_buf_channel_pair();
+    let send_fut = async move {
+        tx.send(VALUE.into()).await?;
+        tx.send(VALUE.into()).await?;
+        pending::<()>().await;
+        panic!("Should not reach here");
+        #[allow(unreachable_code)]
+        Ok(())
+    };
+    let result = try_join!(
+        send_fut,
+        store.update(digest, rx, UploadSizeInfo::ExactSize(4))
+    );
+    assert!(result.is_err(), "Expected error, got: {:?}", &result);
+    const EXPECTED_ERR: &str = "Expected size 4 but already received 6 on insert";
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains(EXPECTED_ERR),
+        "Error should contain '{EXPECTED_ERR}', got: {err:?}"
     );
     assert_eq!(
         inner_store.has(digest).await,
