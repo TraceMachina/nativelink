@@ -419,7 +419,7 @@ impl StoreDriver for S3Store {
                                 .send()
                                 .map_ok_or_else(|e| Err(make_err!(Code::Aborted, "{e:?}")), |_| Ok(())),
                             // Stream all data from the reader channel to the writer channel.
-                            tx.bind(reader_ref)
+                            tx.bind_buffered(reader_ref)
                         );
                         upload_res
                             .merge(bind_res)
