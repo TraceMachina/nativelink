@@ -198,7 +198,7 @@ async fn update_existing_item() -> Result<(), Box<dyn std::error::Error>> {
                 digest: Some(digest),
                 status: Some(GrpcStatus {
                     code: 0, // Status Ok.
-                    message: "".to_string(),
+                    message: String::new(),
                     details: vec![],
                 }),
             },],
@@ -269,7 +269,7 @@ async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dy
                         data: VALUE1.into(),
                         status: Some(GrpcStatus {
                             code: 0, // Status Ok.
-                            message: "".to_string(),
+                            message: String::new(),
                             details: vec![],
                         }),
                         compressor: compressor::Value::Identity.into(),
@@ -279,7 +279,7 @@ async fn batch_read_blobs_read_two_blobs_success_one_fail() -> Result<(), Box<dy
                         data: VALUE2.into(),
                         status: Some(GrpcStatus {
                             code: 0, // Status Ok.
-                            message: "".to_string(),
+                            message: String::new(),
                             details: vec![],
                         }),
                         compressor: compressor::Value::Identity.into(),
@@ -577,7 +577,7 @@ async fn batch_update_blobs_two_items_existence_with_third_missing(
                         digest: Some(digest1),
                         status: Some(GrpcStatus {
                             code: 0, // Status Ok.
-                            message: "".to_string(),
+                            message: String::new(),
                             details: vec![],
                         }),
                     },
@@ -585,7 +585,7 @@ async fn batch_update_blobs_two_items_existence_with_third_missing(
                         digest: Some(digest2),
                         status: Some(GrpcStatus {
                             code: 0, // Status Ok.
-                            message: "".to_string(),
+                            message: String::new(),
                             details: vec![],
                         }),
                     }

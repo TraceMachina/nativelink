@@ -184,7 +184,7 @@ impl CasServer {
                             // Trim the error code. Not Found is quite common and we don't want to send a large
                             // error (debug) message for something that is common. We resize to just the last
                             // message as it will be the most relevant.
-                            e.messages.resize_with(1, || "".to_string());
+                            e.messages.resize_with(1, String::new);
                         }
                         (e.into(), Bytes::new())
                     },

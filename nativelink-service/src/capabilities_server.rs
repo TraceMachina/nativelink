@@ -137,13 +137,13 @@ impl Capabilities for CapabilitiesServer {
                 major: 2,
                 minor: 0,
                 patch: 0,
-                prerelease: "".to_string(),
+                prerelease: String::new(),
             }),
             high_api_version: Some(SemVer {
                 major: 2,
                 minor: 3,
                 patch: 0,
-                prerelease: "".to_string(),
+                prerelease: String::new(),
             }),
         };
         Ok(Response::new(resp))
