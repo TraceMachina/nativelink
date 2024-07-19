@@ -269,3 +269,35 @@ async fn rx_gets_error_if_tx_drops_test() -> Result<(), Error> {
     try_join!(tx_fut, rx_fut)?;
     Ok(())
 }
+
+#[nativelink_test]
+async fn bind_bufferd_test() -> Result<(), Error> {
+    let (mut tx_source, mut rx_bind) = make_buf_channel_pair();
+    let (mut tx_bind, mut rx_final) = make_buf_channel_pair();
+    try_join!(
+        async move {
+            let result = tx_bind.bind_bufferd(&mut rx_bind).await;
+            assert!(result.is_err(), "Should be error, got: {result:?}");
+            assert!(result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Sender dropped before sending EOF"));
+            Ok(())
+        },
+        async move {
+            tx_source.send(DATA1.into()).await.unwrap();
+            drop(tx_source);
+            assert_eq!(
+                rx_final.recv().await,
+                Err(make_err!(
+                    Code::Internal,
+                    "Sender dropped before sending EOF"
+                ))
+            );
+            Result::<_, Error>::Ok(())
+        }
+    )
+    .unwrap();
+    Ok(())
+}
