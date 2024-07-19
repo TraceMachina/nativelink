@@ -22,6 +22,9 @@ build --incompatible_strict_action_env
 # Don't use legacy toolchain resolution.
 build --incompatible_enable_cc_toolchain_resolution
 
+# Don't use legacy repository rules.
+build --incompatible_disable_native_repo_rules
+
 # Use the earliest supported C++ version for protoc.
 build --cxxopt=-std=c++14 --host_cxxopt=-std=c++14
 
