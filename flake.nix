@@ -50,7 +50,7 @@
         system,
         ...
       }: let
-        stable-rust-version = "1.78.0";
+        stable-rust-version = "1.79.0";
         nightly-rust-version = "2024-05-10";
 
         # TODO(aaronmondal): Make musl builds work on Darwin.

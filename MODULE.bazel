@@ -6,7 +6,7 @@ module(
 
 bazel_dep(name = "rules_cc", version = "0.0.9")
 bazel_dep(name = "platforms", version = "0.0.10")
-bazel_dep(name = "rules_python", version = "0.33.2")
+bazel_dep(name = "rules_python", version = "0.34.0")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
@@ -18,7 +18,7 @@ python.toolchain(
 )
 use_repo(python, python = "python_versions")
 
-bazel_dep(name = "rules_rust", version = "0.46.0")
+bazel_dep(name = "rules_rust", version = "0.47.1")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
@@ -42,9 +42,10 @@ rust.toolchain(
         "2024-05-10/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "4055cac34969da2dc652f8070508de73cc03ac578dd6d57e42303dae0a1a9c56",
         "2024-05-10/llvm-tools-nightly-aarch64-apple-darwin.tar.xz": "e28f47ee89e195bde588fb1a8a799ade56264c7dfc676455596814642c3ed9f5",
         "2024-05-10/rust-std-nightly-aarch64-apple-darwin.tar.xz": "60447211f476992fb3fd53f08ab11966fa6f4aca4afa218787b5f425a49af3dc",
+        "2024-05-10/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "9a2ced2ec03995ef2c0579c7e3205defbcab27e545caad9466c19a01a3751988",
     },
     versions = [
-        "1.78.0",
+        "1.79.0",
         "nightly/2024-05-10",
     ],
 )
@@ -55,7 +56,7 @@ rust_host_tools = use_extension(
 )
 rust_host_tools.host_tools(
     edition = "2021",
-    version = "1.78.0",
+    version = "1.79.0",
 )
 
 use_repo(rust, "rust_toolchains")
@@ -83,7 +84,7 @@ rust_analyzer = use_extension(
 )
 rust_analyzer.rust_analyzer_dependencies()
 
-bazel_dep(name = "protobuf", version = "27.1.bcr.1")
+bazel_dep(name = "protobuf", version = "27.2")
 
 # Local remote execution.
 bazel_dep(name = "local-remote-execution", version = "0.0.0")
