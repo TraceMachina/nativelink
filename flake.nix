@@ -306,7 +306,7 @@
               # development shell.
               ${config.pre-commit.installationScript}
 
-              # Generate .bazelrc.lre which configures LRE toolchains when running
+              # Generate lre.bazelrc which configures LRE toolchains when running
               # in the nix environment.
               ${config.local-remote-execution.installationScript}
 
