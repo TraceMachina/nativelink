@@ -35,7 +35,7 @@
             };
             installationScript = lib.mkOption {
               type = lib.types.str;
-              description = lib.mdDoc "A .bazelrc.lre generator for local-remote-execution.";
+              description = lib.mdDoc "A lre.bazelrc generator for local-remote-execution.";
               default = cfg.settings.installationScript;
               defaultText = lib.literalMD "bazelrc contents";
               readOnly = true;
