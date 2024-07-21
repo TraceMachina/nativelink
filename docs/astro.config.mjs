@@ -122,6 +122,10 @@ export default defineConfig({
               label: "Pants",
               link: "/nativelink-cloud/pants/",
             },
+            {
+              label: "API Keys in Production",
+              link: "/nativelink-cloud/api-key/",
+            },
           ],
         },
         {
