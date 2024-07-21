@@ -543,7 +543,7 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
             .update_oneshot(digest.into(), data)
     }
 
-    /// Retreives part of the data from the store and writes it to the given writer.
+    /// Retrieves part of the data from the store and writes it to the given writer.
     #[inline]
     fn get_part<'a>(
         &'a self,
