@@ -76,7 +76,7 @@ pagefind: ${pagefind}
 `;
 }
 
-export function transformGithubMarkdown(content: RootContent[]): RootContent[] {
+export function transformGitHubMarkdown(content: RootContent[]): RootContent[] {
   return content.flatMap((node) => {
     if (node.type === "blockquote") {
       const transformed = transformBlockquote(node as Blockquote);
@@ -227,7 +227,7 @@ export async function transformMarkdownToMdx(
   const tree = parseMarkdown(preprocessedMarkdown);
   const { title, content } = extractTitle(tree);
 
-  let transformedContent = transformGithubMarkdown(content);
+  let transformedContent = transformGitHubMarkdown(content);
   transformedContent = preserveInlineCode(transformedContent);
 
   const modifiedMarkdown = remark()
