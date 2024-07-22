@@ -23,6 +23,7 @@ use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
 use serde::{Deserialize, Serialize};
+use std::process::Command;
 
 pub use crate::fs;
 
@@ -211,4 +212,24 @@ pub fn encode_stream_proto<T: Message>(proto: &T) -> Result<Bytes, Box<dyn std::
     }
 
     Ok(buf.freeze())
+}
+
+// Utility to obtain the version of NativeLink.
+pub fn get_version() -> String {
+    let output = Command::new("git")
+        .args(&["describe", "--tags", "--abbrev=0"])
+        .output()
+        .expect("Failed to execute git command");
+
+    String::from_utf8(output.stdout).expect("Invalid UTF-8 output").trim().to_string()
+}
+
+// Utility to obtain the current hash of NativeLink.
+pub fn get_hash() -> String {
+    let output = Command::new("git")
+        .args(&["rev-parse", "HEAD"])
+        .output()
+        .expect("Failed to execute git command");
+
+    String::from_utf8(output.stdout).expect("Invalid UTF-8 output").trim().to_string()
 }

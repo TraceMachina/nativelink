@@ -72,6 +72,9 @@ use tonic::transport::Server as TonicServer;
 use tower::util::ServiceExt;
 use tracing::{error_span, event, trace_span, Level};
 
+use nativelink_util::common::get_hash;
+use nativelink_util::common::get_version;
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -880,6 +883,15 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing()?;
+
+    //Testing example-->
+
+    event!(
+        Level::WARN,
+        "Git version and Git hash {}, {}",
+        get_version(),
+        get_hash()
+    );
 
     let mut cfg = futures::executor::block_on(get_config())?;
 
