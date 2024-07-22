@@ -29,6 +29,7 @@ use nativelink_proto::google::rpc::Status;
 use prost::bytes::Bytes;
 use prost::Message;
 use prost_types::Any;
+use serde::ser::Error as SerdeError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -765,6 +766,71 @@ pub enum ActionStage {
     CompletedFromCache(ProtoActionResult),
 }
 
+impl Serialize for ActionStage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s = SerdeActionStage::try_from(self.clone()).map_err(S::Error::custom)?;
+        s.serialize(serializer)
+    }
+}
+
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
+enum SerdeActionStage {
+    /// Stage is unknown.
+    Unknown,
+    /// Checking the cache to see if action exists.
+    CacheCheck,
+    /// Action has been accepted and waiting for worker to take it.
+    Queued,
+    // TODO(allada) We need a way to know if the job was sent to a worker, but hasn't begun
+    // execution yet.
+    /// Worker is executing the action.
+    Executing,
+    /// Worker completed the work with result.
+    Completed(ActionResult),
+}
+
+impl From<SerdeActionStage> for ActionStage {
+    fn from(value: SerdeActionStage) -> ActionStage {
+        match value {
+            SerdeActionStage::Unknown => ActionStage::Unknown,
+            SerdeActionStage::CacheCheck => ActionStage::CacheCheck,
+            SerdeActionStage::Queued => ActionStage::Queued,
+            SerdeActionStage::Executing => ActionStage::Executing,
+            SerdeActionStage::Completed(res) => ActionStage::Completed(res),
+        }
+    }
+}
+
+impl TryFrom<ActionStage> for SerdeActionStage {
+    type Error = Error;
+    fn try_from(value: ActionStage) -> Result<SerdeActionStage, Error> {
+        match value {
+            ActionStage::CompletedFromCache(proto) => {
+                let action_result = ActionResult::try_from(proto)?;
+                Ok(SerdeActionStage::Completed(action_result))
+            }
+            ActionStage::Unknown => Ok(SerdeActionStage::Unknown),
+            ActionStage::CacheCheck => Ok(SerdeActionStage::CacheCheck),
+            ActionStage::Queued => Ok(SerdeActionStage::Queued),
+            ActionStage::Executing => Ok(SerdeActionStage::Executing),
+            ActionStage::Completed(res) => Ok(SerdeActionStage::Completed(res)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ActionStage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        SerdeActionStage::deserialize(deserializer).map(|v| v.into())
+    }
+}
+
 impl ActionStage {
     pub const fn has_action_result(&self) -> bool {
         match self {
@@ -1075,7 +1141,7 @@ where
 
 /// Current state of the action.
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct ActionState {
     pub stage: ActionStage,
     pub id: OperationId,

@@ -441,3 +441,17 @@ impl From<Code> for std::io::ErrorKind {
         }
     }
 }
+
+// Allows for mapping this type into a generic serialization error.
+impl serde::ser::Error for Error {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        Self::new(Code::InvalidArgument, msg.to_string())
+    }
+}
+
+// Allows for mapping this type into a generic deserialization error.
+impl serde::de::Error for Error {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        Self::new(Code::InvalidArgument, msg.to_string())
+    }
+}
