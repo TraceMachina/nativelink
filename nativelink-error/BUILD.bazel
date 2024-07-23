@@ -14,10 +14,10 @@ rust_library(
     deps = [
         "//nativelink-metric",
         "//nativelink-proto",
+        "@crates//:fred",
         "@crates//:hex",
         "@crates//:prost",
         "@crates//:prost-types",
-        "@crates//:redis",
         "@crates//:serde",
         "@crates//:tokio",
         "@crates//:tonic",
