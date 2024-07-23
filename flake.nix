@@ -176,6 +176,27 @@
           stdenv = customStdenv;
         };
         createWorker = pkgs.callPackage ./tools/create-worker.nix {inherit buildImage self;};
+        buck2-toolchain = let
+          buck2-nightly-rust-version = "2024-04-28";
+          buck2-nightly-rust =
+            if pkgs.stdenv.isDarwin
+            then pkgs.rust-bin.nightly.${buck2-nightly-rust-version}
+            else pkgs.pkgsMusl.rust-bin.nightly.${buck2-nightly-rust-version};
+        in
+          pkgs.callPackage ./tools/create-worker-experimental.nix {
+            inherit buildImage self;
+            imageName = "buck2-toolchain";
+            packagesForImage = [
+              pkgs.coreutils
+              pkgs.bash
+              pkgs.clang
+              pkgs.go
+              pkgs.diffutils
+              pkgs.gnutar
+              pkgs.gzip
+              buck2-nightly-rust.default
+            ];
+          };
         siso-chromium = buildImage {
           name = "siso-chromium";
           fromImage = pullImage {
@@ -240,6 +261,7 @@
           nativelink-worker-lre-java = createWorker lre-java;
           nativelink-worker-siso-chromium = createWorker siso-chromium;
           nativelink-worker-toolchain-drake = createWorker toolchain-drake;
+          nativelink-worker-buck2-toolchain = buck2-toolchain;
           image = nativelink-image;
         };
         checks = {
