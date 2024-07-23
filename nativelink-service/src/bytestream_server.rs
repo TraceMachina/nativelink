@@ -310,7 +310,20 @@ impl ByteStreamServer {
                                 Ok(bytes) => {
                                     if bytes.is_empty() {
                                         // EOF.
-                                        return Some((Ok(response), None));
+                                        event!(Level::WARN, "EOF");
+                                        // Instead of returning immediately, wait for the `get_part_fut` to complete.
+                                        let get_part_result = if let Some(result) = state.maybe_get_part_result.take() {
+                                            result
+                                        } else {
+                                            // Wrapping in an async block to use await
+                                            async { state.get_part_fut.await }.await
+                                        };
+                                        event!(Level::WARN, "COMPLETE");
+                                    
+                                        match get_part_result {
+                                            Ok(_) => return Some((Ok(response), None)),
+                                            Err(e) => return Some((Err(e.into()), None)),
+                                        }
                                     }
                                     if bytes.len() > state.max_bytes_per_stream {
                                         let err = make_err!(Code::Internal, "Returned store size was larger than read size");
