@@ -45,8 +45,6 @@ rust_library(
         "@crates//:parking_lot",
         "@crates//:prost",
         "@crates//:rand",
-        "@crates//:redis",
-        "@crates//:redis-macros",
         "@crates//:scopeguard",
         "@crates//:serde",
         "@crates//:serde_json",

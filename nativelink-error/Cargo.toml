@@ -14,7 +14,7 @@ nativelink-metric = { path = "../nativelink-metric" }
 hex = "0.4.3"
 prost = "0.12.4"
 prost-types = "0.12.4"
-redis = "0.25.2"
+fred = "9.0.3"
 serde = { version = "1.0.201", features = ["derive"] }
 tokio = { version = "1.37.0" }
 tonic = { version = "0.11.0", features = ["gzip"] }
