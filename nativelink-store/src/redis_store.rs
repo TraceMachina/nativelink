@@ -54,7 +54,7 @@ const READ_CHUNK_SIZE: isize = 64 * 1024;
 #[derive(Clone)]
 pub enum ConnectionKind {
     Cluster(ClusterConnection),
-    Single(ConnectionManager),
+    Single((redis::Client, ConnectionManager)),
 }
 
 impl From<ClusterConnection> for ConnectionKind {
@@ -63,8 +63,8 @@ impl From<ClusterConnection> for ConnectionKind {
     }
 }
 
-impl From<ConnectionManager> for ConnectionKind {
-    fn from(value: ConnectionManager) -> Self {
+impl From<(redis::Client, ConnectionManager)> for ConnectionKind {
+    fn from(value: (redis::Client, ConnectionManager)) -> Self {
         Self::Single(value)
     }
 }
@@ -77,7 +77,7 @@ impl ConnectionLike for ConnectionKind {
     ) -> redis::RedisFuture<'a, redis::Value> {
         match self {
             ConnectionKind::Cluster(inner) => inner.req_packed_command(cmd),
-            ConnectionKind::Single(inner) => inner.req_packed_command(cmd),
+            ConnectionKind::Single((_, inner)) => inner.req_packed_command(cmd),
         }
     }
 
@@ -89,14 +89,14 @@ impl ConnectionLike for ConnectionKind {
     ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
         match self {
             ConnectionKind::Cluster(inner) => inner.req_packed_commands(cmd, offset, count),
-            ConnectionKind::Single(inner) => inner.req_packed_commands(cmd, offset, count),
+            ConnectionKind::Single((_, inner)) => inner.req_packed_commands(cmd, offset, count),
         }
     }
 
     fn get_db(&self) -> i64 {
         match self {
             ConnectionKind::Cluster(inner) => inner.get_db(),
-            ConnectionKind::Single(inner) => inner.get_db(),
+            ConnectionKind::Single((_, inner)) => inner.get_db(),
         }
     }
 }
@@ -128,17 +128,26 @@ pub struct BackgroundConnection<C> {
     state: UnsafeCell<ConnectionState<C>>,
 }
 
-impl BackgroundConnection<ConnectionKind> {
+impl BackgroundConnection<(redis::Client, ConnectionManager)> {
     /// Connect to a single Redis instance.
     ///
     /// ## Errors
     ///
     /// Some cursory checks are performed on the given connection info that can fail before a connection is established.
     /// Errors that occur during the connection process are surfaced when the connection is first used.
-    pub fn single<T: redis::IntoConnectionInfo>(params: T) -> Result<Self, Error> {
+    pub fn single<T: redis::IntoConnectionInfo>(params: T) -> Result<(redis::Client, Self), Error> {
         let client = redis::Client::open(params).map_err(from_redis_err)?;
-        let init = async move { client.get_connection_manager().await };
-        Ok(Self::with_initializer(init))
+        let client_clone = client.clone();
+        let init = async move { Ok((client_clone.clone(), client_clone.get_connection_manager().await.unwrap())) };
+
+        let handle = background_spawn!("redis_initial_connection", init);
+        let state = ConnectionState::Connecting(handle.err_into().shared());
+
+        Ok((client, Self {
+            once: Once::new(),
+            state: UnsafeCell::new(state),
+        }))
+        // let res = Self::with_initializer(init);
     }
 
     /// Connect to multiple Redis instances configured in cluster mode
@@ -148,11 +157,9 @@ impl BackgroundConnection<ConnectionKind> {
     /// Some cursory checks are performed on the given connection info that can fail before a connection is established.
     /// Errors that occur during the connection are surfaced when the connection is first used.
     pub fn cluster<T: redis::IntoConnectionInfo>(
-        params: impl IntoIterator<Item = T>,
+        _params: impl IntoIterator<Item = T>,
     ) -> Result<Self, Error> {
-        let client = redis::cluster::ClusterClient::new(params).map_err(from_redis_err)?;
-        let init = async move { client.get_async_connection().await };
-        Ok(Self::with_initializer(init))
+        todo!()
     }
 }
 
@@ -240,6 +247,7 @@ unsafe impl<C: Sync> Sync for BackgroundConnection<C> {}
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 pub struct RedisStore<C: ConnectionLike + Clone = ConnectionKind> {
+    client: redis::Client,
     /// The connection to the underlying Redis instance(s).
     connection: BackgroundConnection<C>,
 
@@ -255,43 +263,46 @@ pub struct RedisStore<C: ConnectionLike + Clone = ConnectionKind> {
 
 impl RedisStore<ConnectionKind> {
     pub fn new(config: &nativelink_config::stores::RedisStore) -> Result<Arc<Self>, Error> {
-        if config.addresses.is_empty() {
-            return Err(Error::new(
-                Code::InvalidArgument,
-                "At least one address must be specified to connect to Redis".to_string(),
-            ));
-        };
-        let connection =
-            match config.mode {
-                RedisMode::Cluster => {
-                    let addrs = config.addresses.iter().map(String::as_str);
-                    BackgroundConnection::cluster(addrs)?
-                }
-                RedisMode::Standard if config.addresses.len() > 1 => return Err(Error::new(
-                    Code::InvalidArgument,
-                    "Attempted to connect to multiple addresses without setting `cluster = true`"
-                        .to_string(),
-                )),
-                RedisMode::Standard => {
-                    let addr = config.addresses[0].as_str();
-                    BackgroundConnection::single(addr)?
-                }
-                RedisMode::Sentinel => {
-                    return Err(Error::new(
-                        Code::Unimplemented,
-                        "Sentinel mode is currently not supported.".to_string(),
-                    ))
-                }
-            };
 
-        Ok(Arc::new(
-            RedisStore::new_with_conn_and_name_generator_and_prefix(
-                connection,
-                || uuid::Uuid::new_v4().to_string(),
-                config.experimental_pub_sub_channel.clone(),
-                config.key_prefix.clone(),
-            ),
-        ))
+        todo!()
+        // if config.addresses.is_empty() {
+        //     return Err(Error::new(
+        //         Code::InvalidArgument,
+        //         "At least one address must be specified to connect to Redis".to_string(),
+        //     ));
+        // };
+        // let (client, connection) =
+        //     match config.mode {
+        //         RedisMode::Cluster => {
+        //             todo!()
+        //             // let addrs = config.addresses.iter().map(String::as_str);
+        //             // BackgroundConnection::cluster(addrs)?
+        //         }
+        //         RedisMode::Standard if config.addresses.len() > 1 => return Err(Error::new(
+        //             Code::InvalidArgument,
+        //             "Attempted to connect to multiple addresses without setting `cluster = true`"
+        //                 .to_string(),
+        //         )),
+        //         RedisMode::Standard => {
+        //             let addr = config.addresses[0].as_str();
+        //             BackgroundConnection::single(addr)?
+        //         }
+        //         RedisMode::Sentinel => {
+        //             return Err(Error::new(
+        //                 Code::Unimplemented,
+        //                 "Sentinel mode is currently not supported.".to_string(),
+        //             ))
+        //         }
+        //     };
+        // Ok(Arc::new(
+        //     RedisStore::new_with_conn_and_name_generator_and_prefix(
+        //         client,
+        //         connection,
+        //         || uuid::Uuid::new_v4().to_string(),
+        //         config.experimental_pub_sub_channel.clone(),
+        //         config.key_prefix.clone(),
+        //     ),
+        // ))
     }
 }
 
@@ -301,12 +312,13 @@ impl<C: ConnectionLike + Clone + Send + 'static> RedisStore<C> {
         connection: BackgroundConnection<C>,
         temp_name_generator_fn: fn() -> String,
     ) -> Self {
-        RedisStore::new_with_conn_and_name_generator_and_prefix(
-            connection,
-            temp_name_generator_fn,
-            None,
-            String::new(),
-        )
+        todo!()
+        // RedisStore::new_with_conn_and_name_generator_and_prefix(
+        //     connection,
+        //     temp_name_generator_fn,
+        //     None,
+        //     String::new(),
+        // )
     }
 
     #[inline]
@@ -316,17 +328,23 @@ impl<C: ConnectionLike + Clone + Send + 'static> RedisStore<C> {
         pub_sub_channel: Option<String>,
         key_prefix: String,
     ) -> Self {
-        RedisStore {
-            connection,
-            temp_name_generator_fn,
-            pub_sub_channel,
-            key_prefix,
-        }
+        todo!()
+        // RedisStore {
+        //     client,
+        //     connection,
+        //     temp_name_generator_fn,
+        //     pub_sub_channel,
+        //     key_prefix,
+        // }
     }
 
     #[inline]
     pub async fn get_conn(&self) -> Result<C, Error> {
         self.connection.get().await
+    }
+
+    pub fn get_client(&self) -> redis::Client {
+        self.client.clone()
     }
 
     /// Encode a [`StoreKey`] so it can be sent to Redis.
