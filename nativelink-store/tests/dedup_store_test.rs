@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,15 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
+use std::io::Cursor;
+use aws_smithy_runtime::client::http::test_util::dvr::Event;
+use futures::stream::StreamExt;
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::dedup_store::DedupStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::ultracdc::UltraCDC;
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use tokio_util::codec::FramedRead;
+use tracing::{event, Level};
+
+use tokio::io::AsyncRead;
+use tokio_util::codec::Decoder;
+use bytes::Bytes;
+use sha2::{Digest, Sha256};
 
 fn make_default_config() -> nativelink_config::stores::DedupStore {
     nativelink_config::stores::DedupStore {
@@ -77,6 +89,16 @@ async fn simple_round_trip_test() -> Result<(), Error> {
     Ok(())
 }
 
+async fn get_frames<T: AsyncRead + Unpin, D: Decoder>(
+    frame_reader: &mut FramedRead<T, D>,
+) -> Result<Vec<D::Item>, D::Error> {
+    let mut frames = vec![];
+    while let Some(frame) = frame_reader.next().await {
+        frames.push(frame?);
+    }
+    Ok(frames)
+}
+
 #[nativelink_test]
 async fn check_missing_last_chunk_test() -> Result<(), Error> {
     let content_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
@@ -91,15 +113,37 @@ async fn check_missing_last_chunk_test() -> Result<(), Error> {
     let original_data = make_random_data(MEGABYTE_SZ);
     let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
 
+    let mut cursor = Cursor::new(&original_data);
+
+    // Print the hash and lenght for chunks data
+    // {
+    //     let mut frame_reader = FramedRead::new(&mut cursor, UltraCDC::new(8 * 1024, 32 * 1024, 128 * 1024));
+    //     let frames: Vec<Bytes> = get_frames(&mut frame_reader).await?;
+
+    //     let mut frames_map = HashMap::new();
+    //     let mut pos = 0;
+    //     for frame in frames {
+    //         let frame_len = frame.len();
+    //         let key = blake3::hash(&frame[..]);
+    //         event!(Level::WARN, "key: {}, len: {}", key, frame_len);
+    //         pos += frame_len;
+    //     }
+    //     frames_map
+    // };
+
     store
         .update_oneshot(digest, original_data.into())
         .await
         .err_tip(|| "Failed to write data to dedup store")?;
-
+    
     // This is the hash & size of the last chunk item in the content_store.
     const LAST_CHUNK_HASH: &str =
-        "7c8608f5b079bef66c45bd67f7d8ede15d2e1830ea38fd8ad4c6de08b6f21a0c";
-    const LAST_CHUNK_SIZE: usize = 25779;
+        "3706c7d79d112ed209a391ae6854b6824cb4ab4f3976e5b46c1f65a4dff0487a";
+    const LAST_CHUNK_SIZE: usize = 5460;
+
+    let data = content_store.has(digest).await;
+
+    event!(Level::WARN, ?data, "Data");
 
     let did_delete = content_store
         .remove_entry(
@@ -341,9 +385,18 @@ async fn has_checks_content_store() -> Result<(), Error> {
             let size_info = store.has(digest2).await.err_tip(|| "Failed to run .has")?;
             assert_eq!(size_info, Some(DATA2.len()), "Expected sizes to match");
         }
+
+        const DATA3: &str = "1234";
+        let digest3 = DigestInfo::try_new(VALID_HASH2, DATA3.len()).unwrap();
+        store
+            .update_oneshot(digest3, DATA3.into())
+            .await
+            .err_tip(|| "Failed to write data to dedup store")?;
+
         {
             // Check our first added entry is now invalid (because part of it was evicted).
             let size_info = store.has(digest1).await.err_tip(|| "Failed to run .has")?;
+            event!(Level::WARN, "Length of Origin Data {}", original_data.len());
             assert_eq!(
                 size_info, None,
                 "Expected .has() to return None (not found)"

@@ -1,4 +1,4 @@
-// Copyright 2023 The NativeLink Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::fastcdc::FastCDC;
+use nativelink_util::ultracdc::UltraCDC;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ pub struct DedupIndex {
 pub struct DedupStore {
     index_store: Store,
     content_store: Store,
-    fast_cdc_decoder: FastCDC,
+    ultra_cdc_decoder: UltraCDC,
     max_concurrent_fetch_per_get: usize,
     bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
 }
@@ -80,7 +80,7 @@ impl DedupStore {
         Arc::new(Self {
             index_store,
             content_store,
-            fast_cdc_decoder: FastCDC::new(min_size, normal_size, max_size),
+            ultra_cdc_decoder: UltraCDC::new(min_size, normal_size, max_size),
             max_concurrent_fetch_per_get,
             bincode_options: DefaultOptions::new().with_fixint_encoding(),
         })
@@ -172,9 +172,9 @@ impl StoreDriver for DedupStore {
         _size_info: UploadSizeInfo,
     ) -> Result<(), Error> {
         let mut bytes_reader = StreamReader::new(reader);
-        let frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
+        let frame_reader = FramedRead::new(&mut bytes_reader, self.ultra_cdc_decoder.clone());
         let index_entries = frame_reader
-            .map(|r| r.err_tip(|| "Failed to decode frame from fast_cdc"))
+            .map(|r| r.err_tip(|| "Failed to decode frame from ultra_cdc"))
             .map_ok(|frame| async move {
                 let hash = blake3::hash(&frame[..]).into();
                 let index_entry = DigestInfo::new(hash, frame.len() as i64);
