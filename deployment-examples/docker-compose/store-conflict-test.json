@@ -1,0 +1,50 @@
+// This configuration will be used to test the case when CAS and AC
+// use the same store. Currently, CAS and AC use the same store named
+// `FILESYSTEM_STORE`. It should exit with correct message indicating
+// the problem of CAS and AC are using the same store.
+{
+  "stores": {
+    "FILESYSTEM_STORE": {
+      "compression": {
+        "compression_algorithm": {
+          "lz4": {}
+        },
+        "backend": {
+          "filesystem": {
+            "content_path": "~/.cache/nativelink/content_path-cas",
+            "temp_path": "~/.cache/nativelink/tmp_path-cas",
+            "eviction_policy": {
+              // 10gb.
+              "max_bytes": 10000000000,
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [{
+    "listener": {
+      "http": {
+        "socket_address": "0.0.0.0:50053"
+      }
+    },
+    "services": {
+      "cas": {
+        "main": {
+          "cas_store": "FILESYSTEM_STORE"
+        }
+      },
+      "ac": {
+        "main": {
+          "ac_store": "FILESYSTEM_STORE"
+        }
+      },
+      "capabilities": {},
+      "bytestream": {
+        "cas_stores": {
+          "main": "FILESYSTEM_STORE",
+        }
+      }
+    }
+  }]
+}
