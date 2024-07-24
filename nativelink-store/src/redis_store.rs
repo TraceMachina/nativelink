@@ -17,9 +17,13 @@ use std::cell::{OnceCell, UnsafeCell};
 use std::fmt::Display;
 use std::pin::Pin;
 use std::sync::{Arc, Once};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use fred::clients::{RedisPool, SubscriberClient};
+use fred::prelude::*;
+use fred::types::SentinelConfig;
 use futures::future::{ErrInto, FutureExt, Shared};
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryFutureExt, TryStreamExt};
@@ -31,18 +35,31 @@ use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthS
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
 
 const READ_CHUNK_SIZE: isize = 64 * 1024;
+const CONNECTION_POOL_SIZE: usize = 3;
+
+#[cfg(feature = "redis-test")]
+type Mocks = Arc<dyn fred::mocks::Mocks>;
+#[cfg(not(feature = "redis-test"))]
+type Mocks = Option<std::convert::Infallible>;
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 pub struct RedisStore {
-    // /// The connection to the underlying Redis instance(s).
-    // TODO connection: ?,
+    /// The client pool connecting to the backing Redis instance(s).
+    client_pool: RedisPool,
+
+    /// A dedicated client running in `subscriber` mode
+    subscriber: SubscriberClient,
+
+    /// A channel to publish updates to when a key is added, removed, or modified
+    pub_sub_channel: Option<String>,
+
     /// A function used to generate names for temporary keys.
     temp_name_generator_fn: fn() -> String,
-    pub_sub_channel: Option<String>,
 
     /// A common prefix to append to all keys before they are sent to Redis.
     ///
@@ -51,58 +68,84 @@ pub struct RedisStore {
 }
 
 impl RedisStore {
+    /// Create a new `RedisStore` from the given configuration
     pub fn new(config: &nativelink_config::stores::RedisStore) -> Result<Arc<Self>, Error> {
-        todo!()
-    }
-}
-
-impl RedisStore {
-    #[inline]
-    pub fn new_with_conn_and_name_generator(
-        connection: (), // TODO
-        temp_name_generator_fn: fn() -> String,
-    ) -> Self {
-        RedisStore::new_with_conn_and_name_generator_and_prefix(
-            connection,
-            temp_name_generator_fn,
-            None,
-            String::new(),
-        )
+        Self::new_with_name_generator_and_mocks(config, || Uuid::new_v4().to_string(), None)
+            .map(Arc::new)
     }
 
-    #[inline]
-    pub fn new_with_conn_and_name_generator_and_prefix(
-        connection: (), // TODO
+    /// Used for testing, when determinism is required
+    pub fn new_with_name_generator_and_mocks(
+        config: &nativelink_config::stores::RedisStore,
         temp_name_generator_fn: fn() -> String,
-        pub_sub_channel: Option<String>,
-        key_prefix: String,
-    ) -> Self {
-        RedisStore {
-            // connection,
-            temp_name_generator_fn,
-            pub_sub_channel,
-            key_prefix,
+        mocks: Mocks,
+    ) -> Result<Self, Error> {
+        if config.addresses.is_empty() {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "No addresses were specified in redis store configuration."
+            ));
+        };
+        let [addr] = config.addresses.as_slice() else {
+            return Err(make_err!(Code::Unimplemented, "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."));
+        };
+        let redis_config = match config.mode {
+            RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
+            RedisMode::Sentinel => RedisConfig::from_url_sentinel(addr),
+            RedisMode::Standard => RedisConfig::from_url_centralized(addr),
         }
+        .err_tip_with_code(|_| (Code::InvalidArgument, "while parsing redis node address"))?;
+
+        #[cfg(feature = "redis-test")]
+        {
+            redis_config.mocks = mocks;
+        }
+
+        #[cfg(not(feature = "redis-test"))]
+        {
+            debug_assert!(
+                mocks.is_none(),
+                "mocks should only be enabled during testing"
+            )
+        }
+
+        let mut builder = Builder::from_config(redis_config);
+        builder
+            .set_performance_config(PerformanceConfig {
+                default_command_timeout: Duration::from_secs(config.response_timeout_s),
+                ..Default::default()
+            })
+            .set_connection_config(ConnectionConfig {
+                connection_timeout: Duration::from_secs(config.connection_timeout_s),
+                internal_command_timeout: Duration::from_secs(config.response_timeout_s),
+                ..Default::default()
+            })
+            .set_policy(ReconnectPolicy::new_constant(1, 0));
+
+        let client_pool = builder
+            .build_pool(CONNECTION_POOL_SIZE)
+            .err_tip(|| "while creating redis connection pool")?;
+        let subscriber = builder
+            .build_subscriber_client()
+            .err_tip(|| "while creating redis subscription client")?;
+
+        client_pool.connect();
+        subscriber.connect();
+
+        Ok(Self {
+            client_pool,
+            subscriber,
+            pub_sub_channel: config.experimental_pub_sub_channel.clone(),
+            temp_name_generator_fn,
+            key_prefix: config.key_prefix.clone(),
+        })
     }
 
     /// Encode a [`StoreKey`] so it can be sent to Redis.
     fn encode_key<'a>(&self, key: &'a StoreKey<'a>) -> Cow<'a, str> {
-        // TODO(caass): Once https://github.com/redis-rs/redis-rs/pull/1219 makes it into a release,
-        // this can be changed to
-        // ```rust
-        // if self.key_prefix.is_empty() {
-        //   key.as_str()
-        // } else {
-        //   let mut encoded_key = String::with_capacity(self.key_prefix.len() + key_body.len());
-        //   encoded_key.push_str(&self.key_prefix);
-        //   encoded_key.push_str(&key_body);
-        //   Cow::Owned(encoded_key)
-        // }
-        //```
-        // and the return type changed to `Cow<'a, str>`
         let key_body = key.as_str();
         if self.key_prefix.is_empty() {
-            key.as_str()
+            key_body
         } else {
             let mut encoded_key = String::with_capacity(self.key_prefix.len() + key_body.len());
             encoded_key.push_str(&self.key_prefix);
@@ -175,8 +218,4 @@ impl HealthStatusIndicator for RedisStore {
     async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
         StoreDriver::check_health(Pin::new(self), namespace).await
     }
-}
-
-fn from_redis_err(call_res: fred::error::RedisError) -> Error {
-    make_err!(Code::Internal, "Redis Error: {call_res}")
 }
