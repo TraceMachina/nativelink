@@ -2105,6 +2105,7 @@ dependencies = [
 name = "nativelink-error"
 version = "0.4.0"
 dependencies = [
+ "fred",
  "hex",
  "nativelink-proto",
  "prost",

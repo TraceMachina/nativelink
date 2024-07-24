@@ -198,6 +198,25 @@ impl From<Code> for Error {
     }
 }
 
+impl From<fred::error::RedisError> for Error {
+    fn from(error: fred::error::RedisError) -> Self {
+        use fred::error::RedisErrorKind::*;
+
+        let code = match error.kind() {
+            Config | InvalidCommand | InvalidArgument | Url => Code::InvalidArgument,
+            IO | Protocol | Tls | Cluster | Parse | Sentinel => Code::Internal,
+            Auth => Code::PermissionDenied,
+            Canceled => Code::Aborted,
+            Unknown => Code::Unknown,
+            Timeout => Code::DeadlineExceeded,
+            NotFound => Code::NotFound,
+            Backpressure => Code::ResourceExhausted,
+        };
+
+        make_err!(code, "{error}")
+    }
+}
+
 impl From<tonic::transport::Error> for Error {
     fn from(error: tonic::transport::Error) -> Self {
         make_err!(Code::Internal, "{}", error.to_string())
