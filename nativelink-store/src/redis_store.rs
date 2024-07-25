@@ -13,33 +13,27 @@
 // limitations under the License.
 
 use std::borrow::Cow;
-use std::cell::{OnceCell, UnsafeCell};
-use std::fmt::Display;
+use std::cell::OnceCell;
+use std::cmp;
 use std::pin::Pin;
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use fred::clients::{RedisPool, SubscriberClient};
 use fred::prelude::*;
-use fred::types::SentinelConfig;
-use futures::future::{ErrInto, FutureExt, Shared};
-use futures::stream::FuturesOrdered;
-use futures::{Future, TryFutureExt, TryStreamExt};
 use nativelink_config::stores::RedisMode;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
-use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
-use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
 
-const READ_CHUNK_SIZE: isize = 64 * 1024;
+const READ_CHUNK_SIZE: usize = 64 * 1024;
 const CONNECTION_POOL_SIZE: usize = 3;
 
 #[cfg(feature = "redis-test")]
@@ -53,7 +47,7 @@ pub struct RedisStore {
     client_pool: RedisPool,
 
     /// A dedicated client running in `subscriber` mode
-    subscriber: SubscriberClient,
+    _subscriber: SubscriberClient,
 
     /// A channel to publish updates to when a key is added, removed, or modified
     pub_sub_channel: Option<String>,
@@ -134,7 +128,7 @@ impl RedisStore {
 
         Ok(Self {
             client_pool,
-            subscriber,
+            _subscriber: subscriber,
             pub_sub_channel: config.experimental_pub_sub_channel.clone(),
             temp_name_generator_fn,
             key_prefix: config.key_prefix.clone(),
@@ -162,7 +156,44 @@ impl StoreDriver for RedisStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<usize>],
     ) -> Result<(), Error> {
-        todo!()
+        let pipeline = self.client_pool.next().pipeline();
+
+        results.iter_mut().for_each(|result| *result = None); // is this necessary?
+
+        for (idx, key) in keys.iter().enumerate() {
+            // don't bother with zero-length digests
+            if is_zero_digest(key.borrow()) {
+                results[idx] = Some(0);
+                continue;
+            }
+
+            let encoded_key = self.encode_key(key);
+
+            // this command is queued in memory, but not yet sent down the pipeline; the `await` returns instantly
+            let _: () = pipeline
+                .strlen(encoded_key.as_ref())
+                .await
+                .err_tip(|| "could not call `strlen` in has_with_results")?;
+        }
+
+        // now we send the commands. kind of a weird api, maybe we could submit a patch?
+        let responses = pipeline.all::<Vec<_>>().await?;
+        let remaining_results = results.iter_mut().filter(|option| {
+            // anything that's `Some` was already set from `is_zero_digest`
+            option.is_none()
+        });
+
+        for (response, result_slot) in responses.into_iter().zip(remaining_results) {
+            if response == 0 {
+                // redis returns 0 when the key doesn't exist AND when the key exists with value of length 0,
+                // but since we already checked zero-lengths with `is_zero_digest`, this means the value doesn't exist
+                continue;
+            }
+
+            *result_slot = Some(response)
+        }
+
+        Ok(())
     }
 
     async fn update(
@@ -171,7 +202,102 @@ impl StoreDriver for RedisStore {
         mut reader: DropCloserReadHalf,
         _upload_size: UploadSizeInfo,
     ) -> Result<(), Error> {
-        todo!()
+        let final_key = self.encode_key(&key);
+
+        // While the name generation function can be supplied by the user, we need to have the curly
+        // braces in place in order to manage redis' hashing behavior and make sure that the temporary
+        // key name and the final key name are directed to the same cluster node. See
+        // https://redis.io/blog/redis-clustering-best-practices-with-keys/
+        //
+        // The TL;DR is that if we're in cluster mode and the names hash differently, we can't use request
+        // pipelining. By using these braces, we tell redis to only hash the part of the temporary key that's
+        // identical to the final key -- so they will always hash to the same node.
+        //
+        // TODO(caass): the stabilization PR for [`LazyCell`](`std::cell::LazyCell`) has been merged into rust-lang,
+        // so in the next stable release we can use LazyCell::new(|| { ... }) instead.
+        let temp_key = OnceCell::new();
+        let make_temp_name = || {
+            format!(
+                "temp-{}-{{{}}}",
+                (self.temp_name_generator_fn)(),
+                &final_key
+            )
+        };
+
+        let client = self.client_pool.next();
+
+        // This loop is a little confusing at first glance, but essentially the process is:
+        // - Get as much data from the reader as possible
+        // - When the reader is empty, but the writer isn't done sending data, write that data to redis
+        // - When the writer is done sending data, write the data and break from the loop
+        //
+        // At one extreme, we could append data in redis every time we read some bytes -- that is, make one TCP request
+        // per channel read. This is wasteful since we anticipate reading many small chunks of bytes from the reader.
+        //
+        // At the other extreme, we could make a single TCP request to write all of the data all at once.
+        // This could also be an issue if we read loads of data, since we'd send one massive TCP request
+        // rather than a few moderately-sized requests.
+        //
+        // To compromise, we buffer opportunistically -- when the reader doesn't have any data ready to read, but it's
+        // not done getting data, we flush the data we _have_ read to redis before waiting for the reader to get more.
+        //
+        // As a result of this, there will be a span of time where a key in Redis has only partial data. We want other
+        // observers to notice atomic updates to keys, rather than partial updates, so we first write to a temporary key
+        // and then rename that key once we're done appending data.
+        'outer: loop {
+            let mut expecting_first_chunk = true;
+            let tx = client.multi();
+
+            while expecting_first_chunk || !reader.is_empty() {
+                let chunk = reader
+                    .recv()
+                    .await
+                    .err_tip(|| "Failed to reach chunk in update in redis store")?;
+
+                if chunk.is_empty() {
+                    if is_zero_digest(key.borrow()) {
+                        return Ok(());
+                    }
+
+                    // we only receive an empty chunk when there's nothing left to read,
+                    // so if this is our first chunk we should throw it up there
+                    if expecting_first_chunk {
+                        // NOTE: we use `client` here, not `tx`, because this is the only chunk we will publish.
+                        client
+                            .append(temp_key.get_or_init(make_temp_name), &chunk[..])
+                            .await?;
+                    }
+
+                    // reader sent empty chunk, we're done here.
+                    break 'outer;
+                }
+
+                // queued
+                tx.append(temp_key.get_or_init(make_temp_name), &chunk[..])
+                    .await?;
+                expecting_first_chunk = false;
+
+                // Give other tasks a chance to run to populate the reader's
+                // buffer if possible.
+                tokio::task::yield_now().await;
+            }
+
+            // reader is empty, but we're expecting more data. execute queued appends to the temp key
+            tx.exec(false).await?;
+        }
+
+        // we're done receiving all data, so rename the key
+        let tx = client.multi();
+
+        tx.rename(temp_key.get_or_init(make_temp_name), final_key.as_ref())
+            .await?;
+        if let Some(pub_sub_channel) = &self.pub_sub_channel {
+            tx.publish(pub_sub_channel, final_key.as_ref()).await?;
+        }
+
+        tx.exec(false)
+            .await
+            .err_tip(|| "While renaming key in RedisStore::update()")
     }
 
     async fn get_part(
@@ -181,7 +307,77 @@ impl StoreDriver for RedisStore {
         offset: usize,
         length: Option<usize>,
     ) -> Result<(), Error> {
-        todo!()
+        // To follow RBE spec we need to consider any digest's with
+        // zero size to be existing.
+        if is_zero_digest(key.borrow()) {
+            writer
+                .send_eof()
+                .err_tip(|| "Failed to send zero EOF in redis store get_part")?;
+            return Ok(());
+        }
+
+        let client = self.client_pool.next();
+        let encoded_key = self.encode_key(&key);
+        let encoded_key = encoded_key.as_ref();
+
+        if length == Some(0) {
+            // we're supposed to read 0 bytes, so just check if the key exists
+            let exists = client
+                .exists(encoded_key)
+                .await
+                .err_tip(|| "In RedisStore::get_part::zero_exists")?;
+
+            return match exists {
+                0u8 => Err(make_err!(
+                    Code::NotFound,
+                    "Data not found in Redis store for digest: {key:?}"
+                )),
+                1 => writer
+                    .send_eof()
+                    .err_tip(|| "Failed to write EOF in redis store get_part"),
+                _ => unreachable!("only checked for existence of a single key"),
+            };
+        }
+
+        let mut current_start = offset;
+        let max_length = length.unwrap_or(isize::MAX as usize);
+        let end_position = current_start.saturating_add(max_length);
+
+        loop {
+            // Note: Redis getrange is inclusive, so we need to subtract 1 from the end.
+            let current_end =
+                cmp::min(current_start.saturating_add(READ_CHUNK_SIZE), end_position) - 1;
+            let chunk: Bytes = client
+                .getrange(encoded_key, current_start, current_end)
+                .await
+                .err_tip(|| "In RedisStore::get_part::getrange")?;
+
+            if chunk.is_empty() {
+                break writer
+                    .send_eof()
+                    .err_tip(|| "Failed to write EOF in redis store get_part");
+            }
+
+            // Note: Redis getrange is inclusive, so we need to add 1 to the end.
+            let was_partial_data = chunk.len() != current_end - current_start + 1;
+            current_start += chunk.len();
+            writer
+                .send(chunk)
+                .await
+                .err_tip(|| "Failed to write data in Redis store")?;
+
+            // If we got partial data or the exact requested number of bytes, we are done.
+            if writer.get_bytes_written() as usize == max_length || was_partial_data {
+                break writer
+                    .send_eof()
+                    .err_tip(|| "Failed to write EOF in redis store get_part");
+            }
+
+            error_if!(
+                writer.get_bytes_written() as usize > max_length,
+                "Data received exceeds requested length"
+            );
+        }
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
