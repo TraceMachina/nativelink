@@ -12,12 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use nativelink_error::Error;
+use nativelink_metric::RootMetricsComponent;
 use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
-use nativelink_util::metrics_utils::Registry;
 
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{Worker, WorkerTimestamp};
@@ -25,7 +23,7 @@ use crate::worker::{Worker, WorkerTimestamp};
 /// WorkerScheduler interface is responsible for interactions between the scheduler
 /// and worker related operations.
 #[async_trait]
-pub trait WorkerScheduler: Sync + Send + Unpin {
+pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static {
     /// Returns the platform property manager.
     fn get_platform_property_manager(&self) -> &PlatformPropertyManager;
 
@@ -56,7 +54,4 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
 
     /// Sets if the worker is draining or not.
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error>;
-
-    /// Register the metrics for the worker scheduler.
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }

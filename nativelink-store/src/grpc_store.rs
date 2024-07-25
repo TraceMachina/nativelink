@@ -22,6 +22,7 @@ use bytes::BytesMut;
 use futures::stream::{unfold, FuturesUnordered};
 use futures::{future, Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_client::ActionCacheClient;
 use nativelink_proto::build::bazel::remote::execution::v2::content_addressable_storage_client::ContentAddressableStorageClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -59,7 +60,9 @@ use uuid::Uuid;
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
+#[derive(MetricsComponent)]
 pub struct GrpcStore {
+    #[metric(help = "Instance name for the store")]
     instance_name: String,
     store_type: nativelink_config::stores::StoreType,
     retrier: Retrier,
