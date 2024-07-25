@@ -373,9 +373,8 @@ service ContentAddressableStorage {
   // Individual requests may return the following errors, additionally:
   //
   // * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the blob.
-  // * `INVALID_ARGUMENT`: The
-  // [Digest][build.bazel.remote.execution.v2.Digest] does not match the
-  // provided data.
+  // * `INVALID_ARGUMENT`: The [Digest][build.bazel.remote.execution.v2.Digest]
+  //   does not match the provided data.
   rpc BatchUpdateBlobs(BatchUpdateBlobsRequest) returns (BatchUpdateBlobsResponse) {
     option (google.api.http) = { post: "/v2/{instance_name=**}/blobs:batchUpdate" body: "*" };
   }
@@ -2051,6 +2050,7 @@ message ToolDetails {
 //
 // * name: `build.bazel.remote.execution.v2.requestmetadata-bin`
 // * contents: the base64 encoded binary `RequestMetadata` message.
+//
 // Note: the gRPC library serializes binary headers encoded in base64 by
 // default (https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#requests).
 // Therefore, if the gRPC library is used to pass/retrieve this

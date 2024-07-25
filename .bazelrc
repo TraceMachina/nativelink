@@ -44,7 +44,8 @@ build --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
 build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 
 # TODO(aaronmondal): Extend these flags until we can run with clippy::pedantic.
-build --@rules_rust//:clippy_flags=-Dwarnings,-Dclippy::uninlined_format_args,-Dclippy::manual_string_new
+# TODO(aaronmondal): Fix dependency_on_unit_never_type_fallback.
+build --@rules_rust//:clippy_flags=-Dwarnings,-Adependency_on_unit_never_type_fallback,-Dclippy::uninlined_format_args,-Dclippy::manual_string_new
 build --@rules_rust//:clippy.toml=//:clippy.toml
 
 test --@rules_rust//:rustfmt.toml=//:.rustfmt.toml
