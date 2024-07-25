@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error};
+use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_scheduler::action_scheduler::{ActionListener, ActionScheduler};
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_util::action_messages::{ActionInfo, ClientOperationId};
@@ -35,6 +36,7 @@ enum ActionSchedulerReturns {
     FindExistingAction(Result<Option<Pin<Box<dyn ActionListener>>>, Error>),
 }
 
+#[derive(MetricsComponent)]
 pub struct MockActionScheduler {
     rx_call: Mutex<mpsc::UnboundedReceiver<ActionSchedulerCalls>>,
     tx_call: mpsc::UnboundedSender<ActionSchedulerCalls>,
@@ -183,3 +185,5 @@ impl ActionScheduler for MockActionScheduler {
         }
     }
 }
+
+impl RootMetricsComponent for MockActionScheduler {}

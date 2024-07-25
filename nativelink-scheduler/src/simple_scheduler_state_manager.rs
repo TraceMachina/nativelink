@@ -18,11 +18,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::{future, stream, StreamExt, TryStreamExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ClientOperationId,
     ExecutionMetadata, OperationId, WorkerId,
 };
-use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, WorkerStateManager,
@@ -126,8 +126,10 @@ fn apply_filter_predicate(awaited_action: &AwaitedAction, filter: &OperationFilt
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
+#[derive(MetricsComponent)]
 pub struct SimpleSchedulerStateManager<T: AwaitedActionDb> {
     /// Database for storing the state of all actions.
+    #[metric(group = "action_db")]
     action_db: T,
 
     /// Notify matching engine that work needs to be done.
@@ -136,6 +138,7 @@ pub struct SimpleSchedulerStateManager<T: AwaitedActionDb> {
     /// Maximum number of times a job can be retried.
     // TODO(allada) This should be a scheduler decorator instead
     // of always having it on every SimpleScheduler.
+    #[metric(help = "Maximum number of times a job can be retried")]
     max_job_retries: usize,
 }
 
@@ -463,18 +466,5 @@ impl<T: AwaitedActionDb> MatchingEngineStateManager for SimpleSchedulerStateMana
         };
         self.inner_update_operation(operation_id, maybe_worker_id, stage_result)
             .await
-    }
-
-    /// Register metrics with the registry.
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        // TODO(allada) We only register the metrics in one of the components instead of
-        // all three because it's a bit tricky to separate the metrics for each component.
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-}
-
-impl<T: AwaitedActionDb> MetricsComponent for SimpleSchedulerStateManager<T> {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish("", &self.action_db, "");
     }
 }

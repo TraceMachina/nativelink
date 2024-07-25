@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use nativelink_config::schedulers::SchedulerConfig;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::metrics_utils::Registry;
 
 use crate::action_scheduler::ActionScheduler;
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
@@ -35,22 +33,13 @@ pub type SchedulerFactoryResults = (
 pub fn scheduler_factory(
     scheduler_type_cfg: &SchedulerConfig,
     store_manager: &StoreManager,
-    scheduler_metrics: &mut Registry,
 ) -> Result<SchedulerFactoryResults, Error> {
-    let mut visited_schedulers = HashSet::new();
-    inner_scheduler_factory(
-        scheduler_type_cfg,
-        store_manager,
-        Some(scheduler_metrics),
-        &mut visited_schedulers,
-    )
+    inner_scheduler_factory(scheduler_type_cfg, store_manager)
 }
 
 fn inner_scheduler_factory(
     scheduler_type_cfg: &SchedulerConfig,
     store_manager: &StoreManager,
-    maybe_scheduler_metrics: Option<&mut Registry>,
-    visited_schedulers: &mut HashSet<usize>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
         SchedulerConfig::simple(config) => {
@@ -63,7 +52,7 @@ fn inner_scheduler_factory(
                 .get_store(&config.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", config.ac_store))?;
             let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&config.scheduler, store_manager, None, visited_schedulers)
+                inner_scheduler_factory(&config.scheduler, store_manager)
                     .err_tip(|| "In nested CacheLookupScheduler construction")?;
             let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
                 ac_store,
@@ -73,7 +62,7 @@ fn inner_scheduler_factory(
         }
         SchedulerConfig::property_modifier(config) => {
             let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&config.scheduler, store_manager, None, visited_schedulers)
+                inner_scheduler_factory(&config.scheduler, store_manager)
                     .err_tip(|| "In nested PropertyModifierScheduler construction")?;
             let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
                 config,
@@ -82,31 +71,6 @@ fn inner_scheduler_factory(
             (Some(property_modifier_scheduler), worker_scheduler)
         }
     };
-
-    if let Some(scheduler_metrics) = maybe_scheduler_metrics {
-        if let Some(action_scheduler) = &scheduler.0 {
-            // We need a way to prevent our scheduler form having `register_metrics()` called multiple times.
-            // This is the equivalent of grabbing a uintptr_t in C++, storing it in a set, and checking if it's
-            // already been visited. We can't use the Arc's pointer directly because it has two interfaces
-            // (ActionScheduler and WorkerScheduler) and we need to be able to know if the underlying scheduler
-            // has already been visited, not just the trait. `Any` could be used, but that'd require some rework
-            // of all the schedulers. This is the most simple way to do it. Rust's uintptr_t is usize.
-            let action_scheduler_uintptr: usize =
-                Arc::as_ptr(action_scheduler).cast::<()>() as usize;
-            if !visited_schedulers.contains(&action_scheduler_uintptr) {
-                visited_schedulers.insert(action_scheduler_uintptr);
-                action_scheduler.clone().register_metrics(scheduler_metrics);
-            }
-        }
-        if let Some(worker_scheduler) = &scheduler.1 {
-            let worker_scheduler_uintptr: usize =
-                Arc::as_ptr(worker_scheduler).cast::<()>() as usize;
-            if !visited_schedulers.contains(&worker_scheduler_uintptr) {
-                visited_schedulers.insert(worker_scheduler_uintptr);
-                worker_scheduler.clone().register_metrics(scheduler_metrics);
-            }
-        }
-    }
 
     Ok(scheduler)
 }

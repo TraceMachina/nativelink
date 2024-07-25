@@ -9,6 +9,7 @@ nativelink-proto = { path = "../nativelink-proto" }
 nativelink-config = { path = "../nativelink-config" }
 nativelink-util = { path = "../nativelink-util" }
 nativelink-store = { path = "../nativelink-store" }
+nativelink-metric = { path = "../nativelink-metric" }
 
 # TODO(aaronmondal): This should not be a dependency. Move corresponding
 #                    functionality out of the schedulers.

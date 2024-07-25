@@ -35,7 +35,6 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::{StoreKey, StoreLike};
 use pretty_assertions::assert_eq;
-use prometheus_client::registry::Registry;
 use prost_types::Timestamp;
 use tonic::{Code, Request};
 
@@ -54,7 +53,6 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
                 nativelink_config::stores::MemoryStore::default(),
             ),
             &store_manager,
-            Some(&mut <Registry>::default()),
             None,
         )
         .await?,

@@ -22,6 +22,7 @@ use nativelink_config::cas_server::WorkerApiConfig;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile,
     OutputDirectory, OutputFile, OutputSymlink,
@@ -61,6 +62,7 @@ enum WorkerStateManagerReturns {
     UpdateOperation(Result<(), Error>),
 }
 
+#[derive(MetricsComponent)]
 struct MockWorkerStateManager {
     rx_call: Arc<AsyncMutex<mpsc::UnboundedReceiver<WorkerStateManagerCalls>>>,
     tx_call: mpsc::UnboundedSender<WorkerStateManagerCalls>,

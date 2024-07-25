@@ -29,7 +29,6 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::StoreLike;
 use pretty_assertions::assert_eq;
-use prometheus_client::registry::Registry;
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
@@ -60,7 +59,6 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
                 nativelink_config::stores::MemoryStore::default(),
             ),
             &store_manager,
-            Some(&mut <Registry>::default()),
             None,
         )
         .await?,
@@ -72,7 +70,6 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
                 nativelink_config::stores::MemoryStore::default(),
             ),
             &store_manager,
-            Some(&mut <Registry>::default()),
             None,
         )
         .await?,

@@ -40,6 +40,7 @@ rust_library(
     deps = [
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
         "@crates//:async-lock",
         "@crates//:bitflags",
