@@ -33,6 +33,7 @@ rust_library(
     deps = [
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
         "//nativelink-store",
         "//nativelink-util",
@@ -79,6 +80,7 @@ rust_test_suite(
         ":nativelink-scheduler",
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
         "//nativelink-store",
         "//nativelink-util",

@@ -22,12 +22,12 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use futures::{join, FutureExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
 use nativelink_util::fs;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{
     slow_update_store_with_file, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
     UploadSizeInfo,
@@ -40,10 +40,14 @@ use nativelink_util::store_trait::{
 // client to hang up while the data is buffered. An alternative is to possibly make a
 // "BufferedStore" that could be placed on the "slow" store that would hang up early
 // if data is in the buffer.
+#[derive(MetricsComponent)]
 pub struct FastSlowStore {
+    #[metric(group = "fast_store")]
     fast_store: Store,
+    #[metric(group = "slow_store")]
     slow_store: Store,
     weak_self: Weak<Self>,
+    #[metric]
     metrics: FastSlowStoreMetrics,
 }
 
@@ -383,46 +387,18 @@ impl StoreDriver for FastSlowStore {
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
     }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        let fast_store_registry = registry.sub_registry_with_prefix("fast");
-        self.fast_store.register_metrics(fast_store_registry);
-        let slow_store_registry = registry.sub_registry_with_prefix("slow");
-        self.slow_store.register_metrics(slow_store_registry);
-    }
 }
 
-#[derive(Default)]
+#[derive(Default, MetricsComponent)]
 struct FastSlowStoreMetrics {
+    #[metric(help = "Hit count for the fast store")]
     fast_store_hit_count: AtomicU64,
+    #[metric(help = "Downloaded bytes from the fast store")]
     fast_store_downloaded_bytes: AtomicU64,
+    #[metric(help = "Hit count for the slow store")]
     slow_store_hit_count: AtomicU64,
+    #[metric(help = "Downloaded bytes from the slow store")]
     slow_store_downloaded_bytes: AtomicU64,
-}
-
-impl MetricsComponent for FastSlowStoreMetrics {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "fast_store_hit_count",
-            &self.fast_store_hit_count,
-            "Hit count for the fast store",
-        );
-        c.publish(
-            "fast_store_downloaded_bytes",
-            &self.fast_store_downloaded_bytes,
-            "Downloaded bytes from the fast store",
-        );
-        c.publish(
-            "slow_store_hit_count",
-            &self.slow_store_hit_count,
-            "Hit count for the slow store",
-        );
-        c.publish(
-            "slow_store_downloaded_bytes",
-            &self.slow_store_downloaded_bytes,
-            "Downloaded bytes from the slow store",
-        );
-    }
 }
 
 default_health_status_indicator!(FastSlowStore);

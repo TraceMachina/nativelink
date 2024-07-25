@@ -20,6 +20,9 @@ use std::hash::Hash;
 use bytes::{BufMut, Bytes, BytesMut};
 use hex::FromHex;
 use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -34,6 +37,17 @@ pub struct DigestInfo {
 
     /// Possibly the size of the digest in bytes.
     pub size_bytes: i64,
+}
+
+impl MetricsComponent for DigestInfo {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        format!("{}-{}", self.hash_str(), self.size_bytes)
+            .publish(MetricKind::String, field_metadata)
+    }
 }
 
 impl DigestInfo {

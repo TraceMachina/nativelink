@@ -24,11 +24,11 @@ use bytes::{Buf, BufMut, BytesMut};
 use futures::future::FutureExt;
 use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::Registry;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use serde::{Deserialize, Serialize};
@@ -209,7 +209,9 @@ impl UploadState {
 /// Note: Currently using get_part() and trying to read part of the data will
 /// result in the entire contents being read from the inner store but will
 /// only send the contents requested.
+#[derive(MetricsComponent)]
 pub struct CompressionStore {
+    #[metric(group = "inner_store")]
     inner_store: Store,
     config: nativelink_config::stores::Lz4Config,
     bincode_options: BincodeOptions,
@@ -622,11 +624,6 @@ impl StoreDriver for CompressionStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
-        self.inner_store.register_metrics(inner_store_registry);
     }
 }
 

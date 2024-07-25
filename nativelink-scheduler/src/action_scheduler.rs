@@ -18,8 +18,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::Future;
 use nativelink_error::Error;
+use nativelink_metric::RootMetricsComponent;
 use nativelink_util::action_messages::{ActionInfo, ActionState, ClientOperationId};
-use nativelink_util::metrics_utils::Registry;
 
 use crate::platform_property_manager::PlatformPropertyManager;
 
@@ -38,7 +38,7 @@ pub trait ActionListener: Sync + Send + Unpin {
 /// ActionScheduler interface is responsible for interactions between the scheduler
 /// and action related operations.
 #[async_trait]
-pub trait ActionScheduler: Sync + Send + Unpin {
+pub trait ActionScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static {
     /// Returns the platform property manager.
     async fn get_platform_property_manager(
         &self,
@@ -57,7 +57,4 @@ pub trait ActionScheduler: Sync + Send + Unpin {
         &self,
         client_operation_id: &ClientOperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error>;
-
-    /// Register the metrics for the action scheduler.
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }

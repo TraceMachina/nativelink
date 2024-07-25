@@ -20,16 +20,19 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
+use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, ClientOperationId};
-use nativelink_util::metrics_utils::Registry;
 use parking_lot::Mutex;
 
 use crate::action_scheduler::{ActionListener, ActionScheduler};
 use crate::platform_property_manager::PlatformPropertyManager;
 
+#[derive(MetricsComponent)]
 pub struct PropertyModifierScheduler {
     modifications: Vec<nativelink_config::schedulers::PropertyModification>,
+    #[metric(group = "scheduler")]
     scheduler: Arc<dyn ActionScheduler>,
+    #[metric(group = "property_manager")]
     property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
 }
 
@@ -125,10 +128,6 @@ impl ActionScheduler for PropertyModifierScheduler {
             .find_by_client_operation_id(client_operation_id)
             .await
     }
-
-    // Register metrics for the underlying ActionScheduler.
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        let scheduler_registry = registry.sub_registry_with_prefix("property_modifier");
-        self.scheduler.clone().register_metrics(scheduler_registry);
-    }
 }
+
+impl RootMetricsComponent for PropertyModifierScheduler {}

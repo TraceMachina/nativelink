@@ -22,10 +22,10 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{
     StoreDriver, StoreKey, StoreOptimizations, StoreSubscription, StoreSubscriptionItem,
     UploadSizeInfo,
@@ -127,8 +127,10 @@ impl StoreSubscriptionItem for MemoryStoreSubscriptionItem {
 }
 
 type SubscriptionSender = watch::Sender<Result<Arc<dyn StoreSubscriptionItem>, Error>>;
+#[derive(MetricsComponent)]
 pub struct MemoryStore {
     weak_self: Weak<Self>,
+    #[metric(group = "evicting_map")]
     evicting_map: EvictingMap<StoreKey<'static>, BytesWrapper, SystemTime>,
     subscriptions: RwLock<HashMap<StoreKey<'static>, SubscriptionSender>>,
 }
@@ -316,16 +318,6 @@ impl StoreDriver for MemoryStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-}
-
-impl MetricsComponent for MemoryStore {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish("evicting_map", &self.evicting_map, "");
     }
 }
 

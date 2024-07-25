@@ -18,6 +18,9 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime};
 
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
+use nativelink_metric::{
+    publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     execution_stage, Action, ActionResult as ProtoActionResult, ExecuteOperationMetadata,
     ExecuteRequest, ExecuteResponse, ExecutedActionMetadata, FileNode, LogFile, OutputDirectory,
@@ -35,7 +38,6 @@ use uuid::Uuid;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
-use crate::metrics_utils::{CollectorState, MetricsComponent};
 use crate::platform_properties::PlatformProperties;
 
 /// Default priority remote execution jobs will get when not provided.
@@ -70,9 +72,15 @@ impl std::fmt::Display for ClientOperationId {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+fn uuid_to_string(uuid: &Uuid) -> String {
+    uuid.hyphenated().to_string()
+}
+
+#[derive(Clone, Serialize, Deserialize, MetricsComponent)]
 pub struct OperationId {
+    #[metric(help = "The unique qualifier of the operation")]
     pub unique_qualifier: ActionUniqueQualifier,
+    #[metric(help = "The id of the operation", handler = uuid_to_string)]
     pub id: Uuid,
 }
 
@@ -212,6 +220,16 @@ impl std::fmt::Debug for OperationId {
 #[derive(Default, Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
 pub struct WorkerId(pub Uuid);
 
+impl MetricsComponent for WorkerId {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::String(uuid_to_string(&self.0)))
+    }
+}
+
 impl std::fmt::Display for WorkerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buf = Uuid::encode_buffer();
@@ -246,6 +264,28 @@ pub enum ActionUniqueQualifier {
     Cachable(ActionUniqueKey),
     /// The action is uncachable.
     Uncachable(ActionUniqueKey),
+}
+
+impl MetricsComponent for ActionUniqueQualifier {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let (cachable, action) = match self {
+            Self::Cachable(action) => (true, action),
+            Self::Uncachable(action) => (false, action),
+        };
+        publish!(
+            cachable,
+            &cachable,
+            MetricKind::Default,
+            "If the action is cachable.",
+            ""
+        );
+        action.publish(MetricKind::Component, field_metadata)?;
+        Ok(MetricPublishKnownKindData::Component)
+    }
 }
 
 impl ActionUniqueQualifier {
@@ -293,13 +333,16 @@ impl std::fmt::Display for ActionUniqueQualifier {
 
 /// This is a utility struct used to make it easier to match `ActionInfos` in a
 /// `HashMap` without needing to construct an entire `ActionInfo`.
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionUniqueKey {
     /// Name of instance group this action belongs to.
+    #[metric(help = "Name of instance group this action belongs to.")]
     pub instance_name: String,
     /// The digest function this action expects.
+    #[metric(help = "The digest function this action expects.")]
     pub digest_function: DigestHasherFunc,
     /// Digest of the underlying `Action`.
+    #[metric(help = "Digest of the underlying Action.")]
     pub digest: DigestInfo,
 }
 
@@ -308,24 +351,32 @@ pub struct ActionUniqueKey {
 /// to ensure we never match against another `ActionInfo` (when a task should never be cached).
 /// This struct must be 100% compatible with `ExecuteRequest` struct in `remote_execution.proto`
 /// except for the salt field.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionInfo {
     /// Digest of the underlying `Command`.
+    #[metric(help = "Digest of the underlying Command.")]
     pub command_digest: DigestInfo,
     /// Digest of the underlying `Directory`.
+    #[metric(help = "Digest of the underlying Directory.")]
     pub input_root_digest: DigestInfo,
     /// Timeout of the action.
+    #[metric(help = "Timeout of the action.")]
     pub timeout: Duration,
     /// The properties rules that must be applied when finding a worker that can run this action.
+    #[metric(group = "platform_properties")]
     pub platform_properties: PlatformProperties,
     /// The priority of the action. Higher value means it should execute faster.
+    #[metric(help = "The priority of the action. Higher value means it should execute faster.")]
     pub priority: i32,
     /// When this action started to be loaded from the CAS.
+    #[metric(help = "When this action started to be loaded from the CAS.")]
     pub load_timestamp: SystemTime,
     /// When this action was created.
+    #[metric(help = "When this action was created.")]
     pub insert_timestamp: SystemTime,
     /// Info used to uniquely identify this ActionInfo and if it is cachable.
     /// This is primarily used to join actions/operations together using this key.
+    #[metric(help = "Info used to uniquely identify this ActionInfo and if it is cachable.")]
     pub unique_qualifier: ActionUniqueQualifier,
 }
 
@@ -810,21 +861,20 @@ impl ActionStage {
 }
 
 impl MetricsComponent for ActionStage {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        let (stage, maybe_exit_code) = match self {
-            ActionStage::Unknown => ("Unknown", None),
-            ActionStage::CacheCheck => ("CacheCheck", None),
-            ActionStage::Queued => ("Queued", None),
-            ActionStage::Executing => ("Executing", None),
-            ActionStage::Completed(action_result) => ("Completed", Some(action_result.exit_code)),
-            ActionStage::CompletedFromCache(proto_action_result) => {
-                ("CompletedFromCache", Some(proto_action_result.exit_code))
-            }
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let value = match self {
+            ActionStage::Unknown => "Unknown".to_string(),
+            ActionStage::CacheCheck => "CacheCheck".to_string(),
+            ActionStage::Queued => "Queued".to_string(),
+            ActionStage::Executing => "Executing".to_string(),
+            ActionStage::Completed(_) => "Completed".to_string(),
+            ActionStage::CompletedFromCache(_) => "CompletedFromCache".to_string(),
         };
-        c.publish("stage", &stage.to_string(), "The state of the action.");
-        if let Some(exit_code) = maybe_exit_code {
-            c.publish("exit_code", &exit_code, "The exit code of the action.");
-        }
+        Ok(MetricPublishKnownKindData::String(value))
     }
 }
 
@@ -1089,9 +1139,11 @@ where
 
 /// Current state of the action.
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionState {
+    #[metric(help = "The current stage of the action.")]
     pub stage: ActionStage,
+    #[metric(help = "The unique identifier of the action.")]
     pub id: OperationId,
 }
 
@@ -1171,11 +1223,5 @@ impl ActionState {
             done: result.is_some(),
             result,
         }
-    }
-}
-
-impl MetricsComponent for ActionState {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish("stage", &self.stage, "");
     }
 }

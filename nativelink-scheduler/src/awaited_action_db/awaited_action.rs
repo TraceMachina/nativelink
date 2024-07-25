@@ -15,6 +15,9 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
@@ -26,31 +29,49 @@ use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 #[derive(Debug, Clone, Copy)]
 struct AwaitedActionVersion(u64);
 
+impl MetricsComponent for AwaitedActionVersion {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::Counter(self.0))
+    }
+}
+
 /// An action that is being awaited on and last known state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, MetricsComponent)]
 pub struct AwaitedAction {
     /// The current version of the action.
+    #[metric(help = "The version of the AwaitedAction")]
     version: AwaitedActionVersion,
 
     /// The action that is being awaited on.
+    #[metric(help = "The action info of the AwaitedAction")]
     action_info: Arc<ActionInfo>,
 
     /// The operation id of the action.
+    #[metric(help = "The operation id of the AwaitedAction")]
     operation_id: OperationId,
 
     /// The currentsort key used to order the actions.
+    #[metric(help = "The sort key of the AwaitedAction")]
     sort_key: AwaitedActionSortKey,
 
     /// The time the action was last updated.
+    #[metric(help = "The last time the worker updated the AwaitedAction")]
     last_worker_updated_timestamp: SystemTime,
 
     /// Worker that is currently running this action, None if unassigned.
+    #[metric(help = "The worker id of the AwaitedAction")]
     worker_id: Option<WorkerId>,
 
     /// The current state of the action.
+    #[metric(help = "The state of the AwaitedAction")]
     state: Arc<ActionState>,
 
     /// Number of attempts the job has been tried.
+    #[metric(help = "The number of attempts the AwaitedAction has been tried")]
     pub attempts: usize,
 }
 
@@ -134,6 +155,16 @@ impl AwaitedAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct AwaitedActionSortKey(u64);
+
+impl MetricsComponent for AwaitedActionSortKey {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::Counter(self.0))
+    }
+}
 
 impl AwaitedActionSortKey {
     #[rustfmt::skip]

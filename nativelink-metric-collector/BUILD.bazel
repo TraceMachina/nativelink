@@ -1,0 +1,63 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+    "rust_test_suite",
+)
+
+rust_library(
+    name = "nativelink-metric-collector",
+    srcs = [
+        "src/lib.rs",
+        "src/metrics_collection.rs",
+        "src/metrics_visitors.rs",
+        "src/otel_exporter.rs",
+        "src/tracing_layers.rs",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//nativelink-metric",
+        "@crates//:opentelemetry",
+        "@crates//:parking_lot",
+        "@crates//:serde",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/metric_collector_test.rs",
+    ],
+    proc_macro_deps = [
+        "//nativelink-macro",
+    ],
+    deps = [
+        ":nativelink-metric-collector",
+        "//nativelink-error",
+        "//nativelink-metric",
+        "@crates//:opentelemetry",
+        "@crates//:opentelemetry-prometheus",
+        "@crates//:opentelemetry_sdk",
+        "@crates//:prometheus",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-metric-collector",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-metric-collector",
+)

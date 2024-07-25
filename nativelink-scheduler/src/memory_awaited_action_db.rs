@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use futures::{FutureExt, Stream};
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
     ClientOperationId, OperationId,
@@ -29,7 +30,6 @@ use nativelink_util::action_messages::{
 use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::metrics_utils::{CollectorState, MetricsComponent};
 use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -268,12 +268,17 @@ impl<T: AwaitedActionSubscriber> ActionStateResult for ClientActionStateResult<T
 /// return early from a function.
 struct NoEarlyReturn;
 
-#[derive(Default)]
+#[derive(Default, MetricsComponent)]
 struct SortedAwaitedActions {
+    #[metric(group = "unknown")]
     unknown: BTreeSet<SortedAwaitedAction>,
+    #[metric(group = "cache_check")]
     cache_check: BTreeSet<SortedAwaitedAction>,
+    #[metric(group = "queued")]
     queued: BTreeSet<SortedAwaitedAction>,
+    #[metric(group = "executing")]
     executing: BTreeSet<SortedAwaitedAction>,
+    #[metric(group = "completed")]
     completed: BTreeSet<SortedAwaitedAction>,
 }
 
@@ -342,11 +347,14 @@ impl SortedAwaitedActions {
 }
 
 /// The database for storing the state of all actions.
+#[derive(MetricsComponent)]
 pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
     /// A lookup table to lookup the state of an action by its client operation id.
+    #[metric(group = "client_operation_ids")]
     client_operation_to_awaited_action: EvictingMap<ClientOperationId, Arc<ClientAwaitedAction>, I>,
 
     /// A lookup table to lookup the state of an action by its worker operation id.
+    #[metric(group = "operation_ids")]
     operation_id_to_awaited_action: BTreeMap<OperationId, watch::Sender<AwaitedAction>>,
 
     /// A lookup table to lookup the state of an action by its unique qualifier.
@@ -356,9 +364,11 @@ pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
     /// based on the [`AwaitedActionSortKey`] of the [`AwaitedAction`].
     ///
     /// See [`AwaitedActionSortKey`] for more information on the ordering.
+    #[metric(group = "sorted_action_infos")]
     sorted_action_info_hash_keys: SortedAwaitedActions,
 
     /// The number of connected clients for each operation id.
+    #[metric(group = "connected_clients_for_operation_id")]
     connected_clients_for_operation_id: HashMap<OperationId, usize>,
 
     /// Where to send notifications about important events related to actions.
@@ -833,7 +843,9 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
     }
 }
 
+#[derive(MetricsComponent)]
 pub struct MemoryAwaitedActionDb<I: InstantWrapper, NowFn: Fn() -> I> {
+    #[metric]
     inner: Arc<Mutex<AwaitedActionDbImpl<I, NowFn>>>,
     _handle_awaited_action_events: JoinHandleDropGuard<()>,
 }
@@ -976,50 +988,5 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
             .await
             .add_action(client_operation_id, action_info)
             .await
-    }
-}
-
-impl<I: InstantWrapper, NowFn: Fn() -> I + Send + Sync + 'static> MetricsComponent
-    for MemoryAwaitedActionDb<I, NowFn>
-{
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        let inner = self.inner.lock_blocking();
-        c.publish(
-            "action_state_unknown_total",
-            &inner.sorted_action_info_hash_keys.unknown.len(),
-            "Number of actions wih the current state of unknown.",
-        );
-        c.publish(
-            "action_state_cache_check_total",
-            &inner.sorted_action_info_hash_keys.cache_check.len(),
-            "Number of actions wih the current state of cache_check.",
-        );
-        c.publish(
-            "action_state_queued_total",
-            &inner.sorted_action_info_hash_keys.queued.len(),
-            "Number of actions wih the current state of queued.",
-        );
-        c.publish(
-            "action_state_executing_total",
-            &inner.sorted_action_info_hash_keys.executing.len(),
-            "Number of actions wih the current state of executing.",
-        );
-        c.publish(
-            "action_state_completed_total",
-            &inner.sorted_action_info_hash_keys.completed.len(),
-            "Number of actions wih the current state of completed.",
-        );
-        // TODO(allada) This is legacy and should be removed in the future.
-        c.publish(
-            "active_actions_total",
-            &inner.sorted_action_info_hash_keys.executing.len(),
-            "(LEGACY) The number of running actions.",
-        );
-        // TODO(allada) This is legacy and should be removed in the future.
-        c.publish(
-            "queued_actions_total",
-            &inner.sorted_action_info_hash_keys.queued.len(),
-            "(LEGACY) The number actions in the queue.",
-        );
     }
 }
