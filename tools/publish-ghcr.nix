@@ -1,8 +1,13 @@
-{pkgs, ...}:
-pkgs.writeShellScriptBin "publish-ghcr" ''
+{
+  writeShellScriptBin,
+  skopeo,
+  cosign,
+  trivy,
+}:
+writeShellScriptBin "publish-ghcr" ''
   set -xeuo pipefail
 
-  echo $GHCR_PASSWORD | ${pkgs.skopeo}/bin/skopeo \
+  echo $GHCR_PASSWORD | ${skopeo}/bin/skopeo \
     login \
     --username=$GHCR_USERNAME \
     --password-stdin \
@@ -22,23 +27,23 @@ pkgs.writeShellScriptBin "publish-ghcr" ''
 
   nix run .#$1.copyTo docker://''${TAGGED_IMAGE}
 
-  echo $GHCR_PASSWORD | ${pkgs.cosign}/bin/cosign \
+  echo $GHCR_PASSWORD | ${cosign}/bin/cosign \
     login \
     --username=$GHCR_USERNAME \
     --password-stdin \
     ghcr.io
 
-  ${pkgs.cosign}/bin/cosign \
+  ${cosign}/bin/cosign \
     sign \
     --yes \
     ''${GHCR_REGISTRY,,}/''${IMAGE_NAME}@$( \
-      ${pkgs.skopeo}/bin/skopeo \
+      ${skopeo}/bin/skopeo \
         inspect \
         --format "{{ .Digest }}" \
         docker://''${TAGGED_IMAGE} \
   )
 
-  ${pkgs.trivy}/bin/trivy \
+  ${trivy}/bin/trivy \
     image \
     --format sarif \
     ''${TAGGED_IMAGE} \

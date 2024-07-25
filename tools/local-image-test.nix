@@ -1,5 +1,9 @@
-{pkgs, ...}:
-pkgs.writeShellScriptBin "local-image-test" ''
+{
+  dive,
+  trivy,
+  writeShellScriptBin,
+}:
+writeShellScriptBin "local-image-test" ''
   set -xeuo pipefail
 
   echo "Testing image: $1"
@@ -16,9 +20,9 @@ pkgs.writeShellScriptBin "local-image-test" ''
     docker-daemon:''${IMAGE_NAME}:''${IMAGE_TAG}
 
   # Ensure that the image has minimal closure size.
-  CI=1 ${pkgs.dive}/bin/dive \
+  CI=1 ${dive}/bin/dive \
     ''${IMAGE_NAME}:''${IMAGE_TAG} \
     --highestWastedBytes=0
 
-  ${pkgs.trivy}/bin/trivy image ''${IMAGE_NAME}:''${IMAGE_TAG}
+  ${trivy}/bin/trivy image ''${IMAGE_NAME}:''${IMAGE_TAG}
 ''

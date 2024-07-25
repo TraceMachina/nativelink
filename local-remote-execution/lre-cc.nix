@@ -1,14 +1,9 @@
 {
-  pkgs,
   buildImage,
-  llvmPackages,
+  customClang,
+  stdenv,
+  pkgs,
 }: let
-  customStdenv = import ../tools/llvmStdenv.nix {inherit pkgs llvmPackages;};
-  customClang = pkgs.callPackage ../tools/customClang.nix {
-    inherit pkgs;
-    stdenv = customStdenv;
-  };
-
   # This environment is shared between toolchain autogen images and the final
   # toolchain image.
   Env = [
@@ -17,9 +12,9 @@
     # binary identical toolchains during local and remote execution.
     ("PATH="
       + (pkgs.lib.strings.concatStringsSep ":" [
-        "${customStdenv.cc.bintools}/bin"
+        "${stdenv.cc.bintools}/bin"
         "${customClang}/bin"
-        "${customStdenv}/bin"
+        "${stdenv}/bin"
         "${pkgs.coreutils}/bin"
         "${pkgs.findutils}/bin"
         "${pkgs.gnutar}/bin"
