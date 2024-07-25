@@ -41,6 +41,7 @@ use hyper::service::Service;
 use hyper::Uri;
 use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
@@ -232,12 +233,17 @@ impl http_body::Body for BodyWrapper {
     }
 }
 
+#[derive(MetricsComponent)]
 pub struct S3Store {
     s3_client: Arc<Client>,
+    #[metric(help = "The bucket name for the S3 store")]
     bucket: String,
+    #[metric(help = "The key prefix for the S3 store")]
     key_prefix: String,
     retrier: Retrier,
+    #[metric(help = "The number of bytes to buffer for retrying requests")]
     max_retry_buffer_per_request: usize,
+    #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
 }
 

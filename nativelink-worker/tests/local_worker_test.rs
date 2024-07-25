@@ -439,7 +439,8 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Box<dyn st
         Some(ac_store),
         cas_store,
     )
-    .await?;
+    .await?
+    .0;
 
     assert!(
         fs::metadata(work_directory).await.is_ok(),

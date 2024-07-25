@@ -25,6 +25,7 @@ use bytes::{Bytes, BytesMut};
 use futures::future::{select, Either};
 use futures::{join, try_join, Future, FutureExt};
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -37,7 +38,6 @@ use crate::default_store_key_subscribe::default_store_key_subscribe;
 use crate::digest_hasher::{default_digest_hasher_func, DigestHasher, DigestHasherFunc};
 use crate::fs::{self, idle_file_descriptor_timeout};
 use crate::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use crate::metrics_utils::Registry;
 
 static DEFAULT_DIGEST_SIZE_HEALTH_CHECK: OnceLock<usize> = OnceLock::new();
 /// Default digest size for health check data. Any change in this value
@@ -332,9 +332,10 @@ impl<'a> From<&DigestInfo> for StoreKey<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, MetricsComponent)]
 #[repr(transparent)]
 pub struct Store {
+    #[metric]
     inner: Arc<dyn StoreDriver>,
 }
 
@@ -381,12 +382,6 @@ impl Store {
         key: impl Into<StoreKey<'a>>,
     ) -> impl Future<Output = Box<dyn StoreSubscription>> + 'a {
         self.inner.clone().subscribe(key.into())
-    }
-
-    /// Register any metrics that this store wants to expose to the Prometheus.
-    #[inline]
-    pub fn register_metrics(&self, registry: &mut Registry) {
-        self.inner.clone().register_metrics(registry)
     }
 
     /// Register health checks used to monitor the store.
@@ -598,7 +593,9 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
 }
 
 #[async_trait]
-pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
+pub trait StoreDriver:
+    Sync + Send + Unpin + MetricsComponent + HealthStatusIndicator + 'static
+{
     /// See: [`StoreLike::has`] for details.
     #[inline]
     async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<usize>, Error> {
@@ -833,9 +830,6 @@ pub trait StoreDriver: Sync + Send + Unpin + HealthStatusIndicator + 'static {
     /// Returns an Any variation of whatever Self is.
     fn as_any(&self) -> &(dyn std::any::Any + Sync + Send + 'static);
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static>;
-
-    /// Register any metrics that this store wants to expose to the Prometheus.
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}

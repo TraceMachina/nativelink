@@ -37,7 +37,6 @@ use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
 use pretty_assertions::assert_eq;
-use prometheus_client::registry::Registry;
 use tokio::io::DuplexStream;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::yield_now;
@@ -60,7 +59,6 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
                 nativelink_config::stores::MemoryStore::default(),
             ),
             &store_manager,
-            Some(&mut <Registry>::default()),
             None,
         )
         .await?,

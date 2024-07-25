@@ -39,7 +39,6 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::encode_stream_proto;
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use pretty_assertions::assert_eq;
-use prometheus_client::registry::Registry;
 use prost::Message;
 use prost_types::Timestamp;
 use tonic::codec::{Codec, ProstCodec};
@@ -57,7 +56,6 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
                 nativelink_config::stores::MemoryStore::default(),
             ),
             &store_manager,
-            Some(&mut <Registry>::default()),
             None,
         )
         .await?,

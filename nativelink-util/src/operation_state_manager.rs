@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use bitflags::bitflags;
 use futures::Stream;
 use nativelink_error::Error;
-use prometheus_client::registry::Registry;
+use nativelink_metric::MetricsComponent;
 
 use crate::action_messages::{
     ActionInfo, ActionStage, ActionState, ActionUniqueKey, ClientOperationId, OperationId, WorkerId,
@@ -97,7 +97,7 @@ pub type ActionStateResultStream<'a> =
     Pin<Box<dyn Stream<Item = Box<dyn ActionStateResult>> + Send + 'a>>;
 
 #[async_trait]
-pub trait ClientStateManager: Sync + Send {
+pub trait ClientStateManager: Sync + Send + MetricsComponent {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
         &self,
@@ -110,13 +110,10 @@ pub trait ClientStateManager: Sync + Send {
         &'a self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error>;
-
-    /// Register metrics with the registry.
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }
 
 #[async_trait]
-pub trait WorkerStateManager: Sync + Send {
+pub trait WorkerStateManager: Sync + Send + MetricsComponent {
     /// Update that state of an operation.
     /// The worker must also send periodic updates even if the state
     /// did not change with a modified timestamp in order to prevent
@@ -127,13 +124,10 @@ pub trait WorkerStateManager: Sync + Send {
         worker_id: &WorkerId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error>;
-
-    /// Register metrics with the registry.
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }
 
 #[async_trait]
-pub trait MatchingEngineStateManager: Sync + Send {
+pub trait MatchingEngineStateManager: Sync + Send + MetricsComponent {
     /// Returns a stream of operations that match the filter.
     async fn filter_operations<'a>(
         &'a self,
@@ -146,7 +140,4 @@ pub trait MatchingEngineStateManager: Sync + Send {
         operation_id: &OperationId,
         worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error>;
-
-    /// Register metrics with the registry.
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }

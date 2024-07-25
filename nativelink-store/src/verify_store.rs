@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
@@ -24,19 +25,23 @@ use nativelink_util::digest_hasher::{
     default_digest_hasher_func, DigestHasher, ACTIVE_HASHER_FUNC,
 };
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{
-    Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
-};
+use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
+#[derive(MetricsComponent)]
 pub struct VerifyStore {
+    #[metric(group = "inner_store")]
     inner_store: Store,
+    #[metric(help = "If the verification store is verifying the size of the data")]
     verify_size: bool,
+    #[metric(help = "If the verification store is verifying the hash of the data")]
     verify_hash: bool,
 
     // Metrics.
+    #[metric(help = "Number of failures the verification store had due to size mismatches")]
     size_verification_failures: CounterWithTime,
+    #[metric(help = "Number of failures the verification store had due to hash mismatches")]
     hash_verification_failures: CounterWithTime,
 }
 
@@ -237,37 +242,6 @@ impl StoreDriver for VerifyStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        let backend_store = registry.sub_registry_with_prefix("backend");
-        self.inner_store.register_metrics(backend_store);
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-}
-
-impl MetricsComponent for VerifyStore {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "verify_size_enabled",
-            &self.verify_size,
-            "If the verification store is verifying the size of the data",
-        );
-        c.publish(
-            "verify_hash_enabled",
-            &self.verify_hash,
-            "If the verification store is verifying the hash of the data",
-        );
-        c.publish(
-            "size_verification_failures_total",
-            &self.size_verification_failures,
-            "Number of failures the verification store had due to size mismatches",
-        );
-        c.publish(
-            "hash_verification_failures_total",
-            &self.hash_verification_failures,
-            "Number of failures the verification store had due to hash mismatches",
-        );
     }
 }
 

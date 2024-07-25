@@ -36,6 +36,7 @@ rust_library(
         "//nativelink-proto",
         "//nativelink-store",
         "//nativelink-util",
+        "//nativelink-metric",
         "@crates//:async-lock",
         "@crates//:blake3",
         "@crates//:futures",
@@ -77,6 +78,7 @@ rust_test_suite(
     ],
     deps = [
         ":nativelink-scheduler",
+        "//nativelink-metric",
         "//nativelink-config",
         "//nativelink-error",
         "//nativelink-proto",
