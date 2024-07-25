@@ -37,6 +37,7 @@ rust_library(
     deps = [
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
         "//nativelink-util",
         "@crates//:arc-cell",
@@ -100,6 +101,7 @@ rust_test_suite(
         ":nativelink-store",
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
         "//nativelink-util",
         "@crates//:async-lock",

@@ -1,0 +1,35 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+)
+
+rust_library(
+    name = "nativelink-metric",
+    srcs = [
+        "src/lib.rs",
+    ],
+    proc_macro_deps = [
+        "//nativelink-metric/nativelink-metric-macro-derive",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crates//:async-lock",
+        "@crates//:parking_lot",
+        "@crates//:tokio",
+        "@crates//:tracing",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-metric",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-metric",
+)

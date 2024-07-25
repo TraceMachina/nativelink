@@ -20,15 +20,14 @@ use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{select, FutureExt, TryFutureExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, OutputDirectory as ProtoOutputDirectory, Tree as ProtoTree,
 };
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{
-    Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
-};
+use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
@@ -105,11 +104,14 @@ async fn check_output_directories<'a>(
     Ok(())
 }
 
+#[derive(MetricsComponent)]
 pub struct CompletenessCheckingStore {
     cas_store: Store,
     ac_store: Store,
 
+    #[metric(help = "Incomplete entries hit in CompletenessCheckingStore")]
     incomplete_entries_counter: CounterWithTime,
+    #[metric(help = "Complete entries hit in CompletenessCheckingStore")]
     complete_entries_counter: CounterWithTime,
 }
 
@@ -384,29 +386,6 @@ impl StoreDriver for CompletenessCheckingStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        self.cas_store
-            .register_metrics(registry.sub_registry_with_prefix("cas_store"));
-        self.ac_store
-            .register_metrics(registry.sub_registry_with_prefix("ac_store"));
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-}
-
-impl MetricsComponent for CompletenessCheckingStore {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "incomplete_entries_counter",
-            &self.incomplete_entries_counter,
-            "Incomplete entries hit in CompletenessCheckingStore",
-        );
-        c.publish(
-            "complete_entries_counter",
-            &self.complete_entries_counter,
-            "Complete entries hit in CompletenessCheckingStore",
-        );
     }
 }
 

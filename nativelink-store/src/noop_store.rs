@@ -17,12 +17,25 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
 
 #[derive(Default)]
 pub struct NoopStore;
+
+impl MetricsComponent for NoopStore {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::Component)
+    }
+}
 
 impl NoopStore {
     pub fn new() -> Arc<Self> {

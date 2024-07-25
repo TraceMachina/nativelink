@@ -18,13 +18,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
-use nativelink_util::metrics_utils::{
-    CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent,
-};
+use nativelink_util::metrics_utils::{CounterWithTime, FuncCounterWrapper};
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -41,8 +40,10 @@ pub enum WorkerUpdate {
 
 /// Represents a connection to a worker and used as the medium to
 /// interact with the worker from the client/scheduler.
+#[derive(MetricsComponent)]
 pub struct Worker {
     /// Unique identifier of the worker.
+    #[metric(help = "The unique identifier of the worker.")]
     pub id: WorkerId,
 
     /// Properties that describe the capabilities of this worker.
@@ -57,15 +58,19 @@ pub struct Worker {
     /// Timestamp of last time this worker had been communicated with.
     // Warning: Do not update this timestamp without updating the placement of the worker in
     // the LRUCache in the Workers struct.
+    #[metric(help = "Last time this worker was communicated with.")]
     pub last_update_timestamp: WorkerTimestamp,
 
     /// Whether the worker rejected the last action due to back pressure.
+    #[metric(help = "If the worker is paused.")]
     pub is_paused: bool,
 
     /// Whether the worker is draining.
+    #[metric(help = "If the worker is draining.")]
     pub is_draining: bool,
 
     /// Stats about the worker.
+    #[metric]
     metrics: Arc<Metrics>,
 }
 
@@ -235,109 +240,16 @@ impl Hash for Worker {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, MetricsComponent)]
 struct Metrics {
+    #[metric(help = "The timestamp of when this worker connected.")]
     connected_timestamp: u64,
+    #[metric(help = "The number of actions completed for this worker.")]
     actions_completed: CounterWithTime,
+    #[metric(help = "The number of actions started for this worker.")]
     run_action: FuncCounterWrapper,
+    #[metric(help = "The number of keep_alive sent to this worker.")]
     keep_alive: FuncCounterWrapper,
+    #[metric(help = "The number of notify_disconnect sent to this worker.")]
     notify_disconnect: CounterWithTime,
-}
-
-impl MetricsComponent for Worker {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish_with_labels(
-            "connected_timestamp",
-            &self.metrics.connected_timestamp,
-            "The timestamp of when this worker connected.",
-            vec![("worker_id".into(), format!("{}", self.id).into())],
-        );
-        c.publish_with_labels(
-            "actions_completed",
-            &self.metrics.actions_completed,
-            "The number of actions completed for this worker.",
-            vec![("worker_id".into(), format!("{}", self.id).into())],
-        );
-        c.publish_with_labels(
-            "run_action",
-            &self.metrics.run_action,
-            "The number of actions started for this worker.",
-            vec![("worker_id".into(), format!("{}", self.id).into())],
-        );
-        c.publish_with_labels(
-            "keep_alive",
-            &self.metrics.keep_alive,
-            "The number of keep_alive sent to this worker.",
-            vec![("worker_id".into(), format!("{}", self.id).into())],
-        );
-        c.publish_with_labels(
-            "notify_disconnect",
-            &self.metrics.notify_disconnect,
-            "The number of notify_disconnect sent to this worker.",
-            vec![("worker_id".into(), format!("{}", self.id).into())],
-        );
-
-        // Publish info about current state of worker.
-        c.publish_with_labels(
-            "is_paused",
-            &self.is_paused,
-            "If this worker is paused.",
-            vec![("worker_id".into(), format!("{}", self.id).into())],
-        );
-        c.publish_with_labels(
-            "is_draining",
-            &self.is_draining,
-            "If this worker is draining.",
-            vec![("worker_id".into(), format!("{}", self.id).into())],
-        );
-        for action_info in self.running_action_infos.values() {
-            let action_name = action_info.unique_qualifier.to_string();
-            c.publish_with_labels(
-                "timeout",
-                &action_info.timeout,
-                "Timeout of the running action.",
-                vec![("digest".into(), action_name.clone().into())],
-            );
-            c.publish_with_labels(
-                "priority",
-                &action_info.priority,
-                "Priority of the running action.",
-                vec![("digest".into(), action_name.clone().into())],
-            );
-            c.publish_with_labels(
-                "load_timestamp",
-                &action_info.load_timestamp,
-                "When this action started to be loaded from the CAS.",
-                vec![("digest".into(), action_name.clone().into())],
-            );
-            c.publish_with_labels(
-                "insert_timestamp",
-                &action_info.insert_timestamp,
-                "When this action was created.",
-                vec![("digest".into(), action_name.clone().into())],
-            );
-        }
-        for (prop_name, prop_type_and_value) in &self.platform_properties.properties {
-            match prop_type_and_value {
-                PlatformPropertyValue::Exact(value)
-                | PlatformPropertyValue::Priority(value)
-                | PlatformPropertyValue::Unknown(value) => {
-                    c.publish_with_labels(
-                        "platform_properties",
-                        value,
-                        "The platform properties state.",
-                        vec![("property_name".into(), prop_name.to_string().into())],
-                    );
-                }
-                PlatformPropertyValue::Minimum(value) => {
-                    c.publish_with_labels(
-                        "platform_properties",
-                        value,
-                        "The platform properties state.",
-                        vec![("property_name".into(), prop_name.to_string().into())],
-                    );
-                }
-            };
-        }
-    }
 }

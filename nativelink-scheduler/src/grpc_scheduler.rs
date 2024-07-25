@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use futures::stream::unfold;
 use futures::TryFutureExt;
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -50,7 +51,9 @@ use crate::action_scheduler::{ActionListener, ActionScheduler};
 use crate::default_action_listener::DefaultActionListener;
 use crate::platform_property_manager::PlatformPropertyManager;
 
+#[derive(MetricsComponent)]
 pub struct GrpcScheduler {
+    #[metric(group = "property_managers")]
     platform_property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
     retrier: Retrier,
     connection_manager: ConnectionManager,
@@ -318,3 +321,5 @@ impl ActionScheduler for GrpcScheduler {
         }
     }
 }
+
+impl RootMetricsComponent for GrpcScheduler {}
