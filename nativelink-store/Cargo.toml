@@ -8,8 +8,8 @@ nativelink-error = { path = "../nativelink-error" }
 nativelink-config = { path = "../nativelink-config" }
 nativelink-util = { path = "../nativelink-util" }
 nativelink-proto = { path = "../nativelink-proto" }
+nativelink-metric = { path = "../nativelink-metric" }
 
-arc-cell = "0.3.3"
 async-lock = "3.3.0"
 async-trait = "0.1.80"
 aws-config = "1.4.0"

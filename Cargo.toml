@@ -40,6 +40,8 @@ nativelink-service = { path = "nativelink-service" }
 nativelink-store = { path = "nativelink-store" }
 nativelink-util = { path = "nativelink-util" }
 nativelink-worker = { path = "nativelink-worker" }
+nativelink-metric = { path = "nativelink-metric" }
+nativelink-metric-collector = { path = "nativelink-metric-collector" }
 
 async-lock = "3.3.0"
 axum = "0.6.20"
@@ -49,7 +51,6 @@ futures = "0.3.30"
 hyper = { version = "0.14.28" }
 mimalloc = "0.1.41"
 parking_lot = "0.12.2"
-prometheus-client = "0.21.2"
 rustls-pemfile = "2.1.2"
 scopeguard = "1.2.0"
 serde_json5 = "0.1.0"
@@ -58,3 +59,9 @@ tokio-rustls = "0.25.0"
 tonic = { version = "0.11.0", features = ["gzip", "tls"] }
 tower = "0.4.13"
 tracing = "0.1.40"
+opentelemetry_sdk = { version = "0.23.0", features = ["metrics"] }
+tracing-subscriber = "0.3.18"
+opentelemetry = { version = "0.23.0", features = ["metrics"] }
+prometheus = "0.13.4"
+opentelemetry-prometheus = "0.16.0"
+serde_json = "1.0.120"

@@ -27,13 +27,13 @@ use filetime::{set_file_atime, FileTime};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn_blocking};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
@@ -48,14 +48,17 @@ const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
 
-#[derive(Debug)]
+#[derive(Debug, MetricsComponent)]
 pub struct SharedContext {
     // Used in testing to know how many active drop() spawns are running.
     // TODO(allada) It is probably a good idea to use a spin lock during
     // destruction of the store to ensure that all files are actually
     // deleted (similar to how it is done in tests).
+    #[metric(help = "Number of active drop spawns")]
     pub active_drop_spawns: AtomicU64,
+    #[metric(help = "Path to the configured temp path")]
     temp_path: String,
+    #[metric(help = "Path to the configured content path")]
     content_path: String,
 }
 
@@ -514,10 +517,15 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
+    #[metric]
     shared_context: Arc<SharedContext>,
+    #[metric(group = "evicting_map")]
     evicting_map: Arc<EvictingMap<DigestInfo, Arc<Fe>, SystemTime>>,
+    #[metric(help = "Block size of the configured filesystem")]
     block_size: u64,
+    #[metric(help = "Size of the configured read buffer size")]
     read_buffer_size: usize,
     weak_self: Weak<Self>,
     sleep_fn: fn(Duration) -> Sleep,
@@ -910,38 +918,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self
     }
 
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
-    }
-}
-
-impl<Fe: FileEntry> MetricsComponent for FilesystemStore<Fe> {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "read_buff_size_bytes",
-            &self.read_buffer_size,
-            "Size of the configured read buffer size",
-        );
-        c.publish(
-            "active_drop_spawns_total",
-            &self.shared_context.active_drop_spawns,
-            "Number of active drop spawns",
-        );
-        c.publish(
-            "temp_path",
-            &self.shared_context.temp_path,
-            "Path to the configured temp path",
-        );
-        c.publish(
-            "content_path",
-            &self.shared_context.content_path,
-            "Path to the configured content path",
-        );
-        c.publish("evicting_map", self.evicting_map.as_ref(), "");
     }
 }
 

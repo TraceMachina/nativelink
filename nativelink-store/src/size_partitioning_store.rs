@@ -17,15 +17,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 use tokio::join;
 
+#[derive(MetricsComponent)]
 pub struct SizePartitioningStore {
+    #[metric(help = "Size to partition our data")]
     partition_size: i64,
+    #[metric(group = "lower_store")]
     lower_store: Store,
+    #[metric(group = "upper_store")]
     upper_store: Store,
 }
 
@@ -158,24 +162,6 @@ impl StoreDriver for SizePartitioningStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        let lower_store_registry = registry.sub_registry_with_prefix("lower_store");
-        self.lower_store.register_metrics(lower_store_registry);
-        let upper_store_registry = registry.sub_registry_with_prefix("upper_store");
-        self.upper_store.register_metrics(upper_store_registry);
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-}
-
-impl MetricsComponent for SizePartitioningStore {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "partition_size",
-            &self.partition_size,
-            "Size to partition our data",
-        );
     }
 }
 

@@ -12,6 +12,7 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//nativelink-metric",
         "//nativelink-proto",
         "@crates//:hex",
         "@crates//:prost",

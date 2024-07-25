@@ -20,15 +20,28 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, TryStreamExt};
 use nativelink_error::{error_if, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::Registry;
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
+#[derive(MetricsComponent)]
+struct StoreAndWeight {
+    #[metric(help = "The weight of the store")]
+    weight: u32,
+    #[metric(help = "The underlying store")]
+    store: Store,
+}
+
+#[derive(MetricsComponent)]
 pub struct ShardStore {
     // The weights will always be in ascending order a specific store is choosen based on the
     // the hash of the key hash that is nearest-binary searched using the u32 as the index.
-    weights_and_stores: Vec<(u32, Store)>,
+    #[metric(
+        group = "stores",
+        help = "The weights and stores that are used to determine which store to use"
+    )]
+    weights_and_stores: Vec<StoreAndWeight>,
 }
 
 impl ShardStore {
@@ -63,7 +76,11 @@ impl ShardStore {
         // Our last item should always be the max.
         *weights.last_mut().unwrap() = u32::MAX;
         Ok(Arc::new(Self {
-            weights_and_stores: weights.into_iter().zip(stores).collect(),
+            weights_and_stores: weights
+                .into_iter()
+                .zip(stores)
+                .map(|(weight, store)| StoreAndWeight { weight, store })
+                .collect(),
         }))
     }
 
@@ -112,13 +129,13 @@ impl ShardStore {
             }
         };
         self.weights_and_stores
-            .binary_search_by_key(&key, |(weight, _)| *weight)
+            .binary_search_by_key(&key, |item| item.weight)
             .unwrap_or_else(|index| index)
     }
 
     fn get_store(&self, key: &StoreKey) -> &Store {
         let index = self.get_store_index(key);
-        &self.weights_and_stores[index].1
+        &self.weights_and_stores[index].store
     }
 }
 
@@ -132,7 +149,7 @@ impl StoreDriver for ShardStore {
         if keys.len() == 1 {
             // Hot path: It is very common to lookup only one key.
             let store_idx = self.get_store_index(&keys[0]);
-            let store = &self.weights_and_stores[store_idx].1;
+            let store = &self.weights_and_stores[store_idx].store;
             return store
                 .has_with_results(keys, results)
                 .await
@@ -159,7 +176,7 @@ impl StoreDriver for ShardStore {
             .into_iter()
             .enumerate()
             .map(|(store_idx, (key_idxs, keys))| async move {
-                let store = &self.weights_and_stores[store_idx].1;
+                let store = &self.weights_and_stores[store_idx].store;
                 let mut inner_results = vec![None; keys.len()];
                 store
                     .has_with_results(&keys, &mut inner_results)
@@ -210,7 +227,7 @@ impl StoreDriver for ShardStore {
             return self;
         };
         let index = self.get_store_index(&key);
-        self.weights_and_stores[index].1.inner_store(Some(key))
+        self.weights_and_stores[index].store.inner_store(Some(key))
     }
 
     fn as_any<'a>(&'a self) -> &'a (dyn std::any::Any + Sync + Send + 'static) {
@@ -219,13 +236,6 @@ impl StoreDriver for ShardStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        for (i, (_, store)) in self.weights_and_stores.iter().enumerate() {
-            let store_registry = registry.sub_registry_with_prefix(format!("store_{i}"));
-            store.clone().register_metrics(store_registry);
-        }
     }
 }
 

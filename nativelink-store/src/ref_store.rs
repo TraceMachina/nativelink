@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
@@ -35,7 +36,9 @@ struct StoreReference {
 
 unsafe impl Sync for StoreReference {}
 
+#[derive(MetricsComponent)]
 pub struct RefStore {
+    #[metric(help = "The store we are referencing")]
     ref_store_name: String,
     store_manager: Weak<StoreManager>,
     ref_store: StoreReference,

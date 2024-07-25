@@ -9,6 +9,7 @@ autobenches = false
 
 [dependencies]
 nativelink-proto = { path = "../nativelink-proto" }
+nativelink-metric = { path = "../nativelink-metric" }
 
 hex = "0.4.3"
 prost = "0.12.4"
