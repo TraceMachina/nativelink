@@ -123,7 +123,7 @@ export default defineConfig({
               link: "/nativelink-cloud/pants/",
             },
             {
-              label: "API Keys in Production",
+              label: "API Keys in CI",
               link: "/nativelink-cloud/api-key/",
             },
           ],
