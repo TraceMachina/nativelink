@@ -23,30 +23,31 @@ bazel_dep(name = "rules_rust", version = "0.47.1")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
-    rust_analyzer_version = "nightly/2024-05-10",
-    rustfmt_version = "nightly/2024-05-10",
+    rust_analyzer_version = "nightly/2024-07-25",
+    rustfmt_version = "nightly/2024-07-25",
     sha256s = {
-        "2024-05-10/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "34c251c59c99d68d13144ca00f7dd1af47227640ffdd00c6966342535a6c6f6b",
-        "2024-05-10/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "cf705952dd0f4e8d9f6fd69bb3810370e7d8ac78cb96419a2883eee8f182c7fb",
-        "2024-05-10/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "a96ec1120436493e018df070625e46764987d60e7293533fdbfdbca16967c81a",
-        "2024-05-10/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "bc134e14df374e7dc86fa726de75c7d145bc68be9476af5d395252345e41a45f",
-        "2024-05-10/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "878dacc66ead1a12ebc1c9996d4d4be40b8931b8dd6de55433d872f88399fe7d",
-        "2024-05-10/rustc-nightly-x86_64-apple-darwin.tar.xz": "8832320e438a1702571630e12d73194c964c8d21c8fe621cc8bed4ae0ce97625",
-        "2024-05-10/clippy-nightly-x86_64-apple-darwin.tar.xz": "80657ff2c67fe37469940e5983ec868c566b017bc1620f11a6a65e5f029ac42e",
-        "2024-05-10/cargo-nightly-x86_64-apple-darwin.tar.xz": "7390b4d229d9d3a8108c632939426021c12d63ae2681554386a344dd44c50e83",
-        "2024-05-10/llvm-tools-nightly-x86_64-apple-darwin.tar.xz": "b69cd7d16d6fcd78c26a5e78fb9a56fa4116f49d4ece7282253dd9b8fc276b04",
-        "2024-05-10/rust-std-nightly-x86_64-apple-darwin.tar.xz": "0e5f07efa6660c48ceaff776aa4616992a985b5d41247f79304fdaec231e63d2",
-        "2024-05-10/rustc-nightly-aarch64-apple-darwin.tar.xz": "9979984e5f0aa6797ecdc7e414eefe5a0b604b94e8c35e4caa04f9ecfc496e72",
-        "2024-05-10/clippy-nightly-aarch64-apple-darwin.tar.xz": "8915c30cf77cc8a418c42c8a6a8e355b9e3e9ea1278667467af68a779fcf7799",
-        "2024-05-10/cargo-nightly-aarch64-apple-darwin.tar.xz": "12a68a5fec1616d5c7d78cd202b04a12cf21018b688116aed002b2c1b77f54f1",
-        "2024-05-10/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "4055cac34969da2dc652f8070508de73cc03ac578dd6d57e42303dae0a1a9c56",
-        "2024-05-10/llvm-tools-nightly-aarch64-apple-darwin.tar.xz": "e28f47ee89e195bde588fb1a8a799ade56264c7dfc676455596814642c3ed9f5",
-        "2024-05-10/rust-std-nightly-aarch64-apple-darwin.tar.xz": "60447211f476992fb3fd53f08ab11966fa6f4aca4afa218787b5f425a49af3dc",
-        "2024-05-10/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "9a2ced2ec03995ef2c0579c7e3205defbcab27e545caad9466c19a01a3751988",
+        "2024-07-25/rustc-nightly-x86_64-unknown-linux-gnu.tar.xz": "e8fbc4a429fb8242d8429a6b8c37a69a8f9f783071e1a3a87723cc1795be194b",
+        "2024-07-25/clippy-nightly-x86_64-unknown-linux-gnu.tar.xz": "cf705952dd0f4e8d9f6fd69bb3810370e7d8ac78cb96419a2883eee8f182c7fb",
+        "2024-07-25/cargo-nightly-x86_64-unknown-linux-gnu.tar.xz": "a96ec1120436493e018df070625e46764987d60e7293533fdbfdbca16967c81a",
+        "2024-07-25/llvm-tools-nightly-x86_64-unknown-linux-gnu.tar.xz": "bc134e14df374e7dc86fa726de75c7d145bc68be9476af5d395252345e41a45f",
+        "2024-07-25/rust-std-nightly-x86_64-unknown-linux-gnu.tar.xz": "878dacc66ead1a12ebc1c9996d4d4be40b8931b8dd6de55433d872f88399fe7d",
+        "2024-07-25/rustc-nightly-x86_64-apple-darwin.tar.xz": "75887510b414d36f137656e9f3a5fe25d770cdd1692f9cad4adde5c4b40465db",
+        "2024-07-25/clippy-nightly-x86_64-apple-darwin.tar.xz": "a6697a3cf93848e950265bed5691532e800be94d9a1088a1533958451c0be68f",
+        "2024-07-25/cargo-nightly-x86_64-apple-darwin.tar.xz": "7390b4d229d9d3a8108c632939426021c12d63ae2681554386a344dd44c50e83",
+        "2024-07-25/llvm-tools-nightly-x86_64-apple-darwin.tar.xz": "b69cd7d16d6fcd78c26a5e78fb9a56fa4116f49d4ece7282253dd9b8fc276b04",
+        "2024-07-25/rust-std-nightly-x86_64-apple-darwin.tar.xz": "0e5f07efa6660c48ceaff776aa4616992a985b5d41247f79304fdaec231e63d2",
+        "2024-07-25/rustc-nightly-aarch64-apple-darwin.tar.xz": "9979984e5f0aa6797ecdc7e414eefe5a0b604b94e8c35e4caa04f9ecfc496e72",
+        "2024-07-25/clippy-nightly-aarch64-apple-darwin.tar.xz": "8915c30cf77cc8a418c42c8a6a8e355b9e3e9ea1278667467af68a779fcf7799",
+        "2024-07-25/cargo-nightly-aarch64-apple-darwin.tar.xz": "12a68a5fec1616d5c7d78cd202b04a12cf21018b688116aed002b2c1b77f54f1",
+        "2024-07-25/rustfmt-nightly-aarch64-apple-darwin.tar.xz": "4055cac34969da2dc652f8070508de73cc03ac578dd6d57e42303dae0a1a9c56",
+        "2024-07-25/llvm-tools-nightly-aarch64-apple-darwin.tar.xz": "e28f47ee89e195bde588fb1a8a799ade56264c7dfc676455596814642c3ed9f5",
+        "2024-07-25/rust-std-nightly-aarch64-apple-darwin.tar.xz": "60447211f476992fb3fd53f08ab11966fa6f4aca4afa218787b5f425a49af3dc",
+        "2024-07-25/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "9a2ced2ec03995ef2c0579c7e3205defbcab27e545caad9466c19a01a3751988",
+        "rust-src-nightly.tar.xz": "e8d1789175b1ed579d6bd5bff64e6a6bb19444208e14825b24cab4e40e2c11cc",
     },
     versions = [
-        "1.79.0",
-        "nightly/2024-05-10",
+        "1.80.0",
+        "nightly/2024-07-25",
     ],
 )
 
@@ -56,7 +57,7 @@ rust_host_tools = use_extension(
 )
 rust_host_tools.host_tools(
     edition = "2021",
-    version = "1.79.0",
+    version = "1.80.0",
 )
 
 use_repo(rust, "rust_toolchains")
