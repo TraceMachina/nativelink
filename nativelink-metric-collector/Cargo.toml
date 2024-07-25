@@ -1,0 +1,24 @@
+[package]
+name = "nativelink-metric-collector"
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.79.0"
+
+[dependencies]
+tracing = "0.1.40"
+opentelemetry_sdk = { version = "0.23.0", features = ["metrics", "rt-tokio"] }
+tracing-subscriber = "0.3.18"
+# tracing-opentelemetry = { version = "0.25.0", features = ["metrics"] }
+# opentelemetry-stdout = "0.5.0"
+# opentelemetry_api = { version = "0.20.0", features = ["metrics"] }
+opentelemetry = { version = "0.23.0", features = ["metrics"] }
+parking_lot = "0.12.2"
+# tokio = { version = "1.37.0" }
+nativelink-metric = { path = "../nativelink-metric" }
+serde_json = "1.0.120"
+serde = "1.0.204"
+
+[dev-dependencies]
+nativelink-macro = { path = "../nativelink-macro" }
+# nativelink-util = { path = "../nativelink-util" }
+nativelink-error = { path = "../nativelink-error" }

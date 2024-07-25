@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::noop_store::NoopStore;
@@ -230,6 +231,7 @@ fn calculate_range_test() {
 
 #[nativelink_test]
 async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
     struct DropCheckStore {
         drop_flag: Arc<AtomicBool>,
         read_rx: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
@@ -300,12 +302,6 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
         fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
             self
-        }
-
-        fn register_metrics(
-            self: Arc<Self>,
-            _registry: &mut nativelink_util::metrics_utils::Registry,
-        ) {
         }
     }
 

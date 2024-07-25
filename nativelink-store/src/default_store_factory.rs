@@ -20,7 +20,6 @@ use futures::{Future, TryStreamExt};
 use nativelink_config::stores::StoreConfig;
 use nativelink_error::Error;
 use nativelink_util::health_utils::HealthRegistryBuilder;
-use nativelink_util::metrics_utils::Registry;
 use nativelink_util::store_trait::{Store, StoreDriver};
 
 use crate::completeness_checking_store::CompletenessCheckingStore;
@@ -45,7 +44,6 @@ type FutureMaybeStore<'a> = Box<dyn Future<Output = Result<Store, Error>> + 'a>;
 pub fn store_factory<'a>(
     backend: &'a StoreConfig,
     store_manager: &'a Arc<StoreManager>,
-    maybe_store_metrics: Option<&'a mut Registry>,
     maybe_health_registry_builder: Option<&'a mut HealthRegistryBuilder>,
 ) -> Pin<FutureMaybeStore<'a>> {
     Box::pin(async move {
@@ -55,36 +53,36 @@ pub fn store_factory<'a>(
             StoreConfig::redis_store(config) => RedisStore::new(config)?,
             StoreConfig::verify(config) => VerifyStore::new(
                 config,
-                store_factory(&config.backend, store_manager, None, None).await?,
+                store_factory(&config.backend, store_manager, None).await?,
             ),
             StoreConfig::compression(config) => CompressionStore::new(
                 *config.clone(),
-                store_factory(&config.backend, store_manager, None, None).await?,
+                store_factory(&config.backend, store_manager, None).await?,
             )?,
             StoreConfig::dedup(config) => DedupStore::new(
                 config,
-                store_factory(&config.index_store, store_manager, None, None).await?,
-                store_factory(&config.content_store, store_manager, None, None).await?,
+                store_factory(&config.index_store, store_manager, None).await?,
+                store_factory(&config.content_store, store_manager, None).await?,
             ),
             StoreConfig::existence_cache(config) => ExistenceCacheStore::new(
                 config,
-                store_factory(&config.backend, store_manager, None, None).await?,
+                store_factory(&config.backend, store_manager, None).await?,
             ),
             StoreConfig::completeness_checking(config) => CompletenessCheckingStore::new(
-                store_factory(&config.backend, store_manager, None, None).await?,
-                store_factory(&config.cas_store, store_manager, None, None).await?,
+                store_factory(&config.backend, store_manager, None).await?,
+                store_factory(&config.cas_store, store_manager, None).await?,
             ),
             StoreConfig::fast_slow(config) => FastSlowStore::new(
                 config,
-                store_factory(&config.fast, store_manager, None, None).await?,
-                store_factory(&config.slow, store_manager, None, None).await?,
+                store_factory(&config.fast, store_manager, None).await?,
+                store_factory(&config.slow, store_manager, None).await?,
             ),
             StoreConfig::filesystem(config) => <FilesystemStore>::new(config).await?,
             StoreConfig::ref_store(config) => RefStore::new(config, Arc::downgrade(store_manager)),
             StoreConfig::size_partitioning(config) => SizePartitioningStore::new(
                 config,
-                store_factory(&config.lower_store, store_manager, None, None).await?,
-                store_factory(&config.upper_store, store_manager, None, None).await?,
+                store_factory(&config.lower_store, store_manager, None).await?,
+                store_factory(&config.upper_store, store_manager, None).await?,
             ),
             StoreConfig::grpc(config) => GrpcStore::new(config).await?,
             StoreConfig::noop => NoopStore::new(),
@@ -92,18 +90,13 @@ pub fn store_factory<'a>(
                 let stores = config
                     .stores
                     .iter()
-                    .map(|store_config| {
-                        store_factory(&store_config.store, store_manager, None, None)
-                    })
+                    .map(|store_config| store_factory(&store_config.store, store_manager, None))
                     .collect::<FuturesOrdered<_>>()
                     .try_collect::<Vec<_>>()
                     .await?;
                 ShardStore::new(config, stores)?
             }
         };
-        if let Some(store_metrics) = maybe_store_metrics {
-            store.clone().register_metrics(store_metrics);
-        }
 
         if let Some(health_registry_builder) = maybe_health_registry_builder {
             store.clone().register_health(health_registry_builder);

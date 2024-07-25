@@ -40,6 +40,8 @@ nativelink-service = { path = "nativelink-service" }
 nativelink-store = { path = "nativelink-store" }
 nativelink-util = { path = "nativelink-util" }
 nativelink-worker = { path = "nativelink-worker" }
+nativelink-metric = { path = "nativelink-metric" }
+nativelink-metric-collector = { path = "nativelink-metric-collector" }
 
 async-lock = "3.3.0"
 axum = "0.6.20"
@@ -58,3 +60,15 @@ tokio-rustls = "0.25.0"
 tonic = { version = "0.11.0", features = ["gzip", "tls"] }
 tower = "0.4.13"
 tracing = "0.1.40"
+opentelemetry_sdk = { version = "0.23.0", features = ["metrics"] }
+tracing-subscriber = "0.3.18"
+tracing-opentelemetry = { version = "0.25.0", features = ["metrics"] }
+opentelemetry-stdout = "0.5.0"
+opentelemetry_api = { version = "0.20.0", features = ["metrics"] }
+opentelemetry = { version = "0.23.0", features = ["metrics"] }
+prometheus = "0.13.4"
+opentelemetry-prometheus = "0.16.0"
+serde_json = "1.0.120"
+
+[dev-dependencies]
+nativelink-metric-tests = { path = "nativelink-metric-tests" }

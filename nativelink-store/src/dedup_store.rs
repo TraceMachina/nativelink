@@ -21,6 +21,7 @@ use bincode::config::{FixintEncoding, WithOtherIntEncoding};
 use bincode::{DefaultOptions, Options};
 use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
@@ -43,10 +44,14 @@ pub struct DedupIndex {
     pub entries: Vec<DigestInfo>,
 }
 
+#[derive(MetricsComponent)]
 pub struct DedupStore {
+    #[metric(group = "index_store")]
     index_store: Store,
+    #[metric(group = "content_store")]
     content_store: Store,
     fast_cdc_decoder: FastCDC,
+    #[metric(help = "Maximum number of concurrent fetches per get")]
     max_concurrent_fetch_per_get: usize,
     bincode_options: WithOtherIntEncoding<DefaultOptions, FixintEncoding>,
 }

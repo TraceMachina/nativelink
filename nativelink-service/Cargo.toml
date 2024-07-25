@@ -27,6 +27,7 @@ uuid = { version = "1.8.0", features = ["v4"] }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
+nativelink-metric = { path = "../nativelink-metric" }
 
 async-trait = "0.1.80"
 async-lock = "3.3.0"

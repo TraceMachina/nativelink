@@ -15,6 +15,9 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use nativelink_metric::{
+    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
 use serde::{Deserialize, Serialize};
 
@@ -25,8 +28,9 @@ use serde::{Deserialize, Serialize};
 /// all the platform property keys configured on the worker.
 ///
 /// Additional rules may be applied based on `PlatfromPropertyValue`.
-#[derive(Eq, PartialEq, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Clone, Debug, Default, Serialize, Deserialize, MetricsComponent)]
 pub struct PlatformProperties {
+    #[metric]
     pub properties: HashMap<String, PlatformPropertyValue>,
 }
 
@@ -115,5 +119,22 @@ impl PlatformPropertyValue {
             Self::Priority(value) => Cow::Borrowed(value),
             Self::Unknown(value) => Cow::Borrowed(value),
         }
+    }
+}
+
+impl MetricsComponent for PlatformPropertyValue {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let _enter = match self {
+            Self::Exact(v) => group!("exact").in_scope(|| v.publish(kind, field_metadata)),
+            Self::Minimum(v) => group!("minimum").in_scope(|| v.publish(kind, field_metadata)),
+            Self::Priority(v) => group!("priority").in_scope(|| v.publish(kind, field_metadata)),
+            Self::Unknown(v) => group!("unknown").in_scope(|| v.publish(kind, field_metadata)),
+        };
+
+        Ok(MetricPublishKnownKindData::Component)
     }
 }
