@@ -3,9 +3,6 @@ name = "nativelink-store"
 version = "0.4.0"
 edition = "2021"
 
-[features]
-redis-test = ["fred/mocks", "fred/debug-ids"]
-
 [dependencies]
 nativelink-error = { path = "../nativelink-error" }
 nativelink-config = { path = "../nativelink-config" }
@@ -31,6 +28,7 @@ fred = { version = "9.0.3", features = [
   "sentinel-client",
   "sentinel-auth",
   "subscriber-client",
+  "mocks",
 ] }
 futures = "0.3.30"
 hex = "0.4.3"

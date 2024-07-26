@@ -92,7 +92,6 @@ rust_test_suite(
         "tests/size_partitioning_store_test.rs",
         "tests/verify_store_test.rs",
     ],
-    crate_features = ["redis-test"],
     proc_macro_deps = [
         "//nativelink-macro",
         "@crates//:async-trait",
