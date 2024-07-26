@@ -22,10 +22,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use fred::clients::{RedisPool, SubscriberClient};
-use fred::mocks::{MockCommand, Mocks};
+use fred::mocks::Mocks;
 use fred::prelude::*;
 use nativelink_config::stores::RedisMode;
-use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
@@ -34,8 +34,8 @@ use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
 
-const READ_CHUNK_SIZE: usize = 64 * 1024;
-const CONNECTION_POOL_SIZE: usize = 3;
+pub const READ_CHUNK_SIZE: usize = 64 * 1024;
+pub const CONNECTION_POOL_SIZE: usize = 3;
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 pub struct RedisStore {
@@ -60,16 +60,7 @@ pub struct RedisStore {
 impl RedisStore {
     /// Create a new `RedisStore` from the given configuration
     pub fn new(config: &nativelink_config::stores::RedisStore) -> Result<Arc<Self>, Error> {
-        #[derive(Debug)]
-        struct PanicMock;
-        impl Mocks for PanicMock {
-            fn process_command(&self, _: MockCommand) -> Result<RedisValue, RedisError> {
-                panic!()
-            }
-        }
-        const NO_MOCKS: Option<PanicMock> = None;
-
-        Self::new_with_name_generator_and_mocks(config, || Uuid::new_v4().to_string(), NO_MOCKS)
+        Self::new_with_name_generator_and_mocks(config, || Uuid::new_v4().to_string(), None)
             .map(Arc::new)
     }
 
@@ -77,7 +68,7 @@ impl RedisStore {
     pub fn new_with_name_generator_and_mocks(
         config: &nativelink_config::stores::RedisStore,
         temp_name_generator_fn: fn() -> String,
-        mocks: Option<impl Mocks>,
+        mocks: Option<Arc<dyn Mocks>>,
     ) -> Result<Self, Error> {
         if config.addresses.is_empty() {
             return Err(make_err!(
@@ -95,7 +86,7 @@ impl RedisStore {
         }
         .err_tip_with_code(|_| (Code::InvalidArgument, "while parsing redis node address"))?;
 
-        redis_config.mocks = mocks.map(|m| Arc::new(m) as Arc<dyn Mocks>);
+        redis_config.mocks = mocks;
 
         let mut builder = Builder::from_config(redis_config);
         builder
@@ -302,10 +293,9 @@ impl StoreDriver for RedisStore {
         // To follow RBE spec we need to consider any digest's with
         // zero size to be existing.
         if is_zero_digest(key.borrow()) {
-            writer
+            return writer
                 .send_eof()
-                .err_tip(|| "Failed to send zero EOF in redis store get_part")?;
-            return Ok(());
+                .err_tip(|| "Failed to send zero EOF in redis store get_part");
         }
 
         let client = self.client_pool.next();
@@ -331,44 +321,49 @@ impl StoreDriver for RedisStore {
             };
         }
 
-        let mut current_start = offset;
-        let max_length = length.unwrap_or(isize::MAX as usize);
-        let end_position = current_start.saturating_add(max_length);
+        // N.B. the `-1`'s you see here are because redis GETRANGE is inclusive at both the start and end, so when we
+        // do math with indices we change them to be exclusive at the end
+
+        // we want to read the data at the key from `offset` to `offset + length`
+        let data_start = offset;
+        let data_end = data_start.saturating_add(length.unwrap_or(isize::MAX as usize)) - 1;
+
+        // and we don't ever want to read more than `READ_CHUNK_SIZE` bytes at a time, so we'll need to iterate
+        let mut chunk_start = data_start;
+        let mut chunk_end = cmp::min(data_start.saturating_add(READ_CHUNK_SIZE) - 1, data_end);
 
         loop {
-            // Note: Redis getrange is inclusive, so we need to subtract 1 from the end.
-            let current_end =
-                cmp::min(current_start.saturating_add(READ_CHUNK_SIZE), end_position) - 1;
             let chunk: Bytes = client
-                .getrange(encoded_key, current_start, current_end)
+                .getrange(encoded_key, chunk_start, chunk_end)
                 .await
                 .err_tip(|| "In RedisStore::get_part::getrange")?;
 
-            if chunk.is_empty() {
+            if chunk.len() < READ_CHUNK_SIZE || chunk_end == data_end {
+                // the two conditions are:
+                // - we received less than a full chunk -- this should only happen when we're done reading the data
+                // - we read up to `data_end` i.e. we don't want any more data.
+
+                if !chunk.is_empty() {
+                    writer
+                        .send(chunk)
+                        .await
+                        .err_tip(|| "Failed to write data in RedisStore::get_part")?;
+                }
+
                 break writer
                     .send_eof()
                     .err_tip(|| "Failed to write EOF in redis store get_part");
             }
 
-            // Note: Redis getrange is inclusive, so we need to add 1 to the end.
-            let was_partial_data = chunk.len() != current_end - current_start + 1;
-            current_start += chunk.len();
+            // we received a full chunk's worth of data, so write it
             writer
                 .send(chunk)
                 .await
-                .err_tip(|| "Failed to write data in Redis store")?;
+                .err_tip(|| "Failed to write data in RedisStore::get_part")?;
 
-            // If we got partial data or the exact requested number of bytes, we are done.
-            if writer.get_bytes_written() as usize == max_length || was_partial_data {
-                break writer
-                    .send_eof()
-                    .err_tip(|| "Failed to write EOF in redis store get_part");
-            }
-
-            error_if!(
-                writer.get_bytes_written() as usize > max_length,
-                "Data received exceeds requested length"
-            );
+            // ...and go grab the next chunk
+            chunk_start = chunk_end + 1;
+            chunk_end = cmp::min(chunk_start.saturating_add(READ_CHUNK_SIZE) - 1, data_end);
         }
     }
 
