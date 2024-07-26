@@ -21,6 +21,7 @@ uuid = { version = "1.8.0", features = ["v4"] }
 futures = "0.3.30"
 hashbrown = "0.14"
 lru = "0.12.3"
+mock_instant = "0.3.2"
 parking_lot = "0.12.2"
 rand = "0.8.5"
 scopeguard = "1.2.0"

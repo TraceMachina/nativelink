@@ -17,12 +17,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use mock_instant::{Instant as MockInstant, MockClock};
+use mock_instant::MockClock;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::evicting_map::{EvictingMap, InstantWrapper, LenEntry};
+use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_util::instant_wrapper::MockInstantWrapped;
 use pretty_assertions::assert_eq;
 
 #[derive(Clone, PartialEq, Debug)]
@@ -47,23 +48,6 @@ impl From<Bytes> for BytesWrapper {
     }
 }
 
-/// Our mocked out instant that we can pass to our EvictionMap.
-struct MockInstantWrapped(MockInstant);
-
-impl InstantWrapper for MockInstantWrapped {
-    fn from_secs(_secs: u64) -> Self {
-        MockInstantWrapped(MockInstant::now())
-    }
-
-    fn unix_timestamp(&self) -> u64 {
-        100
-    }
-
-    fn elapsed(&self) -> Duration {
-        self.0.elapsed()
-    }
-}
-
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
 const HASH2: &str = "123456789abcdef000000000000000000000000000000000123456789abcdef1";
 const HASH3: &str = "23456789abcdef000000000000000000000000000000000123456789abcdef12";
@@ -78,7 +62,7 @@ async fn insert_purges_at_max_count() -> Result<(), Error> {
             max_bytes: 0,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
     evicting_map
         .insert(DigestInfo::try_new(HASH1, 0)?, Bytes::new().into())
@@ -134,7 +118,7 @@ async fn insert_purges_at_max_bytes() -> Result<(), Error> {
             max_bytes: 17,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
     const DATA: &str = "12345678";
     evicting_map
@@ -191,7 +175,7 @@ async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
             max_bytes: 17,
             evict_bytes: 9,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
     const DATA: &str = "12345678";
     evicting_map
@@ -248,7 +232,7 @@ async fn insert_purges_at_max_seconds() -> Result<(), Error> {
             max_bytes: 0,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
 
     const DATA: &str = "12345678";
@@ -309,7 +293,7 @@ async fn get_refreshes_time() -> Result<(), Error> {
             max_bytes: 0,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
 
     const DATA: &str = "12345678";
@@ -387,7 +371,7 @@ async fn unref_called_on_replace() -> Result<(), Error> {
             max_bytes: 0,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
 
     const DATA1: &str = "12345678";
@@ -433,7 +417,7 @@ async fn contains_key_refreshes_time() -> Result<(), Error> {
             max_bytes: 0,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
 
     const DATA: &str = "12345678";
@@ -487,7 +471,7 @@ async fn hashes_equal_sizes_different_doesnt_override() -> Result<(), Error> {
             max_bytes: 0,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
 
     let value1 = BytesWrapper(Bytes::from_static(b"12345678"));
@@ -540,7 +524,7 @@ async fn get_evicts_on_time() -> Result<(), Error> {
             max_bytes: 0,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
 
     const DATA: &str = "12345678";
@@ -572,7 +556,7 @@ async fn remove_evicts_on_time() -> Result<(), Error> {
             max_bytes: 0,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
 
     const DATA: &str = "12345678";
@@ -606,7 +590,7 @@ async fn range_multiple_items_test() -> Result<(), Error> {
             max_bytes: 0,
             evict_bytes: 0,
         },
-        MockInstantWrapped(MockInstant::now()),
+        MockInstantWrapped::default(),
     );
 
     const KEY1: &str = "key-123";

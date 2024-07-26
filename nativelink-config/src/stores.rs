@@ -712,7 +712,8 @@ pub struct EvictionPolicy {
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub evict_bytes: usize,
 
-    /// Maximum number of seconds for an entry to live before an eviction.
+    /// Maximum number of seconds for an entry to live since it was last
+    /// accessed before it is evicted.
     /// Default: 0. Zero means never evict based on time.
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_seconds: u32,
