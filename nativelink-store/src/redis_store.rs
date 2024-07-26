@@ -22,7 +22,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use fred::clients::{RedisPool, SubscriberClient};
-use fred::mocks::Mocks;
+use fred::mocks::{MockCommand, Mocks};
 use fred::prelude::*;
 use nativelink_config::stores::RedisMode;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
@@ -36,15 +36,6 @@ use crate::cas_utils::is_zero_digest;
 
 const READ_CHUNK_SIZE: usize = 64 * 1024;
 const CONNECTION_POOL_SIZE: usize = 3;
-
-#[derive(Debug)]
-struct PanicMock;
-impl Mocks for PanicMock {
-    fn process_command(&self, _: fred::mocks::MockCommand) -> Result<RedisValue, RedisError> {
-        panic!()
-    }
-}
-const NO_MOCKS: Option<PanicMock> = None;
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 pub struct RedisStore {
@@ -69,6 +60,15 @@ pub struct RedisStore {
 impl RedisStore {
     /// Create a new `RedisStore` from the given configuration
     pub fn new(config: &nativelink_config::stores::RedisStore) -> Result<Arc<Self>, Error> {
+        #[derive(Debug)]
+        struct PanicMock;
+        impl Mocks for PanicMock {
+            fn process_command(&self, _: MockCommand) -> Result<RedisValue, RedisError> {
+                panic!()
+            }
+        }
+        const NO_MOCKS: Option<PanicMock> = None;
+
         Self::new_with_name_generator_and_mocks(config, || Uuid::new_v4().to_string(), NO_MOCKS)
             .map(Arc::new)
     }

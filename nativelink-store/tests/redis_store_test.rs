@@ -14,6 +14,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::thread::panicking;
 
 use bytes::Bytes;
 use fred::bytes_utils::string::Str;
@@ -57,9 +58,6 @@ struct MockRedisBackend {
     /// Commands we expect to encounter, and results we to return to the client.
     // push from the back, pop from the front
     expected: Mutex<VecDeque<(MockCommand, Result<RedisValue, RedisError>)>>,
-
-    // set if we panic before dropping, so we should avoid panicking during drop
-    poisoned: bool,
 }
 
 impl MockRedisBackend {
@@ -112,11 +110,14 @@ impl Mocks for MockRedisBackend {
 
 impl Drop for MockRedisBackend {
     fn drop(&mut self) {
-        if self.poisoned {
+        if panicking() {
             return;
         }
 
-        let expected = self.expected.get_mut().unwrap();
+        let Ok(expected) = self.expected.get_mut() else {
+            return;
+        };
+
         if expected.is_empty() {
             return;
         }
