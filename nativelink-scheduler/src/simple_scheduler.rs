@@ -14,6 +14,7 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
@@ -22,6 +23,7 @@ use nativelink_error::{Error, ResultExt};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, ClientOperationId, OperationId, WorkerId,
 };
+use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -245,25 +247,32 @@ impl SimpleScheduler {
     pub fn new(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
-        Self::new_with_callback(scheduler_cfg, || {
-            // The cost of running `do_try_match()` is very high, but constant
-            // in relation to the number of changes that have happened. This
-            // means that grabbing this lock to process `do_try_match()` should
-            // always yield to any other tasks that might want the lock. The
-            // easiest and most fair way to do this is to sleep for a small
-            // amount of time. Using something like tokio::task::yield_now()
-            // does not yield as aggresively as we'd like if new futures are
-            // scheduled within a future.
-            tokio::time::sleep(Duration::from_millis(1))
-        })
+        Self::new_with_callback(
+            scheduler_cfg,
+            || {
+                // The cost of running `do_try_match()` is very high, but constant
+                // in relation to the number of changes that have happened. This
+                // means that grabbing this lock to process `do_try_match()` should
+                // always yield to any other tasks that might want the lock. The
+                // easiest and most fair way to do this is to sleep for a small
+                // amount of time. Using something like tokio::task::yield_now()
+                // does not yield as aggresively as we'd like if new futures are
+                // scheduled within a future.
+                tokio::time::sleep(Duration::from_millis(1))
+            },
+            SystemTime::now,
+        )
     }
 
     pub fn new_with_callback<
         Fut: Future<Output = ()> + Send,
         F: Fn() -> Fut + Send + Sync + 'static,
+        I: InstantWrapper,
+        NowFn: Fn() -> I + Clone + Send + Sync + 'static,
     >(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
         on_matching_engine_run: F,
+        now_fn: NowFn,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             scheduler_cfg
@@ -291,10 +300,13 @@ impl SimpleScheduler {
         let state_manager = SimpleSchedulerStateManager::new(
             tasks_or_worker_change_notify.clone(),
             max_job_retries,
-            MemoryAwaitedActionDb::new(&EvictionPolicy {
-                max_seconds: retain_completed_for_s,
-                ..Default::default()
-            }),
+            MemoryAwaitedActionDb::new(
+                &EvictionPolicy {
+                    max_seconds: retain_completed_for_s,
+                    ..Default::default()
+                },
+                now_fn,
+            ),
         );
 
         let worker_scheduler = ApiWorkerScheduler::new(

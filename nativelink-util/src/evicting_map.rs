@@ -20,7 +20,6 @@ use std::future::Future;
 use std::hash::Hash;
 use std::ops::{DerefMut, RangeBounds};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use lru::LruCache;
@@ -28,36 +27,13 @@ use nativelink_config::stores::EvictionPolicy;
 use serde::{Deserialize, Serialize};
 use tracing::{event, Level};
 
+use crate::instant_wrapper::InstantWrapper;
 use crate::metrics_utils::{CollectorState, Counter, CounterWithTime, MetricsComponent};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct SerializedLRU<K> {
     pub data: Vec<(K, i32)>,
     pub anchor_time: u64,
-}
-
-/// Wrapper used to abstract away which underlying Instant impl we are using.
-/// This is needed for testing.
-pub trait InstantWrapper: 'static {
-    fn from_secs(secs: u64) -> Self;
-    fn unix_timestamp(&self) -> u64;
-    fn elapsed(&self) -> Duration;
-}
-
-impl InstantWrapper for SystemTime {
-    fn from_secs(secs: u64) -> SystemTime {
-        SystemTime::UNIX_EPOCH
-            .checked_add(Duration::from_secs(secs))
-            .unwrap()
-    }
-
-    fn unix_timestamp(&self) -> u64 {
-        self.duration_since(UNIX_EPOCH).unwrap().as_secs()
-    }
-
-    fn elapsed(&self) -> Duration {
-        <SystemTime>::elapsed(self).unwrap()
-    }
 }
 
 #[derive(Debug)]
@@ -345,7 +321,7 @@ where
 
         let lru_len = state.lru.len();
         for (key, result) in keys.into_iter().zip(results.iter_mut()) {
-            match state.lru.get(key.borrow()) {
+            match state.lru.get_mut(key.borrow()) {
                 Some(entry) => {
                     // Since we are not inserting anythign we don't need to evict based
                     // on the size of the store.
@@ -354,6 +330,7 @@ where
                     // we are here.
                     let should_evict = self.should_evict(lru_len, entry, 0, u64::MAX);
                     if !should_evict && entry.data.touch().await {
+                        entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
                         *result = Some(entry.data.len());
                     } else {
                         *result = None;
@@ -383,6 +360,7 @@ where
         let entry = state.lru.get_mut(key.borrow())?;
 
         if entry.data.touch().await {
+            entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
             return Some(entry.data.clone());
         }
 

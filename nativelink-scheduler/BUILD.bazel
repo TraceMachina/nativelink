@@ -83,6 +83,7 @@ rust_test_suite(
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:futures",
+        "@crates//:mock_instant",
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:tokio",

@@ -1955,6 +1955,7 @@ dependencies = [
  "futures",
  "hashbrown 0.14.5",
  "lru",
+ "mock_instant",
  "nativelink-config",
  "nativelink-error",
  "nativelink-macro",

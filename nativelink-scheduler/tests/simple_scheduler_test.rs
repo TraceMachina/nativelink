@@ -20,6 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::poll;
 use futures::task::Poll;
+use mock_instant::MockClock;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
@@ -37,6 +38,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
@@ -149,6 +151,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -203,6 +206,7 @@ async fn find_executing_action() -> Result<(), Error> {
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -269,6 +273,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
             ..Default::default()
         },
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest1 = DigestInfo::new([99u8; 32], 512);
     let action_digest2 = DigestInfo::new([88u8; 32], 512);
@@ -436,6 +441,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -517,6 +523,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
     let mut platform_properties = PlatformProperties::default();
@@ -597,6 +604,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -700,6 +708,7 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -741,6 +750,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
             ..Default::default()
         },
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -859,6 +869,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -954,6 +965,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1056,6 +1068,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1154,6 +1167,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1281,6 +1295,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1417,6 +1432,7 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest1 = DigestInfo::new([11u8; 32], 512);
     let action_digest2 = DigestInfo::new([99u8; 32], 512);
@@ -1477,6 +1493,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             ..Default::default()
         },
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1621,6 +1638,7 @@ async fn ensure_scheduler_drops_inner_spawn() -> Result<(), Error> {
             let _drop_checker = drop_checker.clone();
             async move {}
         },
+        MockInstantWrapped::default,
     );
     assert_eq!(dropped.load(Ordering::Relaxed), false);
 
@@ -1642,6 +1660,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &nativelink_config::schedulers::SimpleScheduler::default(),
         || async move {},
+        MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
@@ -1694,6 +1713,67 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
             action_listener.changed().await.unwrap().stage,
             ActionStage::Executing
         );
+    }
+
+    Ok(())
+}
+
+// Note: This is a regression test for:
+// https://github.com/TraceMachina/nativelink/issues/1197
+#[nativelink_test]
+async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &nativelink_config::schedulers::SimpleScheduler::default(),
+        || async move {},
+        MockInstantWrapped::default,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let insert_timestamp = make_system_time(1);
+    let action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        PlatformProperties::default(),
+        insert_timestamp,
+    )
+    .await
+    .unwrap();
+
+    let client_id = action_listener.client_operation_id().clone();
+
+    // Simulate client disconnecting.
+    drop(action_listener);
+
+    let mut new_action_listener = scheduler
+        .find_by_client_operation_id(&client_id)
+        .await
+        .unwrap()
+        .expect("Action not found");
+
+    // We should get one notification saying it's queued.
+    assert_eq!(
+        new_action_listener.changed().await.unwrap().stage,
+        ActionStage::Queued
+    );
+
+    let changed_fut = new_action_listener.changed();
+    tokio::pin!(changed_fut);
+
+    // Now increment time and ensure the action does not get evicted.
+    for _ in 0..500 {
+        MockClock::advance(Duration::from_secs(2));
+        // All others should be pending.
+        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
+        tokio::task::yield_now().await;
+        // Eviction happens when someone touches the internal
+        // evicting map. So we constantly ask for some other client
+        // to trigger eviction logic.
+        scheduler
+            .find_by_client_operation_id(&ClientOperationId::from_raw_string(
+                "dummy_client_id".to_string(),
+            ))
+            .await
+            .unwrap();
     }
 
     Ok(())
