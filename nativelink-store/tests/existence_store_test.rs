@@ -12,12 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nativelink_config::stores::{ExistenceCacheStore as ExistenceCacheStoreConfig, StoreConfig};
+use std::time::Duration;
+
+use mock_instant::MockClock;
+use nativelink_config::stores::{
+    EvictionPolicy, ExistenceCacheStore as ExistenceCacheStoreConfig, StoreConfig,
+};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::{Store, StoreLike};
 use pretty_assertions::assert_eq;
 
@@ -114,5 +120,49 @@ async fn get_part_caches_if_exact_size_set() -> Result<(), Error> {
         store.exists_in_cache(&digest).await,
         "Expected digest to exist in cache"
     );
+    Ok(())
+}
+
+// Regression test for: https://github.com/TraceMachina/nativelink/issues/1199.
+#[nativelink_test]
+async fn ensure_has_requests_eventually_do_let_evictions_happen() -> Result<(), Error> {
+    const VALUE: &str = "123";
+    let inner_store = MemoryStore::new(&nativelink_config::stores::MemoryStore::default());
+    let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
+    inner_store
+        .update_oneshot(digest, VALUE.into())
+        .await
+        .err_tip(|| "Failed to update store")?;
+    let store = ExistenceCacheStore::new_with_time(
+        &ExistenceCacheStoreConfig {
+            backend: StoreConfig::noop,
+            eviction_policy: Some(EvictionPolicy {
+                max_seconds: 10,
+                ..Default::default()
+            }),
+        },
+        Store::new(inner_store.clone()),
+        MockInstantWrapped::default(),
+    );
+
+    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len())));
+    MockClock::advance(Duration::from_secs(3));
+
+    // Now that our existence cache has been populated, remove
+    // it from the inner store.
+    inner_store.remove_entry(digest.into()).await;
+
+    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len())));
+    MockClock::advance(Duration::from_secs(3));
+
+    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len())));
+    MockClock::advance(Duration::from_secs(3));
+
+    assert_eq!(store.has(digest).await, Ok(Some(VALUE.len())));
+    MockClock::advance(Duration::from_secs(3));
+
+    // It should have been evicted from the existence cache by now.
+    assert_eq!(store.has(digest).await, Ok(None));
+
     Ok(())
 }

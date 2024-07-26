@@ -737,7 +737,9 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         // insert them into the cache. In theory it should be able to elide this conversion
         // but it seems to be a bit tricky to get right.
         let keys: Vec<_> = keys.iter().map(|v| v.borrow().into_digest()).collect();
-        self.evicting_map.sizes_for_keys(&keys, results).await;
+        self.evicting_map
+            .sizes_for_keys(&keys, results, false /* peek */)
+            .await;
         // We need to do a special pass to ensure our zero files exist.
         // If our results failed and the result was a zero file, we need to
         // create the file by spec.
