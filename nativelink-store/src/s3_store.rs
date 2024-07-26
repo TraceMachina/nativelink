@@ -311,7 +311,7 @@ impl S3Store {
                     .s3_client
                     .head_object()
                     .bucket(&self.bucket)
-                    .key(&self.make_s3_path(digest.borrow()))
+                    .key(self.make_s3_path(digest.borrow()))
                     .send()
                     .await;
 

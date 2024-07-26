@@ -1874,6 +1874,7 @@ pub struct ToolDetails {
 ///
 /// * name: `build.bazel.remote.execution.v2.requestmetadata-bin`
 /// * contents: the base64 encoded binary `RequestMetadata` message.
+///
 /// Note: the gRPC library serializes binary headers encoded in base64 by
 /// default (<https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#requests>).
 /// Therefore, if the gRPC library is used to pass/retrieve this
@@ -2641,9 +2642,8 @@ pub mod content_addressable_storage_client {
         /// Individual requests may return the following errors, additionally:
         ///
         /// * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the blob.
-        /// * `INVALID_ARGUMENT`: The
-        /// [Digest][build.bazel.remote.execution.v2.Digest] does not match the
-        /// provided data.
+        /// * `INVALID_ARGUMENT`: The [Digest][build.bazel.remote.execution.v2.Digest]
+        ///   does not match the provided data.
         pub async fn batch_update_blobs(
             &mut self,
             request: impl tonic::IntoRequest<super::BatchUpdateBlobsRequest>,
@@ -3578,9 +3578,8 @@ pub mod content_addressable_storage_server {
         /// Individual requests may return the following errors, additionally:
         ///
         /// * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the blob.
-        /// * `INVALID_ARGUMENT`: The
-        /// [Digest][build.bazel.remote.execution.v2.Digest] does not match the
-        /// provided data.
+        /// * `INVALID_ARGUMENT`: The [Digest][build.bazel.remote.execution.v2.Digest]
+        ///   does not match the provided data.
         async fn batch_update_blobs(
             &self,
             request: tonic::Request<super::BatchUpdateBlobsRequest>,

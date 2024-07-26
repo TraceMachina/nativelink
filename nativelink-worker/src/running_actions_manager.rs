@@ -655,8 +655,10 @@ impl RunningActionImpl {
     }
 
     /// Prepares any actions needed to execution this action. This action will do the following:
+    ///
     /// * Download any files needed to execute the action
     /// * Build a folder with all files needed to execute the action.
+    ///
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
     async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {

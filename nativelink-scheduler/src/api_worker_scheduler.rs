@@ -468,7 +468,7 @@ impl MetricsComponent for ApiWorkerScheduler {
         }
         for (property, prop_value) in props {
             c.publish(
-                &format!("{property}_available_properties"),
+                format!("{property}_available_properties"),
                 &prop_value,
                 format!("Total sum of available properties for {property}"),
             );

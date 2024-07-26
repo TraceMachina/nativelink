@@ -541,8 +541,9 @@ pub struct UploadActionResultConfig {
     /// - {action_digest_size} - Action digest size.
     /// - {historical_results_hash} - HistoricalExecuteResponse digest hash.
     /// - {historical_results_size} - HistoricalExecuteResponse digest size.
-    /// A common use case of this is to provide a link to the web page that contains more
-    /// useful information for the user.
+    ///
+    /// A common use case of this is to provide a link to the web page that
+    /// contains more useful information for the user.
     ///
     /// An example that is fully compatible with `bb_browser` is:
     /// <https://example.com/my-instance-name-here/blobs/{digest_function}/action/{action_digest_hash}-{action_digest_size}/>

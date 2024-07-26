@@ -12,7 +12,6 @@
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
     };
     crane = {
       url = "github:ipetkov/crane";
@@ -37,7 +36,7 @@
       systems = [
         "x86_64-linux"
         "x86_64-darwin"
-        "apps.aarch64-linux.native"
+        "aarch64-linux"
         "aarch64-darwin"
       ];
       imports = [
@@ -51,7 +50,7 @@
         ...
       }: let
         stable-rust-version = "1.79.0";
-        nightly-rust-version = "2024-05-10";
+        nightly-rust-version = "2024-07-24";
 
         # TODO(aaronmondal): Make musl builds work on Darwin.
         # See: https://github.com/TraceMachina/nativelink/issues/751
@@ -143,7 +142,7 @@
 
         generate-toolchains = import ./tools/generate-toolchains.nix {inherit pkgs;};
 
-        native-cli = import ./native-cli/default.nix {inherit pkgs;};
+        native-cli = pkgs.callPackage ./native-cli/default.nix {};
 
         docs = pkgs.callPackage ./tools/docs.nix {rust = stable-rust.default;};
 
@@ -209,7 +208,6 @@
             patches = [
               ./tools/nixpkgs_link_libunwind_and_libcxx.diff
               ./tools/nixpkgs_disable_ratehammering_pulumi_tests.diff
-              ./tools/nixpkgs_trivy_0_52_2.diff
               ./tools/nixpkgs_playwright.diff
             ];
           };
@@ -283,7 +281,8 @@
               pkgs.docker-client
               pkgs.kind
               pkgs.tektoncd-cli
-              (pkgs.pulumi.withPackages (ps: [ps.pulumi-language-go]))
+              pkgs.pulumi
+              pkgs.pulumiPackages.pulumi-language-go
               pkgs.go
               pkgs.kustomize
               pkgs.nodePackages.pnpm

@@ -125,8 +125,8 @@ impl TryFrom<&str> for OperationId {
     ///
     /// # Returns
     ///
-    /// - `Result<OperationId, Error>`: Returns `Ok(OperationId)` if the conversion is
-    /// successful, or an `Err(Error)` if it fails.
+    /// - `Result<OperationId, Error>`: Returns `Ok(OperationId)` if the
+    ///   conversion is successful, or an `Err(Error)` if it fails.
     ///
     /// # Errors
     ///
