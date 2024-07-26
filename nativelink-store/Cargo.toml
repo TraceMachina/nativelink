@@ -21,7 +21,7 @@ byteorder = "1.5.0"
 bytes = "1.6.0"
 filetime = "0.2.23"
 fred = { version = "9.0.3", features = [
-  "enable-rustls",
+  "enable-rustls-ring",
   "metrics",
   "blocking-encoding",
   "custom-reconnect-errors",
