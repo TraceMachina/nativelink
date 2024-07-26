@@ -306,7 +306,7 @@ where
         Q: Ord + Hash + Eq + Debug,
     {
         let mut results = [None];
-        self.sizes_for_keys([key], &mut results[..]).await;
+        self.sizes_for_keys([key], &mut results[..], false).await;
         results[0]
     }
 
@@ -314,8 +314,14 @@ where
     /// to be provided for storing the resulting key sizes. Each index value in
     /// `keys` maps directly to the size value for the key in `results`.
     /// If no key is found in the internal map, `None` is filled in its place.
-    pub async fn sizes_for_keys<It, Q, R>(&self, keys: It, results: &mut [Option<usize>])
-    where
+    /// If `peek` is set to `true`, the items are not promoted to the front of the
+    /// LRU cache. Note: peek may still evict, but won't promote.
+    pub async fn sizes_for_keys<It, Q, R>(
+        &self,
+        keys: It,
+        results: &mut [Option<usize>],
+        peek: bool,
+    ) where
         It: IntoIterator<Item = R>,
         // This may look strange, but what we are doing is saying:
         // * `K` must be able to borrow `Q`
@@ -330,7 +336,12 @@ where
 
         let lru_len = state.lru.len();
         for (key, result) in keys.into_iter().zip(results.iter_mut()) {
-            match state.lru.get_mut(key.borrow()) {
+            let maybe_entry = if peek {
+                state.lru.peek_mut(key.borrow())
+            } else {
+                state.lru.get_mut(key.borrow())
+            };
+            match maybe_entry {
                 Some(entry) => {
                     // Since we are not inserting anythign we don't need to evict based
                     // on the size of the store.
@@ -338,7 +349,9 @@ where
                     // based on the current time. In such case, we remove the item while
                     // we are here.
                     let should_evict = self.should_evict(lru_len, entry, 0, u64::MAX);
-                    if !should_evict && entry.data.touch().await {
+                    if !should_evict && peek {
+                        *result = Some(entry.data.len());
+                    } else if !should_evict && entry.data.touch().await {
                         entry.seconds_since_anchor = self.anchor_time.elapsed().as_secs() as i32;
                         *result = Some(entry.data.len());
                     } else {
