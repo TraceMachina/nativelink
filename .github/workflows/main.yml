@@ -19,8 +19,6 @@ jobs:
   nativelink-dot-com-build-on-main-test:
     runs-on: ubuntu-22.04
     environment: production
-    # Only run on main branch.
-    if: github.ref == 'refs/heads/main'
     steps:
     - name: Checkout
       uses: >- # v4.1.1
@@ -34,12 +32,13 @@ jobs:
       shell: bash
       run: |
         bazel test \
-          --remote_cache=${{ vars.NATIVELINK_COM_REMOTE_CACHE_URL }} \
-          --remote_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_backend=${{ vars.NATIVELINK_COM_BES_URL }} \
-          --bes_header=${{ secrets.NATIVELINK_COM_API_HEADER }} \
-          --bes_results_url=${{ vars.NATIVELINK_COM_BES_RESULTS_URL }} \
-          --remote_header=x-nativelink-project=nativelink-ci \
+          --remote_cache=grpcs://cas-tracemachina-shared.build-faster.nativelink.net \
+          --remote_header=x-nativelink-api-key=${{ github.ref == 'refs/heads/main' && secrets.NATIVELINK_COM_API_HEADER || '065f02f53f26a12331d5cfd00a778fb243bfb4e857b8fcd4c99273edfb15deae' }} \
+          --bes_backend=grpcs://bes-tracemachina-shared.build-faster.nativelink.net \
+          --bes_header=x-nativelink-api-key=${{ github.ref == 'refs/heads/main' && secrets.NATIVELINK_COM_API_HEADER || '065f02f53f26a12331d5cfd00a778fb243bfb4e857b8fcd4c99273edfb15deae' }} \
+          --bes_results_url=https://app.nativelink.com/e3b1e0e0-4b73-45d6-85bc-5cb7b02edea5/build \
+          --remote_header=x-nativelink-project=${{ github.ref == 'refs/heads/main' && 'nativelink-ci' || 'nativelink-ci-pr' }} \
+          ${{ github.ref != 'refs/heads/main' && '--nogenerate_json_trace_profile --remote_upload_local_results=false \' || '' }}
           //...
 
   docker-compose-compiles-nativelink:
