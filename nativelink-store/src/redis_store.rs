@@ -22,6 +22,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use fred::clients::{RedisPool, SubscriberClient};
+use fred::mocks::Mocks;
 use fred::prelude::*;
 use nativelink_config::stores::RedisMode;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
@@ -36,10 +37,14 @@ use crate::cas_utils::is_zero_digest;
 const READ_CHUNK_SIZE: usize = 64 * 1024;
 const CONNECTION_POOL_SIZE: usize = 3;
 
-#[cfg(feature = "redis-test")]
-type Mocks = Arc<dyn fred::mocks::Mocks>;
-#[cfg(not(feature = "redis-test"))]
-type Mocks = Option<std::convert::Infallible>;
+#[derive(Debug)]
+struct PanicMock;
+impl Mocks for PanicMock {
+    fn process_command(&self, _: fred::mocks::MockCommand) -> Result<RedisValue, RedisError> {
+        panic!()
+    }
+}
+const NO_MOCKS: Option<PanicMock> = None;
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
 pub struct RedisStore {
@@ -64,7 +69,7 @@ pub struct RedisStore {
 impl RedisStore {
     /// Create a new `RedisStore` from the given configuration
     pub fn new(config: &nativelink_config::stores::RedisStore) -> Result<Arc<Self>, Error> {
-        Self::new_with_name_generator_and_mocks(config, || Uuid::new_v4().to_string(), None)
+        Self::new_with_name_generator_and_mocks(config, || Uuid::new_v4().to_string(), NO_MOCKS)
             .map(Arc::new)
     }
 
@@ -72,7 +77,7 @@ impl RedisStore {
     pub fn new_with_name_generator_and_mocks(
         config: &nativelink_config::stores::RedisStore,
         temp_name_generator_fn: fn() -> String,
-        mocks: Mocks,
+        mocks: Option<impl Mocks>,
     ) -> Result<Self, Error> {
         if config.addresses.is_empty() {
             return Err(make_err!(
@@ -83,25 +88,14 @@ impl RedisStore {
         let [addr] = config.addresses.as_slice() else {
             return Err(make_err!(Code::Unimplemented, "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."));
         };
-        let redis_config = match config.mode {
+        let mut redis_config = match config.mode {
             RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
             RedisMode::Sentinel => RedisConfig::from_url_sentinel(addr),
             RedisMode::Standard => RedisConfig::from_url_centralized(addr),
         }
         .err_tip_with_code(|_| (Code::InvalidArgument, "while parsing redis node address"))?;
 
-        #[cfg(feature = "redis-test")]
-        {
-            redis_config.mocks = mocks;
-        }
-
-        #[cfg(not(feature = "redis-test"))]
-        {
-            debug_assert!(
-                mocks.is_none(),
-                "mocks should only be enabled during testing"
-            )
-        }
+        redis_config.mocks = mocks.map(|m| Arc::new(m) as Arc<dyn Mocks>);
 
         let mut builder = Builder::from_config(redis_config);
         builder
@@ -246,7 +240,7 @@ impl StoreDriver for RedisStore {
         // and then rename that key once we're done appending data.
         'outer: loop {
             let mut expecting_first_chunk = true;
-            let tx = client.multi();
+            let pipe = client.pipeline();
 
             while expecting_first_chunk || !reader.is_empty() {
                 let chunk = reader
@@ -259,21 +253,12 @@ impl StoreDriver for RedisStore {
                         return Ok(());
                     }
 
-                    // we only receive an empty chunk when there's nothing left to read,
-                    // so if this is our first chunk we should throw it up there
-                    if expecting_first_chunk {
-                        // NOTE: we use `client` here, not `tx`, because this is the only chunk we will publish.
-                        client
-                            .append(temp_key.get_or_init(make_temp_name), &chunk[..])
-                            .await?;
-                    }
-
                     // reader sent empty chunk, we're done here.
                     break 'outer;
                 }
 
                 // queued
-                tx.append(temp_key.get_or_init(make_temp_name), &chunk[..])
+                pipe.append(temp_key.get_or_init(make_temp_name), &chunk[..])
                     .await?;
                 expecting_first_chunk = false;
 
@@ -283,12 +268,19 @@ impl StoreDriver for RedisStore {
             }
 
             // reader is empty, but we're expecting more data. execute queued appends to the temp key
-            tx.exec(false).await?;
+            pipe.all().await?;
         }
 
-        // we're done receiving all data, so rename the key
+        // We're done receiving all data, so let's
+        // - create a key with the correct name
+        // - move the data from the temp key to the final key
+        // - publish the update if we have somewhere to publish to
+        //
+        // This is done atomically via MULTI/EXEC, so from an outside observer's perspective the key appears
+        // with all the data.
         let tx = client.multi();
 
+        tx.append(final_key.as_ref(), "").await?;
         tx.rename(temp_key.get_or_init(make_temp_name), final_key.as_ref())
             .await?;
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
