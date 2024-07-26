@@ -19,6 +19,9 @@ use bytes::BytesMut;
 use futures::Future;
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::digest_function::Value as ProtoDigestFunction;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -66,6 +69,16 @@ pub fn set_default_digest_hasher_func(hasher: DigestHasherFunc) -> Result<(), Er
 pub enum DigestHasherFunc {
     Sha256,
     Blake3,
+}
+
+impl MetricsComponent for DigestHasherFunc {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        format!("{self:?}").publish(kind, field_metadata)
+    }
 }
 
 impl DigestHasherFunc {

@@ -15,6 +15,9 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use nativelink_metric::{
+    publish, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::Platform as ProtoPlatform;
 use serde::{Deserialize, Serialize};
 
@@ -25,8 +28,9 @@ use serde::{Deserialize, Serialize};
 /// all the platform property keys configured on the worker.
 ///
 /// Additional rules may be applied based on `PlatfromPropertyValue`.
-#[derive(Eq, PartialEq, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Clone, Debug, Default, Serialize, Deserialize, MetricsComponent)]
 pub struct PlatformProperties {
+    #[metric]
     pub properties: HashMap<String, PlatformPropertyValue>,
 }
 
@@ -115,5 +119,24 @@ impl PlatformPropertyValue {
             Self::Priority(value) => Cow::Borrowed(value),
             Self::Unknown(value) => Cow::Borrowed(value),
         }
+    }
+}
+
+impl MetricsComponent for PlatformPropertyValue {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let name = field_metadata.name.into_owned();
+        let help = field_metadata.help.as_ref();
+        match self {
+            Self::Exact(v) => publish!(name, v, kind, help, "exact"),
+            Self::Minimum(v) => publish!(name, v, kind, help, "minimum"),
+            Self::Priority(v) => publish!(name, v, kind, help, "priority"),
+            Self::Unknown(v) => publish!(name, v, kind, help, "unknown"),
+        }
+
+        Ok(MetricPublishKnownKindData::Component)
     }
 }

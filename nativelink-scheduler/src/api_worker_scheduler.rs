@@ -12,17 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use async_lock::Mutex;
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::{
+    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    RootMetricsComponent,
+};
 use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId, WorkerId};
-use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::operation_state_manager::WorkerStateManager;
-use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
+use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::Notify;
 use tonic::async_trait;
 use tracing::{event, Level};
@@ -31,12 +34,48 @@ use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
 
+struct Workers(LruCache<WorkerId, Worker>);
+
+impl Deref for Workers {
+    type Target = LruCache<WorkerId, Worker>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Workers {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+// Note: This could not be a derive macro because this derive-macro
+// does n ot support LruCache and nameless field structs.
+impl MetricsComponent for Workers {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let _enter = group!("workers").entered();
+        for (worker_id, worker) in self.iter() {
+            let _enter = group!(worker_id).entered();
+            worker.publish(MetricKind::Component, MetricFieldData::default())?;
+        }
+        Ok(MetricPublishKnownKindData::Component)
+    }
+}
+
 /// A collection of workers that are available to run tasks.
+#[derive(MetricsComponent)]
 struct ApiWorkerSchedulerImpl {
     /// A `LruCache` of workers availabled based on `allocation_strategy`.
-    workers: LruCache<WorkerId, Worker>,
+    #[metric(group = "workers")]
+    workers: Workers,
 
     /// The worker state manager.
+    #[metric(group = "worker_state_manager")]
     worker_state_manager: Arc<dyn WorkerStateManager>,
     /// The allocation strategy for workers.
     allocation_strategy: WorkerAllocationStrategy,
@@ -51,7 +90,7 @@ impl ApiWorkerSchedulerImpl {
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        let worker = self.workers.peek_mut(worker_id).ok_or_else(|| {
+        let worker = self.workers.0.peek_mut(worker_id).ok_or_else(|| {
             make_input_err!(
                 "Worker not found in worker map in refresh_lifetime() {}",
                 worker_id
@@ -269,11 +308,16 @@ impl ApiWorkerSchedulerImpl {
     }
 }
 
+#[derive(MetricsComponent)]
 pub struct ApiWorkerScheduler {
+    #[metric]
     inner: Mutex<ApiWorkerSchedulerImpl>,
+    #[metric(group = "platform_property_manager")]
     platform_property_manager: Arc<PlatformPropertyManager>,
 
-    /// Timeout of how long to evict workers if no response in this given amount of time in seconds.
+    #[metric(
+        help = "Timeout of how long to evict workers if no response in this given amount of time in seconds."
+    )]
     worker_timeout_s: u64,
 }
 
@@ -287,7 +331,7 @@ impl ApiWorkerScheduler {
     ) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
-                workers: LruCache::unbounded(),
+                workers: Workers(LruCache::unbounded()),
                 worker_state_manager,
                 allocation_strategy,
                 worker_change_notify,
@@ -437,41 +481,6 @@ impl WorkerScheduler for ApiWorkerScheduler {
         let mut inner = self.inner.lock().await;
         inner.set_drain_worker(worker_id, is_draining).await
     }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        self.inner
-            .lock_blocking()
-            .worker_state_manager
-            .clone()
-            .register_metrics(registry);
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
 }
 
-impl MetricsComponent for ApiWorkerScheduler {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        let inner = self.inner.lock_blocking();
-        let mut props = HashMap::<&String, u64>::new();
-        for (_worker_id, worker) in inner.workers.iter() {
-            c.publish_with_labels(
-                "workers",
-                worker,
-                "",
-                vec![("worker_id".into(), worker.id.to_string().into())],
-            );
-            for (property, prop_value) in &worker.platform_properties.properties {
-                let current_value = props.get(&property).unwrap_or(&0);
-                if let PlatformPropertyValue::Minimum(worker_value) = prop_value {
-                    props.insert(property, *current_value + *worker_value);
-                }
-            }
-        }
-        for (property, prop_value) in props {
-            c.publish(
-                format!("{property}_available_properties"),
-                &prop_value,
-                format!("Total sum of available properties for {property}"),
-            );
-        }
-    }
-}
+impl RootMetricsComponent for ApiWorkerScheduler {}

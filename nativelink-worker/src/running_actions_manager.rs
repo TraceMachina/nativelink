@@ -40,6 +40,7 @@ use nativelink_config::cas_server::{
     EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
     Directory as ProtoDirectory, Directory, DirectoryNode, ExecuteResponse, FileNode, SymlinkNode,
@@ -60,9 +61,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::metrics_utils::{
-    AsyncCounterWrapper, CollectorState, CounterWithTime, MetricsComponent,
-};
+use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
@@ -1908,123 +1907,46 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, MetricsComponent)]
 pub struct Metrics {
+    #[metric(help = "Stats about the create_and_add_action command.")]
     create_and_add_action: AsyncCounterWrapper,
+    #[metric(help = "Stats about the cache_action_result command.")]
     cache_action_result: AsyncCounterWrapper,
+    #[metric(help = "Stats about the kill_all command.")]
     kill_all: AsyncCounterWrapper,
+    #[metric(help = "Stats about the create_action_info command.")]
     create_action_info: AsyncCounterWrapper,
+    #[metric(help = "Stats about the make_work_directory command.")]
     make_action_directory: AsyncCounterWrapper,
+    #[metric(help = "Stats about the prepare_action command.")]
     prepare_action: AsyncCounterWrapper,
+    #[metric(help = "Stats about the execute command.")]
     execute: AsyncCounterWrapper,
+    #[metric(help = "Stats about the upload_results command.")]
     upload_results: AsyncCounterWrapper,
+    #[metric(help = "Stats about the cleanup command.")]
     cleanup: AsyncCounterWrapper,
+    #[metric(help = "Stats about the get_finished_result command.")]
     get_finished_result: AsyncCounterWrapper,
+    #[metric(help = "Stats about the get_proto_command_from_store command.")]
     get_proto_command_from_store: AsyncCounterWrapper,
+    #[metric(help = "Stats about the download_to_directory command.")]
     download_to_directory: AsyncCounterWrapper,
+    #[metric(help = "Stats about the prepare_output_files command.")]
     prepare_output_files: AsyncCounterWrapper,
+    #[metric(help = "Stats about the prepare_output_paths command.")]
     prepare_output_paths: AsyncCounterWrapper,
+    #[metric(help = "Stats about the child_process command.")]
     child_process: AsyncCounterWrapper,
+    #[metric(help = "Stats about the child_process_success_error_code command.")]
     child_process_success_error_code: CounterWithTime,
+    #[metric(help = "Stats about the child_process_failure_error_code command.")]
     child_process_failure_error_code: CounterWithTime,
+    #[metric(help = "Total time spent uploading stdout.")]
     upload_stdout: AsyncCounterWrapper,
+    #[metric(help = "Total time spent uploading stderr.")]
     upload_stderr: AsyncCounterWrapper,
+    #[metric(help = "Total number of task timeouts.")]
     task_timeouts: CounterWithTime,
-}
-
-impl MetricsComponent for Metrics {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "create_and_add_action",
-            &self.create_and_add_action,
-            "Stats about the create_and_add_action command.",
-        );
-        c.publish(
-            "cache_action_result",
-            &self.cache_action_result,
-            "Stats about the cache_action_result command.",
-        );
-        c.publish(
-            "kill_all",
-            &self.kill_all,
-            "Stats about the kill_all command.",
-        );
-        c.publish(
-            "create_action_info",
-            &self.create_action_info,
-            "Stats about the create_action_info command.",
-        );
-        c.publish(
-            "make_work_directory",
-            &self.make_action_directory,
-            "Stats about the make_work_directory command.",
-        );
-        c.publish(
-            "prepare_action",
-            &self.prepare_action,
-            "Stats about the prepare_action command.",
-        );
-        c.publish("execute", &self.execute, "Stats about the execute command.");
-        c.publish(
-            "upload_results",
-            &self.upload_results,
-            "Stats about the upload_results command.",
-        );
-        c.publish("cleanup", &self.cleanup, "Stats about the cleanup command.");
-        c.publish(
-            "get_finished_result",
-            &self.get_finished_result,
-            "Stats about the get_finished_result command.",
-        );
-        c.publish(
-            "get_proto_command_from_store",
-            &self.get_proto_command_from_store,
-            "Stats about the get_proto_command_from_store command.",
-        );
-        c.publish(
-            "download_to_directory",
-            &self.download_to_directory,
-            "Stats about the download_to_directory command.",
-        );
-        c.publish(
-            "prepare_output_files",
-            &self.prepare_output_files,
-            "Stats about the prepare_output_files command.",
-        );
-        c.publish(
-            "prepare_output_paths",
-            &self.prepare_output_paths,
-            "Stats about the prepare_output_paths command.",
-        );
-        c.publish(
-            "child_process",
-            &self.child_process,
-            "Stats about the child_process command.",
-        );
-        c.publish(
-            "child_process_success_error_code",
-            &self.child_process_success_error_code,
-            "Stats about the child_process_success_error_code command.",
-        );
-        c.publish(
-            "child_process_failure_error_code",
-            &self.child_process_failure_error_code,
-            "Stats about the child_process_failure_error_code command.",
-        );
-        c.publish(
-            "upload_stdout",
-            &self.upload_stdout,
-            "Total time spent uploading stdout.",
-        );
-        c.publish(
-            "upload_stderr",
-            &self.upload_stderr,
-            "Total time spent uploading stderr.",
-        );
-        c.publish(
-            "task_timeouts_count",
-            &self.task_timeouts,
-            "Total number of task timeouts.",
-        )
-    }
 }

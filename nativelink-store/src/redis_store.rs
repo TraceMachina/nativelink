@@ -25,10 +25,10 @@ use futures::stream::FuturesOrdered;
 use futures::{Future, TryFutureExt, TryStreamExt};
 use nativelink_config::stores::RedisMode;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use redis::aio::{ConnectionLike, ConnectionManager};
 use redis::cluster_async::ClusterConnection;
@@ -239,6 +239,7 @@ unsafe impl<C: Sync + Send> Send for BackgroundConnection<C> {}
 unsafe impl<C: Sync> Sync for BackgroundConnection<C> {}
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
+#[derive(MetricsComponent)]
 pub struct RedisStore<C: ConnectionLike + Clone = ConnectionKind> {
     /// The connection to the underlying Redis instance(s).
     connection: BackgroundConnection<C>,
@@ -250,6 +251,7 @@ pub struct RedisStore<C: ConnectionLike + Clone = ConnectionKind> {
     /// A common prefix to append to all keys before they are sent to Redis.
     ///
     /// See [`RedisStore::key_prefix`](`nativelink_config::stores::RedisStore::key_prefix`).
+    #[metric(help = "Prefix to append to all keys before sending to Redis")]
     key_prefix: String,
 }
 
@@ -602,20 +604,9 @@ where
         self
     }
 
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
     }
-}
-
-impl<C> MetricsComponent for RedisStore<C>
-where
-    C: ConnectionLike + Clone + Send + 'static,
-{
-    fn gather_metrics(&self, _c: &mut CollectorState) {}
 }
 
 #[async_trait]

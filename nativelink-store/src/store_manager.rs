@@ -13,11 +13,14 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
 
+use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::store_trait::Store;
+use parking_lot::RwLock;
 
+#[derive(MetricsComponent)]
 pub struct StoreManager {
+    #[metric]
     stores: RwLock<HashMap<String, Store>>,
 }
 
@@ -29,24 +32,20 @@ impl StoreManager {
     }
 
     pub fn add_store(&self, name: &str, store: Store) {
-        let mut stores = self
-            .stores
-            .write()
-            .expect("Failed to lock mutex in add_store()");
+        let mut stores = self.stores.write();
         stores.insert(name.to_string(), store);
     }
 
     pub fn get_store(&self, name: &str) -> Option<Store> {
-        let stores = self
-            .stores
-            .read()
-            .expect("Failed to lock read mutex in get_store()");
+        let stores = self.stores.read();
         if let Some(store) = stores.get(name) {
             return Some(store.clone());
         }
         None
     }
 }
+
+impl RootMetricsComponent for StoreManager {}
 
 impl Default for StoreManager {
     fn default() -> Self {

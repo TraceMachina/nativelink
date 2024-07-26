@@ -19,8 +19,8 @@ use std::sync::Arc;
 pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
 use futures::{Future, Stream};
 use nativelink_error::Error;
+use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{ActionInfo, ClientOperationId, OperationId};
-use nativelink_util::metrics_utils::MetricsComponent;
 
 mod awaited_action;
 
@@ -34,9 +34,11 @@ pub enum SortedAwaitedActionState {
 }
 
 /// A struct pointing to an AwaitedAction that can be sorted.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, MetricsComponent)]
 pub struct SortedAwaitedAction {
+    #[metric(help = "The sort key of the AwaitedAction")]
     pub sort_key: AwaitedActionSortKey,
+    #[metric(help = "The operation id")]
     pub operation_id: OperationId,
 }
 

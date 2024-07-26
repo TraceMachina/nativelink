@@ -24,6 +24,7 @@ use futures::stream::FuturesUnordered;
 use futures::{select, Future, FutureExt, StreamExt, TryFutureExt};
 use nativelink_config::cas_server::LocalWorkerConfig;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
@@ -33,9 +34,7 @@ use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage};
 use nativelink_util::common::fs;
 use nativelink_util::digest_hasher::{DigestHasherFunc, ACTIVE_HASHER_FUNC};
-use nativelink_util::metrics_utils::{
-    AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, MetricsComponent, Registry,
-};
+use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::origin_context::ActiveOriginContext;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};
@@ -388,7 +387,13 @@ pub async fn new_local_worker(
     cas_store: Store,
     ac_store: Option<Store>,
     historical_store: Store,
-) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
+) -> Result<
+    (
+        LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>,
+        Arc<Metrics>,
+    ),
+    Error,
+> {
     let fast_slow_store = cas_store
         .downcast_ref::<FastSlowStore>(None)
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
@@ -428,42 +433,40 @@ pub async fn new_local_worker(
             max_action_timeout,
             timeout_handled_externally: config.timeout_handled_externally,
         })?);
-    Ok(
-        LocalWorker::new_with_connection_factory_and_actions_manager(
-            config.clone(),
-            running_actions_manager,
-            Box::new(move || {
-                let config = config.clone();
-                Box::pin(async move {
-                    let timeout = config
-                        .worker_api_endpoint
-                        .timeout
-                        .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
-                    let timeout_duration = Duration::from_secs_f32(timeout);
-                    let tls_config =
-                        tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)
-                            .err_tip(|| "Parsing local worker TLS configuration")?;
-                    let endpoint =
-                        tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
-                            .map_err(|e| {
-                                make_input_err!("Invalid URI for worker endpoint : {e:?}")
-                            })?
-                            .connect_timeout(timeout_duration)
-                            .timeout(timeout_duration);
+    let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
+        config.clone(),
+        running_actions_manager,
+        Box::new(move || {
+            let config = config.clone();
+            Box::pin(async move {
+                let timeout = config
+                    .worker_api_endpoint
+                    .timeout
+                    .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
+                let timeout_duration = Duration::from_secs_f32(timeout);
+                let tls_config =
+                    tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)
+                        .err_tip(|| "Parsing local worker TLS configuration")?;
+                let endpoint =
+                    tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
+                        .map_err(|e| make_input_err!("Invalid URI for worker endpoint : {e:?}"))?
+                        .connect_timeout(timeout_duration)
+                        .timeout(timeout_duration);
 
-                    let transport = endpoint.connect().await.map_err(|e| {
-                        make_err!(
-                            Code::Internal,
-                            "Could not connect to endpoint {}: {e:?}",
-                            config.worker_api_endpoint.uri
-                        )
-                    })?;
-                    Ok(WorkerApiClient::new(transport).into())
-                })
-            }),
-            Box::new(move |d| Box::pin(sleep(d))),
-        ),
-    )
+                let transport = endpoint.connect().await.map_err(|e| {
+                    make_err!(
+                        Code::Internal,
+                        "Could not connect to endpoint {}: {e:?}",
+                        config.worker_api_endpoint.uri
+                    )
+                })?;
+                Ok(WorkerApiClient::new(transport).into())
+            })
+        }),
+        Box::new(move |d| Box::pin(sleep(d))),
+    );
+    let metrics = local_worker.metrics.clone();
+    Ok((local_worker, metrics))
 }
 
 impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
@@ -594,19 +597,27 @@ impl<T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorker<T, U> {
         }
         // Unreachable.
     }
-
-    pub fn register_metrics(&self, registry: &mut Registry) {
-        registry.register_collector(Box::new(Collector::new(&self.metrics)));
-    }
 }
 
-struct Metrics {
+#[derive(MetricsComponent)]
+pub struct Metrics {
+    #[metric(
+        help = "Total number of actions sent to this worker to process. This does not mean it started them, it just means it received a request to execute it."
+    )]
     start_actions_received: CounterWithTime,
+    #[metric(help = "Total number of disconnects received from the scheduler.")]
     disconnects_received: CounterWithTime,
+    #[metric(help = "Total number of keep-alives received from the scheduler.")]
     keep_alives_received: CounterWithTime,
+    #[metric(
+        help = "Stats about the calls to check if an action satisfies the config supplied script."
+    )]
     preconditions: AsyncCounterWrapper,
+    #[metric]
     running_actions_manager_metrics: Weak<RunningActionManagerMetrics>,
 }
+
+impl RootMetricsComponent for Metrics {}
 
 impl Metrics {
     fn new(running_actions_manager_metrics: Weak<RunningActionManagerMetrics>) -> Self {
@@ -626,39 +637,5 @@ impl Metrics {
         fut: F,
     ) -> U {
         fut(self).await
-    }
-}
-
-impl MetricsComponent for Metrics {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        c.publish(
-            "start_actions_received",
-            &self.start_actions_received,
-            concat!(
-                "Total number of actions sent to this worker to process. This ",
-                "does not mean it started them, it just means it received a request ",
-                "to execute it."
-            ),
-        );
-        c.publish(
-            "disconnects_received",
-            &self.disconnects_received,
-            "Total number of disconnects received from the scheduler.",
-        );
-        c.publish(
-            "keep_alives_received",
-            &self.keep_alives_received,
-            "Total number of keep-alives received from the scheduler.",
-        );
-        c.publish(
-            "preconditions",
-            &self.preconditions,
-            "Stats about the calls to check if an action satisfies the config supplied script.", // Data is appended to this.
-        );
-        if let Some(running_actions_manager_metrics) =
-            self.running_actions_manager_metrics.upgrade()
-        {
-            c.publish("", running_actions_manager_metrics.as_ref(), "");
-        }
     }
 }

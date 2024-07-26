@@ -41,6 +41,7 @@ rust_library(
     deps = [
         "//nativelink-config",
         "//nativelink-error",
+        "//nativelink-metric",
         "//nativelink-proto",
         "@crates//:async-lock",
         "@crates//:bitflags",
@@ -56,7 +57,6 @@ rust_library(
         "@crates//:parking_lot",
         "@crates//:pin-project",
         "@crates//:pin-project-lite",
-        "@crates//:prometheus-client",
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:rand",

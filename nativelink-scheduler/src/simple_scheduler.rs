@@ -20,11 +20,11 @@ use async_trait::async_trait;
 use futures::Future;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt};
+use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, ClientOperationId, OperationId, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::metrics_utils::Registry;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection,
@@ -95,14 +95,17 @@ impl ActionListener for SimpleSchedulerActionListener {
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
+#[derive(MetricsComponent)]
 pub struct SimpleScheduler {
     /// Manager for matching engine side of the state manager.
     matching_engine_state_manager: Arc<dyn MatchingEngineStateManager>,
 
     /// Manager for client state of this scheduler.
+    #[metric(group = "client_state_manager")]
     client_state_manager: Arc<dyn ClientStateManager>,
 
     /// Manager for platform of this scheduler.
+    #[metric(group = "platform_properties")]
     platform_property_manager: Arc<PlatformPropertyManager>,
 
     /// A `Workers` pool that contains all workers that are available to execute actions in a priority
@@ -382,13 +385,6 @@ impl ActionScheduler for SimpleScheduler {
             })?;
         Ok(maybe_receiver)
     }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        self.client_state_manager.clone().register_metrics(registry);
-        self.matching_engine_state_manager
-            .clone()
-            .register_metrics(registry);
-    }
 }
 
 #[async_trait]
@@ -438,3 +434,5 @@ impl WorkerScheduler for SimpleScheduler {
             .await
     }
 }
+
+impl RootMetricsComponent for SimpleScheduler {}

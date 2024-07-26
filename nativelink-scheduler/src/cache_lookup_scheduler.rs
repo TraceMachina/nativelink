@@ -19,6 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::Future;
 use nativelink_error::{make_err, Code, Error, ResultExt};
+use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, GetActionResultRequest,
 };
@@ -52,12 +53,15 @@ type CheckActions = HashMap<
     )>,
 >;
 
+#[derive(MetricsComponent)]
 pub struct CacheLookupScheduler {
     /// A reference to the AC to find existing actions in.
     /// To prevent unintended issues, this store should probably be a CompletenessCheckingStore.
+    #[metric(group = "ac_store")]
     ac_store: Store,
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
+    #[metric(group = "action_scheduler")]
     action_scheduler: Arc<dyn ActionScheduler>,
     /// Actions that are currently performing a CacheCheck.
     inflight_cache_checks: Arc<Mutex<CheckActions>>,
@@ -308,3 +312,5 @@ impl ActionScheduler for CacheLookupScheduler {
             .await
     }
 }
+
+impl RootMetricsComponent for CacheLookupScheduler {}

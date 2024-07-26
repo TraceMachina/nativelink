@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use prost_types::TimestampError;
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +48,16 @@ macro_rules! error_if {
 pub struct Error {
     pub code: Code,
     pub messages: Vec<String>,
+}
+
+impl MetricsComponent for Error {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        self.to_string().publish(kind, field_metadata)
+    }
 }
 
 impl Error {

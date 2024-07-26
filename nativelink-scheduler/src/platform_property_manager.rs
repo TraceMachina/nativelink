@@ -16,11 +16,33 @@ use std::collections::HashMap;
 
 use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{make_input_err, Code, Error, ResultExt};
+use nativelink_metric::{
+    group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_util::platform_properties::PlatformPropertyValue;
 
 /// Helps manage known properties and conversion into `PlatformPropertyValue`.
 pub struct PlatformPropertyManager {
     known_properties: HashMap<String, PropertyType>,
+}
+
+// TODO(allada) We cannot use the `MetricsComponent` trait here because
+// the `PropertyType` lives in the `nativelink-config` crate which is not
+// a dependency of the `nativelink-metric-collector` crate.
+impl MetricsComponent for PlatformPropertyManager {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let _enter = group!("known_properties").entered();
+        for (k, v) in &self.known_properties {
+            group!(k).in_scope(|| {
+                format!("{v:?}").publish(MetricKind::String, field_metadata.clone())
+            })?;
+        }
+        Ok(MetricPublishKnownKindData::Component)
+    }
 }
 
 impl PlatformPropertyManager {

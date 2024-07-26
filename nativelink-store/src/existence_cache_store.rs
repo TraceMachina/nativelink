@@ -19,11 +19,11 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheStore as ExistenceCacheStoreConfig};
 use nativelink_error::{error_if, Error, ResultExt};
+use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo};
 
 #[derive(Clone, Debug)]
@@ -41,7 +41,9 @@ impl LenEntry for ExistanceItem {
     }
 }
 
+#[derive(MetricsComponent)]
 pub struct ExistenceCacheStore {
+    #[metric(group = "inner_store")]
     inner_store: Store,
     existence_cache: EvictingMap<DigestInfo, ExistanceItem, SystemTime>,
 }
@@ -209,17 +211,6 @@ impl StoreDriver for ExistenceCacheStore {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Sync + Send + 'static> {
         self
-    }
-
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        let inner_store_registry = registry.sub_registry_with_prefix("inner_store");
-        self.inner_store.register_metrics(inner_store_registry);
-    }
-}
-
-impl MetricsComponent for ExistenceCacheStore {
-    fn gather_metrics(&self, c: &mut CollectorState) {
-        self.existence_cache.gather_metrics(c)
     }
 }
 
