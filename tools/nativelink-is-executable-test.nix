@@ -1,9 +1,8 @@
 {
-  pkgs,
   nativelink,
-  ...
+  writeShellScriptBin,
 }:
-pkgs.writeShellScriptBin "is-executable-test" ''
+writeShellScriptBin "is-executable-test" ''
   set -xuo pipefail
 
   nativelink_output="$(${nativelink}/bin/nativelink 2>&1)"

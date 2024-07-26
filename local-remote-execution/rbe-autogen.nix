@@ -1,34 +1,40 @@
 {
-  pkgs,
+  bash,
+  bazel_7,
+  buildEnv,
   buildImage,
-  llvmPackages,
-  ...
+  cacert,
+  coreutils,
+  findutils,
+  gnutar,
+  lib,
+  runCommand,
+  runtimeShell,
+  stdenv,
 }: let
-  customStdenv = import ../tools/llvmStdenv.nix {inherit pkgs llvmPackages;};
-
   # These dependencies are needed to generate the toolchain configurations but
   # aren't required during remote execution.
   autogenDeps = [
     # Required to generate toolchain configs.
-    pkgs.bazel_7
+    bazel_7
 
     # Required for communication with trusted sources.
-    pkgs.cacert
+    cacert
 
     # Tools that we would usually forward from the host.
-    pkgs.bash
-    pkgs.coreutils
+    bash
+    coreutils
 
     # We need these tools to generate the RBE autoconfiguration.
-    pkgs.findutils
-    pkgs.gnutar
+    findutils
+    gnutar
 
-    customStdenv.cc.bintools
+    stdenv.cc.bintools
   ];
 
   # A temporary directory. Note that this doesn't set any permissions. Those
   # need to be added explicitly in the final image arguments.
-  mkTmp = pkgs.runCommand "mkTmp" {} ''
+  mkTmp = runCommand "mkTmp" {} ''
     mkdir -p $out/tmp
   '';
 
@@ -42,7 +48,7 @@
   };
 
   # Enable the shebang `#!/usr/bin/env bash`.
-  mkEnvSymlink = pkgs.runCommand "mkEnvSymlink" {} ''
+  mkEnvSymlink = runCommand "mkEnvSymlink" {} ''
     mkdir -p $out/usr/bin
     ln -s /bin/env $out/usr/bin/env
   '';
@@ -52,10 +58,10 @@
   uid = "1000";
   gid = "1000";
 
-  mkUser = pkgs.runCommand "mkUser" {} ''
+  mkUser = runCommand "mkUser" {} ''
     mkdir -p $out/etc/pam.d
 
-    echo "root:x:0:0::/root:${pkgs.runtimeShell}" > $out/etc/passwd
+    echo "root:x:0:0::/root:${runtimeShell}" > $out/etc/passwd
     echo "${user}:x:${uid}:${gid}:::" >> $out/etc/passwd
 
     echo "root:!x:::::::" > $out/etc/shadow
@@ -83,8 +89,8 @@
     path = mkUser;
     regex = "/home/${user}";
     mode = "0755";
-    uid = pkgs.lib.toInt uid;
-    gid = pkgs.lib.toInt gid;
+    uid = lib.toInt uid;
+    gid = lib.toInt gid;
     uname = user;
     gname = group;
   };
@@ -98,7 +104,7 @@ in
         mkUser
         mkTmp
         mkEnvSymlink
-        (pkgs.buildEnv {
+        (buildEnv {
           name = "${image.imageName}-buildEnv";
           paths = autogenDeps;
           pathsToLink = ["/bin"];
