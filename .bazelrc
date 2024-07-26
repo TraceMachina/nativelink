@@ -59,7 +59,6 @@ build:nightly --@rules_rust//rust/toolchain/channel=nightly
 # AddressSanitizer to detect memory leaks.
 build:asan --config=nightly
 build:asan --@rules_rust//:extra_rustc_flags=-Zsanitizer=address
-build:asan --action_env=ASAN_OPTIONS=detect_leaks=0
 
 # ThreadSanitizer to detect data races. Tests under tsan shouldn't be cached
 # since they tend to produce irreproducible false negatives.
