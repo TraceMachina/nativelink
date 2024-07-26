@@ -34,6 +34,7 @@ use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
 
+// TODO(caass): These (and other settings) should be made configurable via nativelink-config
 pub const READ_CHUNK_SIZE: usize = 64 * 1024;
 pub const CONNECTION_POOL_SIZE: usize = 3;
 
@@ -143,10 +144,10 @@ impl StoreDriver for RedisStore {
     ) -> Result<(), Error> {
         let pipeline = self.client_pool.next().pipeline();
 
-        results.iter_mut().for_each(|result| *result = None); // is this necessary?
+        results.iter_mut().for_each(|result| *result = None);
 
         for (idx, key) in keys.iter().enumerate() {
-            // don't bother with zero-length digests
+            // Don't bother with zero-length digests.
             if is_zero_digest(key.borrow()) {
                 results[idx] = Some(0);
                 continue;
@@ -154,24 +155,24 @@ impl StoreDriver for RedisStore {
 
             let encoded_key = self.encode_key(key);
 
-            // this command is queued in memory, but not yet sent down the pipeline; the `await` returns instantly
+            // This command is queued in memory, but not yet sent down the pipeline; the `await` returns instantly.
             let _: () = pipeline
                 .strlen(encoded_key.as_ref())
                 .await
-                .err_tip(|| "could not call `strlen` in has_with_results")?;
+                .err_tip(|| "In RedisStore::has_with_results")?;
         }
 
-        // now we send the commands. kind of a weird api, maybe we could submit a patch?
+        // Send the queued commands.
         let responses = pipeline.all::<Vec<_>>().await?;
         let remaining_results = results.iter_mut().filter(|option| {
-            // anything that's `Some` was already set from `is_zero_digest`
+            // Anything that's `Some` was already set from `is_zero_digest`.
             option.is_none()
         });
 
         for (response, result_slot) in responses.into_iter().zip(remaining_results) {
             if response == 0 {
-                // redis returns 0 when the key doesn't exist AND when the key exists with value of length 0,
-                // but since we already checked zero-lengths with `is_zero_digest`, this means the value doesn't exist
+                // Redis returns 0 when the key doesn't exist AND when the key exists with value of length 0.
+                // Since we already checked zero-lengths with `is_zero_digest`, this means the value doesn't exist.
                 continue;
             }
 
@@ -244,12 +245,12 @@ impl StoreDriver for RedisStore {
                         return Ok(());
                     }
 
-                    // reader sent empty chunk, we're done here.
+                    // Reader sent empty chunk, we're done here.
                     break 'outer;
                 }
 
-                // queued
-                pipe.append(temp_key.get_or_init(make_temp_name), &chunk[..])
+                // Queue the append, but don't execute until we've received all the chunks.
+                pipe.append(temp_key.get_or_init(make_temp_name), chunk)
                     .await?;
                 expecting_first_chunk = false;
 
@@ -258,26 +259,28 @@ impl StoreDriver for RedisStore {
                 tokio::task::yield_now().await;
             }
 
-            // reader is empty, but we're expecting more data. execute queued appends to the temp key
+            // Here the reader is empty but more data is expected.
+            // Executing the queued commands appends the data we just received to the temp key.
             pipe.all().await?;
         }
 
-        // We're done receiving all data, so let's
-        // - create a key with the correct name
-        // - move the data from the temp key to the final key
-        // - publish the update if we have somewhere to publish to
-        //
-        // This is done atomically via MULTI/EXEC, so from an outside observer's perspective the key appears
-        // with all the data.
+        // We've received all the data from `reader` and appended it all to the temp key, so let's move it to the final key.
+        // We use a transaction here (MULTI/EXEC) to perform the write atomically
         let tx = client.multi();
 
+        // Initialize the real key to an empty value. If the key already exists, its value isn't changed.
         tx.append(final_key.as_ref(), "").await?;
+
+        // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
         tx.rename(temp_key.get_or_init(make_temp_name), final_key.as_ref())
             .await?;
+
+        // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
             tx.publish(pub_sub_channel, final_key.as_ref()).await?;
         }
 
+        // Execute the transaction. If any step fails, the changes will be reverted.
         tx.exec(false)
             .await
             .err_tip(|| "While renaming key in RedisStore::update()")
@@ -303,7 +306,7 @@ impl StoreDriver for RedisStore {
         let encoded_key = encoded_key.as_ref();
 
         if length == Some(0) {
-            // we're supposed to read 0 bytes, so just check if the key exists
+            // We're supposed to read 0 bytes, so just check if the key exists.
             let exists = client
                 .exists(encoded_key)
                 .await
@@ -338,11 +341,10 @@ impl StoreDriver for RedisStore {
                 .await
                 .err_tip(|| "In RedisStore::get_part::getrange")?;
 
-            if chunk.len() < READ_CHUNK_SIZE || chunk_end == data_end {
-                // the two conditions are:
-                // - we received less than a full chunk -- this should only happen when we're done reading the data
-                // - we read up to `data_end` i.e. we don't want any more data.
+            let didnt_receive_full_chunk = chunk.len() < READ_CHUNK_SIZE;
+            let reached_end_of_data = chunk_end == data_end;
 
+            if didnt_receive_full_chunk || reached_end_of_data {
                 if !chunk.is_empty() {
                     writer
                         .send(chunk)
@@ -355,13 +357,13 @@ impl StoreDriver for RedisStore {
                     .err_tip(|| "Failed to write EOF in redis store get_part");
             }
 
-            // we received a full chunk's worth of data, so write it
+            // We received a full chunk's worth of data, so write it...
             writer
                 .send(chunk)
                 .await
                 .err_tip(|| "Failed to write data in RedisStore::get_part")?;
 
-            // ...and go grab the next chunk
+            // ...and go grab the next chunk.
             chunk_start = chunk_end + 1;
             chunk_end = cmp::min(chunk_start.saturating_add(READ_CHUNK_SIZE) - 1, data_end);
         }

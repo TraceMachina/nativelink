@@ -120,7 +120,7 @@ impl Mocks for MockRedisBackend {
 impl Drop for MockRedisBackend {
     fn drop(&mut self) {
         if panicking() {
-            // don't bother
+            // We're already panicking, let's make debugging easier and let future devs solve problems one at a time.
             return;
         }
 
@@ -130,23 +130,23 @@ impl Drop for MockRedisBackend {
 
 #[nativelink_test]
 async fn upload_and_get_data() -> Result<(), Error> {
-    // construct the data we want to send. since it's small, we expect it to be sent in a single chunk.
+    // Construct the data we want to send. Since it's small, we expect it to be sent in a single chunk.
     let data = Bytes::from_static(b"14");
     let chunk_data = RedisValue::Bytes(data.clone());
 
-    // construct a digest for our data and create a key based on that digest
+    // Construct a digest for our data and create a key based on that digest.
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
     let packed_hash_hex = format!("{}-{}", digest.hash_str(), digest.size_bytes);
 
-    // construct redis store with a mocked out backend
+    // Construct our Redis store with a mocked out backend.
     let temp_key = RedisValue::Bytes(make_temp_key(&packed_hash_hex).into());
     let real_key = RedisValue::Bytes(packed_hash_hex.into());
 
     let mocks = Arc::new(MockRedisBackend::new());
 
-    // the first set of commands are for setting the data
+    // The first set of commands are for setting the data.
     mocks
-        // append the real value to the temp key
+        // Append the real value to the temp key.
         .expect(
             MockCommand {
                 cmd: Str::from_static("APPEND"),
@@ -155,7 +155,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
             },
             Ok(RedisValue::Array(vec![RedisValue::Null])),
         )
-        // start a transaction
+        // Start a transaction.
         .expect(
             MockCommand {
                 cmd: Str::from_static("MULTI"),
@@ -164,7 +164,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
             },
             Ok(RedisValue::Null),
         )
-        // create the real key
+        // Create the real key.
         .expect(
             MockCommand {
                 cmd: Str::from_static("APPEND"),
@@ -173,7 +173,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
             },
             Ok(RedisValue::String(Str::new())),
         )
-        // move the data from the fake key to the real key
+        // Move the data from the fake key to the real key.
         .expect(
             MockCommand {
                 cmd: Str::from_static("RENAME"),
@@ -182,7 +182,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
             },
             Ok(RedisValue::Array(vec![RedisValue::Null])),
         )
-        // execute the transaction
+        // Execute the transaction.
         .expect(
             MockCommand {
                 cmd: Str::from_static("EXEC"),
@@ -192,9 +192,9 @@ async fn upload_and_get_data() -> Result<(), Error> {
             Ok(RedisValue::Null),
         );
 
-    // the second set of commands are for retrieving the data from the key
+    // The second set of commands are for retrieving the data from the key.
     mocks
-        // check that the key exists
+        // Check that the key exists.
         .expect(
             MockCommand {
                 cmd: Str::from_static("STRLEN"),
@@ -203,7 +203,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
             },
             Ok(RedisValue::Integer(2)),
         )
-        // retrieve the data from the real key
+        // Retrieve the data from the real key.
         .expect(
             MockCommand {
                 cmd: Str::from_static("GETRANGE"),
@@ -239,23 +239,19 @@ async fn upload_and_get_data() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
-    // construct the data we want to send. since it's small, we expect it to be sent in a single chunk.
     let data = Bytes::from_static(b"14");
     let chunk_data = RedisValue::Bytes(data.clone());
 
     let prefix = "TEST_PREFIX-";
 
-    // construct a digest for our data and create a key based on that digest + our prefix
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
     let packed_hash_hex = format!("{prefix}{}-{}", digest.hash_str(), digest.size_bytes);
 
-    // construct redis store with a mocked out backend
     let temp_key = RedisValue::Bytes(make_temp_key(&packed_hash_hex).into());
     let real_key = RedisValue::Bytes(packed_hash_hex.into());
 
     let mocks = Arc::new(MockRedisBackend::new());
     mocks
-        // append the real value to the temp key
         .expect(
             MockCommand {
                 cmd: Str::from_static("APPEND"),
@@ -264,7 +260,6 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
             },
             Ok(RedisValue::Array(vec![RedisValue::Null])),
         )
-        // start a transaction
         .expect(
             MockCommand {
                 cmd: Str::from_static("MULTI"),
@@ -273,7 +268,6 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
             },
             Ok(RedisValue::Null),
         )
-        // create the real key
         .expect(
             MockCommand {
                 cmd: Str::from_static("APPEND"),
@@ -282,7 +276,6 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
             },
             Ok(RedisValue::String(Str::new())),
         )
-        // move the data from the fake key to the real key
         .expect(
             MockCommand {
                 cmd: Str::from_static("RENAME"),
@@ -291,7 +284,6 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
             },
             Ok(RedisValue::Array(vec![RedisValue::Null])),
         )
-        // execute the transaction
         .expect(
             MockCommand {
                 cmd: Str::from_static("EXEC"),
@@ -300,7 +292,6 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
             },
             Ok(RedisValue::Null),
         )
-        // chec
         .expect(
             MockCommand {
                 cmd: Str::from_static("STRLEN"),
@@ -350,7 +341,7 @@ async fn upload_empty_data() -> Result<(), Error> {
     let data = Bytes::from_static(b"");
     let digest = ZERO_BYTE_DIGESTS[0];
 
-    // we expect to skip uploading when the digest and data is known zero
+    // We expect to skip both uploading and downloading when the digest is known zero.
     let mocks = Arc::new(MockRedisBackend::new());
 
     let store = RedisStore::new_with_name_generator_and_mocks(
@@ -377,7 +368,6 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
     let digest = ZERO_BYTE_DIGESTS[0];
     let prefix = "TEST_PREFIX-";
 
-    // we expect to skip uploading when the digest and data is known zero
     let mocks = Arc::new(MockRedisBackend::new());
 
     let store = RedisStore::new_with_name_generator_and_mocks(
@@ -403,21 +393,18 @@ async fn upload_empty_data_with_prefix() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn test_large_downloads_are_chunked() -> Result<(), Error> {
-    // Requires multiple chunks as data is larger than 64K
+    // Requires multiple chunks as data is larger than 64K.
     let data = Bytes::from(vec![0u8; READ_CHUNK_SIZE + 128]);
 
     let digest = DigestInfo::try_new(VALID_HASH1, 1)?;
     let packed_hash_hex = format!("{}-{}", digest.hash_str(), digest.size_bytes);
 
-    // construct redis store with a mocked out backend
     let temp_key = RedisValue::Bytes(make_temp_key(&packed_hash_hex).into());
     let real_key = RedisValue::Bytes(packed_hash_hex.into());
 
     let mocks = Arc::new(MockRedisBackend::new());
 
-    // data upload
     mocks
-        // append the real value to the temp key
         .expect(
             MockCommand {
                 cmd: Str::from_static("APPEND"),
@@ -426,7 +413,6 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             },
             Ok(RedisValue::Array(vec![RedisValue::Null])),
         )
-        // start a transaction
         .expect(
             MockCommand {
                 cmd: Str::from_static("MULTI"),
@@ -435,7 +421,6 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             },
             Ok(RedisValue::Null),
         )
-        // create the real key
         .expect(
             MockCommand {
                 cmd: Str::from_static("APPEND"),
@@ -444,7 +429,6 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             },
             Ok(RedisValue::String(Str::new())),
         )
-        // move the data from the fake key to the real key
         .expect(
             MockCommand {
                 cmd: Str::from_static("RENAME"),
@@ -453,7 +437,6 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             },
             Ok(RedisValue::Array(vec![RedisValue::Null])),
         )
-        // execute the transaction
         .expect(
             MockCommand {
                 cmd: Str::from_static("EXEC"),
@@ -461,11 +444,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
                 args: vec![],
             },
             Ok(RedisValue::Null),
-        );
-
-    // data retrieval stage
-    mocks
-        // retrieve the first chunk of data from the real key
+        )
         .expect(
             MockCommand {
                 cmd: Str::from_static("STRLEN"),
@@ -474,7 +453,6 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             },
             Ok(RedisValue::Integer(data.len().try_into().unwrap())),
         )
-        // first chunk
         .expect(
             MockCommand {
                 cmd: Str::from_static("GETRANGE"),
@@ -482,13 +460,13 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
                 args: vec![
                     real_key.clone(),
                     RedisValue::Integer(0),
-                    // GETRANGE is inclusive
+                    // We expect to be asked for data from `0..READ_CHUNK_SIZE`, but since GETRANGE is inclusive
+                    // the actual call should be from `0..=(READ_CHUNK_SIZE - 1)`.
                     RedisValue::Integer(READ_CHUNK_SIZE as i64 - 1),
                 ],
             },
             Ok(RedisValue::Bytes(data.slice(..READ_CHUNK_SIZE))),
         )
-        // second chunk
         .expect(
             MockCommand {
                 cmd: Str::from_static("GETRANGE"),
@@ -496,7 +474,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
                 args: vec![
                     real_key,
                     RedisValue::Integer(READ_CHUNK_SIZE as i64),
-                    // GETRANGE is inclusive
+                    // Similar GETRANCE index shenanigans here.
                     RedisValue::Integer(data.len() as i64 - 1),
                 ],
             },
@@ -545,8 +523,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
 
     let mocks = Arc::new(MockRedisBackend::new());
     mocks
-        // append the real value to the temp key in chunks
-        // chunk 1
+        // We expect multiple `"APPEND"`s as we send data in multiple chunks
         .expect(
             MockCommand {
                 cmd: Str::from_static("APPEND"),
@@ -563,7 +540,7 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             },
             Ok(RedisValue::Array(vec![RedisValue::Null])),
         )
-        // start a transaction
+        // The rest of the process looks the same.
         .expect(
             MockCommand {
                 cmd: Str::from_static("MULTI"),
@@ -572,7 +549,6 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             },
             Ok(RedisValue::Null),
         )
-        // create the real key
         .expect(
             MockCommand {
                 cmd: Str::from_static("APPEND"),
@@ -581,7 +557,6 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             },
             Ok(RedisValue::String(Str::new())),
         )
-        // move the data from the fake key to the real key
         .expect(
             MockCommand {
                 cmd: Str::from_static("RENAME"),
@@ -590,7 +565,6 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             },
             Ok(RedisValue::Array(vec![RedisValue::Null])),
         )
-        // execute the transaction
         .expect(
             MockCommand {
                 cmd: Str::from_static("EXEC"),
@@ -599,7 +573,6 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             },
             Ok(RedisValue::Null),
         )
-        // retrieve the data from the real key
         .expect(
             MockCommand {
                 cmd: Str::from_static("STRLEN"),
