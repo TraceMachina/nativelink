@@ -32,13 +32,13 @@ use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{
-    digest_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
+    key_from_filename, EncodedFilePath, FileEntry, FileEntryImpl, FilesystemStore,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -329,7 +329,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
     let expected_file_name = OsString::from(format!(
-        "{}/{}-{}",
+        "{}/h-{}-{}",
         content_path,
         digest1.hash_str(),
         digest1.size_bytes
@@ -396,21 +396,19 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
         }
     }
 
-    let store = Arc::new(
-        FilesystemStore::<TestFileEntry<LocalHooks>>::new(
-            &nativelink_config::stores::FilesystemStore {
-                content_path: content_path.clone(),
-                temp_path: temp_path.clone(),
-                eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
-                    max_count: 3,
-                    ..Default::default()
-                }),
-                block_size: 1,
-                read_buffer_size: 1,
-            },
-        )
-        .await?,
-    );
+    let store = FilesystemStore::<TestFileEntry<LocalHooks>>::new(
+        &nativelink_config::stores::FilesystemStore {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+                max_count: 3,
+                ..Default::default()
+            }),
+            block_size: 1,
+            read_buffer_size: 1,
+        },
+    )
+    .await?;
 
     // Insert data into store.
     store.update_oneshot(digest1, VALUE1.into()).await?;
@@ -519,21 +517,19 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
         }
     }
 
-    let store = Arc::new(
-        FilesystemStore::<TestFileEntry<LocalHooks>>::new(
-            &nativelink_config::stores::FilesystemStore {
-                content_path: content_path.clone(),
-                temp_path: temp_path.clone(),
-                eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
-                    max_count: 1,
-                    ..Default::default()
-                }),
-                block_size: 1,
-                read_buffer_size: 1,
-            },
-        )
-        .await?,
-    );
+    let store = FilesystemStore::<TestFileEntry<LocalHooks>>::new(
+        &nativelink_config::stores::FilesystemStore {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(nativelink_config::stores::EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            block_size: 1,
+            read_buffer_size: 1,
+        },
+    )
+    .await?;
 
     // Insert data into store.
     store.update_oneshot(digest1, VALUE1.into()).await?;
@@ -670,13 +666,13 @@ async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(),
 
     // Make the two files on disk before loading the store.
     let file1 = OsString::from(format!(
-        "{}/{}-{}",
+        "{}/h-{}-{}",
         content_path,
         digest1.hash_str(),
         digest1.size_bytes
     ));
     let file2 = OsString::from(format!(
-        "{}/{}-{}",
+        "{}/h-{}-{}",
         content_path,
         digest2.hash_str(),
         digest2.size_bytes
@@ -818,15 +814,14 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
     let small_digest = DigestInfo::try_new(HASH1, SMALL_VALUE.len())?;
     let big_digest = DigestInfo::try_new(HASH1, BIG_VALUE.len())?;
 
-    static UNREFED_DIGESTS: Lazy<Mutex<Vec<DigestInfo>>> = Lazy::new(|| Mutex::new(Vec::new()));
+    static UNREFED_KEYS: Mutex<Vec<StoreKey<'static>>> = Mutex::new(Vec::new());
     struct LocalHooks {}
     impl FileEntryHooks for LocalHooks {
         fn on_unref<Fe: FileEntry>(file_entry: &Fe) {
             block_on(file_entry.get_file_path_locked(move |path_str| async move {
                 let path = Path::new(&path_str);
-                let digest =
-                    digest_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
-                UNREFED_DIGESTS.lock().push(digest);
+                let key = key_from_filename(path.file_name().unwrap().to_str().unwrap()).unwrap();
+                UNREFED_KEYS.lock().push(key.borrow().into_owned());
                 Ok(())
             }))
             .unwrap();
@@ -856,13 +851,13 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
 
     {
         // Our first digest should have been unrefed exactly once.
-        let unrefed_digests = UNREFED_DIGESTS.lock();
+        let unrefed_keys = UNREFED_KEYS.lock();
+        assert_eq!(unrefed_keys.len(), 1, "Expected exactly 1 unrefed digest");
         assert_eq!(
-            unrefed_digests.len(),
-            1,
-            "Expected exactly 1 unrefed digest"
+            unrefed_keys[0],
+            small_digest.into(),
+            "Expected digest to match"
         );
-        assert_eq!(unrefed_digests[0], small_digest, "Expected digest to match");
     }
 
     Ok(())
@@ -1146,7 +1141,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
             yield_fn().await?;
 
             let empty_digest_file_name = OsString::from(format!(
-                "{}/{}-{}",
+                "{}/h-{}-{}",
                 content_path,
                 digest.hash_str(),
                 digest.size_bytes
@@ -1254,7 +1249,7 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
             assert_eq!(
                 file_path,
                 OsString::from(format!(
-                    "{}/{}-{}",
+                    "{}/h-{}-{}",
                     content_path,
                     digest.hash_str(),
                     digest.size_bytes
@@ -1291,7 +1286,7 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
     store.update_oneshot(digest, VALUE1.into()).await?;
 
     let stored_file_path = OsString::from(format!(
-        "{}/{}-{}",
+        "{}/h-{}-{}",
         content_path,
         digest.hash_str(),
         digest.size_bytes
@@ -1511,7 +1506,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
     );
 
     let expected_file_name = OsString::from(format!(
-        "{}/{}-{}",
+        "{}/h-{}-{}",
         content_path,
         digest.hash_str(),
         digest.size_bytes
