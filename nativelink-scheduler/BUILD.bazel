@@ -43,6 +43,8 @@ rust_library(
         "@crates//:parking_lot",
         "@crates//:rand",
         "@crates//:scopeguard",
+        "@crates//:serde",
+        "@crates//:serde_json",
         "@crates//:static_assertions",
         "@crates//:tokio",
         "@crates//:tokio-stream",
