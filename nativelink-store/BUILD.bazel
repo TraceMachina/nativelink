@@ -117,6 +117,7 @@ rust_test_suite(
         "@crates//:http-body",
         "@crates//:hyper",
         "@crates//:memory-stats",
+        "@crates//:mock_instant",
         "@crates//:once_cell",
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",

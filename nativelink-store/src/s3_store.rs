@@ -46,7 +46,8 @@ use nativelink_util::buf_channel::{
     make_buf_channel_pair, DropCloserReadHalf, DropCloserWriteHalf,
 };
 use nativelink_util::fs;
-use nativelink_util::health_utils::{default_health_status_indicator, HealthStatusIndicator};
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
+use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use rand::rngs::OsRng;
@@ -234,21 +235,31 @@ impl http_body::Body for BodyWrapper {
 }
 
 #[derive(MetricsComponent)]
-pub struct S3Store {
+pub struct S3Store<NowFn> {
     s3_client: Arc<Client>,
+    now_fn: NowFn,
     #[metric(help = "The bucket name for the S3 store")]
     bucket: String,
     #[metric(help = "The key prefix for the S3 store")]
     key_prefix: String,
     retrier: Retrier,
+    #[metric(help = "The number of seconds to consider an object expired")]
+    consider_expired_after_s: i64,
     #[metric(help = "The number of bytes to buffer for retrying requests")]
     max_retry_buffer_per_request: usize,
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
 }
 
-impl S3Store {
-    pub async fn new(config: &nativelink_config::stores::S3Store) -> Result<Arc<Self>, Error> {
+impl<I, NowFn> S3Store<NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
+{
+    pub async fn new(
+        config: &nativelink_config::stores::S3Store,
+        now_fn: NowFn,
+    ) -> Result<Arc<Self>, Error> {
         let jitter_amt = config.retry.jitter;
         let jitter_fn = Arc::new(move |delay: Duration| {
             if jitter_amt == 0. {
@@ -280,16 +291,18 @@ impl S3Store {
             }
             aws_sdk_s3::Client::new(&config_builder.load().await)
         };
-        Self::new_with_client_and_jitter(config, s3_client, jitter_fn)
+        Self::new_with_client_and_jitter(config, s3_client, jitter_fn, now_fn)
     }
 
     pub fn new_with_client_and_jitter(
         config: &nativelink_config::stores::S3Store,
         s3_client: Client,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
+        now_fn: NowFn,
     ) -> Result<Arc<Self>, Error> {
         Ok(Arc::new(Self {
             s3_client: Arc::new(s3_client),
+            now_fn,
             bucket: config.bucket.to_string(),
             key_prefix: config.key_prefix.as_ref().unwrap_or(&String::new()).clone(),
             retrier: Retrier::new(
@@ -297,6 +310,7 @@ impl S3Store {
                 jitter_fn,
                 config.retry.to_owned(),
             ),
+            consider_expired_after_s: i64::from(config.consider_expired_after_s),
             max_retry_buffer_per_request: config
                 .max_retry_buffer_per_request
                 .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
@@ -323,6 +337,14 @@ impl S3Store {
 
                 match result {
                     Ok(head_object_output) => {
+                        if self.consider_expired_after_s != 0 {
+                            if let Some(last_modified) = head_object_output.last_modified {
+                                let now_s = (self.now_fn)().unix_timestamp() as i64;
+                                if last_modified.secs() + self.consider_expired_after_s <= now_s {
+                                    return Some((RetryResult::Ok(None), state));
+                                }
+                            }
+                        }
                         let Some(length) = head_object_output.content_length else {
                             return Some((RetryResult::Ok(None), state));
                         };
@@ -354,7 +376,11 @@ impl S3Store {
 }
 
 #[async_trait]
-impl StoreDriver for S3Store {
+impl<I, NowFn> StoreDriver for S3Store<NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
+{
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
@@ -750,4 +776,17 @@ impl StoreDriver for S3Store {
     }
 }
 
-default_health_status_indicator!(S3Store);
+#[async_trait]
+impl<I, NowFn> HealthStatusIndicator for S3Store<NowFn>
+where
+    I: InstantWrapper,
+    NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
+{
+    fn get_name(&self) -> &'static str {
+        "S3Store"
+    }
+
+    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
+        StoreDriver::check_health(Pin::new(self), namespace).await
+    }
+}

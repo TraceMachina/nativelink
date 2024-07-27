@@ -743,6 +743,20 @@ pub struct S3Store {
     #[serde(default)]
     pub retry: Retry,
 
+    /// If the number of seconds since the `last_modified` time of the object
+    /// is greater than this value, the object will not be considered
+    /// "existing". This allows for external tools to delete objects that
+    /// have not been uploaded in a long time. If a client receives a NotFound
+    /// the client should re-upload the object.
+    ///
+    /// There should be sufficient buffer time between how long the expiration
+    /// configuration of the external tool is and this value. Keeping items
+    /// around for a few days is generally a good idea.
+    ///
+    /// Default: 0. Zero means never consider an object expired.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub consider_expired_after_s: u32,
+
     /// The maximum buffer size to retain in case of a retryable error
     /// during upload. Setting this to zero will disable upload buffering;
     /// this means that in the event of a failure during upload, the entire
