@@ -1939,7 +1939,6 @@ dependencies = [
  "nativelink-error",
  "nativelink-metric",
  "nativelink-metric-collector",
- "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-service",
  "nativelink-store",
@@ -2052,9 +2051,7 @@ version = "0.4.0"
 dependencies = [
  "async-lock",
  "async-trait",
- "blake3",
  "futures",
- "hashbrown 0.14.5",
  "lru",
  "mock_instant",
  "nativelink-config",
@@ -2068,11 +2065,7 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "rand",
- "redis",
- "redis-macros",
  "scopeguard",
- "serde",
- "serde_json",
  "static_assertions",
  "tokio",
  "tokio-stream",
@@ -2107,7 +2100,6 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "prost-types",
- "rand",
  "serde_json5",
  "tokio",
  "tokio-stream",
@@ -2158,8 +2150,6 @@ dependencies = [
  "serde",
  "serial_test",
  "sha2",
- "shellexpand",
- "tempfile",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -2217,7 +2207,6 @@ dependencies = [
  "filetime",
  "formatx",
  "futures",
- "hex",
  "hyper 1.4.1",
  "hyper-util",
  "nativelink-config",
@@ -2225,7 +2214,6 @@ dependencies = [
  "nativelink-macro",
  "nativelink-metric",
  "nativelink-proto",
- "nativelink-scheduler",
  "nativelink-store",
  "nativelink-util",
  "once_cell",
@@ -2764,8 +2752,6 @@ dependencies = [
  "rustls-pemfile 2.1.2",
  "rustls-pki-types",
  "ryu",
- "serde",
- "serde_json",
  "sha1_smol",
  "socket2",
  "tokio",
@@ -2773,29 +2759,6 @@ dependencies = [
  "tokio-rustls 0.25.0",
  "tokio-util",
  "url",
-]
-
-[[package]]
-name = "redis-macros"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8b5407866b6626d251b18c878f043d37f43124680f26a806595a61714ab049a"
-dependencies = [
- "redis",
- "redis-macros-derive",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "redis-macros-derive"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8dfe1dc77e38e260bbd53e98d3aec64add3cdf5d773e38d344c63660196117f5"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.72",
 ]
 
 [[package]]
