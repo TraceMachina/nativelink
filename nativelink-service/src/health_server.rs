@@ -12,14 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use axum::body::Body;
+use bytes::Bytes;
 use futures::StreamExt;
+use http_body_util::Full;
 use hyper::header::{HeaderValue, CONTENT_TYPE};
-use hyper::{Body, Request, Response, StatusCode};
+use hyper::{Request, Response, StatusCode};
 use nativelink_util::health_utils::{
     HealthRegistry, HealthStatus, HealthStatusDescription, HealthStatusReporter,
 };
@@ -41,9 +45,9 @@ impl HealthServer {
     }
 }
 
-impl Service<Request<hyper::Body>> for HealthServer {
-    type Response = Response<hyper::Body>;
-    type Error = std::convert::Infallible;
+impl Service<Request<Body>> for HealthServer {
+    type Response = Response<Full<Bytes>>;
+    type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -57,6 +61,7 @@ impl Service<Request<hyper::Body>> for HealthServer {
             async move {
                 let health_status_descriptions: Vec<HealthStatusDescription> =
                     health_registry.health_status_report().collect().await;
+
                 match serde_json5::to_string(&health_status_descriptions) {
                     Ok(body) => {
                         let contains_failed_report =
@@ -72,14 +77,14 @@ impl Service<Request<hyper::Body>> for HealthServer {
                         Ok(Response::builder()
                             .status(status_code)
                             .header(CONTENT_TYPE, HeaderValue::from_static(JSON_CONTENT_TYPE))
-                            .body(Body::from(body))
+                            .body(Full::new(Bytes::from(body)))
                             .unwrap())
                     }
 
                     Err(e) => Ok(Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)
                         .header(CONTENT_TYPE, HeaderValue::from_static(JSON_CONTENT_TYPE))
-                        .body(Body::from(format!("Internal Failure: {e:?}")))
+                        .body(Full::new(Bytes::from(format!("Internal Failure: {e:?}"))))
                         .unwrap()),
                 }
             },

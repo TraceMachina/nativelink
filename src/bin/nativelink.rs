@@ -21,8 +21,10 @@ use async_lock::Mutex as AsyncMutex;
 use axum::Router;
 use clap::Parser;
 use futures::future::{select_all, BoxFuture, Either, OptionFuture, TryFutureExt};
-use hyper::server::conn::Http;
-use hyper::{Body, Response, StatusCode};
+use hyper::{Response, StatusCode};
+use hyper_util::rt::tokio::TokioIo;
+use hyper_util::server::conn::auto;
+use hyper_util::service::TowerToHyperService;
 use mimalloc::MiMalloc;
 use nativelink_config::cas_server::{
     CasConfig, GlobalConfig, HttpCompressionAlgorithm, ListenerConfig, ServerConfig, WorkerConfig,
@@ -72,7 +74,6 @@ use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server as TonicServer;
-use tower::util::ServiceExt;
 use tracing::{error_span, event, trace_span, Level};
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -441,8 +442,9 @@ async fn inner_main(
         let health_registry = health_registry_builder.lock().await.build();
 
         let mut svc = Router::new()
+            .merge(tonic_services.into_router())
             // This is the default service that executes if no other endpoint matches.
-            .fallback_service(tonic_services.into_service().map_err(|e| panic!("{e}")));
+            .fallback((StatusCode::NOT_FOUND, "Not Found"));
 
         if let Some(health_cfg) = services.health {
             let path = if health_cfg.path.is_empty() {
@@ -469,7 +471,7 @@ async fn inner_main(
 
             svc = svc.route_service(
                 path,
-                axum::routing::get(move |request: hyper::Request<hyper::Body>| {
+                axum::routing::get(move |request: hyper::Request<axum::body::Body>| {
                     Arc::new(OriginContext::new()).wrap_async(
                         trace_span!("prometheus_ctx"),
                         async move {
@@ -538,7 +540,8 @@ async fn inner_main(
                                                 },
                                             )?
                                         };
-                                        let mut response = Response::new(Body::from(json_data));
+                                        let mut response =
+                                            Response::new(axum::body::Body::from(json_data));
                                         response.headers_mut().insert(
                                             hyper::header::CONTENT_TYPE,
                                             hyper::header::HeaderValue::from_static(
@@ -561,7 +564,8 @@ async fn inner_main(
                                     TextEncoder::new()
                                         .encode(&registry.gather(), &mut result)
                                         .unwrap();
-                                    let mut response = Response::new(Body::from(result));
+                                    let mut response =
+                                        Response::new(axum::body::Body::from(result));
                                     // Per spec we should probably use `application/openmetrics-text; version=1.0.0; charset=utf-8`
                                     // https://github.com/OpenObservability/OpenMetrics/blob/1386544931307dff279688f332890c31b6c5de36/specification/OpenMetrics.md#overall-structure
                                     // However, this makes debugging more difficult, so we use the old text/plain instead.
@@ -722,46 +726,49 @@ async fn inner_main(
 
         let socket_addr = http_config.socket_address.parse::<SocketAddr>()?;
         let tcp_listener = TcpListener::bind(&socket_addr).await?;
-        let mut http = Http::new().with_executor(TaskExecutor::default());
+        let mut http = auto::Builder::new(TaskExecutor::default());
 
         let http_config = &http_config.advanced_http;
         if let Some(value) = http_config.http2_keep_alive_interval {
-            http.http2_keep_alive_interval(Duration::from_secs(u64::from(value)));
+            http.http2()
+                .keep_alive_interval(Duration::from_secs(u64::from(value)));
         }
 
         if let Some(value) = http_config.experimental_http2_max_pending_accept_reset_streams {
-            http.http2_max_pending_accept_reset_streams(usize::try_from(value).err_tip(|| {
-                "Could not convert experimental_http2_max_pending_accept_reset_streams"
-            })?);
+            http.http2()
+                .max_pending_accept_reset_streams(usize::try_from(value).err_tip(|| {
+                    "Could not convert experimental_http2_max_pending_accept_reset_streams"
+                })?);
         }
         if let Some(value) = http_config.experimental_http2_initial_stream_window_size {
-            http.http2_initial_stream_window_size(value);
+            http.http2().initial_stream_window_size(value);
         }
         if let Some(value) = http_config.experimental_http2_initial_connection_window_size {
-            http.http2_initial_connection_window_size(value);
+            http.http2().initial_connection_window_size(value);
         }
         if let Some(value) = http_config.experimental_http2_adaptive_window {
-            http.http2_adaptive_window(value);
+            http.http2().adaptive_window(value);
         }
         if let Some(value) = http_config.experimental_http2_max_frame_size {
-            http.http2_max_frame_size(value);
+            http.http2().max_frame_size(value);
         }
         if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
-            http.http2_max_concurrent_streams(value);
+            http.http2().max_concurrent_streams(value);
         }
         if let Some(value) = http_config.experimental_http2_keep_alive_timeout {
-            http.http2_keep_alive_timeout(Duration::from_secs(u64::from(value)));
+            http.http2()
+                .keep_alive_timeout(Duration::from_secs(u64::from(value)));
         }
         if let Some(value) = http_config.experimental_http2_max_send_buf_size {
-            http.http2_max_send_buf_size(
+            http.http2().max_send_buf_size(
                 usize::try_from(value).err_tip(|| "Could not convert http2_max_send_buf_size")?,
             );
         }
         if let Some(true) = http_config.experimental_http2_enable_connect_protocol {
-            http.http2_enable_connect_protocol();
+            http.http2().enable_connect_protocol();
         }
         if let Some(value) = http_config.experimental_http2_max_header_list_size {
-            http.http2_max_header_list_size(value);
+            http.http2().max_header_list_size(value);
         }
 
         event!(Level::WARN, "Ready, listening on {socket_addr}",);
@@ -828,8 +835,8 @@ async fn inner_main(
                         let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
                             match tls_acceptor.accept(tcp_stream).await {
                                 Ok(tls_stream) => Either::Left(http.serve_connection(
-                                    tls_stream,
-                                    svc,
+                                    TokioIo::new(tls_stream),
+                                    TowerToHyperService::new(svc),
                                 )),
                                 Err(err) => {
                                     event!(Level::ERROR, ?err, "Failed to accept tls stream");
@@ -838,8 +845,8 @@ async fn inner_main(
                             }
                         } else {
                             Either::Right(http.serve_connection(
-                                tcp_stream,
-                                svc,
+                                TokioIo::new(tcp_stream),
+                                TowerToHyperService::new(svc),
                             ))
                         };
 

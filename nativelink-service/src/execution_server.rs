@@ -100,7 +100,6 @@ impl InstanceInfo {
         )?;
         let timeout = action
             .timeout
-            .clone()
             .map(|v| Duration::new(v.seconds as u64, v.nanos as u32))
             .unwrap_or(Duration::MAX);
 
