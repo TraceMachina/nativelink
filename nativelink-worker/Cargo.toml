@@ -11,16 +11,11 @@ nativelink-util = { path = "../nativelink-util" }
 nativelink-store = { path = "../nativelink-store" }
 nativelink-metric = { path = "../nativelink-metric" }
 
-# TODO(aaronmondal): This should not be a dependency. Move corresponding
-#                    functionality out of the schedulers.
-nativelink-scheduler = { path = "../nativelink-scheduler" }
-
 async-lock = "3.4.0"
 bytes = "1.6.1"
 filetime = "0.2.23"
 formatx = "0.2.2"
 futures = "0.3.30"
-hex = "0.4.3"
 parking_lot = "0.12.3"
 prost = "0.13.1"
 relative-path = "1.9.3"

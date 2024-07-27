@@ -44,7 +44,6 @@ rust_test_suite(
         "@crates//:opentelemetry_sdk",
         "@crates//:prometheus",
         "@crates//:serde_json",
-        "@crates//:tokio",
         "@crates//:tracing",
         "@crates//:tracing-subscriber",
     ],
