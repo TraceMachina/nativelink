@@ -25,11 +25,13 @@ use futures::task::Poll;
 use http::header;
 use http::status::StatusCode;
 use hyper::Body;
+use mock_instant::MockClock;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::s3_store::S3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
@@ -63,6 +65,7 @@ async fn simple_has_object_found() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
 
     let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
@@ -97,6 +100,7 @@ async fn simple_has_object_not_found() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
     let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
     let result = store.has(digest).await;
@@ -161,6 +165,7 @@ async fn simple_has_retries() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
 
     let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
@@ -206,6 +211,7 @@ async fn simple_update_ac() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
     let (mut tx, rx) = make_buf_channel_pair();
     // Make future responsible for processing the datastream
@@ -293,6 +299,7 @@ async fn simple_get_ac() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
 
     let store_data = store
@@ -337,6 +344,7 @@ async fn smoke_test_get_part() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
 
     store
@@ -403,6 +411,7 @@ async fn get_part_simple_retries() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
 
     let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
@@ -507,7 +516,10 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
                     .unwrap(),
                 http::Response::builder()
                     .status(StatusCode::OK)
-                    .body(SdkBody::empty())
+                    .body(SdkBody::from(concat!(
+                        "<CompleteMultipartUploadResult>",
+                        "</CompleteMultipartUploadResult>",
+                    )))
                     .unwrap(),
             ),
         ]);
@@ -524,8 +536,12 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
-    let _ = store.update_oneshot(digest, send_data.clone().into()).await;
+    store
+        .update_oneshot(digest, send_data.clone().into())
+        .await
+        .unwrap();
     mock_client.assert_requests_match(&[]);
     Ok(())
 }
@@ -560,6 +576,7 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
 
     let (_, get_part_result) = join!(
@@ -605,15 +622,16 @@ async fn get_part_is_zero_digest() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?);
     let store_clone = store.clone();
     let (mut writer, mut reader) = make_buf_channel_pair();
 
     let _drop_guard = spawn!("get_part_is_zero_digest", async move {
-        let _ = store_clone
+        store_clone
             .get_part(digest, &mut writer, 0, None)
             .await
-            .err_tip(|| "Failed to get_part");
+            .unwrap();
     });
 
     let file_data = reader
@@ -649,13 +667,76 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
         },
         s3_client,
         Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
     )?;
 
-    let _ = store
-        .has_with_results(&keys, &mut results)
-        .await
-        .err_tip(|| "Failed to get_part");
+    store.has_with_results(&keys, &mut results).await.unwrap();
     assert_eq!(results, vec!(Some(0)));
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_with_expired_result() -> Result<(), Error> {
+    const CAS_ENTRY_SIZE: usize = 10;
+    let mock_client = StaticReplayClient::new(vec![
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder()
+                .header(header::CONTENT_LENGTH, "512")
+                .header(header::LAST_MODIFIED, "Thu, 01 Jan 1970 00:00:00 GMT")
+                .body(SdkBody::empty())
+                .unwrap(),
+        ),
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder()
+                .header(header::CONTENT_LENGTH, "512")
+                .header(header::LAST_MODIFIED, "Thu, 01 Jan 1970 00:00:00 GMT")
+                .body(SdkBody::empty())
+                .unwrap(),
+        ),
+    ]);
+    let test_config = Builder::new()
+        .behavior_version(BehaviorVersion::v2024_03_28())
+        .region(Region::from_static(REGION))
+        .http_client(mock_client)
+        .build();
+    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+    let store = S3Store::new_with_client_and_jitter(
+        &nativelink_config::stores::S3Store {
+            bucket: BUCKET_NAME.to_string(),
+            consider_expired_after_s: 2 * 24 * 60 * 60, // 2 days.
+            ..Default::default()
+        },
+        s3_client,
+        Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
+    )?;
+
+    // Time starts at 1970-01-01 00:00:00.
+    let digest = DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE).unwrap();
+    {
+        MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
+                                                               // Date is now 1970-01-02 00:00:00.
+        let mut results = vec![None];
+        store
+            .has_with_results(&[digest.into()], &mut results)
+            .await
+            .unwrap();
+        assert_eq!(results, vec![Some(512)]);
+    }
+    {
+        MockClock::advance(Duration::from_secs(24 * 60 * 60)); // 1 day.
+                                                               // Date is now 1970-01-03 00:00:00.
+        let mut results = vec![None];
+        store
+            .has_with_results(&[digest.into()], &mut results)
+            .await
+            .unwrap();
+        // The result should be expired even though s3 says it's there.
+        assert_eq!(results, vec![None]);
+    }
 
     Ok(())
 }
