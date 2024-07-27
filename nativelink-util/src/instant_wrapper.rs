@@ -15,7 +15,7 @@
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mock_instant::Instant as MockInstant;
+use mock_instant::{Instant as MockInstant, MockClock};
 
 /// Wrapper used to abstract away which underlying Instant impl we are using.
 /// This is needed for testing.
@@ -65,7 +65,7 @@ impl InstantWrapper for MockInstantWrapped {
     }
 
     fn unix_timestamp(&self) -> u64 {
-        100
+        MockClock::time().as_secs()
     }
 
     fn elapsed(&self) -> Duration {

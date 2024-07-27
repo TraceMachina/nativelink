@@ -14,6 +14,7 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use futures::stream::FuturesOrdered;
 use futures::{Future, TryStreamExt};
@@ -49,7 +50,9 @@ pub fn store_factory<'a>(
     Box::pin(async move {
         let store: Arc<dyn StoreDriver> = match backend {
             StoreConfig::memory(config) => MemoryStore::new(config),
-            StoreConfig::experimental_s3_store(config) => S3Store::new(config).await?,
+            StoreConfig::experimental_s3_store(config) => {
+                S3Store::new(config, SystemTime::now).await?
+            }
             StoreConfig::redis_store(config) => RedisStore::new(config)?,
             StoreConfig::verify(config) => VerifyStore::new(
                 config,

@@ -2090,6 +2090,7 @@ dependencies = [
  "hyper-rustls",
  "lz4_flex",
  "memory-stats",
+ "mock_instant",
  "nativelink-config",
  "nativelink-error",
  "nativelink-macro",
