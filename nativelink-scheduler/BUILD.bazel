@@ -38,6 +38,7 @@ rust_library(
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:async-lock",
+        "@crates//:bincode",
         "@crates//:blake3",
         "@crates//:futures",
         "@crates//:hashbrown",
