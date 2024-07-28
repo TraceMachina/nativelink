@@ -19,10 +19,13 @@ path = "genproto/lib.rs"
 doctest = false
 
 [dependencies]
-prost = "0.13.1"
-prost-types = "0.13.1"
-tonic = { version = "0.12.0", features = ["gzip"] }
+prost = { version = "0.13.1", default-features = false }
+prost-types = { version = "0.13.1", default-features = false }
+tonic = { version = "0.12.0", default-features = false }
 
 [dev-dependencies]
-prost-build = "0.13.1"
-tonic-build = "0.12.0"
+prost-build = { version = "0.13.1", default-features = false }
+tonic-build = { version = "0.12.0", features = ["prost"] }
+
+[cargo-features-manager.keep]
+tonic-build = ["prost"]

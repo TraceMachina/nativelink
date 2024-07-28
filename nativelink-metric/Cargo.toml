@@ -5,8 +5,7 @@ edition = "2021"
 
 [dependencies]
 nativelink-metric-macro-derive = { path = "nativelink-metric-macro-derive" }
-
-async-lock = "3.3.0"
+async-lock = { version = "3.3.0", default-features = false }
 parking_lot = "0.12.2"
-tracing = "0.1.40"
-tokio = { version = "1.37.0", features = ["sync"] }
+tracing = { version = "0.1.40", default-features = false }
+tokio = "1.37.0"
