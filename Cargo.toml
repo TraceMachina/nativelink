@@ -41,27 +41,32 @@ nativelink-util = { path = "nativelink-util" }
 nativelink-worker = { path = "nativelink-worker" }
 nativelink-metric = { path = "nativelink-metric" }
 nativelink-metric-collector = { path = "nativelink-metric-collector" }
-
-async-lock = "3.4.0"
-axum = "0.7.5"
-
+async-lock = { version = "3.4.0", default-features = false }
+axum = { version = "0.7.5", default-features = false }
 clap = { version = "4.5.9", features = ["derive"] }
-futures = "0.3.30"
+futures = { version = "0.3.30", default-features = false }
 hyper = "1.4.1"
 hyper-util = "0.1.6"
 mimalloc = "0.1.43"
 parking_lot = "0.12.3"
-rustls-pemfile = "2.1.2"
-scopeguard = "1.2.0"
+rustls-pemfile = { version = "2.1.2", default-features = false }
+scopeguard = { version = "1.2.0", default-features = false }
 serde_json5 = "0.1.0"
 tokio = { version = "1.38.0", features = ["rt-multi-thread", "signal"] }
-tokio-rustls = "0.25.0"
-tonic = { version = "0.12.0", features = ["gzip", "tls"] }
-tower = "0.4.13"
-tracing = "0.1.40"
-opentelemetry_sdk = { version = "0.23.0", features = ["metrics"] }
-tracing-subscriber = "0.3.18"
-opentelemetry = { version = "0.23.0", features = ["metrics"] }
-prometheus = "0.13.4"
+tokio-rustls = { version = "0.25.0", default-features = false }
+tonic = { version = "0.12.0", default-features = false }
+tower = { version = "0.4.13", default-features = false }
+tracing = { version = "0.1.40", default-features = false }
+opentelemetry_sdk = { version = "0.23.0", default-features = false }
+tracing-subscriber = { version = "0.3.18", default-features = false }
+opentelemetry = { version = "0.23.0", default-features = false }
+prometheus = { version = "0.13.4", default-features = false }
 opentelemetry-prometheus = "0.16.0"
 serde_json = "1.0.120"
+
+[workspace.cargo-features-manager.keep]
+# This causes blake3 to detect SIMD capabilities at runtime.
+blake3 = ["std"]
+serial_test = ["async"]
+pretty_assertions = ["std"]
+tonic-build = ["prost"]
