@@ -39,7 +39,7 @@ uuid = { version = "1.10.0", default-features = false }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
-redis-test = { version = "0.4.0", features = ["aio"] }
+redis-test = { version = "0.4.0", features = ["aio"], default-features = false }
 pretty_assertions = { version = "1.4.0", features = ["std"] }
 memory-stats = "1.2.0"
 mock_instant = "0.3.2"
@@ -47,16 +47,7 @@ once_cell = { version = "1.19.0", default-features = false }
 sha2 = { version = "0.10.8", default-features = false }
 http = { version = "1.1.0", default-features = false }
 aws-smithy-types = "1.2.0"
-aws-sdk-s3 = { version = "1.41.0", features = ["rt-tokio"] }
-aws-smithy-runtime = { version = "1.6.2", features = ["test-util"] }
+aws-sdk-s3 = { version = "1.41.0", features = ["rt-tokio"], default-features = false }
+aws-smithy-runtime = { version = "1.6.2", features = ["test-util"], default-features = false }
 aws-smithy-runtime-api = "1.7.1"
-serial_test = { version = "3.1.1", features = ["async"] }
-
-[cargo-features-manager.keep]
-aws-sdk-s3 = ["rt-tokio"]
-aws-smithy-runtime = ["test-util"]
-# This causes blake3 to detect SIMD capabilities at runtime.
-blake3 = ["std"]
-pretty_assertions = ["std"]
-redis-test = ["aio"]
-serial_test = ["async"]
+serial_test = { version = "3.1.1", features = ["async"], default-features = false }

@@ -1931,17 +1931,6 @@ pub mod execution_client {
     pub struct ExecutionClient<T> {
         inner: tonic::client::Grpc<T>,
     }
-    impl ExecutionClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
-    }
     impl<T> ExecutionClient<T>
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
@@ -2188,17 +2177,6 @@ pub mod action_cache_client {
     #[derive(Debug, Clone)]
     pub struct ActionCacheClient<T> {
         inner: tonic::client::Grpc<T>,
-    }
-    impl ActionCacheClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
     }
     impl<T> ActionCacheClient<T>
     where
@@ -2504,17 +2482,6 @@ pub mod content_addressable_storage_client {
     pub struct ContentAddressableStorageClient<T> {
         inner: tonic::client::Grpc<T>,
     }
-    impl ContentAddressableStorageClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
-    }
     impl<T> ContentAddressableStorageClient<T>
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
@@ -2793,17 +2760,6 @@ pub mod capabilities_client {
     #[derive(Debug, Clone)]
     pub struct CapabilitiesClient<T> {
         inner: tonic::client::Grpc<T>,
-    }
-    impl CapabilitiesClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
     }
     impl<T> CapabilitiesClient<T>
     where
