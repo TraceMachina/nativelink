@@ -16,11 +16,12 @@
 startup --digest_function=blake3
 common --enable_platform_specific_config
 
+# Don't use legacy toolchain resolution.
+common --incompatible_enable_cc_toolchain_resolution
+common --incompatible_enable_proto_toolchain_resolution
+
 # Don't leak PATH and LD_LIBRARY_PATH into the build.
 build --incompatible_strict_action_env
-
-# Don't use legacy toolchain resolution.
-build --incompatible_enable_cc_toolchain_resolution
 
 # Don't use legacy repository rules.
 build --incompatible_disable_native_repo_rules

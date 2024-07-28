@@ -85,7 +85,14 @@ rust_analyzer = use_extension(
 )
 rust_analyzer.rust_analyzer_dependencies()
 
-bazel_dep(name = "protobuf", version = "27.2")
+bazel_dep(name = "protobuf", version = "27.2", repo_name = "com_google_protobuf")
+bazel_dep(name = "toolchains_protoc", version = "0.3.1")
+
+protoc = use_extension("@toolchains_protoc//protoc:extensions.bzl", "protoc")
+protoc.toolchain(
+    google_protobuf = "com_google_protobuf",
+    version = "v27.1",
+)
 
 # Local remote execution.
 bazel_dep(name = "local-remote-execution", version = "0.0.0")
