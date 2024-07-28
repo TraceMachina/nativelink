@@ -1,3 +1,4 @@
+load("@bazel_skylib//lib:selects.bzl", "selects")
 load(
     "@rules_rust//rust:defs.bzl",
     "rust_binary",
@@ -27,6 +28,42 @@ rust_binary(
     ],
 )
 
+# TODO(aaronmondal): The config settings we create here don't follow good
+#                    practices and are purely created this way to work around a
+#                    suboptimal naming scheme in toolchains_protoc. Don't use
+#                    this outside of getting protoc. Consider upstreaming a
+#                    naming scheme fix.
+PLATFORM_OS_ARCH = [
+    ("linux", "aarch64"),
+    ("linux", "x86_64"),
+    ("macos", "aarch64"),
+    ("macos", "x86_64"),
+    ("windows", "aarch64"),
+    ("windows", "x86_64"),
+]
+
+[
+    selects.config_setting_group(
+        name = "{}_{}".format(
+            os.replace("macos", "osx"),
+            arch.replace("aarch64", "aarch_64"),
+        ),
+        match_all = [
+            "@platforms//cpu:{}".format(arch),
+            "@platforms//os:{}".format(os),
+        ],
+    )
+    for (os, arch) in PLATFORM_OS_ARCH
+]
+
+PLATFORM_NAMES = [
+    "{}_{}".format(
+        os.replace("macos", "osx"),
+        arch.replace("aarch64", "aarch_64"),
+    )
+    for (os, arch) in PLATFORM_OS_ARCH
+]
+
 genrule(
     name = "gen_rs_protos",
     srcs = [
@@ -51,20 +88,27 @@ genrule(
         "google/rpc/status.proto",
     ],
     outs = ["{}.pb.rs".format(name) for name in PROTO_NAMES],
-    cmd = '''
+    cmd = select({
+        platform: '''
         set -e
-        export PROTOC=$(execpath @protobuf//:protoc)
+        export PROTOC=$(execpath @@toolchains_protoc~~protoc~toolchains_protoc_hub.{}//:bin/protoc)
 
         $(execpath :gen_protos_tool) $(SRCS) -o $(RULEDIR)
 
         for file in $(RULEDIR)/*.rs; do
-            mv -- "$$file" "$${file%.rs}.pb.rs"
+            mv -- "$$file" "$${{file%.rs}}.pb.rs"
         done
-        ''',
+        '''.format(platform)
+        for platform in PLATFORM_NAMES
+    }),
     tools = [
         ":gen_protos_tool",
-        "@protobuf//:protoc",
-    ],
+    ] + select({
+        platform: [
+            "@@toolchains_protoc~~protoc~toolchains_protoc_hub.{}//:bin/protoc".format(platform),
+        ]
+        for platform in PLATFORM_NAMES
+    }),
 )
 
 py_binary(
