@@ -182,7 +182,9 @@ impl StoreDriver for MemoryStore {
         // TODO(allada): This is a dirty hack to get around the lifetime issues with the
         // evicting map.
         let digests: Vec<_> = keys.iter().map(|key| key.borrow().into_owned()).collect();
-        self.evicting_map.sizes_for_keys(digests, results).await;
+        self.evicting_map
+            .sizes_for_keys(digests, results, false /* peek */)
+            .await;
         // We need to do a special pass to ensure our zero digest exist.
         keys.iter()
             .zip(results.iter_mut())

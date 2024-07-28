@@ -50,6 +50,7 @@ nativelink-macro = { path = "../nativelink-macro" }
 redis-test = { version = "0.4.0", features = ["aio"] }
 pretty_assertions = "1.4.0"
 memory-stats = "1.2.0"
+mock_instant = "0.3.2"
 once_cell = "1.19.0"
 http = "1.1.0"
 aws-smithy-types = "1.2.0"
@@ -57,4 +58,3 @@ aws-sdk-s3 = { version = "1.41.0" }
 aws-smithy-runtime = { version = "1.6.2", features = ["test-util"] }
 aws-smithy-runtime-api = "1.7.1"
 serial_test = { version = "3.1.1", features = ["async"] }
-mock_instant = "0.3.2"
