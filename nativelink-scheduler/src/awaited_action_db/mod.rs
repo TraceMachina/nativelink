@@ -20,7 +20,7 @@ pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
 use futures::{Future, Stream};
 use nativelink_error::Error;
 use nativelink_metric::MetricsComponent;
-use nativelink_util::action_messages::{ActionInfo, ClientOperationId, OperationId};
+use nativelink_util::action_messages::{ActionInfo, OperationId};
 
 mod awaited_action;
 
@@ -80,7 +80,7 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + 'static {
     /// Get the AwaitedAction by the client operation id.
     fn get_awaited_action_by_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> impl Future<Output = Result<Option<Self::Subscriber>, Error>> + Send;
 
     /// Get all AwaitedActions. This call should be avoided as much as possible.
@@ -113,7 +113,7 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + 'static {
     /// to changes.
     fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> impl Future<Output = Result<Self::Subscriber, Error>> + Send;
 }

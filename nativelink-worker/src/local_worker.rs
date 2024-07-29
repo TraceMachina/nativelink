@@ -211,22 +211,8 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                             self.metrics.keep_alives_received.inc();
                         }
                         Update::KillOperationRequest(kill_operation_request) => {
-                            let operation_id_res = kill_operation_request
-                                .operation_id
-                                .as_str()
-                                .try_into();
-                            let operation_id = match operation_id_res {
-                                Ok(operation_id) => operation_id,
-                                Err(err) => {
-                                    event!(
-                                        Level::ERROR,
-                                        ?kill_operation_request,
-                                        ?err,
-                                        "Failed to convert string to operation_id"
-                                    );
-                                    continue;
-                                }
-                            };
+                            let operation_id = kill_operation_request
+                                .operation_id.into();
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
                                 event!(
                                     Level::ERROR,

@@ -17,20 +17,20 @@ use std::sync::Arc;
 
 use futures::Future;
 use nativelink_error::{make_err, Code, Error};
-use nativelink_util::action_messages::{ActionState, ClientOperationId};
+use nativelink_util::action_messages::{ActionState, OperationId};
 use tokio::sync::watch;
 
 use crate::action_scheduler::ActionListener;
 
 /// Simple implementation of ActionListener using tokio's watch.
 pub struct DefaultActionListener {
-    client_operation_id: ClientOperationId,
+    client_operation_id: OperationId,
     action_state: watch::Receiver<Arc<ActionState>>,
 }
 
 impl DefaultActionListener {
     pub fn new(
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         mut action_state: watch::Receiver<Arc<ActionState>>,
     ) -> Self {
         action_state.mark_changed();
@@ -54,7 +54,7 @@ impl DefaultActionListener {
 }
 
 impl ActionListener for DefaultActionListener {
-    fn client_operation_id(&self) -> &ClientOperationId {
+    fn client_operation_id(&self) -> &OperationId {
         &self.client_operation_id
     }
 

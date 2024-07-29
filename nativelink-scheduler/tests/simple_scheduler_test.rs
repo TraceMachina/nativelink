@@ -32,12 +32,10 @@ use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
-    ActionResult, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
-    ClientOperationId, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
-    SymlinkInfo, WorkerId, INTERNAL_ERROR_EXIT_CODE,
+    ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath,
+    OperationId, SymlinkInfo, WorkerId, INTERNAL_ERROR_EXIT_CODE,
 };
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
@@ -136,7 +134,7 @@ async fn setup_action(
 ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
     let mut action_info = make_base_action_info(insert_timestamp, action_digest);
     action_info.platform_properties = platform_properties;
-    let client_id = ClientOperationId::new(action_info.unique_qualifier.clone());
+    let client_id = OperationId::default();
     let result = scheduler.add_action(client_id, action_info).await;
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
     result
@@ -190,8 +188,9 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Executing,
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -254,8 +253,9 @@ async fn find_executing_action() -> Result<(), Error> {
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Executing,
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -328,7 +328,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
             .expect("`update` should be set on UpdateForWorker");
         let (operation_id, rx_start_execute) = match update_for_worker {
             update_for_worker::Update::StartAction(start_execute) => (
-                OperationId::try_from(start_execute.operation_id.as_str()).unwrap(),
+                OperationId::from(start_execute.operation_id.as_str()),
                 start_execute,
             ),
             v => panic!("Expected StartAction, got : {v:?}"),
@@ -347,7 +347,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
             .expect("`update` should be set on UpdateForWorker");
         let (operation_id, rx_start_execute) = match update_for_worker {
             update_for_worker::Update::StartAction(start_execute) => (
-                OperationId::try_from(start_execute.operation_id.as_str()).unwrap(),
+                OperationId::from(start_execute.operation_id.as_str()),
                 start_execute,
             ),
             v => panic!("Expected StartAction, got : {v:?}"),
@@ -460,7 +460,7 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         // Other tests check full data. We only care if we got StartAction.
         let operation_id = match rx_from_worker.recv().await.unwrap().update {
             Some(update_for_worker::Update::StartAction(start_execute)) => {
-                OperationId::try_from(start_execute.operation_id.as_str()).unwrap()
+                OperationId::from(start_execute.operation_id)
             }
             v => panic!("Expected StartAction, got : {v:?}"),
         };
@@ -491,8 +491,9 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Queued,
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -506,8 +507,9 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Executing,
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -553,8 +555,9 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Queued,
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -582,8 +585,9 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Executing,
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -608,15 +612,11 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
-        instance_name: String::new(),
-        digest: DigestInfo::zero_digest(),
-        digest_function: DigestHasherFunc::Sha256,
-    });
-    let id = OperationId::new(unique_qualifier);
+    let operation_id = OperationId::default();
     let mut expected_action_state = ActionState {
-        id,
+        operation_id,
         stage: ActionStage::Queued,
+        action_digest,
     };
 
     let insert_timestamp1 = make_system_time(1);
@@ -641,7 +641,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         let action_state1 = client1_action_listener.changed().await.unwrap();
         let action_state2 = client2_action_listener.changed().await.unwrap();
         // Name is random so we set force it to be the same.
-        expected_action_state.id = action_state1.id.clone();
+        expected_action_state.operation_id = action_state1.operation_id.clone();
         assert_eq!(action_state1.as_ref(), &expected_action_state);
         assert_eq!(action_state2.as_ref(), &expected_action_state);
     }
@@ -731,8 +731,9 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Queued,
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -800,7 +801,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
                 )),
             }
         );
-        OperationId::try_from(operation_id.as_str()).unwrap()
+        OperationId::from(operation_id)
     };
 
     {
@@ -809,8 +810,9 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
-                id: operation_id.clone(),
+                operation_id: operation_id.clone(),
                 stage: ActionStage::Executing,
+                action_digest: action_state.action_digest,
             }
         );
     }
@@ -841,8 +843,9 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
-                id: operation_id.clone(),
+                operation_id: operation_id.clone(),
                 stage: ActionStage::Executing,
+                action_digest: action_state.action_digest,
             }
         );
     }
@@ -939,7 +942,7 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
     scheduler
         .update_action(
             &worker_id,
-            &OperationId::try_from(operation_id.as_str())?,
+            &OperationId::from(operation_id),
             Ok(ActionStage::Completed(action_result.clone())),
         )
         .await?;
@@ -949,8 +952,9 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Completed(action_result),
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -992,7 +996,7 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
             v => panic!("Expected StartAction, got : {v:?}"),
         };
         // Other tests check full data. We only care if client thinks we are Executing.
-        OperationId::try_from(operation_id.as_str())?
+        OperationId::from(operation_id)
     };
 
     let action_result = ActionResult {
@@ -1051,8 +1055,9 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Completed(action_result),
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -1097,11 +1102,6 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     }
     let _ = setup_new_worker(&scheduler, rogue_worker_id, PlatformProperties::default()).await?;
 
-    let action_info_hash_key = ActionUniqueQualifier::Cachable(ActionUniqueKey {
-        instance_name: INSTANCE_NAME.to_string(),
-        digest_function: DigestHasherFunc::Sha256,
-        digest: action_digest,
-    });
     let action_result = ActionResult {
         output_files: Vec::default(),
         output_folders: Vec::default(),
@@ -1129,7 +1129,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let update_action_result = scheduler
         .update_action(
             &rogue_worker_id,
-            &OperationId::new(action_info_hash_key),
+            &OperationId::default(),
             Ok(ActionStage::Completed(action_result.clone())),
         )
         .await;
@@ -1171,15 +1171,11 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
-        instance_name: String::new(),
-        digest: DigestInfo::zero_digest(),
-        digest_function: DigestHasherFunc::Sha256,
-    });
-    let id = OperationId::new(unique_qualifier);
+    let operation_id = OperationId::default();
     let mut expected_action_state = ActionState {
-        id,
+        operation_id,
         stage: ActionStage::Executing,
+        action_digest,
     };
 
     let insert_timestamp = make_system_time(1);
@@ -1216,9 +1212,9 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         // Client should get notification saying it's being executed.
         let action_state = action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
-        expected_action_state.id = action_state.id.clone();
+        expected_action_state.operation_id = action_state.operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
-        action_state.id.clone()
+        action_state.operation_id.clone()
     };
 
     let action_result = ActionResult {
@@ -1279,7 +1275,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         expected_action_state.stage = ActionStage::Executing;
         let action_state = action_listener.changed().await.unwrap();
         // The name of the action changed (since it's a new action), so update it.
-        expected_action_state.id = action_state.id.clone();
+        expected_action_state.operation_id = action_state.operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
@@ -1333,7 +1329,7 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         assert_eq!(state_1.stage, ActionStage::Executing);
         // Second client should be in a queued state.
         assert_eq!(state_2.stage, ActionStage::Queued);
-        (state_1.id.clone(), state_2.id.clone())
+        (state_1.operation_id.clone(), state_2.operation_id.clone())
     };
 
     let action_result = ActionResult {
@@ -1373,13 +1369,12 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     {
         // First action should now be completed.
         let action_state = client1_action_listener.changed().await.unwrap();
-        let mut expected_action_state = ActionState {
+        let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Completed(action_result.clone()),
+            action_digest: action_state.action_digest,
         };
-        // We now know the name of the action so populate it.
-        expected_action_state.id.unique_qualifier = action_state.id.unique_qualifier.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
@@ -1411,13 +1406,12 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     {
         // Our second client should be notified it completed.
         let action_state = client2_action_listener.changed().await.unwrap();
-        let mut expected_action_state = ActionState {
+        let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Completed(action_result.clone()),
+            action_digest: action_state.action_digest,
         };
-        // We now know the name of the action so populate it.
-        expected_action_state.id.unique_qualifier = action_state.id.unique_qualifier.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
@@ -1519,7 +1513,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             action_listener.changed().await.unwrap().stage,
             ActionStage::Executing
         );
-        OperationId::try_from(operation_id.as_str())?
+        OperationId::from(operation_id)
     };
 
     let _ = scheduler
@@ -1535,8 +1529,9 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Queued,
+            action_digest: action_state.action_digest,
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
@@ -1568,7 +1563,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
         let action_state = action_listener.changed().await.unwrap();
         let expected_action_state = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
-            id: action_state.id.clone(),
+            operation_id: action_state.operation_id.clone(),
             stage: ActionStage::Completed(ActionResult {
                 output_files: Vec::default(),
                 output_folders: Vec::default(),
@@ -1593,6 +1588,7 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
                 error: Some(err.clone()),
                 message: String::new(),
             }),
+            action_digest: action_state.action_digest,
         };
         let mut received_state = action_state.as_ref().clone();
         if let ActionStage::Completed(stage) = &mut received_state.stage {
@@ -1688,7 +1684,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
             action_listener.changed().await.unwrap().stage,
             ActionStage::Executing
         );
-        OperationId::try_from(operation_id.as_str())?
+        OperationId::from(operation_id)
     };
 
     let _ = scheduler
@@ -1769,7 +1765,7 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         // evicting map. So we constantly ask for some other client
         // to trigger eviction logic.
         scheduler
-            .find_by_client_operation_id(&ClientOperationId::from_raw_string(
+            .find_by_client_operation_id(&OperationId::from_raw_string(
                 "dummy_client_id".to_string(),
             ))
             .await

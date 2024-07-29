@@ -22,7 +22,7 @@ use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionState, ClientOperationId, OperationId, WorkerId,
+    ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::{
@@ -57,13 +57,13 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u32 = 60;
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
 struct SimpleSchedulerActionListener {
-    client_operation_id: ClientOperationId,
+    client_operation_id: OperationId,
     action_state_result: Box<dyn ActionStateResult>,
 }
 
 impl SimpleSchedulerActionListener {
     fn new(
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_state_result: Box<dyn ActionStateResult>,
     ) -> Self {
         Self {
@@ -74,7 +74,7 @@ impl SimpleSchedulerActionListener {
 }
 
 impl ActionListener for SimpleSchedulerActionListener {
-    fn client_operation_id(&self) -> &ClientOperationId {
+    fn client_operation_id(&self) -> &OperationId {
         &self.client_operation_id
     }
 
@@ -127,7 +127,7 @@ impl SimpleScheduler {
     /// value.
     async fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         let add_action_result = self
@@ -143,7 +143,7 @@ impl SimpleScheduler {
 
     async fn find_by_client_operation_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         let filter = OperationFilter {
             client_operation_id: Some(client_operation_id.clone()),
@@ -205,7 +205,7 @@ impl SimpleScheduler {
                     .as_state()
                     .await
                     .err_tip(|| "Failed to get action_info from as_state_result stream")?;
-                action_state.id.clone()
+                action_state.operation_id.clone()
             };
 
             // Tell the matching engine that the operation is being assigned to a worker.
@@ -366,7 +366,7 @@ impl ActionScheduler for SimpleScheduler {
 
     async fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: ActionInfo,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         self.add_action(client_operation_id, Arc::new(action_info))
@@ -375,7 +375,7 @@ impl ActionScheduler for SimpleScheduler {
 
     async fn find_by_client_operation_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         let maybe_receiver = self
             .find_by_client_operation_id(client_operation_id)

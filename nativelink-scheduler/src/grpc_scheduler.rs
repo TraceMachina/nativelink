@@ -30,12 +30,9 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionState, ActionUniqueKey, ActionUniqueQualifier, ClientOperationId,
-    OperationId, DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionState, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
 };
-use nativelink_util::common::DigestInfo;
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
@@ -126,16 +123,10 @@ impl GrpcScheduler {
             .await
             .err_tip(|| "Recieving response from upstream scheduler")?
         {
-            let client_operation_id =
-                ClientOperationId::from_raw_string(initial_response.name.clone());
+            let client_operation_id = OperationId::from_raw_string(initial_response.name.clone());
             // Our operation_id is not needed here is just a place holder to recycle existing object.
             // The only thing that actually matters is the operation_id.
-            let operation_id =
-                OperationId::new(ActionUniqueQualifier::Uncachable(ActionUniqueKey {
-                    instance_name: "dummy_instance_name".to_string(),
-                    digest_function: DigestHasherFunc::Sha256,
-                    digest: DigestInfo::zero_digest(),
-                }));
+            let operation_id = OperationId::default();
             let action_state =
                 ActionState::try_from_operation(initial_response, operation_id.clone())
                     .err_tip(|| "In GrpcScheduler::stream_state")?;
@@ -243,7 +234,7 @@ impl ActionScheduler for GrpcScheduler {
 
     async fn add_action(
         &self,
-        _client_operation_id: ClientOperationId,
+        _client_operation_id: OperationId,
         action_info: ActionInfo,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {
@@ -289,7 +280,7 @@ impl ActionScheduler for GrpcScheduler {
 
     async fn find_by_client_operation_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         let request = WaitExecutionRequest {
             name: client_operation_id.to_string(),

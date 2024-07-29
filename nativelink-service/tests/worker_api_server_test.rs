@@ -393,7 +393,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
         insert_timestamp: make_system_time(0),
         unique_qualifier,
     });
-    let expected_operation_id = OperationId::new(action_info.unique_qualifier.clone());
+    let expected_operation_id = OperationId::default();
     test_context
         .scheduler
         .worker_notify_run_action(

@@ -45,8 +45,7 @@ use nativelink_store::memory_store::MemoryStore;
 #[cfg_attr(target_family = "windows", allow(unused_imports))]
 use nativelink_util::action_messages::SymlinkInfo;
 use nativelink_util::action_messages::{
-    ActionResult, ActionUniqueKey, ActionUniqueQualifier, DirectoryInfo, ExecutionMetadata,
-    FileInfo, NameOrPath, OperationId,
+    ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
 };
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
@@ -141,20 +140,6 @@ fn increment_clock(time: &mut SystemTime) -> SystemTime {
     let previous_time = *time;
     *time = previous_time.checked_add(Duration::from_secs(1)).unwrap();
     previous_time
-}
-
-fn make_operation_id(execute_request: &ExecuteRequest) -> OperationId {
-    let unique_qualifier = ActionUniqueQualifier::Cachable(ActionUniqueKey {
-        instance_name: execute_request.instance_name.clone(),
-        digest_function: execute_request.digest_function.try_into().unwrap(),
-        digest: execute_request
-            .action_digest
-            .clone()
-            .unwrap()
-            .try_into()
-            .unwrap(),
-    });
-    OperationId::new(unique_qualifier)
 }
 
 #[nativelink_test]
@@ -506,7 +491,7 @@ async fn ensure_output_files_full_directories_are_created_no_working_directory_t
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         let running_action = running_actions_manager
             .create_and_add_action(
@@ -623,7 +608,7 @@ async fn ensure_output_files_full_directories_are_created_test(
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         let running_action = running_actions_manager
             .create_and_add_action(
@@ -756,7 +741,7 @@ async fn blake3_upload_files() -> Result<(), Box<dyn std::error::Error>> {
             digest_function: ProtoDigestFunction::Blake3.into(),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         let running_action_impl = running_actions_manager
             .create_and_add_action(
@@ -928,7 +913,7 @@ async fn upload_files_from_above_cwd_test() -> Result<(), Box<dyn std::error::Er
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         let running_action_impl = running_actions_manager
             .create_and_add_action(
@@ -1084,7 +1069,7 @@ async fn upload_dir_and_symlink_test() -> Result<(), Box<dyn std::error::Error>>
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         let running_action_impl = running_actions_manager
             .create_and_add_action(
@@ -1279,7 +1264,7 @@ async fn cleanup_happens_on_job_failure() -> Result<(), Box<dyn std::error::Erro
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         let running_action_impl = running_actions_manager
             .create_and_add_action(
@@ -1409,7 +1394,7 @@ async fn kill_ends_action() -> Result<(), Box<dyn std::error::Error>> {
         action_digest: Some(action_digest.into()),
         ..Default::default()
     };
-    let operation_id = make_operation_id(&execute_request).to_string();
+    let operation_id = OperationId::default().to_string();
 
     let running_action_impl = running_actions_manager
         .clone()
@@ -1555,7 +1540,7 @@ exit 0
         action_digest: Some(action_digest.into()),
         ..Default::default()
     };
-    let operation_id = make_operation_id(&execute_request).to_string();
+    let operation_id = OperationId::default().to_string();
 
     let running_action_impl = running_actions_manager
         .clone()
@@ -1722,7 +1707,7 @@ exit 0
         action_digest: Some(action_digest.into()),
         ..Default::default()
     };
-    let operation_id = make_operation_id(&execute_request).to_string();
+    let operation_id = OperationId::default().to_string();
 
     let running_action_impl = running_actions_manager
         .clone()
@@ -1862,7 +1847,7 @@ exit 1
         action_digest: Some(action_digest.into()),
         ..Default::default()
     };
-    let operation_id = make_operation_id(&execute_request).to_string();
+    let operation_id = OperationId::default().to_string();
 
     let running_action_impl = running_actions_manager
         .clone()
@@ -2377,7 +2362,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         running_actions_manager
             .create_and_add_action(
@@ -2457,7 +2442,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         running_actions_manager
             .create_and_add_action(
@@ -2537,7 +2522,7 @@ async fn ensure_worker_timeout_chooses_correct_values() -> Result<(), Box<dyn st
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         let result = running_actions_manager
             .create_and_add_action(
@@ -2660,7 +2645,7 @@ async fn worker_times_out() -> Result<(), Box<dyn std::error::Error>> {
         action_digest: Some(action_digest.into()),
         ..Default::default()
     };
-    let operation_id = make_operation_id(&execute_request).to_string();
+    let operation_id = OperationId::default().to_string();
 
     let execute_results_fut = running_actions_manager
         .create_and_add_action(
@@ -2779,7 +2764,7 @@ async fn kill_all_waits_for_all_tasks_to_finish() -> Result<(), Box<dyn std::err
         action_digest: Some(action_digest.into()),
         ..Default::default()
     };
-    let operation_id = make_operation_id(&execute_request).to_string();
+    let operation_id = OperationId::default().to_string();
 
     let (cleanup_tx, cleanup_rx) = oneshot::channel();
     let cleanup_was_requested = AtomicBool::new(false);
@@ -2931,7 +2916,7 @@ async fn unix_executable_file_test() -> Result<(), Box<dyn std::error::Error>> {
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         let running_action_impl = running_actions_manager
             .create_and_add_action(
@@ -3020,7 +3005,7 @@ async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn std::erro
         action_digest: Some(action_digest.into()),
         ..Default::default()
     };
-    let operation_id = make_operation_id(&execute_request).to_string();
+    let operation_id = OperationId::default().to_string();
 
     let running_action_impl = running_actions_manager
         .create_and_add_action(
@@ -3154,7 +3139,7 @@ async fn upload_with_single_permit() -> Result<(), Box<dyn std::error::Error>> {
             action_digest: Some(action_digest.into()),
             ..Default::default()
         };
-        let operation_id = make_operation_id(&execute_request).to_string();
+        let operation_id = OperationId::default().to_string();
 
         let running_action_impl = running_actions_manager
             .create_and_add_action(
@@ -3327,7 +3312,7 @@ async fn running_actions_manager_respects_action_timeout() -> Result<(), Box<dyn
         action_digest: Some(action_digest.into()),
         ..Default::default()
     };
-    let operation_id = make_operation_id(&execute_request).to_string();
+    let operation_id = OperationId::default().to_string();
 
     let running_action_impl = running_actions_manager
         .clone()
