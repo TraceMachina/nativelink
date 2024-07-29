@@ -65,8 +65,12 @@ opentelemetry-prometheus = "0.16.0"
 serde_json = "1.0.120"
 
 [workspace.cargo-features-manager.keep]
+aws-sdk-s3 = ["rt-tokio"]
+aws-smithy-runtime = ["test-util"]
 # This causes blake3 to detect SIMD capabilities at runtime.
 blake3 = ["std"]
-serial_test = ["async"]
 pretty_assertions = ["std"]
+redis-test = ["aio"]
+serial_test = ["async"]
+tokio = ["signal"]
 tonic-build = ["prost"]

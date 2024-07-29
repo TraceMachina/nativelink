@@ -12,6 +12,3 @@ shellexpand = { version = "3.1.0", default-features = false, features = ["base-0
 
 [dev-dependencies]
 pretty_assertions = { version = "1.4.0", features = ["std"] }
-
-[cargo-features-manager.keep]
-pretty_assertions = ["std"]

@@ -46,6 +46,3 @@ nativelink-macro = { path = "../nativelink-macro" }
 http-body-util = "0.1.2"
 pretty_assertions = { version = "1.4.0", features = ["std"] }
 rand = { version = "0.8.5", default-features = false }
-
-[cargo-features-manager.keep]
-pretty_assertions = ["std"]

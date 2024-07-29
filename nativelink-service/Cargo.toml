@@ -37,6 +37,3 @@ hyper-util = "0.1.6"
 maplit = "1.0.2"
 pretty_assertions = { version = "1.4.0", features = ["std"] }
 prost-types = { version = "0.13.1", default-features = false }
-
-[cargo-features-manager.keep]
-pretty_assertions = ["std"]
