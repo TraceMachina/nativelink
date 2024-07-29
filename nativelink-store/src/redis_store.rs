@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use fred::clients::RedisPool;
+use fred::clients::{RedisClient, RedisPool, SubscriberClient};
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface, TransactionInterface};
 use fred::types::{Builder, ConnectionConfig, PerformanceConfig, ReconnectPolicy, RedisConfig};
 use nativelink_config::stores::RedisMode;
@@ -42,6 +42,8 @@ pub const CONNECTION_POOL_SIZE: usize = 3;
 pub struct RedisStore {
     /// The client pool connecting to the backing Redis instance(s).
     client_pool: RedisPool,
+
+    sub_client: SubscriberClient,
 
     /// A channel to publish updates to when a key is added, removed, or modified
     pub_sub_channel: Option<String>,
@@ -110,12 +112,31 @@ impl RedisStore {
 
         client_pool.connect();
 
+        let sub_client = builder
+            .build_subscriber_client()
+            .err_tip(|| "while creating redis subscriber client")?;
+
+        client_pool.connect();
+
         Ok(Self {
             client_pool,
+            sub_client,
             pub_sub_channel,
             temp_name_generator_fn,
             key_prefix,
         })
+    }
+
+    pub fn get_redis_client(&self) -> RedisClient {
+        // Don't reuse the store subscription connection outside of the store.
+        // Allows for multiple subscription instances.
+        self.client_pool.next_connected().clone()
+    }
+
+    pub fn get_subscriber_client(&self) -> SubscriberClient {
+        // Don't reuse the store subscription connection outside of the store.
+        // Allows for multiple subscription instances.
+        self.sub_client.clone_new()
     }
 
     /// Encode a [`StoreKey`] so it can be sent to Redis.
