@@ -86,7 +86,8 @@ impl AwaitedAction {
         );
         let state = Arc::new(ActionState {
             stage,
-            id: operation_id.clone(),
+            operation_id: operation_id.clone(),
+            action_digest: action_info.unique_qualifier.digest(),
         });
         Self {
             version: AwaitedActionVersion(0),

@@ -20,14 +20,14 @@ use nativelink_error::{make_input_err, Error};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_scheduler::action_scheduler::{ActionListener, ActionScheduler};
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
-use nativelink_util::action_messages::{ActionInfo, ClientOperationId};
+use nativelink_util::action_messages::{ActionInfo, OperationId};
 use tokio::sync::{mpsc, Mutex};
 
 #[allow(clippy::large_enum_variant)]
 enum ActionSchedulerCalls {
     GetPlatformPropertyManager(String),
-    AddAction((ClientOperationId, ActionInfo)),
-    FindExistingAction(ClientOperationId),
+    AddAction((OperationId, ActionInfo)),
+    FindExistingAction(OperationId),
 }
 
 enum ActionSchedulerReturns {
@@ -85,7 +85,7 @@ impl MockActionScheduler {
     pub async fn expect_add_action(
         &self,
         result: Result<Pin<Box<dyn ActionListener>>, Error>,
-    ) -> (ClientOperationId, ActionInfo) {
+    ) -> (OperationId, ActionInfo) {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::AddAction(req) = rx_call_lock
             .recv()
@@ -104,7 +104,7 @@ impl MockActionScheduler {
     pub async fn expect_find_by_client_operation_id(
         &self,
         result: Result<Option<Pin<Box<dyn ActionListener>>>, Error>,
-    ) -> ClientOperationId {
+    ) -> OperationId {
         let mut rx_call_lock = self.rx_call.lock().await;
         let ActionSchedulerCalls::FindExistingAction(req) = rx_call_lock
             .recv()
@@ -145,7 +145,7 @@ impl ActionScheduler for MockActionScheduler {
 
     async fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: ActionInfo,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         self.tx_call
@@ -167,7 +167,7 @@ impl ActionScheduler for MockActionScheduler {
 
     async fn find_by_client_operation_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         self.tx_call
             .send(ActionSchedulerCalls::FindExistingAction(

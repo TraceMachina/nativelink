@@ -668,7 +668,7 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
         }),
     };
 
-    let operation_id = OperationId::new(action_info.unique_qualifier.clone());
+    let operation_id = OperationId::default();
     {
         // Send execution request.
         tx_stream

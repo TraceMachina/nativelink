@@ -31,11 +31,9 @@ use nativelink_scheduler::default_action_listener::DefaultActionListener;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
-    ActionResult, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
-    ClientOperationId, OperationId,
+    ActionResult, ActionStage, ActionState, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::{Store, StoreLike};
 use pretty_assertions::assert_eq;
 use prost::Message;
@@ -95,15 +93,16 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
         .await?;
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            id: OperationId::new(action_info.unique_qualifier.clone()),
+            operation_id: OperationId::default(),
             stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
         }));
     let ActionUniqueQualifier::Cachable(action_key) = action_info.unique_qualifier.clone() else {
         panic!("This test should be testing when item was cached first");
     };
     let mut skip_cache_action = action_info.clone();
     skip_cache_action.unique_qualifier = ActionUniqueQualifier::Uncachable(action_key);
-    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
+    let client_operation_id = OperationId::default();
     let _ = join!(
         context
             .cache_scheduler
@@ -121,12 +120,7 @@ async fn add_action_handles_skip_cache() -> Result<(), Error> {
 #[nativelink_test]
 async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
     let context = make_cache_scheduler()?;
-    let client_operation_id =
-        ClientOperationId::new(ActionUniqueQualifier::Uncachable(ActionUniqueKey {
-            instance_name: "instance".to_string(),
-            digest_function: DigestHasherFunc::Sha256,
-            digest: DigestInfo::new([8; 32], 1),
-        }));
+    let client_operation_id = OperationId::default();
     let (actual_result, actual_client_id) = join!(
         context
             .cache_scheduler

@@ -14,7 +14,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::time::{Duration, SystemTime};
 
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
@@ -47,28 +47,47 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 pub const INTERNAL_ERROR_EXIT_CODE: i32 = -178;
 
 /// Holds an id that is unique to the client for a requested operation.
-/// Each client should be issued a unique id even if they are attached
-/// to the same underlying operation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ClientOperationId(String);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum OperationId {
+    Uuid(Uuid),
+    String(String),
+}
 
-impl ClientOperationId {
-    pub fn new(unique_qualifier: ActionUniqueQualifier) -> Self {
-        Self(OperationId::new(unique_qualifier).to_string())
-    }
-
+impl OperationId {
     pub fn from_raw_string(name: String) -> Self {
-        Self(name)
+        Self::String(name)
     }
 
     pub fn into_string(self) -> String {
-        self.0
+        match self {
+            Self::Uuid(uuid) => uuid.to_string(),
+            Self::String(name) => name,
+        }
     }
 }
 
-impl std::fmt::Display for ClientOperationId {
+impl Default for OperationId {
+    fn default() -> Self {
+        Self::Uuid(Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for OperationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{}", self.0.clone()))
+        match self {
+            Self::Uuid(uuid) => uuid.fmt(f),
+            Self::String(name) => f.write_str(name),
+        }
+    }
+}
+
+impl MetricsComponent for OperationId {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::String(self.to_string()))
     }
 }
 
@@ -76,143 +95,21 @@ fn uuid_to_string(uuid: &Uuid) -> String {
     uuid.hyphenated().to_string()
 }
 
-#[derive(Clone, Serialize, Deserialize, MetricsComponent)]
-pub struct OperationId {
-    #[metric(help = "The unique qualifier of the operation")]
-    pub unique_qualifier: ActionUniqueQualifier,
-    #[metric(help = "The id of the operation", handler = uuid_to_string)]
-    pub id: Uuid,
-}
-
-impl PartialEq for OperationId {
-    fn eq(&self, other: &Self) -> bool {
-        self.id.eq(&other.id)
-    }
-}
-
-impl Eq for OperationId {}
-
-impl PartialOrd for OperationId {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for OperationId {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.id.cmp(&other.id)
-    }
-}
-
-impl Hash for OperationId {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state)
-    }
-}
-
-impl OperationId {
-    pub fn new(unique_qualifier: ActionUniqueQualifier) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            unique_qualifier,
+impl From<&str> for OperationId {
+    fn from(value: &str) -> Self {
+        match Uuid::parse_str(value) {
+            Ok(uuid) => Self::Uuid(uuid),
+            Err(_) => Self::String(value.to_string()),
         }
     }
 }
 
-impl TryFrom<&str> for OperationId {
-    type Error = Error;
-
-    /// Attempts to convert a string slice into an `OperationId`.
-    ///
-    /// The input string `value` is expected to be in the format:
-    /// `<instance_name>/<digest_function>/<digest_hash>-<digest_size>/<cached>/<id>`.
-    ///
-    /// # Parameters
-    ///
-    /// - `value`: A `&str` representing the `OperationId` to be converted.
-    ///
-    /// # Returns
-    ///
-    /// - `Result<OperationId, Error>`: Returns `Ok(OperationId)` if the
-    ///   conversion is successful, or an `Err(Error)` if it fails.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the input string is not in the expected format or if
-    /// any of the components cannot be parsed correctly. The detailed error messages provide
-    /// insight into which part of the input string caused the failure.
-    ///
-    /// ## Example Usage
-    ///
-    /// ```no_run
-    /// use nativelink_util::action_messages::OperationId;
-    /// let operation_id_str = "main/SHA256/4a0885a39d5ba8da3123c02ff56b73196a8b23fd3c835e1446e74a3a3ff4313f-211/u/19b16cf8-a1ad-4948-aaac-b6f4eb7fca52";
-    /// let operation_id = OperationId::try_from(operation_id_str);
-    /// ```
-    ///
-    /// In this example, `operation_id_str` is a string representing an `OperationId`.
-    /// The `try_from` method is used to convert it into an `OperationId` instance.
-    /// If any part of the string is incorrectly formatted, an error will be returned with a
-    /// descriptive message.
-    fn try_from(value: &str) -> Result<Self, Error> {
-        let (unique_qualifier, id) = value
-            .rsplit_once('/')
-            .err_tip(|| format!("Invalid OperationId unique_qualifier / id fragment - {value}"))?;
-        let (instance_name, rest) = unique_qualifier
-            .split_once('/')
-            .err_tip(|| format!("Invalid UniqueQualifier instance name fragment - {value}"))?;
-        let (digest_function, rest) = rest
-            .split_once('/')
-            .err_tip(|| format!("Invalid UniqueQualifier digest function fragment - {value}"))?;
-        let (digest_hash, rest) = rest
-            .split_once('-')
-            .err_tip(|| format!("Invalid UniqueQualifier digest hash fragment - {value}"))?;
-        let (digest_size, cachable) = rest
-            .split_once('/')
-            .err_tip(|| format!("Invalid UniqueQualifier digest size fragment - {value}"))?;
-        let digest = DigestInfo::try_new(
-            digest_hash,
-            digest_size
-                .parse::<u64>()
-                .err_tip(|| format!("Invalid UniqueQualifier size value fragment - {value}"))?,
-        )
-        .err_tip(|| format!("Invalid DigestInfo digest hash - {value}"))?;
-        let cachable = match cachable {
-            "u" => false,
-            "c" => true,
-            _ => {
-                return Err(make_input_err!(
-                    "Invalid UniqueQualifier cachable value fragment - {value}"
-                ));
-            }
-        };
-        let unique_key = ActionUniqueKey {
-            instance_name: instance_name.to_string(),
-            digest_function: digest_function.try_into()?,
-            digest,
-        };
-        let unique_qualifier = if cachable {
-            ActionUniqueQualifier::Cachable(unique_key)
-        } else {
-            ActionUniqueQualifier::Uncachable(unique_key)
-        };
-        let id = Uuid::parse_str(id).map_err(|e| make_input_err!("Failed to parse {e} as uuid"))?;
-        Ok(Self {
-            unique_qualifier,
-            id,
-        })
-    }
-}
-
-impl std::fmt::Display for OperationId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{}/{}", self.unique_qualifier, self.id))
-    }
-}
-
-impl std::fmt::Debug for OperationId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
+impl From<String> for OperationId {
+    fn from(value: String) -> Self {
+        match Uuid::parse_str(&value) {
+            Ok(uuid) => Self::Uuid(uuid),
+            Err(_) => Self::String(value),
+        }
     }
 }
 
@@ -1144,7 +1041,9 @@ pub struct ActionState {
     #[metric(help = "The current stage of the action.")]
     pub stage: ActionStage,
     #[metric(help = "The unique identifier of the action.")]
-    pub id: OperationId,
+    pub operation_id: OperationId,
+    #[metric(help = "The digest of the action.")]
+    pub action_digest: DigestInfo,
 }
 
 impl ActionState {
@@ -1190,13 +1089,20 @@ impl ActionState {
             }
         };
 
+        let action_digest = metadata
+            .action_digest
+            .err_tip(|| "No action_digest in upstream operation")?
+            .try_into()
+            .err_tip(|| "Could not convert action_digest into DigestInfo")?;
+
         Ok(Self {
-            id: operation_id,
+            operation_id,
             stage,
+            action_digest,
         })
     }
 
-    pub fn as_operation(&self, client_operation_id: ClientOperationId) -> Operation {
+    pub fn as_operation(&self, client_operation_id: OperationId) -> Operation {
         let stage = Into::<execution_stage::Value>::into(&self.stage) as i32;
         let name = client_operation_id.into_string();
 
@@ -1206,7 +1112,7 @@ impl ActionState {
         } else {
             None
         };
-        let digest = Some(self.id.unique_qualifier.digest().into());
+        let digest = Some(self.action_digest.into());
 
         let metadata = ExecuteOperationMetadata {
             stage,
