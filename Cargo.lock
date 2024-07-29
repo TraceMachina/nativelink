@@ -1782,6 +1782,8 @@ dependencies = [
  "prost",
  "rand",
  "scopeguard",
+ "serde",
+ "serde_json",
  "static_assertions",
  "tokio",
  "tokio-stream",

@@ -15,18 +15,20 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
+use serde::{Deserialize, Serialize};
 use static_assertions::{assert_eq_size, const_assert, const_assert_eq};
 
 /// The version of the awaited action.
 /// This number will always increment by one each time
 /// the action is updated.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct AwaitedActionVersion(u64);
 
 impl MetricsComponent for AwaitedActionVersion {
@@ -40,7 +42,7 @@ impl MetricsComponent for AwaitedActionVersion {
 }
 
 /// An action that is being awaited on and last known state.
-#[derive(Debug, Clone, MetricsComponent)]
+#[derive(Debug, Clone, MetricsComponent, Serialize, Deserialize)]
 pub struct AwaitedAction {
     /// The current version of the action.
     #[metric(help = "The version of the AwaitedAction")]
@@ -146,13 +148,31 @@ impl AwaitedAction {
     }
 }
 
+impl TryInto<Vec<u8>> for AwaitedAction {
+    type Error = Error;
+    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+        serde_json::to_vec(&self)
+            .map_err(|e| make_input_err!("{}", e.to_string()))
+            .err_tip(|| "In AwaitedAction::TryInto::<Vec<u8>>")
+    }
+}
+
+impl TryFrom<&[u8]> for AwaitedAction {
+    type Error = Error;
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        serde_json::from_slice(value)
+            .map_err(|e| make_input_err!("{}", e.to_string()))
+            .err_tip(|| "In AwaitedAction::TryFrom::&[u8]")
+    }
+}
+
 /// The key used to sort the awaited actions.
 ///
 /// The rules for sorting are as follows:
 /// 1. priority of the action
 /// 2. insert order of the action (lower = higher priority)
 /// 3. (mostly random hash based on the action info)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct AwaitedActionSortKey(u64);
 
