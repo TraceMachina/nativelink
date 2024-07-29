@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
-use nativelink_util::action_messages::{ActionInfo, ClientOperationId};
+use nativelink_util::action_messages::{ActionInfo, OperationId};
 use parking_lot::Mutex;
 
 use crate::action_scheduler::{ActionListener, ActionScheduler};
@@ -93,7 +93,7 @@ impl ActionScheduler for PropertyModifierScheduler {
 
     async fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         mut action_info: ActionInfo,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         let platform_property_manager = self
@@ -122,7 +122,7 @@ impl ActionScheduler for PropertyModifierScheduler {
 
     async fn find_by_client_operation_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         self.scheduler
             .find_by_client_operation_id(client_operation_id)

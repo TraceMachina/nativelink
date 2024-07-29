@@ -26,8 +26,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
-    ClientOperationId, OperationId,
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
@@ -48,7 +47,7 @@ use crate::platform_property_manager::PlatformPropertyManager;
 type CheckActions = HashMap<
     ActionUniqueKey,
     Vec<(
-        ClientOperationId,
+        OperationId,
         oneshot::Sender<Result<Pin<Box<dyn ActionListener>>, Error>>,
     )>,
 >;
@@ -98,7 +97,7 @@ type ActionListenerOneshot = oneshot::Receiver<Result<Pin<Box<dyn ActionListener
 fn subscribe_to_existing_action(
     inflight_cache_checks: &mut MutexGuard<CheckActions>,
     unique_qualifier: &ActionUniqueKey,
-    client_operation_id: &ClientOperationId,
+    client_operation_id: &OperationId,
 ) -> Option<ActionListenerOneshot> {
     inflight_cache_checks
         .get_mut(unique_qualifier)
@@ -109,12 +108,12 @@ fn subscribe_to_existing_action(
         })
 }
 struct CachedActionListener {
-    client_operation_id: ClientOperationId,
+    client_operation_id: OperationId,
     action_state: Arc<ActionState>,
 }
 
 impl ActionListener for CachedActionListener {
-    fn client_operation_id(&self) -> &ClientOperationId {
+    fn client_operation_id(&self) -> &OperationId {
         &self.client_operation_id
     }
 
@@ -148,7 +147,7 @@ impl ActionScheduler for CacheLookupScheduler {
 
     async fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: ActionInfo,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
         let unique_key = match &action_info.unique_qualifier {
@@ -241,8 +240,9 @@ impl ActionScheduler for CacheLookupScheduler {
                         return; // Nobody is waiting for this action anymore.
                     };
                     let action_state = Arc::new(ActionState {
-                        id: OperationId::new(action_info.unique_qualifier.clone()),
+                        operation_id: OperationId::default(),
                         stage: ActionStage::CompletedFromCache(action_result),
+                        action_digest: action_info.unique_qualifier.digest(),
                     });
                     for (client_operation_id, pending_tx) in pending_txs {
                         // Ignore errors here, as the other end may have hung up.
@@ -305,7 +305,7 @@ impl ActionScheduler for CacheLookupScheduler {
 
     async fn find_by_client_operation_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
         self.action_scheduler
             .find_by_client_operation_id(client_operation_id)

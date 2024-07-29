@@ -20,8 +20,8 @@ use futures::{future, stream, StreamExt, TryStreamExt};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ClientOperationId,
-    ExecutionMetadata, OperationId, WorkerId,
+    ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
+    OperationId, WorkerId,
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -249,7 +249,8 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
             }
             awaited_action.set_state(Arc::new(ActionState {
                 stage,
-                id: operation_id.clone(),
+                operation_id: operation_id.clone(),
+                action_digest: awaited_action.action_info().digest(),
             }));
             awaited_action.increment_version();
 
@@ -285,7 +286,7 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
 
     async fn inner_add_operation(
         &self,
-        new_client_operation_id: ClientOperationId,
+        new_client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<T::Subscriber, Error> {
         let rx = self
@@ -411,7 +412,7 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
 impl<T: AwaitedActionDb> ClientStateManager for SimpleSchedulerStateManager<T> {
     async fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         let sub = self

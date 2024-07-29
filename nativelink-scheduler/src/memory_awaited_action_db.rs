@@ -24,8 +24,7 @@ use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
-    ClientOperationId, OperationId,
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
@@ -99,7 +98,7 @@ impl LenEntry for ClientAwaitedAction {
 /// Actions the AwaitedActionsDb needs to process.
 pub(crate) enum ActionEvent {
     /// A client has sent a keep alive message.
-    ClientKeepAlive(ClientOperationId),
+    ClientKeepAlive(OperationId),
     /// A client has dropped and pointed to OperationId.
     ClientDroppedOperation(OperationId),
 }
@@ -108,7 +107,7 @@ pub(crate) enum ActionEvent {
 /// keep alive config and state.
 struct ClientInfo<I: InstantWrapper, NowFn: Fn() -> I> {
     /// The client operation id.
-    client_operation_id: ClientOperationId,
+    client_operation_id: OperationId,
     /// The last time a keep alive was sent.
     last_keep_alive: I,
     /// The function to get the current time.
@@ -136,7 +135,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I> MemoryAwaitedActionSubscriber<I, NowFn
     }
     pub fn new_with_client(
         mut awaited_action_rx: watch::Receiver<AwaitedAction>,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         event_tx: mpsc::UnboundedSender<ActionEvent>,
         now_fn: NowFn,
     ) -> Self
@@ -351,7 +350,7 @@ impl SortedAwaitedActions {
 pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
     /// A lookup table to lookup the state of an action by its client operation id.
     #[metric(group = "client_operation_ids")]
-    client_operation_to_awaited_action: EvictingMap<ClientOperationId, Arc<ClientAwaitedAction>, I>,
+    client_operation_to_awaited_action: EvictingMap<OperationId, Arc<ClientAwaitedAction>, I>,
 
     /// A lookup table to lookup the state of an action by its worker operation id.
     #[metric(group = "operation_ids")]
@@ -381,7 +380,7 @@ pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
 impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbImpl<I, NowFn> {
     async fn get_awaited_action_by_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> Result<Option<MemoryAwaitedActionSubscriber<I, NowFn>>, Error> {
         let maybe_client_awaited_action = self
             .client_operation_to_awaited_action
@@ -710,7 +709,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
 
     async fn add_action(
         &mut self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<MemoryAwaitedActionSubscriber<I, NowFn>, Error> {
         // Check to see if the action is already known and subscribe if it is.
@@ -732,7 +731,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             ActionUniqueQualifier::Cachable(unique_key) => Some(unique_key.clone()),
             ActionUniqueQualifier::Uncachable(_unique_key) => None,
         };
-        let operation_id = OperationId::new(action_info.unique_qualifier.clone());
+        let operation_id = OperationId::default();
         let awaited_action = AwaitedAction::new(operation_id.clone(), action_info);
         debug_assert!(
             ActionStage::Queued == awaited_action.state().stage,
@@ -782,7 +781,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
 
     async fn try_subscribe(
         &mut self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
         unique_qualifier: &ActionUniqueQualifier,
         // TODO(allada) To simplify the scheduler 2024 refactor, we
         // removed the ability to upgrade priorities of actions.
@@ -894,7 +893,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
 
     async fn get_awaited_action_by_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> Result<Option<Self::Subscriber>, Error> {
         self.inner
             .lock()
@@ -980,7 +979,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
 
     async fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<Self::Subscriber, Error> {
         self.inner
