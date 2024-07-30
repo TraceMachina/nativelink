@@ -1,0 +1,33 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose
+[target.aarch64-pc-windows-msvc]
+rustflags = [
+    "-C", "target-feature=+crt-static", # Static CRT for 64-bit ARM Windows
+    "-C", "link-arg=/NODEFAULTLIB:libcmt" # Avoid automatic dynamic CRT linking
+]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C", "target-feature=+crt-static", # Static CRT for 64-bit x86 Windows
+    "-C", "link-arg=/NODEFAULTLIB:libcmt" # Avoid automatic dynamic CRT linking
+]
