@@ -1681,7 +1681,7 @@ checksum = "defc4c55412d89136f966bbb339008b474350e5e6e78d2714439c386b3137a03"
 
 [[package]]
 name = "nativelink"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-lock",
  "axum",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "fred",
  "hex",
@@ -1745,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1754,7 +1754,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -1765,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-collector"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nativelink-error",
  "nativelink-metric",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -1802,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1833,7 +1833,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1868,7 +1868,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1956,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-lock",
  "bytes",
@@ -2251,9 +2251,13 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppv-lite86"
-version = "0.2.17"
+version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b40af805b3121feab8a3c29f04d8ad262fa8e0561883e7653e024ae4479e6de"
+checksum = "2288c0e17cc8d342c712bb43a257a80ebffce59cdb33d5000d8348f3ec02528b"
+dependencies = [
+ "zerocopy",
+ "zerocopy-derive",
+]
 
 [[package]]
 name = "pretty_assertions"
@@ -3580,6 +3584,7 @@ version = "0.7.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b9b4fd18abc82b8136838da5d50bae7bdea537c574d8dc1a34ed098d6c166f0"
 dependencies = [
+ "byteorder",
  "zerocopy-derive",
 ]
 
