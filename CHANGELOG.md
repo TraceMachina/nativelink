@@ -105,7 +105,10 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.5.0 - ([ef41b2f](https://github.com/TraceMachina/nativelink/commit/ef41b2f005c799bd246c74b54f78a12578e22c2f))
+- Release NativeLink v0.5.0 - ([b12a58a](https://github.com/TraceMachina/nativelink/commit/b12a58af9362cc810c58d02e5f9f249ab34cb109))
+- Release NativeLink v0.5.0 - ([1a7b1dd](https://github.com/TraceMachina/nativelink/commit/1a7b1dd6b27de835d1b447578e6f4d2e945bc0f8))
+- Migrate much of the ActionScheduler API to ClientStateManager API ([#1241](https://github.com/TraceMachina/nativelink/issues/1241)) - ([2b8f1ee](https://github.com/TraceMachina/nativelink/commit/2b8f1ee4f1078afb47f1d012ad8a347e752817db))
+- Move ActionSchedulerListener to ActionStateResult ([#1237](https://github.com/TraceMachina/nativelink/issues/1237)) - ([d57ee8d](https://github.com/TraceMachina/nativelink/commit/d57ee8d267e2a088f0f7f73c1108109b22ac1da0))
 - modified the lre file path ([#1239](https://github.com/TraceMachina/nativelink/issues/1239)) - ([33f09cb](https://github.com/TraceMachina/nativelink/commit/33f09cbd1b2833956ffb268f786a7c035f375dae))
 - Remove ClientOperationId and move all to OperationId ([#1214](https://github.com/TraceMachina/nativelink/issues/1214)) - ([81db90e](https://github.com/TraceMachina/nativelink/commit/81db90e17ddee6834e186f26c2395e6affda3799))
 - Remove unnecessary sync trait bounds. ([#1227](https://github.com/TraceMachina/nativelink/issues/1227)) - ([e26e1b5](https://github.com/TraceMachina/nativelink/commit/e26e1b52274f0c4780dbd648c328dc57e30b75f2))
