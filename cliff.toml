@@ -80,6 +80,10 @@ commit_parsers = [
   { message = "Don't retry permanent failures", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Retry GrpcStore get_part_ref", group = "<!-- 1 -->⛰️  Features" },
   { message = "Evict on touch failure", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Implement `ClientStateManager` for `SimpleScheduler`", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Move `update_action_with_internal_error` into `StateManager`", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Migrate to callPackage syntax", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Remove nativelink-proto as build dependency", group = "<!-- 4 -->🧪 Testing & CI" },
 
   # Get all breaking changes first.
   { message = "Breaking", group = "<!-- 0 -->❌️  Breaking Changes" },
