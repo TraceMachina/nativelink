@@ -95,6 +95,10 @@ DID_FAIL=0
 export NATIVELINK_DIR="$CACHE_DIR/nativelink"
 mkdir -p "$NATIVELINK_DIR"
 
+# Running "docs builds" as CI to ensure documentation doesn't break after merging
+echo "Running \"docs builds\" to ensure documentation doesn't break"
+docs builds
+
 for pattern in "${TEST_PATTERNS[@]}"; do
   find "$SELF_DIR/integration_tests/" -name "$pattern" -type f -print0 | while IFS= read -r -d $'\0' fullpath; do
     # Cleanup.
