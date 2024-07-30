@@ -25,3 +25,11 @@ jobs:
           DeterminateSystems/magic-nix-cache-action@a04e6275a6bea232cd04fc6f3cbf20d4cb02a3e1
       - name: Run pre-commit hooks
         run: nix flake check
+[dependencies]
+static-vcruntime = "0.2" 
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/NODEFAULTLIB:libcmt"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/NODEFAULTLIB:libcmt"]
