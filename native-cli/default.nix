@@ -9,7 +9,7 @@ buildGoModule {
   pname = "native-cli";
   version = "0.4.0";
   src = ./.;
-  vendorHash = "sha256-lqOzzt97Xr9tcsAcrIubPtFii85s2m06Hz+cfruHQqQ=";
+  vendorHash = "sha256-p5lMhIHP0Al/0adP7/8w2P3a73xK1fIj9k5OApM/LjE=";
   buildInputs = [makeWrapper];
   ldflags = ["-s -w"];
   installPhase = ''
