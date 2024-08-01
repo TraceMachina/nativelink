@@ -211,15 +211,32 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<redis::RedisError> for Error {
-    fn from(err: redis::RedisError) -> Self {
-        make_err!(Code::Internal, "{}", err.to_string())
-    }
-}
-
 impl From<Code> for Error {
     fn from(code: Code) -> Self {
         make_err!(code, "")
+    }
+}
+
+impl From<fred::error::RedisError> for Error {
+    fn from(error: fred::error::RedisError) -> Self {
+        use fred::error::RedisErrorKind::{
+            Auth, Backpressure, Canceled, Cluster, Config, InvalidArgument, InvalidCommand,
+            NotFound, Parse, Protocol, Sentinel, Timeout, Tls, Unknown, Url, IO,
+        };
+
+        // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
+        let code = match error.kind() {
+            Config | InvalidCommand | InvalidArgument | Url => Code::InvalidArgument,
+            IO | Protocol | Tls | Cluster | Parse | Sentinel => Code::Internal,
+            Auth => Code::PermissionDenied,
+            Canceled => Code::Aborted,
+            Unknown => Code::Unknown,
+            Timeout => Code::DeadlineExceeded,
+            NotFound => Code::NotFound,
+            Backpressure => Code::Unavailable,
+        };
+
+        make_err!(code, "{error}")
     }
 }
 
