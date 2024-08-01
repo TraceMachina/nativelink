@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::Deref;
+use std::borrow::Borrow;
+use std::ops::{Deref, RangeBounds};
 use std::pin::{pin, Pin};
 use std::{ops::Bound, str::from_utf8};
 use std::collections::HashMap;
@@ -20,6 +21,7 @@ use std::task::Poll;
 use fred::clients::RedisClient;
 use fred::error::RedisError;
 use nativelink_metric::MetricsComponent;
+use nativelink_proto::google::longrunning::operation;
 
 use std::sync::Arc;
 use nativelink_util::chunked_stream::ChunkedStream;
@@ -27,24 +29,24 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 
 use async_lock::Mutex;
-use fred::interfaces::{ClientLike, EventInterface, KeysInterface, PubsubInterface};
+use fred::interfaces::{ClientLike, EventInterface, KeysInterface, PubsubInterface, SortedSetsInterface, TransactionInterface};
 use nativelink_error::{Code, make_err, make_input_err, Error};
 use nativelink_store::redis_store::RedisStore;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueQualifier, ClientOperationId, OperationId
+    ActionInfo, ActionStage, ActionUniqueQualifier, ClientOperationId, OperationId
 };
 
 use futures::{join, poll, stream, Stream, StreamExt, TryStreamExt};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{StoreDriver, StoreLike};
+use nativelink_util::store_trait::{StoreDriver, StoreLike, StoreKey};
 use fred::types::{Message, RedisKey, ScanResult, Scanner};
 use tokio::sync::watch;
 use tonic::async_trait;
 use tracing::{event, Level};
 
 use crate::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction, SortedAwaitedActionState
+    AwaitedAction, AwaitedActionDb, AwaitedActionSortKey, AwaitedActionSubscriber, SortedAwaitedAction, SortedAwaitedActionState
 };
 
 /// Duration to wait before sending client keep alive messages.
@@ -99,8 +101,6 @@ pub struct RedisAwaitedActionDb {
     _join_handle: JoinHandleDropGuard<()>,
 }
 
-
-// fn parse_message(msg: fred::
 impl RedisAwaitedActionDb {
     pub async fn new(
         store: Arc<RedisStore>,
@@ -109,17 +109,16 @@ impl RedisAwaitedActionDb {
         let weak_inner = Arc::downgrade(&inner);
         let store_clone = store.clone();
 
+        let sub = store_clone.get_subscriber_client();
+        let Ok(_connection_handle) = sub.init().await else {
+            event!(Level::ERROR, "RedisAwaitedActionDb::new Failed initialize pubsub");
+            return Err(make_err!(Code::Internal, "RedisAwaitedActionDb::new Failed initialize pubsub"))
+        };
+        if sub.psubscribe("oid:*").await.is_err() {
+            event!(Level::ERROR, "RedisAwaitedActionDb::new Failed to subscribe to AwaitedActionUpdates");
+            return Err(make_err!(Code::Internal, "RedisAwaitedActionDb::new Failed to subscribe to AwaitedActionUpdates"))
+        };
         let join_handle = spawn!("redis_action_change_listener", async move {
-            let sub = store_clone.get_subscriber_client();
-            let Ok(_connection_handle) = sub.init().await else {
-                event!(Level::ERROR, "RedisAwaitedActionDb::new Failed initialize pubsub");
-                return
-            };
-            if sub.psubscribe("oid:*").await.is_err() {
-                event!(Level::ERROR, "RedisAwaitedActionDb::new Failed to subscribe to AwaitedActionUpdates");
-                return
-            };
-
             let mut stream = BroadcastStream::from(sub.message_rx());
             // Unpack the Option<Result>> into just a Result
             fn handle_next(next: Option<Result<Message, BroadcastStreamRecvError>>) -> Result<Message, Error> {
@@ -239,23 +238,23 @@ impl RedisAwaitedActionDb {
             }
         }
     }
-    //
-    // async fn get_awaited_action_by_operation_id(&self, operation_id: &OperationId) -> Result<Option<AwaitedAction>, Error> {
-    //     let result: Result<AwaitedAction, Error> = {
-    //         let key = format!("oid:{operation_id}");
-    //         let bytes = self.store.get_part_unchunked(key.as_str(), 0, None).await?;
-    //         AwaitedAction::try_from(bytes.to_vec().as_slice())
-    //     };
-    //     match result {
-    //         Ok(v) => Ok(Some(v)),
-    //         Err(e) => {
-    //             match e.code {
-    //                 Code::NotFound => Ok(None),
-    //                 _ => Err(e)
-    //             }
-    //         }
-    //     }
-    // }
+
+    async fn get_awaited_action_by_operation_id(&self, operation_id: &OperationId) -> Result<Option<AwaitedAction>, Error> {
+        let result: Result<AwaitedAction, Error> = {
+            let key = format!("oid:{operation_id}");
+            let bytes = self.store.get_part_unchunked(key.as_str(), 0, None).await?;
+            AwaitedAction::try_from(bytes.to_vec().as_slice())
+        };
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(e) => {
+                match e.code {
+                    Code::NotFound => Ok(None),
+                    _ => Err(e)
+                }
+            }
+        }
+    }
 }
 
 impl AwaitedActionDb for RedisAwaitedActionDb {
@@ -274,52 +273,6 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         }
     }
 
-    async fn get_all_awaited_actions(&self) -> impl Stream<Item = Result<RedisOperationSubscriber, Error>> {
-        let ids: Vec<RedisKey> = {
-            let mut inner = self.inner.lock().await;
-            inner.get_operations_list()
-                .await
-                .into_iter()
-                .map(|id| { RedisKey::from(id.to_string()) })
-                .collect()
-        };
-        let client = self.store.get_redis_client();
-        let result: Result<Vec<Vec<u8>>, Error> = client.mget(ids)
-            .await
-            .map_err(|e| { e.into() });
-        let awaited_actions_result = result.unwrap();
-
-        let mut result: Vec<AwaitedAction> = awaited_actions_result
-            .into_iter()
-            .map(|action_bytes| {
-                AwaitedAction::try_from(action_bytes.as_slice()).unwrap()
-            }).collect();
-        result.sort_by(|a, b| {
-            a.sort_key().cmp(&b.sort_key())
-        });
-        let sorted_ids: Vec<OperationId> = result.iter().map(|action| {
-            action.operation_id().clone()
-        }).collect();
-
-        let subs = {
-            let mut inner = self.inner.lock().await;
-            let mut subscriptions: Vec<Result<RedisOperationSubscriber, Error>> = Vec::new();
-            for id in sorted_ids.iter() {
-                let maybe_tx = inner.get_operation_sender(id).await;
-                if let Some(tx) = maybe_tx {
-                    subscriptions.push(Ok(RedisOperationSubscriber {
-                        operation_id: id.clone(),
-                        awaited_action_rx: tx.subscribe()
-                    }))
-                } else {
-                    let err = make_err!(Code::NotFound, "Failed to find subscription for Operation {}", id);
-                    subscriptions.push(Err(err))
-                };
-            }
-            subscriptions
-        };
-        stream::iter(subs)
-    }
     /// Get the AwaitedAction by the operation id.
     async fn get_by_operation_id(
         &self,
@@ -335,15 +288,56 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
     ) -> Result<(), Error> {
         let operation_id = new_awaited_action.operation_id().clone();
 
-        let con = self.store.get_redis_client();
-        con.connect();
+        let client = self.store.get_redis_client();
+        client.connect().await;
+        let current_action = self.get_awaited_action_by_operation_id(&new_awaited_action.operation_id()).await?;
+        let Some(action) = current_action else {
+            // TODO: Should this try to fall back to redis?
+            return Err(make_err!(Code::NotFound, "Existing operation was found in redis but was not present in db"))
+        };
+        let tx = client.multi();
+        let new_sorted_state = SortedAwaitedActionState::try_from(new_awaited_action.state().stage)?;
+        let current_sorted_state = SortedAwaitedActionState::try_from(action.state().stage)?;
+        let sorted_awaited_action = SortedAwaitedAction::from(&new_awaited_action);
+
+        if new_awaited_action.state() != action.state() {
+            tx.zrem(
+                current_sorted_state.state_id(),
+                sorted_awaited_action.to_string()
+            ).await?;
+
+            tx.zadd(
+                new_sorted_state.state_id(),
+                None,
+                Some(fred::types::Ordering::LessThan),
+                false,
+                false,
+                (0 as f64, sorted_awaited_action.to_string())
+            ).await?;
+        }
+
+
         let bytes: Vec<u8> = new_awaited_action.try_into()?;
-
         let key = format!("oid:{operation_id}");
-        self.store.update_oneshot(key.as_str(), bytes.clone().into()).await?;
+        tx.set(key.clone(), bytes.clone(), None, None, false).await?;
+        // If someone else updates the operation, then abort everything
+        tx.watch_before(key);
+        // Execute and abort on error
+        let result: Result<(), RedisError> = tx.exec(true).await;
 
-        let pub_channel = format!("update:{operation_id}");
-        Ok(con.publish(&pub_channel, bytes).await?)
+        // Only publish if we successfully performed the update
+        match result {
+            Ok(_) => {
+                let pub_channel = format!("update:{operation_id}");
+                return Ok(client.publish(&pub_channel, bytes).await?)
+            }
+            Err(e) => { Err(e.into()) }
+        }
+
+
+        // // If we are going in or out of Queued State, need to add/remove the sort key from the index
+        // self.store.update_oneshot(key.as_str(), bytes.clone().into()).await?;
+
     }
 
     /// Add (or join) an action to the AwaitedActionDb and subscribe
@@ -377,11 +371,29 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
                 let operation_id_key = format!("oid:{operation_id}");
                 let bytes_action: Vec<u8> = action.clone().try_into()?;
 
+                let sorted_state = SortedAwaitedActionState::try_from(action.state().stage.clone())?;
+                let sorted_action: SortedAwaitedAction = action.borrow().into();
+
                 let (tx, rx) = tokio::sync::watch::channel(action);
                 inner.set_operation_sender(&operation_id, tx).await;
-
+                let client = self.store.get_redis_client();
                 self.store.update_oneshot(operation_id_key.as_str(), bytes_action.into()).await?;
                 self.store.update_oneshot(action_hash_key.as_str(), operation_id.to_string().into()).await?;
+
+                client.zadd(
+                    sorted_state.state_id(),
+                    None,
+                    Some(fred::types::Ordering::LessThan),
+                    false,
+                    false,
+                    (0 as f64, sorted_action.to_string())
+                ).await?;
+                // If we are going in or out of Queued State, need to add/remove the sort key from the index
+                // key:
+                // value: AwaitedAction
+                // key: Sorted Set Table Name
+                //
+                // client.zscan("QUEUED_ACTIONS", pattern, count)
                 Ok(RedisOperationSubscriber {
                     awaited_action_rx: rx,
                     operation_id: operation_id.clone(),
@@ -398,15 +410,107 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         start: Bound<SortedAwaitedAction>,
         end: Bound<SortedAwaitedAction>,
         desc: bool,
-    ) -> impl Stream<Item = Result<RedisOperationSubscriber, Error>> + Send + Sync {
+    ) -> impl Stream<Item = Result<RedisOperationSubscriber, Error>> + Send {
+        let start_sort_key = start.map(|key| { key.sort_key.as_u64() });
+        let end_sort_key = end.map(|key| { key.sort_key.as_u64() });
+        let set_key = state.state_id();
+        let client = self.store.get_redis_client();
+        client.connect().await;
+
+        let range = self.store.get_redis_client()
+            .zrange(
+                set_key,
+                start_sort_key,
+                end_sort_key,
+                None,
+                desc, None, false
+            ).await;
+        ChunkedStream::new(
+            start_sort_key,
+            end_sort_key,
+            move |start, end, mut output| async move {
+                self.store.list((start, end), |v| {
+                    output.push_back(v);
+                    return output.len() <= 50
+                }).await;
+                let maybe_new_start = output.back();
+
+
+                Ok(maybe_new_start
+                    .map(|new_start| ((Bound::Excluded(new_start.clone()), end), output)))
+            }
+        );
+
+        let subs = {
+            let mut inner = self.inner.lock().await;
+            let mut subscriptions: Vec<Result<RedisOperationSubscriber, Error>> = Vec::new();
+            for id in operation.iter() {
+                let maybe_tx = inner.get_operation_sender(id).await;
+                if let Some(tx) = maybe_tx {
+                    subscriptions.push(Ok(RedisOperationSubscriber {
+                        operation_id: id.clone(),
+                        awaited_action_rx: tx.subscribe()
+                    }))
+                } else {
+                    let err = make_err!(Code::NotFound, "Failed to find subscription for Operation {}", id);
+                    subscriptions.push(Err(err))
+                };
+            }
+            subscriptions
+        };
+        // result.sort_by(|a, b| {
+        //     a.sort_key().cmp(&b.sort_key())
+        // });
+        // let sorted_ids: Vec<OperationId> = result.iter().map(|action| {
+        //     action.operation_id().clone()
+        // }).collect();
         // TODO
         stream::iter(Vec::new())
     }
+
+    async fn get_all_awaited_actions(&self) -> impl Stream<Item = Result<RedisOperationSubscriber, Error>> {
+        // Return a stream of RedisOperationSubscribers
+        let ids: Vec<RedisKey> = {
+            let mut inner = self.inner.lock().await;
+            inner.get_operations_list()
+                .await
+                .into_iter()
+                .map(|id| { RedisKey::from(id.to_string()) })
+                .collect()
+        };
+        let client = self.store.get_redis_client();
+        let result: Result<Vec<Vec<u8>>, Error> = client.mget(ids)
+            .await
+            .map_err(|e| { e.into() });
+        let awaited_actions_result = result.unwrap();
+
+        let awaited_actions: Vec<AwaitedAction> = awaited_actions_result
+            .into_iter()
+            .map(|action_bytes| {
+                AwaitedAction::try_from(action_bytes.as_slice()).unwrap()
+            }).collect();
+
+        let subs = {
+            let mut inner = self.inner.lock().await;
+            let mut subscriptions: Vec<Result<RedisOperationSubscriber, Error>> = Vec::new();
+            for action in awaited_actions.iter() {
+                let id = action.operation_id();
+                let maybe_tx = inner.get_operation_sender(id).await;
+                if let Some(tx) = maybe_tx {
+                    subscriptions.push(Ok(RedisOperationSubscriber {
+                        operation_id: id.clone(),
+                        awaited_action_rx: tx.subscribe()
+                    }))
+                } else {
+                    let err = make_err!(Code::NotFound, "Failed to find subscription for Operation {}", id);
+                    subscriptions.push(Err(err))
+                };
+            }
+            subscriptions
+        };
+        stream::iter(subs)
+    }
 }
-
-
-
-
 
 //
 // impl RedisActionStream {
