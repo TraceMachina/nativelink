@@ -27,6 +27,7 @@ pub mod noop_store;
 pub mod redis_store;
 pub mod ref_store;
 pub mod s3_store;
+pub mod scheduler_store;
 pub mod shard_store;
 pub mod size_partitioning_store;
 pub mod store_manager;

@@ -22,8 +22,8 @@ pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
 use futures::{Future, Stream};
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
-use nativelink_util::action_messages::ActionStage;
-use nativelink_util::{action_messages::{ActionInfo, ClientOperationId, OperationId}, store_trait::StoreKey};
+use nativelink_util::action_messages::{ActionInfo, ActionStage, ClientOperationId, OperationId};
+use nativelink_util::store_trait::StoreKey;
 use serde::{Deserialize, Serialize};
 
 mod awaited_action;
@@ -56,7 +56,7 @@ impl TryFrom<&ActionStage> for SortedAwaitedActionState {
             ActionStage::Executing => Ok(Self::Executing),
             ActionStage::Completed(_) => Ok(Self::Completed),
             ActionStage::Queued => Ok(Self::Queued),
-            _ => { Err(make_input_err!("Invalid State")) }
+            _ => Err(make_input_err!("Invalid State")),
         }
     }
 }
@@ -89,7 +89,10 @@ pub struct SortedAwaitedAction {
 
 impl Display for SortedAwaitedAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write(f, format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id))
+        write(
+            f,
+            format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id),
+        )
     }
 }
 
@@ -97,7 +100,7 @@ impl From<&AwaitedAction> for SortedAwaitedAction {
     fn from(value: &AwaitedAction) -> Self {
         Self {
             operation_id: value.operation_id().clone(),
-            sort_key: value.sort_key()
+            sort_key: value.sort_key(),
         }
     }
 }
@@ -170,8 +173,7 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + 'static {
     /// Get all AwaitedActions. This call should be avoided as much as possible.
     fn get_all_awaited_actions(
         &self,
-    ) -> impl Future<Output = impl Stream<Item = Result<Self::Subscriber, Error>> + Send> + Send
-          ;
+    ) -> impl Future<Output = impl Stream<Item = Result<Self::Subscriber, Error>> + Send> + Send;
 
     /// Get the AwaitedAction by the operation id.
     fn get_by_operation_id(

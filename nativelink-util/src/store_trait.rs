@@ -239,7 +239,7 @@ impl<'a> StoreKey<'a> {
                 let mut hasher = DigestHasherFunc::Blake3.hasher();
                 hasher.update(&i.to_be_bytes());
                 hasher.finalize_digest()
-            },
+            }
             StoreKey::Str(s) => {
                 let mut hasher = DigestHasherFunc::Blake3.hasher();
                 hasher.update(s.as_bytes());
