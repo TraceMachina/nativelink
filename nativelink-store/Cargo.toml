@@ -34,7 +34,7 @@ fred = { version = "9.0.3", features = [
 futures = { version = "0.3.30", default-features = false }
 hex = { version = "0.4.3", default-features = false }
 http-body = "1.0.1"
-hyper = { version = "0.14.30" }
+hyper = { version = "1.0.0" }
 hyper-rustls = { version = "0.24.2", default-features = false, features = [
   "webpki-roots",
 ] }
