@@ -14,16 +14,17 @@
 
 use core::fmt;
 use std::cmp;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{write, Display};
 use std::ops::Bound;
 use std::sync::Arc;
 
 pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
 use futures::{Future, Stream};
-use nativelink_error::{make_input_err, Error, ResultExt};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
-use nativelink_util::action_messages::ActionStage;
-use nativelink_util::{action_messages::{ActionInfo, ClientOperationId, OperationId}, store_trait::StoreKey};
+use nativelink_util::action_messages::{ActionInfo, ActionStage, ClientOperationId, OperationId};
+use nativelink_util::store_trait::StoreKey;
 use serde::{Deserialize, Serialize};
 
 mod awaited_action;
@@ -56,7 +57,7 @@ impl TryFrom<&ActionStage> for SortedAwaitedActionState {
             ActionStage::Executing => Ok(Self::Executing),
             ActionStage::Completed(_) => Ok(Self::Completed),
             ActionStage::Queued => Ok(Self::Queued),
-            _ => { Err(make_input_err!("Invalid State")) }
+            _ => Err(make_input_err!("Invalid State")),
         }
     }
 }
@@ -89,7 +90,10 @@ pub struct SortedAwaitedAction {
 
 impl Display for SortedAwaitedAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write(f, format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id))
+        write(
+            f,
+            format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id),
+        )
     }
 }
 
@@ -97,7 +101,7 @@ impl From<&AwaitedAction> for SortedAwaitedAction {
     fn from(value: &AwaitedAction) -> Self {
         Self {
             operation_id: value.operation_id().clone(),
-            sort_key: value.sort_key()
+            sort_key: value.sort_key(),
         }
     }
 }
@@ -170,8 +174,7 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + 'static {
     /// Get all AwaitedActions. This call should be avoided as much as possible.
     fn get_all_awaited_actions(
         &self,
-    ) -> impl Future<Output = impl Stream<Item = Result<Self::Subscriber, Error>> + Send> + Send
-          ;
+    ) -> impl Future<Output = impl Stream<Item = Result<Self::Subscriber, Error>> + Send> + Send;
 
     /// Get the AwaitedAction by the operation id.
     fn get_by_operation_id(
@@ -201,4 +204,86 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + 'static {
         client_operation_id: ClientOperationId,
         action_info: Arc<ActionInfo>,
     ) -> impl Future<Output = Result<Self::Subscriber, Error>> + Send;
+}
+
+/// A struct that is used to keep the devloper from trying to
+/// return early from a function.
+pub struct NoEarlyReturn;
+
+#[derive(Default, MetricsComponent)]
+pub struct SortedAwaitedActions {
+    #[metric(group = "unknown")]
+    pub unknown: BTreeSet<SortedAwaitedAction>,
+    #[metric(group = "cache_check")]
+    pub cache_check: BTreeSet<SortedAwaitedAction>,
+    #[metric(group = "queued")]
+    pub queued: BTreeSet<SortedAwaitedAction>,
+    #[metric(group = "executing")]
+    pub executing: BTreeSet<SortedAwaitedAction>,
+    #[metric(group = "completed")]
+    pub completed: BTreeSet<SortedAwaitedAction>,
+}
+
+impl SortedAwaitedActions {
+    pub fn btree_for_state(&mut self, state: &ActionStage) -> &mut BTreeSet<SortedAwaitedAction> {
+        match state {
+            ActionStage::Unknown => &mut self.unknown,
+            ActionStage::CacheCheck => &mut self.cache_check,
+            ActionStage::Queued => &mut self.queued,
+            ActionStage::Executing => &mut self.executing,
+            ActionStage::Completed(_) => &mut self.completed,
+            ActionStage::CompletedFromCache(_) => &mut self.completed,
+        }
+    }
+
+    pub fn insert_sort_map_for_stage(
+        &mut self,
+        stage: &ActionStage,
+        sorted_awaited_action: SortedAwaitedAction,
+    ) -> Result<(), Error> {
+        let newly_inserted = match stage {
+            ActionStage::Unknown => self.unknown.insert(sorted_awaited_action.clone()),
+            ActionStage::CacheCheck => self.cache_check.insert(sorted_awaited_action.clone()),
+            ActionStage::Queued => self.queued.insert(sorted_awaited_action.clone()),
+            ActionStage::Executing => self.executing.insert(sorted_awaited_action.clone()),
+            ActionStage::Completed(_) => self.completed.insert(sorted_awaited_action.clone()),
+            ActionStage::CompletedFromCache(_) => {
+                self.completed.insert(sorted_awaited_action.clone())
+            }
+        };
+        if !newly_inserted {
+            return Err(make_err!(
+                Code::Internal,
+                "Tried to insert an action that was already in the sorted map. This should never happen. {:?} - {:?}",
+                stage,
+                sorted_awaited_action
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn process_state_changes(
+        &mut self,
+        old_awaited_action: &AwaitedAction,
+        new_awaited_action: &AwaitedAction,
+    ) -> Result<(), Error> {
+        let btree = self.btree_for_state(&old_awaited_action.state().stage);
+        let maybe_sorted_awaited_action = btree.take(&SortedAwaitedAction {
+            sort_key: old_awaited_action.sort_key(),
+            operation_id: new_awaited_action.operation_id().clone(),
+        });
+
+        let Some(sorted_awaited_action) = maybe_sorted_awaited_action else {
+            return Err(make_err!(
+                Code::Internal,
+                "sorted_action_info_hash_keys and action_info_hash_key_to_awaited_action are out of sync - {} - {:?}",
+                new_awaited_action.operation_id(),
+                new_awaited_action,
+            ));
+        };
+
+        self.insert_sort_map_for_stage(&new_awaited_action.state().stage, sorted_awaited_action)
+            .err_tip(|| "In AwaitedActionDb::update_awaited_action")?;
+        Ok(())
+    }
 }

@@ -37,8 +37,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{event, Level};
 
 use crate::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
-    SortedAwaitedActionState,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, NoEarlyReturn, SortedAwaitedAction, SortedAwaitedActionState, SortedAwaitedActions
 };
 
 /// Number of events to process per cycle.
@@ -264,87 +263,6 @@ impl<T: AwaitedActionSubscriber> ActionStateResult for ClientActionStateResult<T
     }
 }
 
-/// A struct that is used to keep the devloper from trying to
-/// return early from a function.
-struct NoEarlyReturn;
-
-#[derive(Default, MetricsComponent)]
-struct SortedAwaitedActions {
-    #[metric(group = "unknown")]
-    unknown: BTreeSet<SortedAwaitedAction>,
-    #[metric(group = "cache_check")]
-    cache_check: BTreeSet<SortedAwaitedAction>,
-    #[metric(group = "queued")]
-    queued: BTreeSet<SortedAwaitedAction>,
-    #[metric(group = "executing")]
-    executing: BTreeSet<SortedAwaitedAction>,
-    #[metric(group = "completed")]
-    completed: BTreeSet<SortedAwaitedAction>,
-}
-
-impl SortedAwaitedActions {
-    fn btree_for_state(&mut self, state: &ActionStage) -> &mut BTreeSet<SortedAwaitedAction> {
-        match state {
-            ActionStage::Unknown => &mut self.unknown,
-            ActionStage::CacheCheck => &mut self.cache_check,
-            ActionStage::Queued => &mut self.queued,
-            ActionStage::Executing => &mut self.executing,
-            ActionStage::Completed(_) => &mut self.completed,
-            ActionStage::CompletedFromCache(_) => &mut self.completed,
-        }
-    }
-
-    fn insert_sort_map_for_stage(
-        &mut self,
-        stage: &ActionStage,
-        sorted_awaited_action: SortedAwaitedAction,
-    ) -> Result<(), Error> {
-        let newly_inserted = match stage {
-            ActionStage::Unknown => self.unknown.insert(sorted_awaited_action.clone()),
-            ActionStage::CacheCheck => self.cache_check.insert(sorted_awaited_action.clone()),
-            ActionStage::Queued => self.queued.insert(sorted_awaited_action.clone()),
-            ActionStage::Executing => self.executing.insert(sorted_awaited_action.clone()),
-            ActionStage::Completed(_) => self.completed.insert(sorted_awaited_action.clone()),
-            ActionStage::CompletedFromCache(_) => {
-                self.completed.insert(sorted_awaited_action.clone())
-            }
-        };
-        if !newly_inserted {
-            return Err(make_err!(
-                Code::Internal,
-                "Tried to insert an action that was already in the sorted map. This should never happen. {:?} - {:?}",
-                stage,
-                sorted_awaited_action
-            ));
-        }
-        Ok(())
-    }
-
-    fn process_state_changes(
-        &mut self,
-        old_awaited_action: &AwaitedAction,
-        new_awaited_action: &AwaitedAction,
-    ) -> Result<(), Error> {
-        let btree = self.btree_for_state(&old_awaited_action.state().stage);
-        let maybe_sorted_awaited_action = btree.take(&SortedAwaitedAction {
-            sort_key: old_awaited_action.sort_key(),
-            operation_id: new_awaited_action.operation_id().clone(),
-        });
-
-        let Some(sorted_awaited_action) = maybe_sorted_awaited_action else {
-            return Err(make_err!(
-                Code::Internal,
-                "sorted_action_info_hash_keys and action_info_hash_key_to_awaited_action are out of sync - {} - {:?}",
-                new_awaited_action.operation_id(),
-                new_awaited_action,
-            ));
-        };
-
-        self.insert_sort_map_for_stage(&new_awaited_action.state().stage, sorted_awaited_action)
-            .err_tip(|| "In AwaitedActionDb::update_awaited_action")?;
-        Ok(())
-    }
-}
 
 /// The database for storing the state of all actions.
 #[derive(MetricsComponent)]

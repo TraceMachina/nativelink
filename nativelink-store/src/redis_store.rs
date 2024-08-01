@@ -14,13 +14,14 @@
 
 use std::borrow::Cow;
 use std::cmp;
+use std::ops::{Bound, RangeBounds};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use fred::clients::{RedisClient, RedisPool, SubscriberClient};
+use fred::clients::{RedisPool, SubscriberClient};
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface, TransactionInterface};
 use fred::types::{Builder, ConnectionConfig, PerformanceConfig, ReconnectPolicy, RedisConfig};
 use nativelink_config::stores::RedisMode;
@@ -29,9 +30,11 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
+use crate::scheduler_store::SchedulerStore;
 
 // TODO(caass): These (and other settings) should be made configurable via nativelink-config
 pub const READ_CHUNK_SIZE: usize = 64 * 1024;
@@ -43,10 +46,10 @@ pub struct RedisStore {
     /// The client pool connecting to the backing Redis instance(s).
     client_pool: RedisPool,
 
-    sub_client: SubscriberClient,
-
     /// A channel to publish updates to when a key is added, removed, or modified
     pub_sub_channel: Option<String>,
+
+    sub_client: SubscriberClient,
 
     /// A function used to generate names for temporary keys.
     temp_name_generator_fn: fn() -> String,
@@ -110,28 +113,28 @@ impl RedisStore {
             .build_pool(CONNECTION_POOL_SIZE)
             .err_tip(|| "while creating redis connection pool")?;
 
-        client_pool.connect();
-
         let sub_client = builder
             .build_subscriber_client()
-            .err_tip(|| "while creating redis subscriber client")?;
+            .err_tip(|| "while creating redis connection pool")?;
 
         client_pool.connect();
+
+        sub_client.connect();
 
         Ok(Self {
             client_pool,
-            sub_client,
             pub_sub_channel,
+            sub_client,
             temp_name_generator_fn,
             key_prefix,
         })
     }
 
-    pub fn get_redis_client(&self) -> RedisClient {
-        // Don't reuse the store subscription connection outside of the store.
-        // Allows for multiple subscription instances.
-        self.client_pool.next_connected().clone()
-    }
+    // pub fn get_redis_client(&self) -> RedisClient {
+    //     // Don't reuse the store subscription connection outside of the store.
+    //     // Allows for multiple subscription instances.
+    //     self.client_pool.next_connected().clone()
+    // }
 
     pub fn get_subscriber_client(&self) -> SubscriberClient {
         // Don't reuse the store subscription connection outside of the store.
@@ -162,6 +165,46 @@ impl RedisStore {
     }
 }
 
+#[async_trait]
+impl SchedulerStore for RedisStore {
+    async fn remove(&self, _key: StoreKey<'_>) -> Result<(), Error> {
+        todo!()
+    }
+
+    async fn update_if(
+        &self,
+        _key: StoreKey<'_>,
+        _data: DropCloserReadHalf,
+        _old_version: u64,
+        _new_version: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    async fn list_prefix(
+        self: Pin<&Self>,
+        _prefix: StoreKey<'_>,
+        range: (Bound<StoreKey<'_>>, Bound<StoreKey<'_>>),
+        handler: &mut (dyn for<'a> FnMut(&'a StoreKey) -> bool + Send + Sync + '_),
+    ) -> Result<usize, Error> {
+        todo!();
+    }
+
+    async fn subscribe<'de, T>(
+        &self,
+        _key: StoreKey<'_>,
+    ) -> Result<tokio::sync::broadcast::Receiver<T>, Error> {
+        todo!()
+    }
+
+    async fn publish_channel<T: Serialize + Send>(
+        &self,
+        _key: StoreKey<'_>,
+        _message: T,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+}
 #[async_trait]
 impl StoreDriver for RedisStore {
     async fn has_with_results(
