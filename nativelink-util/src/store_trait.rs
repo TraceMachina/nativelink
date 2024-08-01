@@ -193,6 +193,9 @@ pub enum StoreKey<'a> {
     /// A string key.
     Str(Cow<'a, str>),
 
+    /// For redis.
+    Int(u64),
+
     /// A key that is a digest.
     Digest(DigestInfo),
 }
@@ -211,6 +214,7 @@ impl<'a> StoreKey<'a> {
             StoreKey::Str(Cow::Owned(s)) => StoreKey::Str(Cow::Borrowed(s)),
             StoreKey::Str(Cow::Borrowed(s)) => StoreKey::Str(Cow::Borrowed(s)),
             StoreKey::Digest(d) => StoreKey::Digest(*d),
+            StoreKey::Int(i) => StoreKey::Int(*i),
         }
     }
 
@@ -221,6 +225,7 @@ impl<'a> StoreKey<'a> {
             StoreKey::Str(Cow::Owned(s)) => StoreKey::Str(Cow::Owned(s)),
             StoreKey::Str(Cow::Borrowed(s)) => StoreKey::Str(Cow::Owned(s.to_owned())),
             StoreKey::Digest(d) => StoreKey::Digest(d),
+            StoreKey::Int(i) => StoreKey::Int(i),
         }
     }
 
@@ -230,6 +235,11 @@ impl<'a> StoreKey<'a> {
     pub fn into_digest(self) -> DigestInfo {
         match self {
             StoreKey::Digest(digest) => digest,
+            StoreKey::Int(i) => {
+                let mut hasher = DigestHasherFunc::Blake3.hasher();
+                hasher.update(&i.to_be_bytes());
+                hasher.finalize_digest()
+            }
             StoreKey::Str(s) => {
                 let mut hasher = DigestHasherFunc::Blake3.hasher();
                 hasher.update(s.as_bytes());
@@ -245,6 +255,7 @@ impl<'a> StoreKey<'a> {
         match self {
             StoreKey::Str(Cow::Owned(s)) => Cow::Borrowed(s),
             StoreKey::Str(Cow::Borrowed(s)) => Cow::Borrowed(s),
+            StoreKey::Int(i) => Cow::Owned(i.to_string()),
             StoreKey::Digest(d) => Cow::Owned(format!("{}-{}", d.hash_str(), d.size_bytes)),
         }
     }
@@ -253,6 +264,7 @@ impl<'a> StoreKey<'a> {
 impl Clone for StoreKey<'static> {
     fn clone(&self) -> Self {
         match self {
+            StoreKey::Int(i) => StoreKey::Int(*i),
             StoreKey::Str(s) => StoreKey::Str(s.clone()),
             StoreKey::Digest(d) => StoreKey::Digest(*d),
         }
@@ -272,6 +284,11 @@ impl Ord for StoreKey<'_> {
             (StoreKey::Digest(a), StoreKey::Digest(b)) => a.cmp(b),
             (StoreKey::Str(_), StoreKey::Digest(_)) => std::cmp::Ordering::Less,
             (StoreKey::Digest(_), StoreKey::Str(_)) => std::cmp::Ordering::Greater,
+            (StoreKey::Int(a), StoreKey::Int(b)) => a.cmp(b),
+            (StoreKey::Int(a), StoreKey::Str(b)) => a.to_string().as_str().cmp(b),
+            (StoreKey::Int(_), StoreKey::Digest(_)) => std::cmp::Ordering::Less,
+            (StoreKey::Str(a), StoreKey::Int(b)) => a.cmp(&Cow::Borrowed(b.to_string().as_str())),
+            (StoreKey::Digest(_), StoreKey::Int(_)) => std::cmp::Ordering::Greater,
         }
     }
 }
@@ -294,8 +311,13 @@ impl Hash for StoreKey<'_> {
         enum HashId {
             Str = 0,
             Digest = 1,
+            Int = 2,
         }
         match self {
+            StoreKey::Int(i) => {
+                (HashId::Int as u8).hash(state);
+                i.hash(state)
+            }
             StoreKey::Str(s) => {
                 (HashId::Str as u8).hash(state);
                 s.hash(state)

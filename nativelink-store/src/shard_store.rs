@@ -127,6 +127,12 @@ impl ShardStore {
                 let key_u64 = hasher.finish();
                 (key_u64 >> 32) as u32 // We only need the top 32 bits.
             }
+            StoreKey::Int(i) => {
+                let mut hasher = DefaultHasher::new();
+                hasher.write(&i.to_be_bytes());
+                let key_u64 = hasher.finish();
+                (key_u64 >> 32) as u32 // We only need the top 32 bits.
+            }
         };
         self.weights_and_stores
             .binary_search_by_key(&key, |item| item.weight)
