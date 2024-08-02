@@ -166,8 +166,7 @@ impl StoreDriver for DedupStore {
             })
             .collect::<FuturesOrdered<_>>()
             .try_collect()
-            .await?;
-        Ok(())
+            .await
     }
 
     async fn update(

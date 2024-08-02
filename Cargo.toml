@@ -29,7 +29,9 @@ debug = false
 name = "nativelink"
 
 [features]
-enable_tokio_console = []
+enable_tokio_console = [
+  "nativelink-util/enable_tokio_console"
+]
 
 [dependencies]
 nativelink-error = { path = "nativelink-error" }

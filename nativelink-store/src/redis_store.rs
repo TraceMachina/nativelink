@@ -275,7 +275,7 @@ impl StoreDriver for RedisStore {
                 }
 
                 // Queue the append, but don't execute until we've received all the chunks.
-                pipe.append(&temp_key, chunk)
+                pipe.append::<(), _, _>(&temp_key, chunk)
                     .await
                     .err_tip(|| "Failed to append to temp key in RedisStore::update")?;
                 expecting_first_chunk = false;
@@ -287,20 +287,20 @@ impl StoreDriver for RedisStore {
 
             // Here the reader is empty but more data is expected.
             // Executing the queued commands appends the data we just received to the temp key.
-            pipe.all()
+            pipe.all::<()>()
                 .await
                 .err_tip(|| "Failed to append to temporary key in RedisStore::update")?;
         }
 
         // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
         client
-            .rename(&temp_key, final_key.as_ref())
+            .rename::<(), _, _>(&temp_key, final_key.as_ref())
             .await
             .err_tip(|| "While renaming key in RedisStore::update()")?;
 
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            client.publish(pub_sub_channel, final_key.as_ref()).await?;
+            return Ok(client.publish(pub_sub_channel, final_key.as_ref()).await?);
         };
 
         Ok(())
