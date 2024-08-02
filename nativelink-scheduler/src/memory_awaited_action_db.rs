@@ -937,7 +937,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         start: Bound<SortedAwaitedAction>,
         end: Bound<SortedAwaitedAction>,
         desc: bool,
-    ) -> impl Stream<Item = Result<Self::Subscriber, Error>> + Send + Sync {
+    ) -> impl Stream<Item = Result<Self::Subscriber, Error>> + Send {
         ChunkedStream::new(start, end, move |start, end, mut output| async move {
             let inner = self.inner.lock().await;
             let mut done = true;
