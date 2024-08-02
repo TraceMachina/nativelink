@@ -399,8 +399,7 @@ where
             })
             .collect::<FuturesUnordered<_>>()
             .try_collect()
-            .await?;
-        Ok(())
+            .await
     }
 
     async fn update(
