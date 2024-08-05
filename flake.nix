@@ -82,48 +82,130 @@
         # Tracked in https://github.com/TraceMachina/nativelink/issues/477.
         customClang = pkgs.callPackage ./tools/customClang.nix {stdenv = customStdenv;};
 
-        craneLib =
-          if pkgs.stdenv.isDarwin
-          then (crane.mkLib pkgs).overrideToolchain stable-rust.default
-          else
-            (crane.mkLib pkgs).overrideToolchain (stable-rust.default.override {
-              targets = ["x86_64-unknown-linux-musl"];
-            });
+        nixSystemToRustTriple = nixSystem:
+          {
+            "x86_64-linux" = "x86_64-unknown-linux-musl";
+            "aarch64-linux" = "aarch64-unknown-linux-musl";
+            "x86_64-darwin" = "x86_64-apple-darwin";
+            "aarch64-darwin" = "aarch64-apple-darwin";
+          }
+          .${nixSystem}
+          or (throw "Unsupported Nix system: ${nixSystem}");
+
+        # Calling `pkgs.pkgsCross` changes the host and target platform to the
+        # cross-target but leaves the build platform the same as pkgs.
+        #
+        # For instance, calling `pkgs.pkgsCross.aarch64-multiplatform` on an
+        # `x86_64-linux` host sets `host==target==aarch64-linux` but leaves the
+        # build platform at `x86_64-linux`.
+        #
+        # On aarch64-darwin the same `pkgs.pkgsCross.aarch64-multiplatform`
+        # again sets `host==target==aarch64-linux` but now with a build platform
+        # of `aarch64-darwin`.
+        #
+        # For optimal cache reuse of different crosscompilation toolchains we
+        # take our rust toolchain from the host's `pkgs` and remap the rust
+        # target to the target platform of the `pkgsCross` target. This lets us
+        # reuse the same executables (for instance rustc) to build artifacts for
+        # different target platforms.
+        stableRustFor = p:
+          p.rust-bin.stable.${stable-rust-version}.default.override {
+            targets = [
+              "${nixSystemToRustTriple p.stdenv.targetPlatform.system}"
+            ];
+          };
+
+        craneLibFor = p: (crane.mkLib p).overrideToolchain stableRustFor;
 
         src = pkgs.lib.cleanSourceWith {
-          src = craneLib.path ./.;
+          src = (craneLibFor pkgs).path ./.;
           filter = path: type:
             (builtins.match "^.*(data/SekienSkashita\.jpg|nativelink-config/README\.md)" path != null)
-            || (craneLib.filterCargoSources path type);
+            || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
-        commonArgs =
+        # Warning: The different usages of `p` and `pkgs` are intentional as we
+        # use crosscompilers and crosslinkers whose packagesets collapse with
+        # the host's packageset. If you change this, take care that you don't
+        # accidentally explode the global closure size.
+        commonArgsFor = p: let
+          isLinuxBuild = p.stdenv.buildPlatform.isLinux;
+          isLinuxTarget = p.stdenv.targetPlatform.isLinux;
+          targetArch = nixSystemToRustTriple p.stdenv.targetPlatform.system;
+
+          # Full path to the linker for CARGO_TARGET_XXX_LINKER
+          linkerPath =
+            if isLinuxBuild && isLinuxTarget
+            then "${pkgs.mold}/bin/ld.mold"
+            else "${pkgs.llvmPackages_latest.lld}/bin/ld.lld";
+        in
           {
             inherit src;
             stdenv =
-              if pkgs.stdenv.isDarwin
-              then customStdenv
-              else pkgs.pkgsMusl.stdenv;
+              if isLinuxTarget
+              then p.pkgsMusl.stdenv
+              else p.stdenv;
             strictDeps = true;
-            buildInputs = [pkgs.cacert] ++ maybeDarwinDeps;
-            nativeBuildInputs = maybeDarwinDeps;
+            buildInputs =
+              [p.cacert]
+              ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
+                p.darwin.apple_sdk.frameworks.Security
+                p.libiconv
+              ];
+            nativeBuildInputs =
+              (
+                if isLinuxBuild
+                then [pkgs.mold]
+                else [pkgs.llvmPackages_latest.lld]
+              )
+              ++ pkgs.lib.optionals p.stdenv.targetPlatform.isDarwin [
+                p.darwin.apple_sdk.frameworks.Security
+                p.libiconv
+              ];
+            CARGO_BUILD_TARGET = targetArch;
           }
-          // pkgs.lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
-            CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
-            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-          };
+          // (
+            if isLinuxTarget
+            then
+              {
+                CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+              }
+              // (
+                if linkerPath != null
+                then {
+                  "CARGO_TARGET_${pkgs.lib.toUpper (pkgs.lib.replaceStrings ["-"] ["_"] targetArch)}_LINKER" = linkerPath;
+                }
+                else {}
+              )
+            else {}
+          );
 
         # Additional target for external dependencies to simplify caching.
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
 
-        nativelink = craneLib.buildPackage (commonArgs
-          // {
-            inherit cargoArtifacts;
-          });
+        nativelinkFor = p:
+          (craneLibFor p).buildPackage ((commonArgsFor p)
+            // {
+              cargoArtifacts = cargoArtifactsFor p;
+            });
 
-        nativelink-debug = craneLib.buildPackage (commonArgs
+        nativeTargetPkgs =
+          if pkgs.system == "x86_64-linux"
+          then pkgs.pkgsCross.musl64
+          else if pkgs.system == "aarch64-linux"
+          then pkgs.pkgsCross.aarch64-multiplatform-musl
+          else pkgs;
+
+        nativelink = nativelinkFor nativeTargetPkgs;
+
+        # These two can be built by all build platforms. This is not true for
+        # darwin targets which are only buildable via native compilation.
+        nativelink-aarch64-linux = nativelinkFor pkgs.pkgsCross.aarch64-multiplatform-musl;
+        nativelink-x86_64-linux = nativelinkFor pkgs.pkgsCross.musl64;
+
+        nativelink-debug = (craneLibFor pkgs).buildPackage ((commonArgsFor pkgs)
           // {
-            inherit cargoArtifacts;
+            cargoArtifacts = cargoArtifactsFor pkgs;
             CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static --cfg tokio_unstable";
             CARGO_PROFILE = "smol";
             cargoExtraArgs = "--features enable_tokio_console";
@@ -146,28 +228,37 @@
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
 
-        nativelink-image = buildImage {
-          name = "nativelink";
-          copyToRoot = [
-            (pkgs.buildEnv {
-              name = "nativelink-buildEnv";
-              paths = [nativelink];
-              pathsToLink = ["/bin"];
-            })
-          ];
-          config = {
-            Entrypoint = [(pkgs.lib.getExe' nativelink "nativelink")];
-            Labels = {
-              "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
-              "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
-              "org.opencontainers.image.licenses" = "Apache-2.0";
-              "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
-              "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
-              "org.opencontainers.image.title" = "NativeLink";
-              "org.opencontainers.image.vendor" = "Trace Machina, Inc.";
+        # TODO(aaronmondal): Allow "crosscompiling" this image. At the moment
+        #                    this would set a wrong container architecture. See:
+        #                    https://github.com/nlewo/nix2container/issues/138.
+        nativelink-image = let
+          nativelinkForImage =
+            if pkgs.stdenv.isx86_64
+            then nativelink-x86_64-linux
+            else nativelink-aarch64-linux;
+        in
+          buildImage {
+            name = "nativelink";
+            copyToRoot = [
+              (pkgs.buildEnv {
+                name = "nativelink-buildEnv";
+                paths = [nativelinkForImage];
+                pathsToLink = ["/bin"];
+              })
+            ];
+            config = {
+              Entrypoint = [(pkgs.lib.getExe' nativelinkForImage "nativelink")];
+              Labels = {
+                "org.opencontainers.image.description" = "An RBE compatible, high-performance cache and remote executor.";
+                "org.opencontainers.image.documentation" = "https://github.com/TraceMachina/nativelink";
+                "org.opencontainers.image.licenses" = "Apache-2.0";
+                "org.opencontainers.image.revision" = "${self.rev or self.dirtyRev or "dirty"}";
+                "org.opencontainers.image.source" = "https://github.com/TraceMachina/nativelink";
+                "org.opencontainers.image.title" = "NativeLink";
+                "org.opencontainers.image.vendor" = "Trace Machina, Inc.";
+              };
             };
           };
-        };
 
         nativelink-worker-init = pkgs.callPackage ./tools/nativelink-worker-init.nix {inherit buildImage self nativelink-image;};
 
@@ -250,20 +341,47 @@
             program = "${native-cli}/bin/native";
           };
         };
-        packages = rec {
-          inherit publish-ghcr local-image-test nativelink-is-executable-test nativelink nativelink-debug native-cli lre-cc nativelink-worker-init;
-          default = nativelink;
+        packages =
+          rec {
+            inherit
+              local-image-test
+              lre-cc
+              native-cli
+              nativelink
+              nativelink-aarch64-linux
+              nativelink-debug
+              nativelink-image
+              nativelink-is-executable-test
+              nativelink-worker-init
+              nativelink-x86_64-linux
+              publish-ghcr
+              ;
+            default = nativelink;
 
-          rbe-autogen-lre-cc = rbe-autogen lre-cc;
-          nativelink-worker-lre-cc = createWorker lre-cc;
-          lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
-          rbe-autogen-lre-java = rbe-autogen lre-java;
-          nativelink-worker-lre-java = createWorker lre-java;
-          nativelink-worker-siso-chromium = createWorker siso-chromium;
-          nativelink-worker-toolchain-drake = createWorker toolchain-drake;
-          nativelink-worker-buck2-toolchain = buck2-toolchain;
-          image = nativelink-image;
-        };
+            rbe-autogen-lre-cc = rbe-autogen lre-cc;
+            nativelink-worker-lre-cc = createWorker lre-cc;
+            lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};
+            rbe-autogen-lre-java = rbe-autogen lre-java;
+            nativelink-worker-lre-java = createWorker lre-java;
+            nativelink-worker-siso-chromium = createWorker siso-chromium;
+            nativelink-worker-toolchain-drake = createWorker toolchain-drake;
+            nativelink-worker-buck2-toolchain = buck2-toolchain;
+            image = nativelink-image;
+          }
+          // (
+            # It's not possible to crosscompile to darwin, not even between
+            # x86_64-darwin and aarch64-darwin. We create these targets anyways
+            # To keep them uniform with the linux targets if they're buildable.
+            if pkgs.stdenv.system == "aarch64-darwin"
+            then {
+              nativelink-aarch64-darwin = nativelink;
+            }
+            else if pkgs.stdenv.system == "x86_64-darwin"
+            then {
+              nativelink-x86_64-darwin = nativelink;
+            }
+            else {}
+          );
         checks = {
           # TODO(aaronmondal): Fix the tests.
           # tests = craneLib.cargoNextest (commonArgs
