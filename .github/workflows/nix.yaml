@@ -134,4 +134,5 @@ jobs:
 
       - name: Test nix run
         run: |
+          nix run -L .#nativelink-prevent-store-conflict-test
           nix run -L .#nativelink-is-executable-test
