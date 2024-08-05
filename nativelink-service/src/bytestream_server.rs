@@ -321,6 +321,23 @@ impl ByteStreamServer {
                                 Ok(bytes) => {
                                     if bytes.is_empty() {
                                         // EOF.
+                                        // Wait for get_part_fut to finish
+                                        match state.get_part_fut.await{ // Once get_part_fut finishes, we check for errors
+                                            Ok(_) => {}
+                                            Err(mut e) => {
+                                                // Handle the Err case appropriately
+                                                // For example, we might want to log the error or propagate it
+                                                if e.code == Code::NotFound {
+                                                    // Trim the error code. Not Found is quite common and we don't want to send a large
+                                                    // error (debug) message for something that is common. We resize to just the last
+                                                    // message as it will be the most relevant.
+                                                    e.messages.truncate(1);
+                                                }
+                                                event!(Level::ERROR, response = ?e);
+                                                return Some((Err(e.into()), None));
+                                            } // Error handling ends
+                                        } // match bloc ends
+                                        // Once get_part_fut finishes, we are done
                                         return Some((Ok(response), None));
                                     }
                                     if bytes.len() > state.max_bytes_per_stream {
