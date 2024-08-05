@@ -321,6 +321,25 @@ impl ByteStreamServer {
                                 Ok(bytes) => {
                                     if bytes.is_empty() {
                                         // EOF.
+                                        // We might need to wait for `get_part_fut` to finish
+                                        // If `maybe_get_part_result` has a value, it means `get_part_fut` will never complete,
+                                        // so only if `maybe_get_part_result` is None, we await `get_part_fut`
+                                        let get_part_result = if let Some(result) = state.maybe_get_part_result {
+                                            result
+                                        } else {
+                                            state.get_part_fut.await
+                                        };
+
+                                        if let Err(mut err) = get_part_result {
+                                            if err.code == Code::NotFound {
+                                                // Trim the error code. Not Found is quite common and we don't want to send a large
+                                                // error (debug) message for something that is common. We resize to just the last
+                                                // message as it will be the most relevant.
+                                                err.messages.truncate(1);
+                                            }
+                                            return Some((Err(err.into()), None));
+                                        }
+
                                         return Some((Ok(response), None));
                                     }
                                     if bytes.len() > state.max_bytes_per_stream {
