@@ -80,15 +80,24 @@ spec:
           cd "$(workspaces.optional-src.path)"
         fi
 
-        NIX_SOCKET="unix:///workspace/nix-store/nix/var/nix/daemon-socket/socket"
-        NIX_ROOT="/workspace/nix-store"
+        # The double-mount optimization doesn't work on MacOS where this cluster
+        # runs in an aarch64-linux environment.
+        if [ "$(uname -m)" = "x86_64" ] && [ "$(uname -s)" = "Linux" ]; then
+          NIX_SOCKET="unix:///workspace/nix-store/nix/var/nix/daemon-socket/socket"
+          NIX_ROOT="/workspace/nix-store"
+          NIX_STORE_OPTS="--store ${NIX_SOCKET}?root=${NIX_ROOT}"
+        else
+          NIX_STORE_OPTS=""
+        fi
+
+        echo "NIX_STORE_OPTS: '$NIX_STORE_OPTS'"
 
         # Not ideal, but will have to do until we implement more elaborate git
         # repo syncing schemes.
         git config --global --add safe.directory "*"
 
         nix run \
-          --store "${NIX_SOCKET}?root=${NIX_ROOT}" \
+          $NIX_STORE_OPTS \
           --option sandbox "${ENABLE_NIX_SANDBOX}" \
           --print-build-logs \
           "${FLAKE_OUTPUT}".copyTo \
