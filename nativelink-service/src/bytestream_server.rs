@@ -321,6 +321,37 @@ impl ByteStreamServer {
                                 Ok(bytes) => {
                                     if bytes.is_empty() {
                                         // EOF.
+                                        // We want to wait for get_part_fut to finish if it's doing something.
+                                        // There are cases when get_part_fut is set to a future that never finishes (via Box::pin(pending()))
+                                        // and we obviously don't need to wait for get_part_fut in those cases.
+                                        //
+                                        // Now, maybe_get_part_result is normally set to None. It's value is only changed
+                                        // right before setting state.get_part_fut to Box::pin(pending())
+                                        // In other words, the only time we wait for get_part_fut to complete is
+                                        // when maybe_get_part_result = None
+                                        let get_part_result = if let Some(result) = state.maybe_get_part_result {
+                                            // if maybe_get_part_result is not None, get_part_fut either is done or is set to Box::pin(pending())
+                                            // Either way, we don't need to wait
+                                            result
+                                        } else {
+                                            // Else when maybe_get_part_result is None, wait for get_part_fut to terminate
+                                            state.get_part_fut.await
+                                        };
+
+                                        // Now, get_part_result has a future that resulted in either Result<()> or Error.
+                                        // If get_part_result has Result<()>, we don't need any extra checks
+                                        // But if get_part_result has an error, we need to handle it accordingly
+                                        if let Err(mut err) = get_part_result {
+                                            if err.code == Code::NotFound {
+                                                // Trim the error code. Not Found is quite common and we don't want to send a large
+                                                // error (debug) message for something that is common. We resize to just the last
+                                                // message as it will be the most relevant.
+                                                err.messages.truncate(1);
+                                            }
+                                            return Some((Err(err.into()), None));
+                                        }
+
+                                        // If there were no errors and we've waited for get_part_fut to finish if needs be
                                         return Some((Ok(response), None));
                                     }
                                     if bytes.len() > state.max_bytes_per_stream {
