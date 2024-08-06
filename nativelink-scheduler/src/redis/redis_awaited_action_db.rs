@@ -6,7 +6,7 @@ use fred::clients::RedisClient;
 use fred::interfaces::KeysInterface;
 use futures::{stream, Stream};
 use nativelink_util::action_messages::{ActionInfo, ActionUniqueQualifier, ClientOperationId, OperationId};
-use nativelink_error::{make_err, Code, Error};
+use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_store::redis_store::RedisStore;
 
@@ -40,7 +40,8 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         match self.redis_adapter.get_operation_id_by_client_id(client_operation_id).await {
             Ok(operation_id) => {
                 // TODO: Match to return None
-                let rx = self.redis_adapter.subscribe_to_operation(&operation_id).await?;
+                let rx = self.redis_adapter.subscribe_to_operation(&operation_id).await
+                    .err_tip(|| "In RedisAwaitedActionDb::get_by_operation_id")?;
                 Ok(Some(RedisOperationSubscriber {
                     awaited_action_rx: rx
                 }))
@@ -59,7 +60,9 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         &self,
         operation_id: &OperationId,
     ) -> Result<Option<RedisOperationSubscriber>, Error> {
-        let rx = self.redis_adapter.subscribe_to_operation(operation_id).await?;
+        let rx = self.redis_adapter.subscribe_to_operation(operation_id)
+            .await
+            .err_tip(|| "In RedisAwaitedActionDb::get_by_operation_id")?;
         Ok(Some(RedisOperationSubscriber { awaited_action_rx: rx }))
     }
 
@@ -78,8 +81,9 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         client_id: ClientOperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<RedisOperationSubscriber, Error> {
-        println!("in redis add_action");
-        let rx = self.redis_adapter.subscribe_client_to_operation(client_id, action_info).await?;
+        let rx = self.redis_adapter.subscribe_client_to_operation(client_id, action_info)
+            .await
+            .err_tip(|| "In RedisAwaitedActionDb::add_action")?;
         Ok(RedisOperationSubscriber {
             awaited_action_rx: rx
         })

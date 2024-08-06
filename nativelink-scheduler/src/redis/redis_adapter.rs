@@ -1,13 +1,12 @@
-use fred::{clients::SubscriberClient, interfaces::{EventInterface, KeysInterface, PubsubInterface, SortedSetsInterface, TransactionInterface}, types::{KeyspaceEvent, Message, RedisValue, ZRange, ZRangeBound, ZRangeKind, ZSort}};
-use nativelink_proto::google::devtools::build::v1::build_event::console_output::Output;
-use tokio_stream::wrappers::BroadcastStream;
+use fred::{clients::SubscriberClient, interfaces::{EventInterface, KeysInterface, PubsubInterface, SortedSetsInterface, TransactionInterface}, types::{KeyspaceEvent, Message, RedisKey, RedisValue, ZRange, ZRangeBound, ZRangeKind, ZSort}};
+use serde_json::to_string;
 use tracing::{event, Level};
 use std::borrow::Borrow;
 use nativelink_util::{action_messages::{ActionInfo, ActionUniqueKey, ActionUniqueQualifier, ClientOperationId, OperationId}, store_trait::{StoreKey, StoreLike}};
 use std::{ops::Bound, str::from_utf8, sync::Arc};
 use nativelink_metric::MetricsComponent;
 use nativelink_store::redis_store::RedisStore;
-use nativelink_error::{make_err, make_input_err, Code, Error};
+use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use crate::awaited_action_db::{AwaitedAction, SortedAwaitedAction, SortedAwaitedActionState};
 
 use super::subscription_manager::RedisOperationSubscriber;
@@ -51,7 +50,7 @@ pub fn to_redis_bound<T>(rust_bound: Bound<T>, start: bool) -> ZRange
 }
 
 #[derive(Clone, Debug)]
-enum RedisKeys<'a> {
+pub enum RedisKeys<'a> {
     AwaitedAction(&'a OperationId),
     OperationIdByHashKey(&'a ActionUniqueQualifier),
     OperationIdByClientId(&'a ClientOperationId),
@@ -67,9 +66,9 @@ impl<'a> std::fmt::Display for RedisKeys<'a> {
     }
 }
 
-impl<'a> Into<StoreKey<'a>> for RedisKeys<'a> {
-    fn into(self) -> StoreKey<'a> {
-        StoreKey::Str(self.to_string().into())
+impl<'a> From<&RedisKeys<'a>> for StoreKey<'a> {
+    fn from(value: &RedisKeys<'a>) -> Self {
+        StoreKey::Str(value.to_string().into())
     }
 }
 
@@ -78,17 +77,24 @@ impl RedisAdapter {
     pub fn new(store: Arc<RedisStore>) -> Self {
         Self { store }
     }
+    pub async fn get_bytes(&self, key: &RedisKeys<'_>) -> Result<bytes::Bytes, nativelink_error::Error> {
+
+        let bytes = self.store.get_part_unchunked(key, 0, None).await?;
+        if bytes.is_empty() {
+            return Err(make_err!(Code::NotFound, "Failed to find value for key - {key}"))
+        }
+        Ok(bytes)
+    }
     pub async fn subscribe_to_operation(
         &self,
         operation_id: &OperationId,
     ) -> Result<tokio::sync::watch::Receiver<AwaitedAction>, Error> {
         let client = self.store.get_subscriber_client();
         let key = RedisKeys::AwaitedAction(operation_id);
-        let bytes = self.store.get_part_unchunked(
-            key.clone(),
-            0,
-            None
-        ).await?;
+        println!("{}", key);
+        let bytes = self.store.get_part_unchunked(&key, 0, None)
+            .await
+            .err_tip(|| "In RedisAdapter::subscribe_to_operation")?;
         let initial_state = AwaitedAction::try_from(bytes)?;
         let update_channel = format!("updates:{key}");
         client.subscribe(update_channel).await?;
@@ -264,14 +270,15 @@ impl RedisAdapter {
     }
 
     pub async fn get_awaited_action(&self, operation_id: &OperationId) -> Result<AwaitedAction, Error> {
-        let bytes = self.store.get_part_unchunked(RedisKeys::AwaitedAction(operation_id), 0, None).await?;
+        let bytes = self.get_bytes(&RedisKeys::AwaitedAction(operation_id)).await?;
         serde_json::from_slice(&bytes).map_err(|err| {
             make_input_err!("In RedisAdapter::get_awaited_action - {}", err.to_string())
         })
     }
 
     pub async fn get_operation_id_by_client_id(&self, client_id: &ClientOperationId) -> Result<OperationId, Error> {
-        let bytes = self.store.get_part_unchunked(RedisKeys::OperationIdByClientId(client_id), 0, None).await?;
+        let bytes = self.get_bytes(&RedisKeys::OperationIdByClientId(client_id)).await?;
+        println!("{}", format!("{:?}", bytes));
         OperationId::try_from(
             from_utf8(&bytes).map_err(|err| {
                 make_input_err!("In RedisAdapter::get_operation_id_by_client_id - {}", err.to_string())
@@ -280,7 +287,7 @@ impl RedisAdapter {
     }
 
     pub async fn get_operation_id_by_action_hash_key(&self, unique_qualifier: &ActionUniqueQualifier) -> Result<OperationId, Error> {
-        let bytes = self.store.get_part_unchunked(RedisKeys::OperationIdByHashKey(unique_qualifier), 0, None).await?;
+        let bytes = self.get_bytes(&RedisKeys::OperationIdByHashKey(unique_qualifier)).await?;
         OperationId::try_from(
             from_utf8(&bytes).map_err(|err| {
                 make_input_err!("In RedisAdapter::get_operation_id_by_action_hash_key - {}", err.to_string())
@@ -305,9 +312,9 @@ impl RedisAdapter {
         let action_bytes: Vec<u8> = action.clone().try_into()?;
 
         self.add_to_set(&sorted_state.to_string(), &sorted_action.to_string()).await?;
-        self.store.update_oneshot(awaited_action_key, action_bytes.into()).await?;
-        self.store.update_oneshot(operation_id_cid, operation_id.to_string().into()).await?;
-        self.store.update_oneshot(operation_id_ahk, operation_id.to_string().into()).await?;
+        self.store.update_oneshot(&awaited_action_key, action_bytes.into()).await?;
+        self.store.update_oneshot(&operation_id_cid, operation_id.to_string().into()).await?;
+        self.store.update_oneshot(&operation_id_ahk, operation_id.to_string().into()).await?;
         self.subscribe_to_operation(&operation_id).await
     }
 
@@ -317,18 +324,25 @@ impl RedisAdapter {
         client_id: ClientOperationId,
         action_info: Arc<ActionInfo>
     ) -> Result<tokio::sync::watch::Receiver<AwaitedAction>, Error> {
+        println!("subscribe client to operation");
         match self.get_operation_id_by_client_id(&client_id).await {
             Ok(operation_id) => {
-                let sub = self.subscribe_to_operation(&operation_id).await?;
-                self.store.update_oneshot(RedisKeys::OperationIdByClientId(&client_id), operation_id.to_string().into()).await?;
-                return Ok(sub)
+                println!("OK");
+                let sub = self.subscribe_to_operation(&operation_id)
+                    .await
+                    .err_tip(|| "In RedisAwaitedActionDb::subscribe_client_to_operation - subscribe_to_operation")?;
+                self.store.update_oneshot(&RedisKeys::OperationIdByClientId(&client_id), operation_id.to_string().into()).await
+                    .err_tip(|| "In RedisAwaitedActionDb::subscribe_client_to_operation - update_oneshot")?;
+                Ok(sub)
             },
             Err(e) => {
                 match e.code {
                     Code::NotFound => {
-                        return self.add_new_operation(client_id, action_info).await
+                        Ok(self.add_new_operation(client_id, action_info)
+                            .await
+                            .err_tip(|| "In RedisAwaitedActionDb::subscribe_client_to_operation - add_new_operation")?)
                     },
-                    _ => return Err(e)
+                    _ => { println!("ERR UNHANDLED"); Err(e) }
                 }
             }
         }
