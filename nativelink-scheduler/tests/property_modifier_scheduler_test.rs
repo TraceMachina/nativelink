@@ -29,12 +29,8 @@ use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::default_action_listener::DefaultActionListener;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
-use nativelink_util::action_messages::{
-    ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier, ClientOperationId,
-    OperationId,
-};
+use nativelink_util::action_messages::{ActionStage, ActionState, OperationId};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::platform_properties::PlatformPropertyValue;
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
@@ -73,14 +69,15 @@ async fn add_action_adds_property() -> Result<(), Error> {
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            id: OperationId::new(action_info.unique_qualifier.clone()),
+            operation_id: OperationId::default(),
             stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
         }));
     let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
         name.clone(),
         PropertyType::exact,
     )])));
-    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
+    let client_operation_id = OperationId::default();
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
@@ -120,14 +117,15 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
         .insert(name.clone(), PlatformPropertyValue::Unknown(original_value));
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            id: OperationId::new(action_info.unique_qualifier.clone()),
+            operation_id: OperationId::default(),
             stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
         }));
     let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
         name.clone(),
         PropertyType::exact,
     )])));
-    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
+    let client_operation_id = OperationId::default();
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
@@ -164,14 +162,15 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            id: OperationId::new(action_info.unique_qualifier.clone()),
+            operation_id: OperationId::default(),
             stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
         }));
     let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
         name.clone(),
         PropertyType::exact,
     )])));
-    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
+    let client_operation_id = OperationId::default();
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
@@ -208,14 +207,15 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            id: OperationId::new(action_info.unique_qualifier.clone()),
+            operation_id: OperationId::default(),
             stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
         }));
     let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
         name,
         PropertyType::exact,
     )])));
-    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
+    let client_operation_id = OperationId::default();
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
@@ -250,11 +250,12 @@ async fn add_action_property_remove() -> Result<(), Error> {
         .insert(name, PlatformPropertyValue::Unknown(value));
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
-            id: OperationId::new(action_info.unique_qualifier.clone()),
+            operation_id: OperationId::default(),
             stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
         }));
     let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
-    let client_operation_id = ClientOperationId::new(action_info.unique_qualifier.clone());
+    let client_operation_id = OperationId::default();
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
@@ -280,11 +281,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
 #[nativelink_test]
 async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
     let context = make_modifier_scheduler(vec![]);
-    let operation_id = ClientOperationId::new(ActionUniqueQualifier::Uncachable(ActionUniqueKey {
-        instance_name: "instance".to_string(),
-        digest_function: DigestHasherFunc::Sha256,
-        digest: DigestInfo::new([8; 32], 1),
-    }));
+    let operation_id = OperationId::default();
     let (actual_result, actual_operation_id) = join!(
         context
             .modifier_scheduler

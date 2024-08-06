@@ -32,8 +32,7 @@ use nativelink_scheduler::action_scheduler::{ActionListener, ActionScheduler};
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, ClientOperationId,
-    DEFAULT_EXECUTION_PRIORITY,
+    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
@@ -44,19 +43,19 @@ use tracing::{error_span, event, instrument, Level};
 
 type InstanceInfoName = String;
 
-struct NativelinkClientOperationId {
+struct NativelinkOperationId {
     instance_name: InstanceInfoName,
-    client_operation_id: ClientOperationId,
+    client_operation_id: OperationId,
 }
 
-impl NativelinkClientOperationId {
+impl NativelinkOperationId {
     fn from_name(name: &str) -> Result<Self, Error> {
         let (instance_name, name) = name
             .split_once('/')
             .err_tip(|| "Expected instance_name and name to be separated by '/'")?;
         Ok(Self {
             instance_name: instance_name.to_string(),
-            client_operation_id: ClientOperationId::from_raw_string(name.to_string()),
+            client_operation_id: OperationId::from_raw_string(name.to_string()),
         })
     }
 
@@ -206,7 +205,7 @@ impl ExecutionServer {
     }
 
     fn to_execute_stream(
-        nl_client_operation_id: NativelinkClientOperationId,
+        nl_client_operation_id: NativelinkOperationId,
         action_listener: Pin<Box<dyn ActionListener>>,
     ) -> Response<ExecuteStream> {
         let client_operation_id_string = nl_client_operation_id.into_string();
@@ -219,9 +218,8 @@ impl ExecutionServer {
                     match action_listener.changed().await {
                         Ok(action_update) => {
                             event!(Level::INFO, ?action_update, "Execute Resp Stream");
-                            let client_operation_id = ClientOperationId::from_raw_string(
-                                client_operation_id_string.clone(),
-                            );
+                            let client_operation_id =
+                                OperationId::from_raw_string(client_operation_id_string.clone());
                             // If the action is finished we won't be sending any more updates.
                             let maybe_action_listener = if action_update.stage.is_finished() {
                                 None
@@ -284,15 +282,12 @@ impl ExecutionServer {
 
         let action_listener = instance_info
             .scheduler
-            .add_action(
-                ClientOperationId::new(action_info.unique_qualifier.clone()),
-                action_info,
-            )
+            .add_action(OperationId::default(), action_info)
             .await
             .err_tip(|| "Failed to schedule task")?;
 
         Ok(Self::to_execute_stream(
-            NativelinkClientOperationId {
+            NativelinkOperationId {
                 instance_name,
                 client_operation_id: action_listener.client_operation_id().clone(),
             },
@@ -305,7 +300,7 @@ impl ExecutionServer {
         request: Request<WaitExecutionRequest>,
     ) -> Result<Response<ExecuteStream>, Status> {
         let (instance_name, client_operation_id) =
-            NativelinkClientOperationId::from_name(&request.into_inner().name)
+            NativelinkOperationId::from_name(&request.into_inner().name)
                 .map(|v| (v.instance_name, v.client_operation_id))
                 .err_tip(|| "Failed to parse operation_id in ExecutionServer::wait_execution")?;
         let Some(instance_info) = self.instance_infos.get(&instance_name) else {
@@ -322,7 +317,7 @@ impl ExecutionServer {
             return Err(Status::not_found("Failed to find existing task"));
         };
         Ok(Self::to_execute_stream(
-            NativelinkClientOperationId {
+            NativelinkOperationId {
                 instance_name,
                 client_operation_id,
             },

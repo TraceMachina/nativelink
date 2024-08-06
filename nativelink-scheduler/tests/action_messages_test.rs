@@ -22,7 +22,7 @@ use nativelink_proto::google::longrunning::{operation, Operation};
 use nativelink_proto::google::rpc::Status;
 use nativelink_util::action_messages::{
     ActionResult, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
-    ClientOperationId, ExecutionMetadata, OperationId,
+    ExecutionMetadata, OperationId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -35,12 +35,14 @@ async fn action_state_any_url_test() -> Result<(), Error> {
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new([1u8; 32], 5),
     });
-    let client_id = ClientOperationId::new(unique_qualifier.clone());
-    let operation_id = OperationId::new(unique_qualifier);
+    let action_digest = unique_qualifier.digest();
+    let client_id = OperationId::default();
+    let operation_id = OperationId::default();
     let action_state = ActionState {
-        id: operation_id.clone(),
+        operation_id: operation_id.clone(),
         // Result is only populated if has_action_result.
         stage: ActionStage::Completed(ActionResult::default()),
+        action_digest,
     };
     let operation: Operation = action_state.as_operation(client_id);
 

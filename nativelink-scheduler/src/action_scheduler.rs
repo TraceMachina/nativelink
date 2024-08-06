@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use futures::Future;
 use nativelink_error::Error;
 use nativelink_metric::RootMetricsComponent;
-use nativelink_util::action_messages::{ActionInfo, ActionState, ClientOperationId};
+use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId};
 
 use crate::platform_property_manager::PlatformPropertyManager;
 
@@ -27,7 +27,7 @@ use crate::platform_property_manager::PlatformPropertyManager;
 /// that are interested in the state of an action.
 pub trait ActionListener: Sync + Send + Unpin {
     /// Returns the client operation id.
-    fn client_operation_id(&self) -> &ClientOperationId;
+    fn client_operation_id(&self) -> &OperationId;
 
     /// Waits for the action state to change.
     fn changed(
@@ -48,13 +48,13 @@ pub trait ActionScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
     /// Adds an action to the scheduler for remote execution.
     async fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: ActionInfo,
     ) -> Result<Pin<Box<dyn ActionListener>>, Error>;
 
     /// Find an existing action by its name.
     async fn find_by_client_operation_id(
         &self,
-        client_operation_id: &ClientOperationId,
+        client_operation_id: &OperationId,
     ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error>;
 }

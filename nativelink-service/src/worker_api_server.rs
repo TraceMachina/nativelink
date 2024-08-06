@@ -199,10 +199,7 @@ impl WorkerApiServer {
         execute_result: ExecuteResult,
     ) -> Result<Response<()>, Error> {
         let worker_id: WorkerId = execute_result.worker_id.try_into()?;
-        let operation_id =
-            OperationId::try_from(execute_result.operation_id.as_str()).err_tip(|| {
-                "Failed to convert operation_id in WorkerApiServer::inner_execution_response"
-            })?;
+        let operation_id = OperationId::from(execute_result.operation_id);
 
         match execute_result
             .result

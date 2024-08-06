@@ -23,7 +23,7 @@ use nativelink_error::Error;
 use nativelink_metric::MetricsComponent;
 
 use crate::action_messages::{
-    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ClientOperationId, OperationId, WorkerId,
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, OperationId, WorkerId,
 };
 use crate::common::DigestInfo;
 
@@ -69,7 +69,7 @@ pub struct OperationFilter {
     pub stages: OperationStageFlags,
 
     /// The client operation id.
-    pub client_operation_id: Option<ClientOperationId>,
+    pub client_operation_id: Option<OperationId>,
 
     /// The operation id.
     pub operation_id: Option<OperationId>,
@@ -101,7 +101,7 @@ pub trait ClientStateManager: Sync + Send + MetricsComponent {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
         &self,
-        client_operation_id: ClientOperationId,
+        client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error>;
 
