@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -27,7 +26,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, Exe
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
-use nativelink_scheduler::action_scheduler::{ActionListener, ActionScheduler};
+use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -37,6 +36,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
@@ -131,7 +131,7 @@ async fn setup_action(
     action_digest: DigestInfo,
     platform_properties: PlatformProperties,
     insert_timestamp: SystemTime,
-) -> Result<Pin<Box<dyn ActionListener>>, Error> {
+) -> Result<Box<dyn ActionStateResult>, Error> {
     let mut action_info = make_base_action_info(insert_timestamp, action_digest);
     action_info.platform_properties = platform_properties;
     let client_id = OperationId::default();
@@ -221,14 +221,19 @@ async fn find_executing_action() -> Result<(), Error> {
     .await
     .unwrap();
 
-    let client_operation_id = action_listener.client_operation_id().clone();
+    let client_operation_id = action_listener
+        .as_state()
+        .await
+        .unwrap()
+        .operation_id
+        .clone();
     // Drop our receiver and look up a new one.
     drop(action_listener);
     let mut action_listener = scheduler
         .find_by_client_operation_id(&client_operation_id)
         .await
-        .expect("Action not found")
-        .unwrap();
+        .unwrap()
+        .expect("Action not found");
 
     {
         // Worker should have been sent an execute command.
@@ -636,15 +641,21 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     )
     .await?;
 
-    {
+    let (operation_id1, operation_id2) = {
         // Clients should get notification saying it's been queued.
         let action_state1 = client1_action_listener.changed().await.unwrap();
         let action_state2 = client2_action_listener.changed().await.unwrap();
+        let operation_id1 = action_state1.operation_id.clone();
+        let operation_id2 = action_state2.operation_id.clone();
         // Name is random so we set force it to be the same.
-        expected_action_state.operation_id = action_state1.operation_id.clone();
+        expected_action_state.operation_id = operation_id1.clone();
         assert_eq!(action_state1.as_ref(), &expected_action_state);
+        expected_action_state.operation_id = operation_id2.clone();
         assert_eq!(action_state2.as_ref(), &expected_action_state);
-    }
+        // Both clients should have unique operation ID.
+        assert_ne!(action_state2.operation_id, action_state1.operation_id);
+        (operation_id1, operation_id2)
+    };
 
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
@@ -673,10 +684,12 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     {
         // Both client1 and client2 should be receiving the same updates.
         // Most importantly the `name` (which is random) will be the same.
+        expected_action_state.operation_id = operation_id1.clone();
         assert_eq!(
             client1_action_listener.changed().await.unwrap().as_ref(),
             &expected_action_state
         );
+        expected_action_state.operation_id = operation_id2.clone();
         assert_eq!(
             client2_action_listener.changed().await.unwrap().as_ref(),
             &expected_action_state
@@ -693,10 +706,9 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
             insert_timestamp3,
         )
         .await?;
-        assert_eq!(
-            client3_action_listener.changed().await.unwrap().as_ref(),
-            &expected_action_state
-        );
+        let action_state = client3_action_listener.changed().await.unwrap().clone();
+        expected_action_state.operation_id = action_state.operation_id.clone();
+        assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
     Ok(())
@@ -782,7 +794,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         queued_timestamp: Some(insert_timestamp.into()),
     };
 
-    let operation_id = {
+    {
         // Worker1 should now see execution request.
         let msg_for_worker = rx_from_worker1.recv().await.unwrap();
         let operation_id = if let update_for_worker::Update::StartAction(start_execute) =
@@ -801,8 +813,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
                 )),
             }
         );
-        OperationId::from(operation_id)
-    };
+    }
 
     {
         // Client should get notification saying it's being executed.
@@ -810,7 +821,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
-                operation_id: operation_id.clone(),
+                operation_id: action_state.operation_id.clone(),
                 stage: ActionStage::Executing,
                 action_digest: action_state.action_digest,
             }
@@ -843,7 +854,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
         assert_eq!(
             action_state.as_ref(),
             &ActionState {
-                operation_id: operation_id.clone(),
+                operation_id: action_state.operation_id.clone(),
                 stage: ActionStage::Executing,
                 action_digest: action_state.action_digest,
             }
@@ -984,7 +995,12 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
     )
     .await?;
 
-    let client_id = action_listener.client_operation_id().clone();
+    let client_id = action_listener
+        .as_state()
+        .await
+        .unwrap()
+        .operation_id
+        .clone();
 
     // Drop our receiver and don't reconnect until completed.
     drop(action_listener);
@@ -1185,11 +1201,13 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         PlatformProperties::default(),
         insert_timestamp,
     )
-    .await?;
-    let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
+    .await
+    .unwrap();
+    let mut rx_from_worker = setup_new_worker(&scheduler, worker_id, PlatformProperties::default())
+        .await
+        .unwrap();
 
-    {
+    let operation_id = {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
@@ -1205,17 +1223,26 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         };
         let msg_for_worker = rx_from_worker.recv().await.unwrap();
         // Operation ID is random so we ignore it.
-        assert!(update_eq(expected_msg_for_worker, msg_for_worker, true));
-    }
+        assert!(update_eq(
+            expected_msg_for_worker,
+            msg_for_worker.clone(),
+            true
+        ));
+        match msg_for_worker.update.unwrap() {
+            update_for_worker::Update::StartAction(start_execute) => {
+                OperationId::from(start_execute.operation_id)
+            }
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+    };
 
-    let operation_id = {
+    {
         // Client should get notification saying it's being executed.
         let action_state = action_listener.changed().await.unwrap();
         // We now know the name of the action so populate it.
         expected_action_state.operation_id = action_state.operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
-        action_state.operation_id.clone()
-    };
+    }
 
     let action_result = ActionResult {
         output_files: Vec::default(),
@@ -1248,7 +1275,8 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
             &operation_id,
             Ok(ActionStage::Completed(action_result.clone())),
         )
-        .await?;
+        .await
+        .unwrap();
 
     {
         // Action should now be executing.
@@ -1270,7 +1298,8 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
             PlatformProperties::default(),
             insert_timestamp,
         )
-        .await?;
+        .await
+        .unwrap();
         // We didn't disconnect our worker, so it will have scheduled it to the worker.
         expected_action_state.stage = ActionStage::Executing;
         let action_state = action_listener.changed().await.unwrap();
@@ -1299,8 +1328,9 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     let mut properties = HashMap::new();
     properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
     let platform_properties = PlatformProperties { properties };
-    let mut rx_from_worker =
-        setup_new_worker(&scheduler, worker_id, platform_properties.clone()).await?;
+    let mut rx_from_worker = setup_new_worker(&scheduler, worker_id, platform_properties.clone())
+        .await
+        .unwrap();
     let insert_timestamp1 = make_system_time(1);
     let mut client1_action_listener = setup_action(
         &scheduler,
@@ -1308,7 +1338,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         platform_properties.clone(),
         insert_timestamp1,
     )
-    .await?;
+    .await
+    .unwrap();
     let insert_timestamp2 = make_system_time(1);
     let mut client2_action_listener = setup_action(
         &scheduler,
@@ -1316,21 +1347,23 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
         platform_properties,
         insert_timestamp2,
     )
-    .await?;
+    .await
+    .unwrap();
 
-    match rx_from_worker.recv().await.unwrap().update {
-        Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+    let operation_id1 = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => {
+            OperationId::from(start_execute.operation_id)
+        }
         v => panic!("Expected StartAction, got : {v:?}"),
-    }
-    let (operation_id1, operation_id2) = {
+    };
+    {
         let state_1 = client1_action_listener.changed().await.unwrap();
         let state_2 = client2_action_listener.changed().await.unwrap();
         // First client should be in an Executing state.
         assert_eq!(state_1.stage, ActionStage::Executing);
         // Second client should be in a queued state.
         assert_eq!(state_2.stage, ActionStage::Queued);
-        (state_1.operation_id.clone(), state_2.operation_id.clone())
-    };
+    }
 
     let action_result = ActionResult {
         output_files: Vec::default(),
@@ -1364,7 +1397,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
             &operation_id1,
             Ok(ActionStage::Completed(action_result.clone())),
         )
-        .await?;
+        .await
+        .unwrap();
 
     {
         // First action should now be completed.
@@ -1381,18 +1415,21 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     // At this stage it should have added back any platform_properties and the next
     // task should be executing on the same worker.
 
-    {
+    let operation_id2 = {
         // Our second client should now executing.
-        match rx_from_worker.recv().await.unwrap().update {
-            Some(update_for_worker::Update::StartAction(_)) => { /* Success */ }
+        let operation_id = match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(start_execute)) => {
+                OperationId::from(start_execute.operation_id)
+            }
             v => panic!("Expected StartAction, got : {v:?}"),
-        }
+        };
         // Other tests check full data. We only care if client thinks we are Executing.
         assert_eq!(
             client2_action_listener.changed().await.unwrap().stage,
             ActionStage::Executing
         );
-    }
+        operation_id
+    };
 
     // Tell scheduler our second task is completed.
     scheduler
@@ -1401,7 +1438,8 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
             &operation_id2,
             Ok(ActionStage::Completed(action_result.clone())),
         )
-        .await?;
+        .await
+        .unwrap();
 
     {
         // Our second client should be notified it completed.
@@ -1735,7 +1773,12 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
     .await
     .unwrap();
 
-    let client_id = action_listener.client_operation_id().clone();
+    let client_id = action_listener
+        .as_state()
+        .await
+        .unwrap()
+        .operation_id
+        .clone();
 
     // Simulate client disconnecting.
     drop(action_listener);

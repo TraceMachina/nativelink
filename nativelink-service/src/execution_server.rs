@@ -28,7 +28,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, Command, ExecuteRequest, WaitExecutionRequest,
 };
 use nativelink_proto::google::longrunning::Operation;
-use nativelink_scheduler::action_scheduler::{ActionListener, ActionScheduler};
+use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
@@ -36,6 +36,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
+use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::store_trait::Store;
 use tonic::{Request, Response, Status};
@@ -206,7 +207,7 @@ impl ExecutionServer {
 
     fn to_execute_stream(
         nl_client_operation_id: NativelinkOperationId,
-        action_listener: Pin<Box<dyn ActionListener>>,
+        action_listener: Box<dyn ActionStateResult>,
     ) -> Response<ExecuteStream> {
         let client_operation_id_string = nl_client_operation_id.into_string();
         let receiver_stream = Box::pin(unfold(
@@ -289,7 +290,12 @@ impl ExecutionServer {
         Ok(Self::to_execute_stream(
             NativelinkOperationId {
                 instance_name,
-                client_operation_id: action_listener.client_operation_id().clone(),
+                client_operation_id: action_listener
+                    .as_state()
+                    .await
+                    .err_tip(|| "In ExecutionServer::inner_execute")?
+                    .operation_id
+                    .clone(),
             },
             action_listener,
         ))
