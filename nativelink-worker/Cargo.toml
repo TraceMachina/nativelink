@@ -10,7 +10,7 @@ nativelink-config = { path = "../nativelink-config" }
 nativelink-util = { path = "../nativelink-util" }
 nativelink-store = { path = "../nativelink-store" }
 nativelink-metric = { path = "../nativelink-metric" }
-async-lock = "3.4.0"
+async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 bytes = { version = "1.6.1", default-features = false }
 filetime = "0.2.23"
 formatx = "0.2.2"
@@ -22,11 +22,11 @@ scopeguard = { version = "1.2.0", default-features = false }
 serde = { version = "1.0.204", default-features = false }
 serde_json5 = "0.1.0"
 shlex = { version = "1.3.0", default-features = false }
-tokio = { version = "1.38.0", features = ["process"] }
+tokio = { version = "1.38.0", features = ["process", "fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
 tokio-stream = { version = "0.1.15", default-features = false, features = ["fs"] }
-tonic = { version = "0.12.0", features = ["gzip", "tls"], default-features = false }
+tonic = { version = "0.12.0", features = ["gzip", "tls", "transport"], default-features = false }
 tracing = { version = "0.1.40", default-features = false }
-uuid = { version = "1.10.0", default-features = false, features = ["v4"] }
+uuid = { version = "1.10.0", default-features = false, features = ["v4", "serde"] }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

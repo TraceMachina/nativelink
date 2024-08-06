@@ -19,19 +19,19 @@ hyper = { version = "1.4.1" }
 serde_json5 = "0.1.0"
 parking_lot = "0.12.3"
 prost = { version = "0.13.1", default-features = false }
-tokio = "1.38.0"
-tokio-stream = { version = "0.1.15", default-features = false }
-tonic = { version = "0.12.0", default-features = false }
+tokio = { version = "1.38.0", features = ["fs", "rt-multi-thread", "signal", "io-util"], default-features = false }
+tokio-stream = { version = "0.1.15", features = ["fs"], default-features = false }
+tonic = { version = "0.12.0", features = ["transport", "tls"], default-features = false }
 tower = { version = "0.4.13", default-features = false }
 tracing = { version = "0.1.40", default-features = false }
-uuid = { version = "1.10.0", default-features = false }
+uuid = { version = "1.8.0", default-features = false, features = ["v4", "serde"] }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 nativelink-metric = { path = "../nativelink-metric" }
 
 async-trait = "0.1.80"
-async-lock = { version = "3.3.0", default-features = false }
+async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 hyper = "1.4.1"
 hyper-util = "0.1.6"
 maplit = "1.0.2"
