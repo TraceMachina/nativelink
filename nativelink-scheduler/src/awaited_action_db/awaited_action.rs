@@ -176,6 +176,12 @@ impl TryFrom<&[u8]> for AwaitedAction {
 #[repr(transparent)]
 pub struct AwaitedActionSortKey(u64);
 
+impl AwaitedActionSortKey {
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
 impl MetricsComponent for AwaitedActionSortKey {
     fn publish(
         &self,

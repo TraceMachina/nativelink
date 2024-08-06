@@ -12,34 +12,121 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::fmt;
 use std::cmp;
+use std::fmt::{write, Display};
 use std::ops::Bound;
 use std::sync::Arc;
 
 pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
 use futures::{Future, Stream};
-use nativelink_error::Error;
+use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
-use nativelink_util::action_messages::{ActionInfo, ClientOperationId, OperationId};
+use nativelink_util::action_messages::{ActionInfo, ActionStage, ClientOperationId, OperationId};
+use serde::{Deserialize, Serialize};
 
 mod awaited_action;
 
 /// A simple enum to represent the state of an AwaitedAction.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum SortedAwaitedActionState {
-    CacheCheck,
-    Queued,
-    Executing,
-    Completed,
+    CacheCheck = 0,
+    Queued = 1,
+    Executing = 2,
+    Completed = 3,
+}
+
+impl SortedAwaitedActionState {
+    pub fn state_id(&self) -> u64 {
+        match self {
+            Self::CacheCheck => 0,
+            Self::Queued => 1,
+            Self::Executing => 2,
+            Self::Completed => 3,
+        }
+    }
+}
+
+impl TryFrom<&ActionStage> for SortedAwaitedActionState {
+    type Error = Error;
+    fn try_from(value: &ActionStage) -> Result<Self, Error> {
+        match value {
+            ActionStage::CacheCheck => Ok(Self::CacheCheck),
+            ActionStage::Executing => Ok(Self::Executing),
+            ActionStage::Completed(_) => Ok(Self::Completed),
+            ActionStage::Queued => Ok(Self::Queued),
+            _ => Err(make_input_err!("Invalid State")),
+        }
+    }
+}
+
+impl TryFrom<ActionStage> for SortedAwaitedActionState {
+    type Error = Error;
+    fn try_from(value: ActionStage) -> Result<Self, Error> {
+        Self::try_from(&value)
+    }
+}
+
+impl fmt::Display for SortedAwaitedActionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SortedAwaitedActionState::CacheCheck => write!(f, "CacheCheck"),
+            SortedAwaitedActionState::Queued => write!(f, "Queued"),
+            SortedAwaitedActionState::Executing => write!(f, "Executing"),
+            SortedAwaitedActionState::Completed => write!(f, "Completed"),
+        }
+    }
 }
 
 /// A struct pointing to an AwaitedAction that can be sorted.
-#[derive(Debug, Clone, MetricsComponent)]
+#[derive(Debug, Clone, Serialize, Deserialize, MetricsComponent)]
 pub struct SortedAwaitedAction {
     #[metric(help = "The sort key of the AwaitedAction")]
     pub sort_key: AwaitedActionSortKey,
     #[metric(help = "The operation id")]
     pub operation_id: OperationId,
+}
+
+impl Display for SortedAwaitedAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write(
+            f,
+            format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id),
+        )
+    }
+}
+
+impl From<&AwaitedAction> for SortedAwaitedAction {
+    fn from(value: &AwaitedAction) -> Self {
+        Self {
+            operation_id: value.operation_id().clone(),
+            sort_key: value.sort_key(),
+        }
+    }
+}
+
+impl From<AwaitedAction> for SortedAwaitedAction {
+    fn from(value: AwaitedAction) -> Self {
+        Self::from(&value)
+    }
+}
+
+impl TryInto<Vec<u8>> for SortedAwaitedAction {
+    type Error = Error;
+    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+        serde_json::to_vec(&self)
+            .map_err(|e| make_input_err!("{}", e.to_string()))
+            .err_tip(|| "In SortedAwaitedAction::TryInto::<Vec<u8>>")
+    }
+}
+
+impl TryFrom<&[u8]> for SortedAwaitedAction {
+    type Error = Error;
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        serde_json::from_slice(value)
+            .map_err(|e| make_input_err!("{}", e.to_string()))
+            .err_tip(|| "In AwaitedAction::TryFrom::&[u8]")
+    }
 }
 
 impl PartialEq for SortedAwaitedAction {
