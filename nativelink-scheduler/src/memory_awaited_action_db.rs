@@ -37,7 +37,8 @@ use tokio::sync::{mpsc, watch};
 use tracing::{event, Level};
 
 use crate::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, NoEarlyReturn, SortedAwaitedAction, SortedAwaitedActionState, SortedAwaitedActions
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, NoEarlyReturn, SortedAwaitedAction,
+    SortedAwaitedActionState, SortedAwaitedActions,
 };
 
 /// Number of events to process per cycle.
@@ -262,7 +263,6 @@ impl<T: AwaitedActionSubscriber> ActionStateResult for ClientActionStateResult<T
         self.inner.as_action_info().await
     }
 }
-
 
 /// The database for storing the state of all actions.
 #[derive(MetricsComponent)]

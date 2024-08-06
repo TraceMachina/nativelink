@@ -37,6 +37,7 @@ fred = { version = "9.0.3", features = [
   "custom-reconnect-errors",
   "subscriber-client",
 ] }
+bytes = { version = "1.7.1", features = ["serde"] }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

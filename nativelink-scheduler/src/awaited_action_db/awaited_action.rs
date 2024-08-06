@@ -166,6 +166,14 @@ impl TryFrom<&[u8]> for AwaitedAction {
     }
 }
 
+impl TryFrom<bytes::Bytes> for AwaitedAction {
+    type Error = Error;
+    fn try_from(value: bytes::Bytes) -> Result<Self, Self::Error> {
+        serde_json::from_slice(&value)
+            .map_err(|e| make_input_err!("{}", e.to_string()))
+            .err_tip(|| "In AwaitedAction::TryFrom::&[u8]")
+    }
+}
 /// The key used to sort the awaited actions.
 ///
 /// The rules for sorting are as follows:

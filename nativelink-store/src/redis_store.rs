@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use fred::clients::{RedisPool, SubscriberClient};
+use fred::clients::{RedisClient, RedisPool, SubscriberClient};
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface, TransactionInterface};
 use fred::types::{Builder, ConnectionConfig, PerformanceConfig, ReconnectPolicy, RedisConfig};
 use nativelink_config::stores::RedisMode;
@@ -135,6 +135,9 @@ impl RedisStore {
     //     // Allows for multiple subscription instances.
     //     self.client_pool.next_connected().clone()
     // }
+    pub fn get_client(&self) -> RedisClient {
+        self.client_pool.next_connected().clone()
+    }
 
     pub fn get_subscriber_client(&self) -> SubscriberClient {
         // Don't reuse the store subscription connection outside of the store.

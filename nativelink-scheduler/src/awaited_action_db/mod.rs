@@ -32,21 +32,10 @@ mod awaited_action;
 /// A simple enum to represent the state of an AwaitedAction.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum SortedAwaitedActionState {
-    CacheCheck = 0,
-    Queued = 1,
-    Executing = 2,
-    Completed = 3,
-}
-
-impl SortedAwaitedActionState {
-    pub fn state_id(&self) -> u64 {
-        match self {
-            Self::CacheCheck => 0,
-            Self::Queued => 1,
-            Self::Executing => 2,
-            Self::Completed => 3,
-        }
-    }
+    CacheCheck,
+    Queued,
+    Executing,
+    Completed,
 }
 
 impl TryFrom<&ActionStage> for SortedAwaitedActionState {
@@ -68,6 +57,7 @@ impl TryFrom<ActionStage> for SortedAwaitedActionState {
         Self::try_from(&value)
     }
 }
+
 impl fmt::Display for SortedAwaitedActionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
