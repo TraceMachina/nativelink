@@ -29,7 +29,9 @@ use nativelink_util::action_messages::{
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::operation_state_manager::ActionStateResult;
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
+};
 use nativelink_util::store_trait::Store;
 use parking_lot::{Mutex, MutexGuard};
 use scopeguard::guard;
@@ -147,23 +149,11 @@ impl CacheLookupScheduler {
             inflight_cache_checks: Default::default(),
         })
     }
-}
 
-#[async_trait]
-impl ActionScheduler for CacheLookupScheduler {
-    async fn get_platform_property_manager(
-        &self,
-        instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error> {
-        self.action_scheduler
-            .get_platform_property_manager(instance_name)
-            .await
-    }
-
-    async fn add_action(
+    async fn inner_add_action(
         &self,
         client_operation_id: OperationId,
-        action_info: ActionInfo,
+        action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         let unique_key = match &action_info.unique_qualifier {
             ActionUniqueQualifier::Cachable(unique_key) => unique_key.clone(),
@@ -320,13 +310,45 @@ impl ActionScheduler for CacheLookupScheduler {
             .err_tip(|| "In CacheLookupScheduler::add_action")
     }
 
-    async fn find_by_client_operation_id(
+    async fn inner_filter_operations(
         &self,
-        client_operation_id: &OperationId,
-    ) -> Result<Option<Box<dyn ActionStateResult>>, Error> {
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
         self.action_scheduler
-            .find_by_client_operation_id(client_operation_id)
+            .filter_operations(filter)
             .await
+            .err_tip(|| "IOn CacheLookupScheduler::filter_operations")
+    }
+}
+
+#[async_trait]
+impl ActionScheduler for CacheLookupScheduler {
+    async fn get_platform_property_manager(
+        &self,
+        instance_name: &str,
+    ) -> Result<Arc<PlatformPropertyManager>, Error> {
+        self.action_scheduler
+            .get_platform_property_manager(instance_name)
+            .await
+    }
+}
+
+#[async_trait]
+impl ClientStateManager for CacheLookupScheduler {
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
+        self.inner_add_action(client_operation_id, action_info)
+            .await
+    }
+
+    async fn filter_operations(
+        &self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        self.inner_filter_operations(filter).await
     }
 }
 

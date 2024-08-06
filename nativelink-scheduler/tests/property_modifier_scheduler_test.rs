@@ -21,7 +21,7 @@ mod utils {
     pub(crate) mod scheduler_utils;
 }
 
-use futures::join;
+use futures::{join, StreamExt};
 use nativelink_config::schedulers::{PlatformPropertyAddition, PropertyModification, PropertyType};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
@@ -30,6 +30,7 @@ use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
 use nativelink_util::action_messages::{ActionStage, ActionState, OperationId};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::operation_state_manager::{ClientStateManager, OperationFilter};
 use nativelink_util::platform_properties::PlatformPropertyValue;
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
@@ -88,7 +89,7 @@ async fn add_action_adds_property() -> Result<(), Error> {
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
-                Arc::new(action_info),
+                action_info,
                 forward_watch_channel_rx
             )))),
     );
@@ -110,11 +111,14 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
             name: name.clone(),
             value: replaced_value.clone(),
         })]);
-    let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest())
+        .as_ref()
+        .clone();
     action_info
         .platform_properties
         .properties
         .insert(name.clone(), PlatformPropertyValue::Unknown(original_value));
+    let action_info = Arc::new(action_info);
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
             operation_id: OperationId::default(),
@@ -137,7 +141,7 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
-                Arc::new(action_info),
+                action_info,
                 forward_watch_channel_rx
             )))),
     );
@@ -183,7 +187,7 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
-                Arc::new(action_info),
+                action_info,
                 forward_watch_channel_rx
             )))),
     );
@@ -229,7 +233,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
-                Arc::new(action_info),
+                action_info,
                 forward_watch_channel_rx
             )))),
     );
@@ -246,11 +250,14 @@ async fn add_action_property_remove() -> Result<(), Error> {
     let name = "name".to_string();
     let value = "value".to_string();
     let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
-    let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest())
+        .as_ref()
+        .clone();
     action_info
         .platform_properties
         .properties
         .insert(name, PlatformPropertyValue::Unknown(value));
+    let action_info = Arc::new(action_info);
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
             operation_id: OperationId::default(),
@@ -270,7 +277,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
-                Arc::new(action_info),
+                action_info,
                 forward_watch_channel_rx
             )))),
     );
@@ -285,17 +292,26 @@ async fn add_action_property_remove() -> Result<(), Error> {
 #[nativelink_test]
 async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
     let context = make_modifier_scheduler(vec![]);
-    let operation_id = OperationId::default();
-    let (actual_result, actual_operation_id) = join!(
+    let client_operation_id = OperationId::default();
+    let (actual_result, actual_filter) = join!(
         context
             .modifier_scheduler
-            .find_by_client_operation_id(&operation_id),
+            .filter_operations(OperationFilter {
+                client_operation_id: Some(client_operation_id.clone()),
+                ..Default::default()
+            }),
         context
             .mock_scheduler
-            .expect_find_by_client_operation_id(Ok(None)),
+            .expect_filter_operations(Ok(Box::pin(futures::stream::empty()))),
     );
-    assert_eq!(true, actual_result.unwrap().is_none());
-    assert_eq!(operation_id, actual_operation_id);
+    assert_eq!(true, actual_result.unwrap().next().await.is_none());
+    assert_eq!(
+        OperationFilter {
+            client_operation_id: Some(client_operation_id),
+            ..Default::default()
+        },
+        actual_filter
+    );
     Ok(())
 }
 

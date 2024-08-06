@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::stream::unfold;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName};
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
@@ -36,7 +36,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
-use nativelink_util::operation_state_manager::ActionStateResult;
+use nativelink_util::operation_state_manager::{ActionStateResult, OperationFilter};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::store_trait::Store;
 use tonic::{Request, Response, Status};
@@ -283,7 +283,7 @@ impl ExecutionServer {
 
         let action_listener = instance_info
             .scheduler
-            .add_action(OperationId::default(), action_info)
+            .add_action(OperationId::default(), Arc::new(action_info))
             .await
             .err_tip(|| "Failed to schedule task")?;
 
@@ -316,9 +316,14 @@ impl ExecutionServer {
         };
         let Some(rx) = instance_info
             .scheduler
-            .find_by_client_operation_id(&client_operation_id)
+            .filter_operations(OperationFilter {
+                client_operation_id: Some(client_operation_id.clone()),
+                ..Default::default()
+            })
             .await
             .err_tip(|| "Error running find_existing_action in ExecutionServer::wait_execution")?
+            .next()
+            .await
         else {
             return Err(Status::not_found("Failed to find existing task"));
         };

@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream::unfold;
-use futures::TryFutureExt;
-use nativelink_error::{make_err, Code, Error, ResultExt};
+use futures::{StreamExt, TryFutureExt};
+use nativelink_error::{error_if, make_err, Code, Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_client::ExecutionClient;
@@ -32,7 +32,9 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionState, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::connection_manager::ConnectionManager;
-use nativelink_util::operation_state_manager::ActionStateResult;
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
+};
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
@@ -217,11 +219,8 @@ impl GrpcScheduler {
             "Upstream scheduler didn't accept action."
         ))
     }
-}
 
-#[async_trait]
-impl ActionScheduler for GrpcScheduler {
-    async fn get_platform_property_manager(
+    async fn inner_get_platform_property_manager(
         &self,
         instance_name: &str,
     ) -> Result<Arc<PlatformPropertyManager>, Error> {
@@ -268,10 +267,10 @@ impl ActionScheduler for GrpcScheduler {
         .await
     }
 
-    async fn add_action(
+    async fn inner_add_action(
         &self,
         _client_operation_id: OperationId,
-        action_info: ActionInfo,
+        action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {
             None
@@ -314,10 +313,17 @@ impl ActionScheduler for GrpcScheduler {
         Self::stream_state(result_stream).await
     }
 
-    async fn find_by_client_operation_id(
+    async fn inner_filter_operations(
         &self,
-        client_operation_id: &OperationId,
-    ) -> Result<Option<Box<dyn ActionStateResult>>, Error> {
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        error_if!(filter != OperationFilter {
+            client_operation_id: filter.client_operation_id.clone(),
+            ..Default::default()
+        }, "Unsupported filter in GrpcScheduler::filter_operations. Only client_operation_id is supported - {filter:?}");
+        let client_operation_id = filter.client_operation_id.ok_or_else(|| {
+            make_err!(Code::InvalidArgument, "`client_operation_id` is the only supported filter in GrpcScheduler::filter_operations")
+        })?;
         let request = WaitExecutionRequest {
             name: client_operation_id.to_string(),
         };
@@ -336,16 +342,50 @@ impl ActionScheduler for GrpcScheduler {
             .and_then(|result_stream| Self::stream_state(result_stream.into_inner()))
             .await;
         match result_stream {
-            Ok(result_stream) => Ok(Some(result_stream)),
+            Ok(result_stream) => Ok(unfold(
+                Some(result_stream),
+                |maybe_result_stream| async move { maybe_result_stream.map(|v| (v, None)) },
+            )
+            .boxed()),
             Err(err) => {
                 event!(
                     Level::WARN,
                     ?err,
                     "Error looking up action with upstream scheduler"
                 );
-                Ok(None)
+                Ok(futures::stream::empty().boxed())
             }
         }
+    }
+}
+
+#[async_trait]
+impl ClientStateManager for GrpcScheduler {
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
+        self.inner_add_action(client_operation_id, action_info)
+            .await
+    }
+
+    async fn filter_operations<'a>(
+        &'a self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream<'a>, Error> {
+        self.inner_filter_operations(filter).await
+    }
+}
+
+#[async_trait]
+impl ActionScheduler for GrpcScheduler {
+    async fn get_platform_property_manager(
+        &self,
+        instance_name: &str,
+    ) -> Result<Arc<PlatformPropertyManager>, Error> {
+        self.inner_get_platform_property_manager(instance_name)
+            .await
     }
 }
 
