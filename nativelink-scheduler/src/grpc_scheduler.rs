@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,6 +32,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionState, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::connection_manager::ConnectionManager;
+use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
@@ -44,9 +44,43 @@ use tokio::time::sleep;
 use tonic::{Request, Streaming};
 use tracing::{event, Level};
 
-use crate::action_scheduler::{ActionListener, ActionScheduler};
-use crate::default_action_listener::DefaultActionListener;
+use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
+
+struct GrpcActionStateResult {
+    client_operation_id: OperationId,
+    rx: watch::Receiver<Arc<ActionState>>,
+}
+
+#[async_trait]
+impl ActionStateResult for GrpcActionStateResult {
+    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+        let mut action_state = self.rx.borrow().clone();
+        Arc::make_mut(&mut action_state).operation_id = self.client_operation_id.clone();
+        Ok(action_state)
+    }
+
+    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+        self.rx.changed().await.map_err(|_| {
+            make_err!(
+                Code::Internal,
+                "Channel closed in GrpcActionStateResult::changed"
+            )
+        })?;
+        let mut action_state = self.rx.borrow().clone();
+        Arc::make_mut(&mut action_state).operation_id = self.client_operation_id.clone();
+        Ok(action_state)
+    }
+
+    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+        // TODO(allada) We should probably remove as_action_info()
+        // or implement it properly.
+        return Err(make_err!(
+            Code::Unimplemented,
+            "as_action_info not implemented for GrpcActionStateResult::as_action_info"
+        ));
+    }
+}
 
 #[derive(MetricsComponent)]
 pub struct GrpcScheduler {
@@ -117,7 +151,7 @@ impl GrpcScheduler {
 
     async fn stream_state(
         mut result_stream: Streaming<Operation>,
-    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
         if let Some(initial_response) = result_stream
             .message()
             .await
@@ -130,7 +164,8 @@ impl GrpcScheduler {
             let action_state =
                 ActionState::try_from_operation(initial_response, operation_id.clone())
                     .err_tip(|| "In GrpcScheduler::stream_state")?;
-            let (tx, rx) = watch::channel(Arc::new(action_state));
+            let (tx, mut rx) = watch::channel(Arc::new(action_state));
+            rx.mark_changed();
             background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
                     select!(
@@ -171,10 +206,11 @@ impl GrpcScheduler {
                     )
                 }
             });
-            return Ok(Box::pin(DefaultActionListener::new(
+
+            return Ok(Box::new(GrpcActionStateResult {
                 client_operation_id,
                 rx,
-            )));
+            }));
         }
         Err(make_err!(
             Code::Internal,
@@ -236,7 +272,7 @@ impl ActionScheduler for GrpcScheduler {
         &self,
         _client_operation_id: OperationId,
         action_info: ActionInfo,
-    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
         let execution_policy = if action_info.priority == DEFAULT_EXECUTION_PRIORITY {
             None
         } else {
@@ -281,7 +317,7 @@ impl ActionScheduler for GrpcScheduler {
     async fn find_by_client_operation_id(
         &self,
         client_operation_id: &OperationId,
-    ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
+    ) -> Result<Option<Box<dyn ActionStateResult>>, Error> {
         let request = WaitExecutionRequest {
             name: client_operation_id.to_string(),
         };
