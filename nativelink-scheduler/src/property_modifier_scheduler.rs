@@ -21,7 +21,9 @@ use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
-use nativelink_util::operation_state_manager::ActionStateResult;
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
+};
 use parking_lot::Mutex;
 
 use crate::action_scheduler::ActionScheduler;
@@ -47,11 +49,8 @@ impl PropertyModifierScheduler {
             property_managers: Mutex::new(HashMap::new()),
         }
     }
-}
 
-#[async_trait]
-impl ActionScheduler for PropertyModifierScheduler {
-    async fn get_platform_property_manager(
+    async fn inner_get_platform_property_manager(
         &self,
         instance_name: &str,
     ) -> Result<Arc<PlatformPropertyManager>, Error> {
@@ -91,19 +90,20 @@ impl ActionScheduler for PropertyModifierScheduler {
         Ok(property_manager)
     }
 
-    async fn add_action(
+    async fn inner_add_action(
         &self,
         client_operation_id: OperationId,
-        mut action_info: ActionInfo,
+        mut action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         let platform_property_manager = self
-            .get_platform_property_manager(action_info.unique_qualifier.instance_name())
+            .inner_get_platform_property_manager(action_info.unique_qualifier.instance_name())
             .await
             .err_tip(|| "In PropertyModifierScheduler::add_action")?;
+        let action_info_mut = Arc::make_mut(&mut action_info);
         for modification in &self.modifications {
             match modification {
                 PropertyModification::add(addition) => {
-                    action_info.platform_properties.properties.insert(
+                    action_info_mut.platform_properties.properties.insert(
                         addition.name.clone(),
                         platform_property_manager
                             .make_prop_value(&addition.name, &addition.value)
@@ -111,7 +111,7 @@ impl ActionScheduler for PropertyModifierScheduler {
                     )
                 }
                 PropertyModification::remove(name) => {
-                    action_info.platform_properties.properties.remove(name)
+                    action_info_mut.platform_properties.properties.remove(name)
                 }
             };
         }
@@ -120,13 +120,41 @@ impl ActionScheduler for PropertyModifierScheduler {
             .await
     }
 
-    async fn find_by_client_operation_id(
+    async fn inner_filter_operations(
         &self,
-        client_operation_id: &OperationId,
-    ) -> Result<Option<Box<dyn ActionStateResult>>, Error> {
-        self.scheduler
-            .find_by_client_operation_id(client_operation_id)
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        self.scheduler.filter_operations(filter).await
+    }
+}
+
+#[async_trait]
+impl ActionScheduler for PropertyModifierScheduler {
+    async fn get_platform_property_manager(
+        &self,
+        instance_name: &str,
+    ) -> Result<Arc<PlatformPropertyManager>, Error> {
+        self.inner_get_platform_property_manager(instance_name)
             .await
+    }
+}
+
+#[async_trait]
+impl ClientStateManager for PropertyModifierScheduler {
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
+        self.inner_add_action(client_operation_id, action_info)
+            .await
+    }
+
+    async fn filter_operations<'a>(
+        &'a self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream<'a>, Error> {
+        self.inner_filter_operations(filter).await
     }
 }
 

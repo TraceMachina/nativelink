@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures::poll;
 use futures::task::Poll;
+use futures::{poll, StreamExt};
 use mock_instant::MockClock;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
@@ -26,7 +26,6 @@ use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, Exe
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
-use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -36,7 +35,9 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
-use nativelink_util::operation_state_manager::ActionStateResult;
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ClientStateManager, OperationFilter,
+};
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
@@ -133,7 +134,7 @@ async fn setup_action(
     insert_timestamp: SystemTime,
 ) -> Result<Box<dyn ActionStateResult>, Error> {
     let mut action_info = make_base_action_info(insert_timestamp, action_digest);
-    action_info.platform_properties = platform_properties;
+    Arc::make_mut(&mut action_info).platform_properties = platform_properties;
     let client_id = OperationId::default();
     let result = scheduler.add_action(client_id, action_info).await;
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
@@ -230,9 +231,14 @@ async fn find_executing_action() -> Result<(), Error> {
     // Drop our receiver and look up a new one.
     drop(action_listener);
     let mut action_listener = scheduler
-        .find_by_client_operation_id(&client_operation_id)
+        .filter_operations(OperationFilter {
+            client_operation_id: Some(client_operation_id.clone()),
+            ..Default::default()
+        })
         .await
         .unwrap()
+        .next()
+        .await
         .expect("Action not found");
 
     {
@@ -1062,9 +1068,14 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
 
     // Now look up a channel after the action has completed.
     let mut action_listener = scheduler
-        .find_by_client_operation_id(&client_id)
+        .filter_operations(OperationFilter {
+            client_operation_id: Some(client_id.clone()),
+            ..Default::default()
+        })
         .await
         .unwrap()
+        .next()
+        .await
         .expect("Action not found");
     {
         // Client should get notification saying it has been completed.
@@ -1784,9 +1795,14 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
     drop(action_listener);
 
     let mut new_action_listener = scheduler
-        .find_by_client_operation_id(&client_id)
+        .filter_operations(OperationFilter {
+            client_operation_id: Some(client_id.clone()),
+            ..Default::default()
+        })
         .await
         .unwrap()
+        .next()
+        .await
         .expect("Action not found");
 
     // We should get one notification saying it's queued.
@@ -1807,12 +1823,18 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
         // Eviction happens when someone touches the internal
         // evicting map. So we constantly ask for some other client
         // to trigger eviction logic.
-        scheduler
-            .find_by_client_operation_id(&OperationId::from_raw_string(
-                "dummy_client_id".to_string(),
-            ))
+        assert!(scheduler
+            .filter_operations(OperationFilter {
+                client_operation_id: Some(OperationId::from_raw_string(
+                    "dummy_client_id".to_string(),
+                )),
+                ..Default::default()
+            })
             .await
-            .unwrap();
+            .unwrap()
+            .next()
+            .await
+            .is_none());
     }
 
     Ok(())

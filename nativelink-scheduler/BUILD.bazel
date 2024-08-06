@@ -82,6 +82,7 @@ rust_test_suite(
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:tokio",
+        "@crates//:tokio-stream",
         "@crates//:uuid",
     ],
 )
