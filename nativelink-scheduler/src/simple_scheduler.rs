@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -36,7 +35,7 @@ use tokio::time::Duration;
 use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
-use crate::action_scheduler::{ActionListener, ActionScheduler};
+use crate::action_scheduler::ActionScheduler;
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -56,12 +55,12 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u32 = 60;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
-struct SimpleSchedulerActionListener {
+struct SimpleSchedulerActionStateResult {
     client_operation_id: OperationId,
     action_state_result: Box<dyn ActionStateResult>,
 }
 
-impl SimpleSchedulerActionListener {
+impl SimpleSchedulerActionStateResult {
     fn new(
         client_operation_id: OperationId,
         action_state_result: Box<dyn ActionStateResult>,
@@ -73,22 +72,33 @@ impl SimpleSchedulerActionListener {
     }
 }
 
-impl ActionListener for SimpleSchedulerActionListener {
-    fn client_operation_id(&self) -> &OperationId {
-        &self.client_operation_id
+#[async_trait]
+impl ActionStateResult for SimpleSchedulerActionStateResult {
+    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+        let mut action_state = self
+            .action_state_result
+            .as_state()
+            .await
+            .err_tip(|| "In SimpleSchedulerActionStateResult")?;
+        Arc::make_mut(&mut action_state).operation_id = self.client_operation_id.clone();
+        Ok(action_state)
     }
 
-    fn changed(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<Arc<ActionState>, Error>> + Send + '_>> {
-        Box::pin(async move {
-            let action_state = self
-                .action_state_result
-                .changed()
-                .await
-                .err_tip(|| "In SimpleSchedulerActionListener::changed getting receiver")?;
-            Ok(action_state)
-        })
+    async fn changed(&mut self) -> Result<Arc<ActionState>, Error> {
+        let mut action_state = self
+            .action_state_result
+            .changed()
+            .await
+            .err_tip(|| "In SimpleSchedulerActionStateResult")?;
+        Arc::make_mut(&mut action_state).operation_id = self.client_operation_id.clone();
+        Ok(action_state)
+    }
+
+    async fn as_action_info(&self) -> Result<Arc<ActionInfo>, Error> {
+        self.action_state_result
+            .as_action_info()
+            .await
+            .err_tip(|| "In SimpleSchedulerActionStateResult")
     }
 }
 
@@ -129,22 +139,22 @@ impl SimpleScheduler {
         &self,
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
-    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
-        let add_action_result = self
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
+        let action_state_result = self
             .client_state_manager
             .add_action(client_operation_id.clone(), action_info)
-            .await?;
-
-        Ok(Box::pin(SimpleSchedulerActionListener::new(
-            client_operation_id,
-            add_action_result,
+            .await
+            .err_tip(|| "In SimpleScheduler::add_action")?;
+        Ok(Box::new(SimpleSchedulerActionStateResult::new(
+            client_operation_id.clone(),
+            action_state_result,
         )))
     }
 
     async fn find_by_client_operation_id(
         &self,
         client_operation_id: &OperationId,
-    ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
+    ) -> Result<Option<Box<dyn ActionStateResult>>, Error> {
         let filter = OperationFilter {
             client_operation_id: Some(client_operation_id.clone()),
             ..Default::default()
@@ -156,7 +166,7 @@ impl SimpleScheduler {
         let Some(action_state_result) = stream.next().await else {
             return Ok(None);
         };
-        Ok(Some(Box::pin(SimpleSchedulerActionListener::new(
+        Ok(Some(Box::new(SimpleSchedulerActionStateResult::new(
             client_operation_id.clone(),
             action_state_result,
         ))))
@@ -368,7 +378,7 @@ impl ActionScheduler for SimpleScheduler {
         &self,
         client_operation_id: OperationId,
         action_info: ActionInfo,
-    ) -> Result<Pin<Box<dyn ActionListener>>, Error> {
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
         self.add_action(client_operation_id, Arc::new(action_info))
             .await
     }
@@ -376,7 +386,7 @@ impl ActionScheduler for SimpleScheduler {
     async fn find_by_client_operation_id(
         &self,
         client_operation_id: &OperationId,
-    ) -> Result<Option<Pin<Box<dyn ActionListener>>>, Error> {
+    ) -> Result<Option<Box<dyn ActionStateResult>>, Error> {
         let maybe_receiver = self
             .find_by_client_operation_id(client_operation_id)
             .await
