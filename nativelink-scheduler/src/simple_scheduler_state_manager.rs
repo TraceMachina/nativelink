@@ -288,6 +288,7 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
         new_client_operation_id: ClientOperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<T::Subscriber, Error> {
+        println!("here");
         let rx = self
             .action_db
             .add_action(new_client_operation_id, action_info)

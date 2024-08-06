@@ -21,6 +21,7 @@ use futures::Future;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
+use nativelink_store::redis_store::RedisStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, ClientOperationId, OperationId, WorkerId,
 };
@@ -40,6 +41,7 @@ use crate::action_scheduler::{ActionListener, ActionScheduler};
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::redis::redis_awaited_action_db::RedisAwaitedActionDb;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
 use crate::worker::{Worker, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
@@ -300,16 +302,11 @@ impl SimpleScheduler {
         }
 
         let tasks_or_worker_change_notify = Arc::new(Notify::new());
+        let redis_store = RedisStore::new(&scheduler_cfg.redis.clone());
         let state_manager = SimpleSchedulerStateManager::new(
             tasks_or_worker_change_notify.clone(),
             max_job_retries,
-            MemoryAwaitedActionDb::new(
-                &EvictionPolicy {
-                    max_seconds: retain_completed_for_s,
-                    ..Default::default()
-                },
-                now_fn,
-            ),
+            RedisAwaitedActionDb::new(redis_store.unwrap()),
         );
 
         let worker_scheduler = ApiWorkerScheduler::new(

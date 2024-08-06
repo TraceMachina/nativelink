@@ -926,6 +926,19 @@ pub struct RedisStore {
     pub mode: RedisMode,
 }
 
+impl Default for RedisStore {
+    fn default() -> Self {
+        Self {
+            addresses: vec!["redis://localhost:6379".to_string()],
+            experimental_pub_sub_channel: None,
+            key_prefix: String::new(),
+            connection_timeout_s: 10,
+            response_timeout_s: 10,
+            mode: RedisMode::Standard,
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RedisMode {

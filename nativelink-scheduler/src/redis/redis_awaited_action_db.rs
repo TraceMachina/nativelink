@@ -78,6 +78,7 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         client_id: ClientOperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<RedisOperationSubscriber, Error> {
+        println!("in redis add_action");
         let rx = self.redis_adapter.subscribe_client_to_operation(client_id, action_info).await?;
         Ok(RedisOperationSubscriber {
             awaited_action_rx: rx
