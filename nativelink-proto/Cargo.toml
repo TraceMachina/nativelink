@@ -21,7 +21,7 @@ doctest = false
 [dependencies]
 prost = { version = "0.13.1", default-features = false }
 prost-types = { version = "0.13.1", default-features = false }
-tonic = { version = "0.12.0", default-features = false }
+tonic = { version = "0.12.0", features = ["transport", "tls"], default-features = false }
 
 [dev-dependencies]
 prost-build = { version = "0.13.1", default-features = false }
