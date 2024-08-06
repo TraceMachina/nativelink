@@ -88,7 +88,7 @@ jobs:
       run: |
         mkdir -p ~/.cache && \
         cd deployment-examples/docker-compose && \
-        docker-compose up -d && \
+        (docker-compose up -d || docker compose up -d) && \
         cd ../../ && \
         docker run --rm --net=host -w /root/nativelink -v $PWD:/root/nativelink trace_machina/nativelink:builder sh -c ' \
           bazel clean && \
