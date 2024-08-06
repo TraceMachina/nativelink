@@ -135,7 +135,7 @@ impl SimpleScheduler {
     /// for execution based on priority and other metrics.
     /// All further updates to the action will be provided through the returned
     /// value.
-    async fn add_action(
+    async fn inner_add_action(
         &self,
         client_operation_id: OperationId,
         action_info: Arc<ActionInfo>,
@@ -151,25 +151,14 @@ impl SimpleScheduler {
         )))
     }
 
-    async fn find_by_client_operation_id(
+    async fn inner_filter_operations(
         &self,
-        client_operation_id: &OperationId,
-    ) -> Result<Option<Box<dyn ActionStateResult>>, Error> {
-        let filter = OperationFilter {
-            client_operation_id: Some(client_operation_id.clone()),
-            ..Default::default()
-        };
-        let filter_result = self.client_state_manager.filter_operations(filter).await;
-
-        let mut stream = filter_result
-            .err_tip(|| "In SimpleScheduler::find_by_client_operation_id getting filter result")?;
-        let Some(action_state_result) = stream.next().await else {
-            return Ok(None);
-        };
-        Ok(Some(Box::new(SimpleSchedulerActionStateResult::new(
-            client_operation_id.clone(),
-            action_state_result,
-        ))))
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        self.client_state_manager
+            .filter_operations(filter)
+            .await
+            .err_tip(|| "In SimpleScheduler::find_by_client_operation_id getting filter result")
     }
 
     async fn get_queued_operations(&self) -> Result<ActionStateResultStream, Error> {
@@ -366,34 +355,31 @@ impl SimpleScheduler {
 }
 
 #[async_trait]
+impl ClientStateManager for SimpleScheduler {
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
+        self.inner_add_action(client_operation_id, action_info)
+            .await
+    }
+
+    async fn filter_operations<'a>(
+        &'a self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream<'a>, Error> {
+        self.inner_filter_operations(filter).await
+    }
+}
+
+#[async_trait]
 impl ActionScheduler for SimpleScheduler {
     async fn get_platform_property_manager(
         &self,
         _instance_name: &str,
     ) -> Result<Arc<PlatformPropertyManager>, Error> {
         Ok(self.platform_property_manager.clone())
-    }
-
-    async fn add_action(
-        &self,
-        client_operation_id: OperationId,
-        action_info: ActionInfo,
-    ) -> Result<Box<dyn ActionStateResult>, Error> {
-        self.add_action(client_operation_id, Arc::new(action_info))
-            .await
-    }
-
-    async fn find_by_client_operation_id(
-        &self,
-        client_operation_id: &OperationId,
-    ) -> Result<Option<Box<dyn ActionStateResult>>, Error> {
-        let maybe_receiver = self
-            .find_by_client_operation_id(client_operation_id)
-            .await
-            .err_tip(|| {
-                format!("Error while finding action with client id: {client_operation_id:?}")
-            })?;
-        Ok(maybe_receiver)
     }
 }
 

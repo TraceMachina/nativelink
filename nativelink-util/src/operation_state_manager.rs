@@ -106,10 +106,10 @@ pub trait ClientStateManager: Sync + Send + MetricsComponent {
     ) -> Result<Box<dyn ActionStateResult>, Error>;
 
     /// Returns a stream of operations that match the filter.
-    async fn filter_operations<'a>(
-        &'a self,
+    async fn filter_operations(
+        &self,
         filter: OperationFilter,
-    ) -> Result<ActionStateResultStream<'a>, Error>;
+    ) -> Result<ActionStateResultStream, Error>;
 }
 
 #[async_trait]
