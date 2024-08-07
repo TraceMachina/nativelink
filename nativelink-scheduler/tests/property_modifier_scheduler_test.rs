@@ -26,7 +26,6 @@ use nativelink_config::schedulers::{PlatformPropertyAddition, PropertyModificati
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
-use nativelink_scheduler::default_action_listener::DefaultActionListener;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
 use nativelink_util::action_messages::{ActionStage, ActionState, OperationId};
@@ -35,7 +34,7 @@ use nativelink_util::platform_properties::PlatformPropertyValue;
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
 use utils::mock_scheduler::MockActionScheduler;
-use utils::scheduler_utils::{make_base_action_info, INSTANCE_NAME};
+use utils::scheduler_utils::{make_base_action_info, TokioWatchActionStateResult, INSTANCE_NAME};
 
 struct TestContext {
     mock_scheduler: Arc<MockActionScheduler>,
@@ -81,14 +80,15 @@ async fn add_action_adds_property() -> Result<(), Error> {
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
-            .add_action(client_operation_id.clone(), action_info),
+            .add_action(client_operation_id.clone(), action_info.clone()),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+            .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
+                Arc::new(action_info),
                 forward_watch_channel_rx
             )))),
     );
@@ -129,14 +129,15 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
-            .add_action(client_operation_id.clone(), action_info),
+            .add_action(client_operation_id.clone(), action_info.clone()),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+            .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
+                Arc::new(action_info),
                 forward_watch_channel_rx
             )))),
     );
@@ -174,14 +175,15 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
-            .add_action(client_operation_id.clone(), action_info),
+            .add_action(client_operation_id.clone(), action_info.clone()),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+            .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
+                Arc::new(action_info),
                 forward_watch_channel_rx
             )))),
     );
@@ -219,14 +221,15 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
-            .add_action(client_operation_id.clone(), action_info),
+            .add_action(client_operation_id.clone(), action_info.clone()),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+            .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
+                Arc::new(action_info),
                 forward_watch_channel_rx
             )))),
     );
@@ -259,14 +262,15 @@ async fn add_action_property_remove() -> Result<(), Error> {
     let (_, _, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
-            .add_action(client_operation_id.clone(), action_info),
+            .add_action(client_operation_id.clone(), action_info.clone()),
         context
             .mock_scheduler
             .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
-            .expect_add_action(Ok(Box::pin(DefaultActionListener::new(
+            .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
                 client_operation_id.clone(),
+                Arc::new(action_info),
                 forward_watch_channel_rx
             )))),
     );
