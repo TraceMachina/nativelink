@@ -21,7 +21,9 @@ use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_util::{
     action_messages::{ActionInfo, OperationId},
-    operation_state_manager::ActionStateResult,
+    operation_state_manager::{
+        ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
+    },
 };
 use tokio::sync::{mpsc, Mutex};
 
@@ -29,13 +31,13 @@ use tokio::sync::{mpsc, Mutex};
 enum ActionSchedulerCalls {
     GetPlatformPropertyManager(String),
     AddAction((OperationId, ActionInfo)),
-    FindExistingAction(OperationId),
+    FilterOperations(OperationFilter),
 }
 
 enum ActionSchedulerReturns {
     GetPlatformPropertyManager(Result<Arc<PlatformPropertyManager>, Error>),
     AddAction(Result<Box<dyn ActionStateResult>, Error>),
-    FindExistingAction(Result<Option<Box<dyn ActionStateResult>>, Error>),
+    FilterOperations(Result<ActionStateResultStream<'static>, Error>),
 }
 
 #[derive(MetricsComponent)]
@@ -103,12 +105,12 @@ impl MockActionScheduler {
         req
     }
 
-    pub async fn expect_find_by_client_operation_id(
+    pub async fn expect_filter_operations(
         &self,
-        result: Result<Option<Box<dyn ActionStateResult>>, Error>,
-    ) -> OperationId {
+        result: Result<ActionStateResultStream<'static>, Error>,
+    ) -> OperationFilter {
         let mut rx_call_lock = self.rx_call.lock().await;
-        let ActionSchedulerCalls::FindExistingAction(req) = rx_call_lock
+        let ActionSchedulerCalls::FilterOperations(req) = rx_call_lock
             .recv()
             .await
             .expect("Could not receive msg in mpsc")
@@ -116,7 +118,7 @@ impl MockActionScheduler {
             panic!("Got incorrect call waiting for find_by_client_operation_id")
         };
         self.tx_resp
-            .send(ActionSchedulerReturns::FindExistingAction(result))
+            .send(ActionSchedulerReturns::FilterOperations(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
             .unwrap();
         req
@@ -144,16 +146,19 @@ impl ActionScheduler for MockActionScheduler {
             _ => panic!("Expected get_platform_property_manager return value"),
         }
     }
+}
 
+#[async_trait]
+impl ClientStateManager for MockActionScheduler {
     async fn add_action(
         &self,
         client_operation_id: OperationId,
-        action_info: ActionInfo,
+        action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         self.tx_call
             .send(ActionSchedulerCalls::AddAction((
                 client_operation_id,
-                action_info,
+                action_info.as_ref().clone(),
             )))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
@@ -167,14 +172,12 @@ impl ActionScheduler for MockActionScheduler {
         }
     }
 
-    async fn find_by_client_operation_id(
-        &self,
-        client_operation_id: &OperationId,
-    ) -> Result<Option<Box<dyn ActionStateResult>>, Error> {
+    async fn filter_operations<'a>(
+        &'a self,
+        filter: OperationFilter,
+    ) -> Result<ActionStateResultStream<'a>, Error> {
         self.tx_call
-            .send(ActionSchedulerCalls::FindExistingAction(
-                client_operation_id.clone(),
-            ))
+            .send(ActionSchedulerCalls::FilterOperations(filter))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock
@@ -182,7 +185,7 @@ impl ActionScheduler for MockActionScheduler {
             .await
             .expect("Could not receive msg in mpsc")
         {
-            ActionSchedulerReturns::FindExistingAction(result) => result,
+            ActionSchedulerReturns::FilterOperations(result) => result,
             _ => panic!("Expected find_by_client_operation_id return value"),
         }
     }

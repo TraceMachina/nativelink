@@ -32,8 +32,8 @@ pub const INSTANCE_NAME: &str = "foobar_instance_name";
 pub fn make_base_action_info(
     insert_timestamp: SystemTime,
     action_digest: DigestInfo,
-) -> ActionInfo {
-    ActionInfo {
+) -> Arc<ActionInfo> {
+    Arc::new(ActionInfo {
         command_digest: DigestInfo::new([0u8; 32], 0),
         input_root_digest: DigestInfo::new([0u8; 32], 0),
         timeout: Duration::MAX,
@@ -48,7 +48,7 @@ pub fn make_base_action_info(
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
         }),
-    }
+    })
 }
 
 pub struct TokioWatchActionStateResult {
