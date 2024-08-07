@@ -77,10 +77,10 @@ pub trait AwaitedActionSubscriber: Send + Sync + Sized + 'static {
 pub trait AwaitedActionDb: Send + Sync + MetricsComponent + 'static {
     type Subscriber: AwaitedActionSubscriber;
 
-    /// Get the AwaitedAction by the client operation id.
+    /// Get the AwaitedAction by the operation id.
     fn get_awaited_action_by_id(
         &self,
-        client_operation_id: &OperationId,
+        operation_id: &OperationId,
     ) -> impl Future<Output = Result<Option<Self::Subscriber>, Error>> + Send;
 
     /// Get all AwaitedActions. This call should be avoided as much as possible.
@@ -113,7 +113,7 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + 'static {
     /// to changes.
     fn add_action(
         &self,
-        client_operation_id: OperationId,
+        operation_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> impl Future<Output = Result<Self::Subscriber, Error>> + Send;
 }
