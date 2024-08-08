@@ -411,7 +411,6 @@ most automatically generated changelogs provide.
    - `MODULE.bazel`
    - `Cargo.toml`
    - `nativelink-*/Cargo.toml`
-   - `nativelink-docs/package.json`
 
 2. Run `git cliff --tag=0.x.y > CHANGELOG.md` to update the changelog. You might
    need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put a

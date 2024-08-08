@@ -3,7 +3,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.5.0](https://github.com/TraceMachina/nativelink/compare/v0.4.0..0.5.0) - 2024-08-07
+## [0.5.1](https://github.com/TraceMachina/nativelink/compare/v0.5.0..0.5.1) - 2024-08-08
+
+
+
+### 🐛 Bug Fixes
+
+- [Bug] Add rt-tokio feature to aws-sdk-s3 ([#1248](https://github.com/TraceMachina/nativelink/issues/1248)) - ([3eadab0](https://github.com/TraceMachina/nativelink/commit/3eadab01d23177deb207d148bb2ab883f2f66a4f))
+
+### ⚙️ Miscellaneous
+
+- Release NativeLink v0.5.1 - ([b3325e7](https://github.com/TraceMachina/nativelink/commit/b3325e7d8f0678edebf6d98cc37ba19250dbd580))
+- Make redis clients available on RedisStore ([#1244](https://github.com/TraceMachina/nativelink/issues/1244)) - ([c3f648e](https://github.com/TraceMachina/nativelink/commit/c3f648ecaad4861983bce1a5dc67781685bd1e80))
+
+## [0.5.0](https://github.com/TraceMachina/nativelink/compare/v0.4.0..v0.5.0) - 2024-08-07
 
 
 
@@ -105,7 +118,7 @@ All notable changes to this project will be documented in this file.
 
 ### ⚙️ Miscellaneous
 
-- Release NativeLink v0.5.0 - ([cfd05a6](https://github.com/TraceMachina/nativelink/commit/cfd05a693eda6d7918d8829f1cc6df2b8d089f3a))
+- Release NativeLink v0.5.0 ([#1223](https://github.com/TraceMachina/nativelink/issues/1223)) - ([d898c54](https://github.com/TraceMachina/nativelink/commit/d898c5488741c209855b3e3f21cb20d749af3b10))
 - Migrate much of the ActionScheduler API to ClientStateManager API ([#1241](https://github.com/TraceMachina/nativelink/issues/1241)) - ([2b8f1ee](https://github.com/TraceMachina/nativelink/commit/2b8f1ee4f1078afb47f1d012ad8a347e752817db))
 - Move ActionSchedulerListener to ActionStateResult ([#1237](https://github.com/TraceMachina/nativelink/issues/1237)) - ([d57ee8d](https://github.com/TraceMachina/nativelink/commit/d57ee8d267e2a088f0f7f73c1108109b22ac1da0))
 - modified the lre file path ([#1239](https://github.com/TraceMachina/nativelink/issues/1239)) - ([33f09cb](https://github.com/TraceMachina/nativelink/commit/33f09cbd1b2833956ffb268f786a7c035f375dae))
