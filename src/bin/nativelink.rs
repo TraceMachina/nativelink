@@ -958,6 +958,16 @@ async fn get_config() -> Result<CasConfig, Box<dyn std::error::Error>> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing()?;
 
+    // Attempt to get environment variables, unless it raises compile time errors.
+    let app_version = env!("NATIVELINK_APP_VERSION");
+    let git_commit_hash = env!("NATIVELINK_GIT_COMMIT_HASH");
+
+    // Print application version and commit hash.
+    event!(
+        Level::WARN,
+        "NativeLink Version: {app_version}, Commit Hash: {git_commit_hash}",
+    );
+
     let mut cfg = futures::executor::block_on(get_config())?;
 
     let (mut metrics_enabled, max_blocking_threads) = {
