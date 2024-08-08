@@ -18,6 +18,11 @@ async-trait = "0.1.81"
 bytes = { version = "1.6.1", default-features = false }
 prost = { version = "0.13.1", default-features = false }
 uuid = { version = "1.8.0", default-features = false, features = ["v4", "serde"] }
+fred = { version = "9.0.3", default-features = false, features = [
+  "i-keys",
+  "i-sorted-sets",
+  "i-pubsub",
+] }
 futures = { version = "0.3.30", default-features = false }
 lru = { version = "0.12.3", default-features = false }
 mock_instant = "0.3.2"

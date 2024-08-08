@@ -875,12 +875,22 @@ pub enum ErrorCode {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RedisHosts(
+    #[serde(deserialize_with = "convert_vec_string_with_shellexpand")] pub Vec<String>,
+);
+
+impl Default for RedisHosts {
+    fn default() -> Self {
+        Self(vec!["redis://localhost:6879".to_string()])
+    }
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct RedisStore {
     /// The hostname or IP address of the Redis server.
     /// Ex: ["redis://username:password@redis-server-url:6380/99"]
     /// 99 Represents database ID, 6380 represents the port.
-    #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
-    pub addresses: Vec<String>,
+    pub addresses: RedisHosts,
 
     /// The response timeout for the Redis connection in seconds.
     ///
