@@ -18,6 +18,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
+use nativelink_config::schedulers::SchedulerBackend;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
@@ -27,7 +28,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
-    OperationFilter, OperationStageFlags, OrderDirection,
+    OperationFilter, OperationStageFlags, OrderDirection, StateManagerGeneric,
 };
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -39,7 +40,9 @@ use tracing::{event, Level};
 use crate::action_scheduler::{ActionListener, ActionScheduler};
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
+// use crate::redis::redis_awaited_action_db::RedisAwaitedActionDb;
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::redis::redis_awaited_action_db::RedisAwaitedActionDb;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
 use crate::worker::{Worker, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
@@ -300,17 +303,42 @@ impl SimpleScheduler {
         }
 
         let tasks_or_worker_change_notify = Arc::new(Notify::new());
-        let state_manager = SimpleSchedulerStateManager::new(
-            tasks_or_worker_change_notify.clone(),
-            max_job_retries,
-            MemoryAwaitedActionDb::new(
-                &EvictionPolicy {
-                    max_seconds: retain_completed_for_s,
-                    ..Default::default()
-                },
-                now_fn,
+        let state_manager: Arc<dyn StateManagerGeneric> = match &scheduler_cfg.db_backend {
+            SchedulerBackend::Memory => SimpleSchedulerStateManager::new(
+                tasks_or_worker_change_notify.clone(),
+                max_job_retries,
+                MemoryAwaitedActionDb::new(
+                    &EvictionPolicy {
+                        max_seconds: retain_completed_for_s,
+                        ..Default::default()
+                    },
+                    now_fn,
+                ),
             ),
-        );
+            SchedulerBackend::Redis(store_config) => {
+                match nativelink_store::redis_store::RedisStore::new(store_config) {
+                    Ok(store) => SimpleSchedulerStateManager::new(
+                        tasks_or_worker_change_notify.clone(),
+                        max_job_retries,
+                        RedisAwaitedActionDb::new(store),
+                    ),
+                    Err(e) => {
+                        event!(Level::ERROR, ?e, "In SimpleScheduler::new - Failed to initialize RedisStore backend. Falling back to Memory Backend");
+                        SimpleSchedulerStateManager::new(
+                            tasks_or_worker_change_notify.clone(),
+                            max_job_retries,
+                            MemoryAwaitedActionDb::new(
+                                &EvictionPolicy {
+                                    max_seconds: retain_completed_for_s,
+                                    ..Default::default()
+                                },
+                                now_fn,
+                            ),
+                        )
+                    }
+                }
+            }
+        };
 
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
