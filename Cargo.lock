@@ -1806,6 +1806,7 @@ version = "0.5.0"
 dependencies = [
  "async-lock",
  "async-trait",
+ "bytes",
  "futures",
  "lru",
  "mock_instant",

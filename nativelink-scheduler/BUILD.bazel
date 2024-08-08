@@ -37,6 +37,7 @@ rust_library(
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:async-lock",
+        "@crates//:bytes",
         "@crates//:futures",
         "@crates//:lru",
         "@crates//:parking_lot",
