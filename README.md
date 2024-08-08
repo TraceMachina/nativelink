@@ -22,6 +22,8 @@ NativeLink is an efficient, high-performance build cache and remote execution sy
 
 NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **one billion requests** per month for its customers, including large corporations such as **Samsung**.
 
+[![NativeLink Explained in 90 seconds](https://img.youtube.com/vi/WLpqFuyLMUQ/0.jpg)](https://www.youtube.com/watch?v=WLpqFuyLMUQ)
+
 ## 🔑 Key Features
 
 1. **Advanced Build Cache**:
@@ -61,7 +63,7 @@ curl -O \
 docker run \
     -v $(pwd)/basic_cas.json:/config \
     -p 50051 \
-    ghcr.io/tracemachina/nativelink:v0.5.1 \
+    ghcr.io/tracemachina/nativelink:v0.5.0 \
     config
 ```
 
@@ -78,7 +80,7 @@ Invoke-WebRequest `
 docker run `
     -v ${PWD}/basic_cas.json:/config `
     -p 50051 `
-    ghcr.io/tracemachina/nativelink:v0.5.1 `
+    ghcr.io/tracemachina/nativelink:v0.5.0 `
     config
 ```
 
