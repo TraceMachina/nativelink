@@ -87,7 +87,7 @@ please raise an issue so that we can clarify this document.
 ## Local development setup
 
 NativeLink ships almost all of its tooling in a nix flake which is configured
-via a [`flake.nix`](./flake.nix) file in the root of the repository. While it's
+via a [`flake.nix`](https://github.com/tracemachina/nativelink/tree/main/flake.nix) file in the root of the repository. While it's
 possible to work on some parts of the codebase without this environment, it'll
 make your life much easier since it lets you reproduce most of CI locally.
 
@@ -468,4 +468,4 @@ most automatically generated changelogs provide.
 ## Conduct
 
 NativeLink Code of Conduct is available in the
-[CODE_OF_CONDUCT](CODE_OF_CONDUCT.md) file.
+[CODE_OF_CONDUCT](https://github.com/tracemachina/nativelink/tree/main/CODE_OF_CONDUCT.md) file.

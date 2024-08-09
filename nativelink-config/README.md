@@ -2,7 +2,7 @@
 
 NativeLink uses a JSON file as the configuration format.
 
-To view the available fields please refer to the [configuration reference](../../reference/nativelink-config).
+To view the available fields please refer to the [configuration reference](https://github.com/tracemachina/nativelink/tree/main/nativelink-config/src).
 
 ## Examples
 
