@@ -16,8 +16,8 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::ops::DerefMut;
-use std::path::Path;
+use std::ops::{DerefMut, RangeBounds};
+use std::path::{Path, MAIN_SEPARATOR_STR as PATH_SEP};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -38,7 +38,7 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{fs, DigestInfo};
 use nativelink_util::evicting_map::LenEntry;
 use nativelink_util::origin_context::ContextAwareFuture;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -196,7 +196,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Drop for TestFileEntry<Hooks
 /// not set.
 fn make_temp_path(data: &str) -> String {
     format!(
-        "{}/{}/{}",
+        "{}{PATH_SEP}{}{PATH_SEP}{}",
         env::var("TEST_TMPDIR").unwrap_or(env::temp_dir().to_str().unwrap().to_string()),
         thread_rng().gen::<u64>(),
         data
@@ -329,7 +329,7 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
     let expected_file_name = OsString::from(format!(
-        "{}/{}-{}",
+        "{}{PATH_SEP}{}-{}",
         content_path,
         digest1.hash_str(),
         digest1.size_bytes
@@ -670,13 +670,13 @@ async fn oldest_entry_evicted_with_access_times_loaded_from_disk() -> Result<(),
 
     // Make the two files on disk before loading the store.
     let file1 = OsString::from(format!(
-        "{}/{}-{}",
+        "{}{PATH_SEP}{}-{}",
         content_path,
         digest1.hash_str(),
         digest1.size_bytes
     ));
     let file2 = OsString::from(format!(
-        "{}/{}-{}",
+        "{}{PATH_SEP}{}-{}",
         content_path,
         digest2.hash_str(),
         digest2.size_bytes
@@ -1146,7 +1146,7 @@ async fn has_with_results_on_zero_digests() -> Result<(), Error> {
             yield_fn().await?;
 
             let empty_digest_file_name = OsString::from(format!(
-                "{}/{}-{}",
+                "{}{PATH_SEP}{}-{}",
                 content_path,
                 digest.hash_str(),
                 digest.size_bytes
@@ -1254,7 +1254,7 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
             assert_eq!(
                 file_path,
                 OsString::from(format!(
-                    "{}/{}-{}",
+                    "{}{PATH_SEP}{}-{}",
                     content_path,
                     digest.hash_str(),
                     digest.size_bytes
@@ -1291,7 +1291,7 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
     store.update_oneshot(digest, VALUE1.into()).await?;
 
     let stored_file_path = OsString::from(format!(
-        "{}/{}-{}",
+        "{}{PATH_SEP}{}-{}",
         content_path,
         digest.hash_str(),
         digest.size_bytes
@@ -1382,7 +1382,8 @@ async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     );
     store.update_oneshot(digest, value.clone().into()).await?;
 
-    let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
+    let mut file =
+        fs::create_file(OsString::from(format!("{temp_path}{PATH_SEP}dummy_file"))).await?;
     {
         let writer = file.as_writer().await?;
         writer.write_all(value.as_bytes()).await?;
@@ -1450,7 +1451,8 @@ async fn update_with_whole_file_slow_path_when_low_file_descriptors() -> Result<
 
     let temp_path = make_temp_path("temp_path2");
     fs::create_dir_all(&temp_path).await?;
-    let mut file = fs::create_file(OsString::from(format!("{temp_path}/dummy_file"))).await?;
+    let mut file =
+        fs::create_file(OsString::from(format!("{temp_path}{PATH_SEP}dummy_file"))).await?;
     {
         let writer = file.as_writer().await?;
         writer.write_all(value.as_bytes()).await?;
@@ -1491,8 +1493,11 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         .await?,
     );
 
-    let mut file =
-        fs::create_file(OsString::from(format!("{}/{}", temp_path, "dummy_file"))).await?;
+    let mut file = fs::create_file(OsString::from(format!(
+        "{}{PATH_SEP}{}",
+        temp_path, "dummy_file"
+    )))
+    .await?;
     let original_inode = file
         .as_reader()
         .await?
@@ -1511,7 +1516,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
     );
 
     let expected_file_name = OsString::from(format!(
-        "{}/{}-{}",
+        "{}{PATH_SEP}{}-{}",
         content_path,
         digest.hash_str(),
         digest.size_bytes
@@ -1530,5 +1535,160 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         "Expected the same inode for the file"
     );
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn list_test() -> Result<(), Error> {
+    use nativelink_util::common::DigestInfo;
+    use sha2::{Digest, Sha256};
+
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    // Remove, but here due to previous error seen by Jacob in CI
+    fs::create_dir_all(&content_path)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to create content path: {e:?}"));
+    fs::create_dir_all(&temp_path)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to create temp path: {e:?}"));
+
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+            &nativelink_config::stores::FilesystemStore {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                read_buffer_size: 1,
+                ..Default::default()
+            },
+            |_| sleep(Duration::ZERO),
+            |from, to| std::fs::rename(from, to),
+        )
+        .await?,
+    );
+
+    const KEY1: &str = "key1";
+    const KEY2: &str = "key2";
+    const KEY3: &str = "key3";
+    const VALUE: &str = "value1";
+
+    // Function to hash a key string and return a hex string
+    fn hash_key(key: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(key.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
+    // Calculate the expected digests the same way the other tests do it
+    let expected_digest1 = DigestInfo::try_new(&hash_key(KEY1), VALUE.len() as i64)?;
+    let expected_digest2 = DigestInfo::try_new(&hash_key(KEY2), VALUE.len() as i64)?;
+    let expected_digest3 = DigestInfo::try_new(&hash_key(KEY3), VALUE.len() as i64)?;
+
+    // if you need to debug the expected digests you can do something like this
+    // println!("Expected digest for KEY1: {expected_digest1:}");
+
+    store
+        .update_oneshot(StoreKey::Digest(expected_digest1), VALUE.into())
+        .await?;
+    store
+        .update_oneshot(StoreKey::Digest(expected_digest2), VALUE.into())
+        .await?;
+    store
+        .update_oneshot(StoreKey::Digest(expected_digest3), VALUE.into())
+        .await?;
+
+    async fn get_list(
+        store: &FilesystemStore,
+        range: impl RangeBounds<StoreKey<'static>> + Send + Sync + 'static,
+    ) -> Vec<StoreKey<'static>> {
+        let mut found_keys = vec![];
+        store
+            .list(range, |key| {
+                found_keys.push(key.borrow().into_owned());
+                true
+            })
+            .await
+            .unwrap();
+        found_keys
+    }
+
+    {
+        // Test listing all keys.
+        let keys = get_list(&store, ..).await;
+        assert_eq!(
+            keys,
+            vec![
+                StoreKey::Digest(expected_digest1),
+                StoreKey::Digest(expected_digest2),
+                StoreKey::Digest(expected_digest3)
+            ]
+        );
+    }
+    {
+        // Test listing from key1 to all.
+        let keys = get_list(&store, StoreKey::Digest(expected_digest1)..).await;
+        assert_eq!(
+            keys,
+            vec![
+                StoreKey::Digest(expected_digest1),
+                StoreKey::Digest(expected_digest2),
+                StoreKey::Digest(expected_digest3)
+            ]
+        );
+    }
+    {
+        // Test listing from key1 to key2.
+        let keys = get_list(
+            &store,
+            StoreKey::Digest(expected_digest1)..StoreKey::Digest(expected_digest2),
+        )
+        .await;
+        assert_eq!(keys, vec![StoreKey::Digest(expected_digest1)]);
+    }
+    {
+        // Test listing from key1 including key2.
+        let keys = get_list(
+            &store,
+            StoreKey::Digest(expected_digest1)..=StoreKey::Digest(expected_digest2),
+        )
+        .await;
+        assert_eq!(
+            keys,
+            vec![
+                StoreKey::Digest(expected_digest1),
+                StoreKey::Digest(expected_digest2)
+            ]
+        );
+    }
+    {
+        // Test listing from key1 to key3.
+        let keys = get_list(
+            &store,
+            StoreKey::Digest(expected_digest1)..StoreKey::Digest(expected_digest3),
+        )
+        .await;
+        assert_eq!(
+            keys,
+            vec![
+                StoreKey::Digest(expected_digest1),
+                StoreKey::Digest(expected_digest2)
+            ]
+        );
+    }
+    {
+        // Test listing from all to key2.
+        let keys = get_list(&store, ..StoreKey::Digest(expected_digest2)).await;
+        assert_eq!(keys, vec![StoreKey::Digest(expected_digest1)]);
+    }
+    {
+        // Test listing from key2 to key3.
+        let keys = get_list(
+            &store,
+            StoreKey::Digest(expected_digest2)..StoreKey::Digest(expected_digest3),
+        )
+        .await;
+        assert_eq!(keys, vec![StoreKey::Digest(expected_digest2)]);
+    }
     Ok(())
 }
