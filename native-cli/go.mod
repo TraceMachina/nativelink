@@ -7,7 +7,7 @@ require (
 	github.com/go-git/go-git/v5 v5.12.0
 	github.com/pulumi/pulumi-docker/sdk/v3 v3.6.1
 	github.com/pulumi/pulumi-kubernetes/sdk/v4 v4.15.0
-	github.com/pulumi/pulumi/sdk/v3 v3.127.0
+	github.com/pulumi/pulumi/sdk/v3 v3.128.0
 	github.com/spf13/cobra v1.8.1
 	k8s.io/apimachinery v0.30.3
 	k8s.io/client-go v0.30.3
