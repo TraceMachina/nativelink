@@ -133,6 +133,8 @@
 
         local-image-test = pkgs.callPackage ./tools/local-image-test.nix {};
 
+        nativelink-prevent-store-conflict-test = pkgs.callPackage ./tools/nativelink-prevent-store-conflict-test.nix {inherit nativelink;};
+
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
         rbe-configs-gen = pkgs.callPackage ./local-remote-execution/rbe-configs-gen.nix {};
@@ -251,7 +253,7 @@
           };
         };
         packages = rec {
-          inherit publish-ghcr local-image-test nativelink-is-executable-test nativelink nativelink-debug native-cli lre-cc nativelink-worker-init;
+          inherit publish-ghcr local-image-test nativelink-prevent-store-conflict-test nativelink-is-executable-test nativelink nativelink-debug native-cli lre-cc nativelink-worker-init;
           default = nativelink;
 
           rbe-autogen-lre-cc = rbe-autogen lre-cc;
