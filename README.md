@@ -60,7 +60,7 @@ curl -O \
 # to find the latest tag
 docker run \
     -v $(pwd)/basic_cas.json:/config \
-    -p 50051 \
+    -p 50051:50051 \
     ghcr.io/tracemachina/nativelink:v0.5.1 \
     config
 ```
@@ -77,7 +77,7 @@ Invoke-WebRequest `
 # Note: Adjust the path if the script is not run from the directory containing basic_cas.json
 docker run `
     -v ${PWD}/basic_cas.json:/config `
-    -p 50051 `
+    -p 50051:50051 `
     ghcr.io/tracemachina/nativelink:v0.5.1 `
     config
 ```
