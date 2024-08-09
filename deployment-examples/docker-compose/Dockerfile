@@ -18,7 +18,7 @@ ARG OS_VERSION=22.04
 ARG OPT_LEVEL=opt
 # Additional bazel flags.
 ARG ADDITIONAL_BAZEL_FLAGS=
-# Bash arguments my be passed in here to install any additional dependencies
+# Bash arguments may be passed in here to install any additional dependencies
 # needed by the user. Useful if your worker needs specific dependencies installed.
 ARG ADDITIONAL_SETUP_WORKER_CMD=
 
