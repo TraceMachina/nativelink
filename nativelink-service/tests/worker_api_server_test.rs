@@ -34,6 +34,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
+use nativelink_scheduler::worker::ActionInfoWithProps;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
 use nativelink_util::action_messages::{
@@ -42,7 +43,6 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::WorkerStateManager;
-use nativelink_util::platform_properties::PlatformProperties;
 use pretty_assertions::assert_eq;
 use tokio::join;
 use tokio::sync::{mpsc, Notify};
@@ -385,21 +385,29 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn std::error:
         command_digest: DigestInfo::new([0u8; 32], 0),
         input_root_digest: DigestInfo::new([0u8; 32], 0),
         timeout: Duration::MAX,
-        platform_properties: PlatformProperties {
-            properties: HashMap::new(),
-        },
+        platform_properties: HashMap::new(),
         priority: 0,
         load_timestamp: make_system_time(0),
         insert_timestamp: make_system_time(0),
         unique_qualifier,
     });
     let expected_operation_id = OperationId::default();
+
+    let platform_properties = test_context
+        .scheduler
+        .get_platform_property_manager()
+        .make_platform_properties(action_info.platform_properties.clone())
+        .err_tip(|| "Failed to make platform properties in SimpleScheduler::do_try_match")?;
+
     test_context
         .scheduler
         .worker_notify_run_action(
             test_context.worker_id,
             expected_operation_id.clone(),
-            action_info.clone(),
+            ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+            },
         )
         .await
         .unwrap();

@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod action_scheduler;
 pub mod api_worker_scheduler;
 mod awaited_action_db;
 pub mod cache_lookup_scheduler;

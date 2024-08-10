@@ -29,6 +29,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
@@ -38,9 +39,6 @@ use scopeguard::guard;
 use tokio::sync::oneshot;
 use tonic::Request;
 use tracing::{event, Level};
-
-use crate::action_scheduler::ActionScheduler;
-use crate::platform_property_manager::PlatformPropertyManager;
 
 /// Actions that are having their cache checked or failed cache lookup and are
 /// being forwarded upstream.  Missing the skip_cache_check actions which are
@@ -62,7 +60,7 @@ pub struct CacheLookupScheduler {
     /// The "real" scheduler to use to perform actions if they were not found
     /// in the action cache.
     #[metric(group = "action_scheduler")]
-    action_scheduler: Arc<dyn ActionScheduler>,
+    action_scheduler: Arc<dyn ClientStateManager>,
     /// Actions that are currently performing a CacheCheck.
     inflight_cache_checks: Arc<Mutex<CheckActions>>,
 }
@@ -142,7 +140,10 @@ impl ActionStateResult for CacheLookupActionStateResult {
 }
 
 impl CacheLookupScheduler {
-    pub fn new(ac_store: Store, action_scheduler: Arc<dyn ActionScheduler>) -> Result<Self, Error> {
+    pub fn new(
+        ac_store: Store,
+        action_scheduler: Arc<dyn ClientStateManager>,
+    ) -> Result<Self, Error> {
         Ok(Self {
             ac_store,
             action_scheduler,
@@ -322,18 +323,6 @@ impl CacheLookupScheduler {
 }
 
 #[async_trait]
-impl ActionScheduler for CacheLookupScheduler {
-    async fn get_platform_property_manager(
-        &self,
-        instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error> {
-        self.action_scheduler
-            .get_platform_property_manager(instance_name)
-            .await
-    }
-}
-
-#[async_trait]
 impl ClientStateManager for CacheLookupScheduler {
     async fn add_action(
         &self,
@@ -349,6 +338,10 @@ impl ClientStateManager for CacheLookupScheduler {
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream, Error> {
         self.inner_filter_operations(filter).await
+    }
+
+    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
+        self.action_scheduler.as_known_platform_property_provider()
     }
 }
 

@@ -147,7 +147,7 @@ pub trait AwaitedActionSubscriber: Send + Sync + Sized + 'static {
 }
 
 /// A trait that defines the interface for an AwaitedActionDb.
-pub trait AwaitedActionDb: Send + Sync + MetricsComponent + 'static {
+pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
     type Subscriber: AwaitedActionSubscriber;
 
     /// Get the AwaitedAction by the client operation id.

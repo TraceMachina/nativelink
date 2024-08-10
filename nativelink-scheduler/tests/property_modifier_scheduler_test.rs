@@ -22,16 +22,14 @@ mod utils {
 }
 
 use futures::{join, StreamExt};
-use nativelink_config::schedulers::{PlatformPropertyAddition, PropertyModification, PropertyType};
+use nativelink_config::schedulers::{PlatformPropertyAddition, PropertyModification};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
-use nativelink_scheduler::action_scheduler::ActionScheduler;
-use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::property_modifier_scheduler::PropertyModifierScheduler;
 use nativelink_util::action_messages::{ActionStage, ActionState, OperationId};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{ClientStateManager, OperationFilter};
-use nativelink_util::platform_properties::PlatformPropertyValue;
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
 use utils::mock_scheduler::MockActionScheduler;
@@ -73,18 +71,11 @@ async fn add_action_adds_property() -> Result<(), Error> {
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
-    let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
-        name.clone(),
-        PropertyType::exact,
-    )])));
     let client_operation_id = OperationId::default();
-    let (_, _, (passed_client_operation_id, action_info)) = join!(
+    let (_, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
             .add_action(client_operation_id.clone(), action_info.clone()),
-        context
-            .mock_scheduler
-            .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
@@ -95,8 +86,8 @@ async fn add_action_adds_property() -> Result<(), Error> {
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
     assert_eq!(
-        HashMap::from([(name, PlatformPropertyValue::Exact(value))]),
-        action_info.platform_properties.properties
+        HashMap::from([(name, value)]),
+        action_info.platform_properties
     );
     Ok(())
 }
@@ -116,8 +107,7 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
         .clone();
     action_info
         .platform_properties
-        .properties
-        .insert(name.clone(), PlatformPropertyValue::Unknown(original_value));
+        .insert(name.clone(), original_value);
     let action_info = Arc::new(action_info);
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
@@ -125,18 +115,11 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
-    let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
-        name.clone(),
-        PropertyType::exact,
-    )])));
     let client_operation_id = OperationId::default();
-    let (_, _, (passed_client_operation_id, action_info)) = join!(
+    let (_, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
             .add_action(client_operation_id.clone(), action_info.clone()),
-        context
-            .mock_scheduler
-            .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
@@ -147,8 +130,8 @@ async fn add_action_overwrites_property() -> Result<(), Error> {
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
     assert_eq!(
-        HashMap::from([(name, PlatformPropertyValue::Exact(replaced_value))]),
-        action_info.platform_properties.properties
+        HashMap::from([(name, replaced_value)]),
+        action_info.platform_properties
     );
     Ok(())
 }
@@ -171,18 +154,11 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
-    let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
-        name.clone(),
-        PropertyType::exact,
-    )])));
     let client_operation_id = OperationId::default();
-    let (_, _, (passed_client_operation_id, action_info)) = join!(
+    let (_, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
             .add_action(client_operation_id.clone(), action_info.clone()),
-        context
-            .mock_scheduler
-            .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
@@ -193,8 +169,8 @@ async fn add_action_property_added_after_remove() -> Result<(), Error> {
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
     assert_eq!(
-        HashMap::from([(name, PlatformPropertyValue::Exact(value))]),
-        action_info.platform_properties.properties
+        HashMap::from([(name, value)]),
+        action_info.platform_properties
     );
     Ok(())
 }
@@ -217,18 +193,15 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
-    let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
-        name,
-        PropertyType::exact,
-    )])));
+    // let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::from([(
+    //     name,
+    //     PropertyType::exact,
+    // )])));
     let client_operation_id = OperationId::default();
-    let (_, _, (passed_client_operation_id, action_info)) = join!(
+    let (_, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
             .add_action(client_operation_id.clone(), action_info.clone()),
-        context
-            .mock_scheduler
-            .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
@@ -238,10 +211,7 @@ async fn add_action_property_remove_after_add() -> Result<(), Error> {
             )))),
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
-    assert_eq!(
-        HashMap::from([]),
-        action_info.platform_properties.properties
-    );
+    assert_eq!(HashMap::from([]), action_info.platform_properties);
     Ok(())
 }
 
@@ -253,10 +223,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
     let mut action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest())
         .as_ref()
         .clone();
-    action_info
-        .platform_properties
-        .properties
-        .insert(name, PlatformPropertyValue::Unknown(value));
+    action_info.platform_properties.insert(name, value);
     let action_info = Arc::new(action_info);
     let (_forward_watch_channel_tx, forward_watch_channel_rx) =
         watch::channel(Arc::new(ActionState {
@@ -264,15 +231,12 @@ async fn add_action_property_remove() -> Result<(), Error> {
             stage: ActionStage::Queued,
             action_digest: action_info.unique_qualifier.digest(),
         }));
-    let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
+    // let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
     let client_operation_id = OperationId::default();
-    let (_, _, (passed_client_operation_id, action_info)) = join!(
+    let (_, (passed_client_operation_id, action_info)) = join!(
         context
             .modifier_scheduler
             .add_action(client_operation_id.clone(), action_info.clone()),
-        context
-            .mock_scheduler
-            .expect_get_platform_property_manager(Ok(platform_property_manager)),
         context
             .mock_scheduler
             .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
@@ -282,10 +246,7 @@ async fn add_action_property_remove() -> Result<(), Error> {
             )))),
     );
     assert_eq!(client_operation_id, passed_client_operation_id);
-    assert_eq!(
-        HashMap::from([]),
-        action_info.platform_properties.properties
-    );
+    assert_eq!(HashMap::from([]), action_info.platform_properties);
     Ok(())
 }
 
@@ -319,19 +280,15 @@ async fn find_by_client_operation_id_call_passed() -> Result<(), Error> {
 async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
     let name = "name".to_string();
     let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
-    let scheduler_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
-    let get_property_manager_fut = context
+    let known_properties = Vec::new();
+    let instance_name_fut = context
         .mock_scheduler
-        .expect_get_platform_property_manager(Ok(scheduler_property_manager));
-    let property_manager_fut = context
+        .expect_get_known_properties(Ok(known_properties));
+    let known_props_fut = context
         .modifier_scheduler
-        .get_platform_property_manager(INSTANCE_NAME);
-    let (actual_instance_name, property_manager) =
-        join!(get_property_manager_fut, property_manager_fut);
-    assert_eq!(
-        HashMap::<_, _>::from_iter([(name, PropertyType::priority)]),
-        *property_manager?.get_known_properties()
-    );
+        .get_known_properties(INSTANCE_NAME);
+    let (actual_instance_name, known_props) = join!(instance_name_fut, known_props_fut);
+    assert_eq!(Ok(vec![name]), known_props);
     assert_eq!(actual_instance_name, INSTANCE_NAME);
     Ok(())
 }
@@ -340,20 +297,14 @@ async fn remove_adds_to_underlying_manager() -> Result<(), Error> {
 async fn remove_retains_type_in_underlying_manager() -> Result<(), Error> {
     let name = "name".to_string();
     let context = make_modifier_scheduler(vec![PropertyModification::remove(name.clone())]);
-    let scheduler_property_manager =
-        Arc::new(PlatformPropertyManager::new(HashMap::<_, _>::from_iter([
-            (name.clone(), PropertyType::exact),
-        ])));
-    let get_property_manager_fut = context
+    let known_properties = vec![name.clone()];
+    let instance_name_fut = context
         .mock_scheduler
-        .expect_get_platform_property_manager(Ok(scheduler_property_manager));
-    let property_manager_fut = context
+        .expect_get_known_properties(Ok(known_properties));
+    let known_props_fut = context
         .modifier_scheduler
-        .get_platform_property_manager(INSTANCE_NAME);
-    let (_, property_manager) = join!(get_property_manager_fut, property_manager_fut);
-    assert_eq!(
-        HashMap::<_, _>::from_iter([(name, PropertyType::exact)]),
-        *property_manager?.get_known_properties()
-    );
+        .get_known_properties(INSTANCE_NAME);
+    let (_, known_props) = join!(instance_name_fut, known_props_fut);
+    assert_eq!(Ok(vec![name]), known_props);
     Ok(())
 }

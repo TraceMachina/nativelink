@@ -35,7 +35,6 @@ use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
 };
 use nativelink_metric_collector::{otel_export, MetricsCollectorLayer};
-use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
 use nativelink_service::ac_server::AcServer;
 use nativelink_service::bep_server::BepServer;
@@ -52,6 +51,7 @@ use nativelink_util::common::fs::{set_idle_file_descriptor_timeout, set_open_fil
 use nativelink_util::digest_hasher::{set_default_digest_hasher_func, DigestHasherFunc};
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::metrics_utils::{set_metrics_enabled_for_this_thread, Counter};
+use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::origin_context::OriginContext;
 use nativelink_util::store_trait::{
     set_default_digest_size_health_check, DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG,
@@ -122,7 +122,7 @@ struct RootMetrics {
     // TODO(allada) To prevent output from being too verbose we only
     // print the action_schedulers.
     #[metric(group = "action_schedulers")]
-    schedulers: HashMap<String, Arc<dyn ActionScheduler>>,
+    schedulers: HashMap<String, Arc<dyn ClientStateManager>>,
 }
 
 impl RootMetricsComponent for RootMetrics {}

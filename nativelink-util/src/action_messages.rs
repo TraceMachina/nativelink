@@ -38,7 +38,6 @@ use uuid::Uuid;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
-use crate::platform_properties::PlatformProperties;
 
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
@@ -261,7 +260,7 @@ pub struct ActionInfo {
     pub timeout: Duration,
     /// The properties rules that must be applied when finding a worker that can run this action.
     #[metric(group = "platform_properties")]
-    pub platform_properties: PlatformProperties,
+    pub platform_properties: HashMap<String, String>,
     /// The priority of the action. Higher value means it should execute faster.
     #[metric(help = "The priority of the action. Higher value means it should execute faster.")]
     pub priority: i32,
@@ -309,6 +308,13 @@ impl ActionInfo {
         } else {
             ActionUniqueQualifier::Cachable(unique_key)
         };
+
+        let proto_properties = action.platform.unwrap_or_default();
+        let mut platform_properties = HashMap::with_capacity(proto_properties.properties.len());
+        for property in proto_properties.properties {
+            platform_properties.insert(property.name, property.value);
+        }
+
         Ok(Self {
             command_digest: action
                 .command_digest
@@ -323,7 +329,7 @@ impl ActionInfo {
                 .unwrap_or_default()
                 .try_into()
                 .map_err(|_| make_input_err!("Failed convert proto duration to system duration"))?,
-            platform_properties: action.platform.unwrap_or_default().into(),
+            platform_properties,
             priority: execute_request
                 .execution_policy
                 .unwrap_or_default()
@@ -335,15 +341,15 @@ impl ActionInfo {
     }
 }
 
-impl From<ActionInfo> for ExecuteRequest {
-    fn from(val: ActionInfo) -> Self {
+impl From<&ActionInfo> for ExecuteRequest {
+    fn from(val: &ActionInfo) -> Self {
         let digest = val.digest().into();
-        let (skip_cache_lookup, unique_qualifier) = match val.unique_qualifier {
+        let (skip_cache_lookup, unique_qualifier) = match &val.unique_qualifier {
             ActionUniqueQualifier::Cachable(unique_qualifier) => (false, unique_qualifier),
             ActionUniqueQualifier::Uncachable(unique_qualifier) => (true, unique_qualifier),
         };
         Self {
-            instance_name: unique_qualifier.instance_name,
+            instance_name: unique_qualifier.instance_name.clone(),
             action_digest: Some(digest),
             skip_cache_lookup,
             execution_policy: None,     // Not used in the worker.

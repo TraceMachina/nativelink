@@ -9,7 +9,6 @@ load(
 rust_library(
     name = "nativelink-scheduler",
     srcs = [
-        "src/action_scheduler.rs",
         "src/api_worker_scheduler.rs",
         "src/awaited_action_db/awaited_action.rs",
         "src/awaited_action_db/mod.rs",

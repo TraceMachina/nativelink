@@ -24,6 +24,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection,
@@ -35,12 +36,11 @@ use tokio::time::Duration;
 use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
-use crate::action_scheduler::ActionScheduler;
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
-use crate::worker::{Worker, WorkerTimestamp};
+use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for workers in seconds.
@@ -185,16 +185,32 @@ impl SimpleScheduler {
             action_state_result: &dyn ActionStateResult,
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
+            platform_property_manager: &PlatformPropertyManager,
         ) -> Result<(), Error> {
             let action_info = action_state_result
                 .as_action_info()
                 .await
                 .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
 
+            // TODO(allada) We should not compute this every time and instead store
+            // it with the ActionInfo when we receive it.
+            let platform_properties = platform_property_manager
+                .make_platform_properties(action_info.platform_properties.clone())
+                .err_tip(|| {
+                    "Failed to make platform properties in SimpleScheduler::do_try_match"
+                })?;
+
+            let action_info = ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+            };
+
             // Try to find a worker for the action.
             let worker_id = {
-                let platform_properties = &action_info.platform_properties;
-                match workers.find_worker_for_action(platform_properties).await {
+                match workers
+                    .find_worker_for_action(&action_info.platform_properties)
+                    .await
+                {
                     Some(worker_id) => worker_id,
                     // If we could not find a worker for the action,
                     // we have nothing to do.
@@ -241,6 +257,7 @@ impl SimpleScheduler {
                     action_state_result.as_ref(),
                     self.worker_scheduler.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
+                    self.platform_property_manager.as_ref(),
                 )
                 .await,
             );
@@ -375,15 +392,22 @@ impl ClientStateManager for SimpleScheduler {
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter).await
     }
+
+    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
+        Some(self)
+    }
 }
 
 #[async_trait]
-impl ActionScheduler for SimpleScheduler {
-    async fn get_platform_property_manager(
-        &self,
-        _instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error> {
-        Ok(self.platform_property_manager.clone())
+impl KnownPlatformPropertyProvider for SimpleScheduler {
+    async fn get_known_properties(&self, _instance_name: &str) -> Result<Vec<String>, Error> {
+        Ok(self
+            .worker_scheduler
+            .get_platform_property_manager()
+            .get_known_properties()
+            .keys()
+            .cloned()
+            .collect())
     }
 }
 

@@ -12,24 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_metric::RootMetricsComponent;
-use nativelink_util::operation_state_manager::ClientStateManager;
 
-use crate::platform_property_manager::PlatformPropertyManager;
+use crate::operation_state_manager::ClientStateManager;
 
-/// ActionScheduler interface is responsible for interactions between the scheduler
-/// and action related operations.
+/// KnownPlatformPropertyProvider interface is responsible for retrieving
+/// a list of known platform properties.
+// TODO(https://github.com/rust-lang/rust/issues/65991) When this lands we can
+// move this to the nativelink-scheduler crate.
 #[async_trait]
-pub trait ActionScheduler:
+pub trait KnownPlatformPropertyProvider:
     ClientStateManager + Sync + Send + Unpin + RootMetricsComponent + 'static
 {
-    /// Returns the platform property manager.
-    async fn get_platform_property_manager(
-        &self,
-        instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error>;
+    // / Returns the platform property manager.
+    async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error>;
 }

@@ -17,8 +17,8 @@ use std::sync::Arc;
 use nativelink_config::schedulers::SchedulerConfig;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::operation_state_manager::ClientStateManager;
 
-use crate::action_scheduler::ActionScheduler;
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
@@ -26,7 +26,7 @@ use crate::simple_scheduler::SimpleScheduler;
 use crate::worker_scheduler::WorkerScheduler;
 
 pub type SchedulerFactoryResults = (
-    Option<Arc<dyn ActionScheduler>>,
+    Option<Arc<dyn ClientStateManager>>,
     Option<Arc<dyn WorkerScheduler>>,
 );
 
