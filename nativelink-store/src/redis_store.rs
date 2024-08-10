@@ -22,13 +22,16 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use fred::clients::{RedisClient, RedisPool, SubscriberClient};
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface};
-use fred::types::{Builder, ConnectionConfig, PerformanceConfig, ReconnectPolicy, RedisConfig};
+use fred::types::{
+    Builder, ConnectionConfig, PerformanceConfig, ReconnectPolicy, RedisConfig, TracingConfig,
+};
 use nativelink_config::stores::RedisMode;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
+use tracing::Level;
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
@@ -72,7 +75,7 @@ impl RedisStore {
         let [addr] = config.addresses.0.as_slice() else {
             return Err(make_err!(Code::Unimplemented, "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."));
         };
-        let redis_config = match config.mode {
+        let mut redis_config = match config.mode {
             RedisMode::Cluster => RedisConfig::from_url_clustered(addr),
             RedisMode::Sentinel => RedisConfig::from_url_sentinel(addr),
             RedisMode::Standard => RedisConfig::from_url_centralized(addr),
@@ -83,6 +86,11 @@ impl RedisStore {
                 format!("while parsing redis node address: {e}"),
             )
         })?;
+        redis_config.tracing = TracingConfig {
+            enabled: true,
+            full_tracing_level: Level::DEBUG,
+            ..Default::default()
+        };
 
         let mut builder = Builder::from_config(redis_config);
         builder

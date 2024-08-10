@@ -41,13 +41,11 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         {
             Ok(operation_id) => {
                 // TODO: Match to return None
-                let rx = self
+                let sub = self
                     .redis_adapter
                     .subscribe_to_operation(&operation_id)
                     .await?;
-                Ok(Some(RedisOperationSubscriber {
-                    awaited_action_rx: rx,
-                }))
+                Ok(Some(sub))
             }
             Err(e) => match e.code {
                 Code::NotFound => Ok(None),
@@ -61,14 +59,12 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         &self,
         operation_id: &OperationId,
     ) -> Result<Option<RedisOperationSubscriber>, Error> {
-        let rx = self
+        let sub = self
             .redis_adapter
             .subscribe_to_operation(operation_id)
             .await
             .err_tip(|| "In RedisAwaitedActionDb::get_by_operation_id")?;
-        Ok(Some(RedisOperationSubscriber {
-            awaited_action_rx: rx,
-        }))
+        Ok(Some(sub))
     }
 
     /// Process a change changed AwaitedAction and notify any listeners.
@@ -85,14 +81,12 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         client_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<RedisOperationSubscriber, Error> {
-        let rx = self
+        let sub = self
             .redis_adapter
             .subscribe_client_to_operation(client_id, action_info)
             .await
             .err_tip(|| "In RedisAwaitedActionDb::add_action")?;
-        Ok(RedisOperationSubscriber {
-            awaited_action_rx: rx,
-        })
+        Ok(sub)
     }
 
     async fn get_range_of_actions(
