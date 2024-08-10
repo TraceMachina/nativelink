@@ -25,6 +25,7 @@ pub mod fastcdc;
 pub mod fs;
 pub mod health_utils;
 pub mod instant_wrapper;
+pub mod known_platform_property_provider;
 pub mod metrics_utils;
 pub mod operation_state_manager;
 pub mod origin_context;

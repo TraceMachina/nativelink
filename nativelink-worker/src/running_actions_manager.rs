@@ -806,9 +806,8 @@ impl RunningActionImpl {
                     EnvironmentSource::property(property) => self
                         .action_info
                         .platform_properties
-                        .properties
                         .get(property)
-                        .map_or_else(|| Cow::Borrowed(""), |v| v.as_str()),
+                        .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
                     EnvironmentSource::value(value) => Cow::Borrowed(value.as_str()),
                     EnvironmentSource::timeout_millis => {
                         Cow::Owned(requested_timeout.as_millis().to_string())

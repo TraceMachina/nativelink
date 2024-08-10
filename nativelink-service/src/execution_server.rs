@@ -28,7 +28,6 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, Command, ExecuteRequest, WaitExecutionRequest,
 };
 use nativelink_proto::google::longrunning::Operation;
-use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
@@ -36,8 +35,9 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{make_ctx_for_hash_func, DigestHasherFunc};
-use nativelink_util::operation_state_manager::{ActionStateResult, OperationFilter};
-use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ClientStateManager, OperationFilter,
+};
 use nativelink_util::store_trait::Store;
 use tonic::{Request, Response, Status};
 use tracing::{error_span, event, instrument, Level};
@@ -70,7 +70,7 @@ impl NativelinkOperationId {
 }
 
 struct InstanceInfo {
-    scheduler: Arc<dyn ActionScheduler>,
+    scheduler: Arc<dyn ClientStateManager>,
     cas_store: Store,
 }
 
@@ -79,7 +79,7 @@ impl InstanceInfo {
         &self,
         instance_name: String,
         action_digest: DigestInfo,
-        action: &Action,
+        action: Action,
         priority: i32,
         skip_cache_lookup: bool,
         digest_function: DigestHasherFunc,
@@ -104,16 +104,9 @@ impl InstanceInfo {
             .unwrap_or(Duration::MAX);
 
         let mut platform_properties = HashMap::new();
-        if let Some(platform) = &action.platform {
-            for property in &platform.properties {
-                let platform_property = self
-                    .scheduler
-                    .get_platform_property_manager(&instance_name)
-                    .await
-                    .err_tip(|| "Failed to get platform properties in build_action_info")?
-                    .make_prop_value(&property.name, &property.value)
-                    .err_tip(|| "Failed to convert platform property in build_action_info")?;
-                platform_properties.insert(property.name.clone(), platform_property);
+        if let Some(platform) = action.platform {
+            for property in platform.properties {
+                platform_properties.insert(property.name, property.value);
             }
         }
 
@@ -121,18 +114,9 @@ impl InstanceInfo {
         if platform_properties.is_empty() {
             let command =
                 get_and_decode_digest::<Command>(&self.cas_store, command_digest.into()).await?;
-            if let Some(platform) = &command.platform {
-                for property in &platform.properties {
-                    let platform_property = self
-                        .scheduler
-                        .get_platform_property_manager(&instance_name)
-                        .await
-                        .err_tip(|| "Failed to get platform properties in build_action_info")?
-                        .make_prop_value(&property.name, &property.value)
-                        .err_tip(|| {
-                            "Failed to convert command platform property in build_action_info"
-                        })?;
-                    platform_properties.insert(property.name.clone(), platform_property);
+            if let Some(platform) = command.platform {
+                for property in platform.properties {
+                    platform_properties.insert(property.name, property.value);
                 }
             }
         }
@@ -152,7 +136,7 @@ impl InstanceInfo {
             command_digest,
             input_root_digest,
             timeout,
-            platform_properties: PlatformProperties::new(platform_properties),
+            platform_properties,
             priority,
             load_timestamp: UNIX_EPOCH,
             insert_timestamp: SystemTime::now(),
@@ -170,7 +154,7 @@ type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send
 impl ExecutionServer {
     pub fn new(
         config: &HashMap<InstanceName, ExecutionConfig>,
-        scheduler_map: &HashMap<String, Arc<dyn ActionScheduler>>,
+        scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
         store_manager: &StoreManager,
     ) -> Result<Self, Error> {
         let mut instance_infos = HashMap::with_capacity(config.len());
@@ -271,7 +255,7 @@ impl ExecutionServer {
             .build_action_info(
                 instance_name.clone(),
                 digest,
-                &action,
+                action,
                 priority,
                 request.skip_cache_lookup,
                 request

@@ -12,82 +12,71 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nativelink_config::schedulers::{PropertyModification, PropertyType};
+use nativelink_config::schedulers::PropertyModification;
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{ActionInfo, OperationId};
+use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
 use parking_lot::Mutex;
 
-use crate::action_scheduler::ActionScheduler;
-use crate::platform_property_manager::PlatformPropertyManager;
-
 #[derive(MetricsComponent)]
 pub struct PropertyModifierScheduler {
     modifications: Vec<nativelink_config::schedulers::PropertyModification>,
     #[metric(group = "scheduler")]
-    scheduler: Arc<dyn ActionScheduler>,
+    scheduler: Arc<dyn ClientStateManager>,
     #[metric(group = "property_manager")]
-    property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
+    known_properties: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl PropertyModifierScheduler {
     pub fn new(
         config: &nativelink_config::schedulers::PropertyModifierScheduler,
-        scheduler: Arc<dyn ActionScheduler>,
+        scheduler: Arc<dyn ClientStateManager>,
     ) -> Self {
         Self {
             modifications: config.modifications.clone(),
             scheduler,
-            property_managers: Mutex::new(HashMap::new()),
+            known_properties: Mutex::new(HashMap::new()),
         }
     }
 
-    async fn inner_get_platform_property_manager(
-        &self,
-        instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error> {
+    async fn inner_get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
         {
-            let property_managers = self.property_managers.lock();
-            if let Some(property_manager) = property_managers.get(instance_name) {
+            let known_properties = self.known_properties.lock();
+            if let Some(property_manager) = known_properties.get(instance_name) {
                 return Ok(property_manager.clone());
             }
         }
-        let property_manager = self
+        let known_platform_property_provider = self
             .scheduler
-            .get_platform_property_manager(instance_name)
-            .await?;
-        let mut known_properties = property_manager.get_known_properties().clone();
+            .as_known_platform_property_provider()
+            .err_tip(|| "Inner scheduler does not implement KnownPlatformPropertyProvider for PropertyModifierScheduler")?;
+        let mut known_properties = HashSet::<String>::from_iter(
+            known_platform_property_provider
+                .get_known_properties(instance_name)
+                .await?,
+        );
         for modification in &self.modifications {
             match modification {
                 PropertyModification::remove(name) => {
-                    known_properties
-                        .entry(name.into())
-                        .or_insert(PropertyType::priority);
+                    known_properties.insert(name.clone());
                 }
                 PropertyModification::add(_) => (),
             }
         }
-        let property_manager = {
-            let mut property_managers = self.property_managers.lock();
-            match property_managers.entry(instance_name.into()) {
-                Entry::Vacant(new_entry) => {
-                    let property_manager = Arc::new(PlatformPropertyManager::new(known_properties));
-                    new_entry.insert(property_manager.clone());
-                    property_manager
-                }
-                // We lost the race, use the other manager.
-                Entry::Occupied(old_entry) => old_entry.get().clone(),
-            }
-        };
-        Ok(property_manager)
+        let final_known_properties: Vec<String> = known_properties.into_iter().collect();
+        self.known_properties
+            .lock()
+            .insert(instance_name.to_string(), final_known_properties.clone());
+
+        Ok(final_known_properties)
     }
 
     async fn inner_add_action(
@@ -95,23 +84,14 @@ impl PropertyModifierScheduler {
         client_operation_id: OperationId,
         mut action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
-        let platform_property_manager = self
-            .inner_get_platform_property_manager(action_info.unique_qualifier.instance_name())
-            .await
-            .err_tip(|| "In PropertyModifierScheduler::add_action")?;
         let action_info_mut = Arc::make_mut(&mut action_info);
         for modification in &self.modifications {
             match modification {
-                PropertyModification::add(addition) => {
-                    action_info_mut.platform_properties.properties.insert(
-                        addition.name.clone(),
-                        platform_property_manager
-                            .make_prop_value(&addition.name, &addition.value)
-                            .err_tip(|| "In PropertyModifierScheduler::add_action")?,
-                    )
-                }
+                PropertyModification::add(addition) => action_info_mut
+                    .platform_properties
+                    .insert(addition.name.clone(), addition.value.clone()),
                 PropertyModification::remove(name) => {
-                    action_info_mut.platform_properties.properties.remove(name)
+                    action_info_mut.platform_properties.remove(name)
                 }
             };
         }
@@ -129,13 +109,9 @@ impl PropertyModifierScheduler {
 }
 
 #[async_trait]
-impl ActionScheduler for PropertyModifierScheduler {
-    async fn get_platform_property_manager(
-        &self,
-        instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error> {
-        self.inner_get_platform_property_manager(instance_name)
-            .await
+impl KnownPlatformPropertyProvider for PropertyModifierScheduler {
+    async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
+        self.inner_get_known_properties(instance_name).await
     }
 }
 
@@ -155,6 +131,10 @@ impl ClientStateManager for PropertyModifierScheduler {
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter).await
+    }
+
+    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
+        Some(self)
     }
 }
 

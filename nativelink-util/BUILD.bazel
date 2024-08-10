@@ -22,6 +22,7 @@ rust_library(
         "src/fs.rs",
         "src/health_utils.rs",
         "src/instant_wrapper.rs",
+        "src/known_platform_property_provider.rs",
         "src/lib.rs",
         "src/metrics_utils.rs",
         "src/operation_state_manager.rs",

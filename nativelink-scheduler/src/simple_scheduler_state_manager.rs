@@ -23,6 +23,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
     OperationId, WorkerId,
 };
+use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, WorkerStateManager,
@@ -428,6 +429,10 @@ impl<T: AwaitedActionDb> ClientStateManager for SimpleSchedulerStateManager<T> {
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter, move |rx| Box::new(ClientActionStateResult::new(rx)))
             .await
+    }
+
+    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
+        None
     }
 }
 

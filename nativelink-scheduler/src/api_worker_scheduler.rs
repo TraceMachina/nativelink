@@ -23,7 +23,7 @@ use nativelink_metric::{
     group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
     RootMetricsComponent,
 };
-use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId, WorkerId};
+use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
 use nativelink_util::operation_state_manager::WorkerStateManager;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::Notify;
@@ -31,7 +31,7 @@ use tonic::async_trait;
 use tracing::{event, Level};
 
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::worker::{Worker, WorkerTimestamp, WorkerUpdate};
+use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
 
 struct Workers(LruCache<WorkerId, Worker>);
@@ -248,7 +248,7 @@ impl ApiWorkerSchedulerImpl {
         &mut self,
         worker_id: WorkerId,
         operation_id: OperationId,
-        action_info: Arc<ActionInfo>,
+        action_info: ActionInfoWithProps,
     ) -> Result<(), Error> {
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result =
@@ -345,7 +345,7 @@ impl ApiWorkerScheduler {
         &self,
         worker_id: WorkerId,
         operation_id: OperationId,
-        action_info: Arc<ActionInfo>,
+        action_info: ActionInfoWithProps,
     ) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
         inner

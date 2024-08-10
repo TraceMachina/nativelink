@@ -26,6 +26,7 @@ use crate::action_messages::{
     ActionInfo, ActionStage, ActionState, ActionUniqueKey, OperationId, WorkerId,
 };
 use crate::common::DigestInfo;
+use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,7 +98,7 @@ pub type ActionStateResultStream<'a> =
     Pin<Box<dyn Stream<Item = Box<dyn ActionStateResult>> + Send + 'a>>;
 
 #[async_trait]
-pub trait ClientStateManager: Sync + Send + MetricsComponent {
+pub trait ClientStateManager: Sync + Send + Unpin + MetricsComponent + 'static {
     /// Add a new action to the queue or joins an existing action.
     async fn add_action(
         &self,
@@ -110,6 +111,14 @@ pub trait ClientStateManager: Sync + Send + MetricsComponent {
         &self,
         filter: OperationFilter,
     ) -> Result<ActionStateResultStream, Error>;
+
+    /// Returns the known platform property provider for the given instance
+    /// if this implementation supports it.
+    // TODO(https://github.com/rust-lang/rust/issues/65991) When this lands we can
+    // remove this and have the call sites instead try to cast the ClientStateManager
+    // into a KnownPlatformPropertyProvider instead. Rust currently does not support
+    // casting traits to other traits.
+    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider>;
 }
 
 #[async_trait]

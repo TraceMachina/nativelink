@@ -32,6 +32,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionState, ActionUniqueQualifier, OperationId, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::connection_manager::ConnectionManager;
+use nativelink_util::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
@@ -45,9 +46,6 @@ use tokio::sync::watch;
 use tokio::time::sleep;
 use tonic::{Request, Streaming};
 use tracing::{event, Level};
-
-use crate::action_scheduler::ActionScheduler;
-use crate::platform_property_manager::PlatformPropertyManager;
 
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
@@ -87,7 +85,7 @@ impl ActionStateResult for GrpcActionStateResult {
 #[derive(MetricsComponent)]
 pub struct GrpcScheduler {
     #[metric(group = "property_managers")]
-    platform_property_managers: Mutex<HashMap<String, Arc<PlatformPropertyManager>>>,
+    supported_props: Mutex<HashMap<String, Vec<String>>>,
     retrier: Retrier,
     connection_manager: ConnectionManager,
 }
@@ -115,7 +113,7 @@ impl GrpcScheduler {
         let endpoint = tls_utils::endpoint(&config.endpoint)?;
         let jitter_fn = Arc::new(jitter_fn);
         Ok(Self {
-            platform_property_managers: Mutex::new(HashMap::new()),
+            supported_props: Mutex::new(HashMap::new()),
             retrier: Retrier::new(
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn.clone(),
@@ -220,14 +218,9 @@ impl GrpcScheduler {
         ))
     }
 
-    async fn inner_get_platform_property_manager(
-        &self,
-        instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error> {
-        if let Some(platform_property_manager) =
-            self.platform_property_managers.lock().get(instance_name)
-        {
-            return Ok(platform_property_manager.clone());
+    async fn inner_get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
+        if let Some(supported_props) = self.supported_props.lock().get(instance_name) {
+            return Ok(supported_props.clone());
         }
 
         self.perform_request(instance_name, |instance_name| async move {
@@ -244,25 +237,17 @@ impl GrpcScheduler {
                 .await
                 .err_tip(|| "Retrieving upstream GrpcScheduler capabilities");
             let capabilities = capabilities_result?.into_inner();
-            let platform_property_manager = Arc::new(PlatformPropertyManager::new(
-                capabilities
-                    .execution_capabilities
-                    .err_tip(|| "Unable to get execution properties in GrpcScheduler")?
-                    .supported_node_properties
-                    .iter()
-                    .map(|property| {
-                        (
-                            property.clone(),
-                            nativelink_config::schedulers::PropertyType::exact,
-                        )
-                    })
-                    .collect(),
-            ));
+            let supported_props = capabilities
+                .execution_capabilities
+                .err_tip(|| "Unable to get execution properties in GrpcScheduler")?
+                .supported_node_properties
+                .into_iter()
+                .collect::<Vec<String>>();
 
-            self.platform_property_managers
+            self.supported_props
                 .lock()
-                .insert(instance_name.to_string(), platform_property_manager.clone());
-            Ok(platform_property_manager)
+                .insert(instance_name.to_string(), supported_props.clone());
+            Ok(supported_props)
         })
         .await
     }
@@ -376,16 +361,16 @@ impl ClientStateManager for GrpcScheduler {
     ) -> Result<ActionStateResultStream<'a>, Error> {
         self.inner_filter_operations(filter).await
     }
+
+    fn as_known_platform_property_provider(&self) -> Option<&dyn KnownPlatformPropertyProvider> {
+        Some(self)
+    }
 }
 
 #[async_trait]
-impl ActionScheduler for GrpcScheduler {
-    async fn get_platform_property_manager(
-        &self,
-        instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error> {
-        self.inner_get_platform_property_manager(instance_name)
-            .await
+impl KnownPlatformPropertyProvider for GrpcScheduler {
+    async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
+        self.inner_get_known_properties(instance_name).await
     }
 }
 

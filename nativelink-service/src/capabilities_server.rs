@@ -28,10 +28,10 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     GetCapabilitiesRequest, PriorityCapabilities, ServerCapabilities,
 };
 use nativelink_proto::build::bazel::semver::SemVer;
-use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_util::digest_hasher::default_digest_hasher_func;
+use nativelink_util::operation_state_manager::ClientStateManager;
 use tonic::{Request, Response, Status};
-use tracing::{instrument, Level};
+use tracing::{event, instrument, Level};
 
 const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
 
@@ -43,30 +43,37 @@ pub struct CapabilitiesServer {
 impl CapabilitiesServer {
     pub async fn new(
         config: &HashMap<InstanceName, CapabilitiesConfig>,
-        scheduler_map: &HashMap<String, Arc<dyn ActionScheduler>>,
+        scheduler_map: &HashMap<String, Arc<dyn ClientStateManager>>,
     ) -> Result<Self, Error> {
         let mut supported_node_properties_for_instance = HashMap::new();
         for (instance_name, cfg) in config {
             let mut properties = Vec::new();
             if let Some(remote_execution_cfg) = &cfg.remote_execution {
-                let scheduler = scheduler_map
-                    .get(&remote_execution_cfg.scheduler)
-                    .err_tip(|| {
-                        format!(
-                            "Scheduler needs config for '{}' because it exists in capabilities",
-                            remote_execution_cfg.scheduler
-                        )
-                    })?
-                    .clone();
-
-                for platform_key in scheduler
-                    .get_platform_property_manager(instance_name)
-                    .await
-                    .err_tip(|| format!("Failed to get platform properties for {instance_name}"))?
-                    .get_known_properties()
-                    .keys()
-                {
-                    properties.push(platform_key.clone());
+                let scheduler =
+                    scheduler_map
+                        .get(&remote_execution_cfg.scheduler)
+                        .err_tip(|| {
+                            format!(
+                                "Scheduler needs config for '{}' because it exists in capabilities",
+                                remote_execution_cfg.scheduler
+                            )
+                        })?;
+                if let Some(props_provider) = scheduler.as_known_platform_property_provider() {
+                    for platform_key in props_provider
+                        .get_known_properties(instance_name)
+                        .await
+                        .err_tip(|| {
+                            format!("Failed to get platform properties for {instance_name}")
+                        })?
+                    {
+                        properties.push(platform_key.clone());
+                    }
+                } else {
+                    event!(
+                        Level::WARN,
+                        "Scheduler '{}' does not implement KnownPlatformPropertyProvider",
+                        remote_execution_cfg.scheduler
+                    );
                 }
             }
             supported_node_properties_for_instance.insert(instance_name.clone(), properties);
