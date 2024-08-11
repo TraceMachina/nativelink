@@ -436,7 +436,7 @@ async fn inner_main(
                             Some(service)
                         })
                     })
-                    .err_tip(|| "Could not create WorkerApi service")?,
+                    .err_tip(|| "Could not create BEP service")?,
             );
 
         let health_registry = health_registry_builder.lock().await.build();
