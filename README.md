@@ -23,7 +23,7 @@ NativeLink is an efficient, high-performance build cache and remote execution sy
 NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **one billion requests** per month for its customers, including large corporations such as **Samsung**.
 
 <a href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
-    <img src="https://trace-github-resources.s3.us-east-2.amazonaws.com/harper-90-thumbnail.webp" alt="NativeLink Explained in 90 seconds" loading="lazy"/>
+    <img src="https://trace-github-resources.s3.us-east-2.amazonaws.com/harper-90-thumbnail.webp" alt="NativeLink Explained in 90 seconds" loading="lazy" width="300" height="169" />
 </a>
 
 ## 🔑 Key Features
