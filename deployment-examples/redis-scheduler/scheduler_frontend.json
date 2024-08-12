@@ -23,32 +23,17 @@
   },
   "schedulers": {
     "MAIN_SCHEDULER": {
-      "db_backend": {
-        "redis": {
-          "addresses": ["redis://${SCHEDULER_ENDPOINT:-127.0.0.1}:6379/"],
-          "mode": "standard"
-        }
-      },
-      // TODO(adams): use the right scheduler because reclient doesn't use the cached results?
-      // TODO(adams): max_bytes_per_stream
       "simple": {
+        "db_backend": {
+          "redis": {
+            "addresses": ["redis://127.0.0.1:6379"],
+            "mode": "standard"
+          }
+        },
         "supported_platform_properties": {
-          "cpu_count": "priority",
-          "memory_kb": "priority",
-          "network_kbps": "priority",
-          "disk_read_iops": "priority",
-          "disk_read_bps": "priority",
-          "disk_write_iops": "priority",
-          "disk_write_bps": "priority",
-          "shm_size": "priority",
-          "gpu_count": "priority",
-          "gpu_model": "priority",
-          "cpu_vendor": "priority",
-          "cpu_arch": "priority",
-          "cpu_model": "priority",
-          "kernel_version": "priority",
+          "cpu_count": "minimum",
           "OSFamily": "priority",
-          "container-image": "priority",
+          "container-image": "priority"
         }
       }
     }
@@ -56,7 +41,7 @@
   "servers": [{
     "listener": {
       "http": {
-        "socket_address": "0.0.0.0:50052"
+        "socket_address": "0.0.0.0:50052",
       }
     },
     "services": {
@@ -79,11 +64,10 @@
         }
       }
     }
-  },
-  {
+  }, {
     "listener": {
       "http": {
-        "socket_address": "0.0.0.0:50061",
+        "socket_address": "${SCHEDULER_FRONTEND_ENDPOINT}",
       }
     },
     "services": {

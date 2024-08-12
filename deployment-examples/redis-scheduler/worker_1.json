@@ -1,0 +1,67 @@
+{
+  "stores": {
+    "GRPC_LOCAL_STORE": {
+      // Note: This file is used to test GRPC store.
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": [
+          {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+        ],
+        "store_type": "cas"
+      }
+    },
+    "GRPC_LOCAL_AC_STORE": {
+      // Note: This file is used to test GRPC store.
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": [
+          {"address": "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051"}
+        ],
+        "store_type": "ac"
+      }
+    },
+    "WORKER_FAST_SLOW_STORE": {
+      "fast_slow": {
+        "fast": {
+          "filesystem": {
+            "content_path": "~/.cache/nativelink/data-worker-test-1/content_path-cas",
+            "temp_path": "~/.cache/nativelink/data-worker-test-1/tmp_path-cas",
+            "eviction_policy": {
+              // 10gb.
+              "max_bytes": 10000000000,
+            }
+          }
+        },
+        "slow": {
+          "ref_store": {
+            "name": "GRPC_LOCAL_STORE",
+          }
+        }
+      }
+    }
+  },
+  "workers": [{
+    "local": {
+      "worker_api_endpoint": {
+        "uri": "grpc://${SCHEDULER_BACKEND_1_ENDPOINT}",
+      },
+      "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
+      "upload_action_result": {
+        "ac_store": "GRPC_LOCAL_AC_STORE",
+      },
+      "work_directory": "~/.cache/nativelink/work-1",
+      "platform_properties": {
+        "cpu_count": {
+          "values": ["2"]
+        },
+        "OSFamily": {
+          "values": [""]
+        },
+        "container-image": {
+          "values": [""]
+        }
+      }
+    }
+  }],
+  "servers": []
+}

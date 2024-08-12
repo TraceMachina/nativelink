@@ -75,8 +75,8 @@
       "http": {
         "socket_address": "0.0.0.0:50071",
         "tls": {
-          "cert_file": "/root/example-do-not-use-in-prod-rootca.crt",
-          "key_file": "/root/example-do-not-use-in-prod-key.pem"
+          "cert_file": "${CA}",
+          "key_file": "${PEM}"
         }
       }
     },
