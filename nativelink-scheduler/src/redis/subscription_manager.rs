@@ -24,7 +24,6 @@ use nativelink_store::redis_store::RedisStore;
 use nativelink_error::{make_err, Code, Error};
 use nativelink_util::action_messages::OperationId;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::{watch, Notify};
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
@@ -110,7 +109,6 @@ impl RedisOperationSubscribersImpl {
 
 pub struct RedisOperationSubscribers {
     inner: Arc<Mutex<RedisOperationSubscribersImpl>>,
-    store: Arc<RedisStore>,
     _join_handle: JoinHandleDropGuard<()>,
 }
 
@@ -225,7 +223,6 @@ impl RedisOperationSubscribers {
         });
         Self {
             inner,
-            store,
             _join_handle,
         }
     }
