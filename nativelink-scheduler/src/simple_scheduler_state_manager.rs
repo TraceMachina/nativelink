@@ -25,7 +25,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
-    OperationFilter, OperationStageFlags, OrderDirection, StateManagerGeneric, WorkerStateManager,
+    OperationFilter, OperationStageFlags, OrderDirection, WorkerStateManager,
 };
 use tokio::sync::Notify;
 use tracing::{event, Level};
@@ -142,7 +142,6 @@ pub struct SimpleSchedulerStateManager<T: AwaitedActionDb> {
     max_job_retries: usize,
 }
 
-impl<T: AwaitedActionDb> StateManagerGeneric for SimpleSchedulerStateManager<T> {}
 impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
     pub fn new(
         tasks_change_notify: Arc<Notify>,

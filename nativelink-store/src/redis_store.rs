@@ -66,13 +66,13 @@ pub struct RedisStore {
 impl RedisStore {
     /// Create a new `RedisStore` from the given configuration.
     pub fn new(config: &nativelink_config::stores::RedisStore) -> Result<Arc<Self>, Error> {
-        if config.addresses.0.is_empty() {
+        if config.addresses.is_empty() {
             return Err(make_err!(
                 Code::InvalidArgument,
                 "No addresses were specified in redis store configuration."
             ));
         };
-        let [addr] = config.addresses.0.as_slice() else {
+        let [addr] = config.addresses.as_slice() else {
             return Err(make_err!(Code::Unimplemented, "Connecting directly to multiple redis nodes in a cluster is currently unsupported. Please specify a single URL to a single node, and nativelink will use cluster discover to find the other nodes."));
         };
         let mut redis_config = match config.mode {

@@ -141,9 +141,3 @@ pub trait MatchingEngineStateManager: Sync + Send + MetricsComponent {
         worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error>;
 }
-
-#[async_trait]
-pub trait StateManagerGeneric:
-    WorkerStateManager + ClientStateManager + MatchingEngineStateManager
-{
-}

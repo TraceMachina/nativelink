@@ -121,12 +121,13 @@ pub struct SimpleScheduler {
     pub allocation_strategy: WorkerAllocationStrategy,
 
     /// The type of backend to use for storing and scheduling jobs.
-    /// Default: SchedulerBackend::Memory
+    /// Default: SchedulerBackend::memory
     #[serde(default)]
     pub db_backend: SchedulerBackend,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[allow(non_camel_case_types)]
+#[derive(Clone, Deserialize, Debug, Default)]
 pub enum SchedulerBackend {
     #[default]
     Memory,

@@ -1,8 +1,7 @@
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// you may not use this file except in compliance with the License. You may obtain a copy of the License at
 //
 //    http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -43,7 +42,8 @@ fn inner_scheduler_factory(
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
         SchedulerConfig::simple(config) => {
-            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(config);
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(config)
+                .err_tip(|| "In inner_scheduler_factory")?;
             (Some(action_scheduler), Some(worker_scheduler))
         }
         SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
