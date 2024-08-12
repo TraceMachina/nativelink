@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This is a sanity check test to ensure we are caching test results.
+# This is a sanity check test to ensure prometheus metrics server is working.
 
 if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
   echo "This script should be run under run_integration_tests.sh"
