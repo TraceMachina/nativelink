@@ -22,7 +22,7 @@ use fred::interfaces::{
     ClientLike, KeysInterface, PubsubInterface, SortedSetsInterface, TransactionInterface,
 };
 use fred::types::{RedisValue, ZRange, ZRangeBound, ZRangeKind, ZSort};
-use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_store::redis_store::RedisStore;
 use nativelink_util::action_messages::{ActionInfo, ActionUniqueQualifier, OperationId};
@@ -103,7 +103,11 @@ impl RedisAdapter {
         }
     }
     pub async fn get_bytes(&self, key: &RedisKeys<'_>) -> Result<Bytes, nativelink_error::Error> {
-        let bytes = self.store.get_part_unchunked(key, 0, None).await.err_tip(|| "In RedisAdapter::get_bytes")?;
+        let bytes = self
+            .store
+            .get_part_unchunked(key, 0, None)
+            .await
+            .err_tip(|| "In RedisAdapter::get_bytes")?;
         if bytes.is_empty() {
             return Err(make_err!(
                 Code::NotFound,
@@ -125,7 +129,7 @@ impl RedisAdapter {
     // If the key already exists in another set, this will remove it from that set.
     async fn move_or_add_to_set(&self, set_name: &str, key: &str) -> Result<(), Error> {
         let client = self.store.get_client();
-        // Get the set the value is currently in
+        // Get the name of the sorted set the value is currently in
         // If this value changes before the tx finishes, the transaction reverts.
         let maybe_current_set_name: Option<String> = client
             .get(key)
@@ -178,17 +182,18 @@ impl RedisAdapter {
         let start_bound = to_redis_bound(start, !desc);
         let end_bound = to_redis_bound(end, desc);
         let client = self.store.get_client();
-        client.zrange(
-            set,
-            start_bound,
-            end_bound,
-            Some(ZSort::ByLex),
-            desc,
-            None,
-            false,
-        )
-        .await
-        .err_tip(|| "In RedisAdapter::list_set")
+        client
+            .zrange(
+                set,
+                start_bound,
+                end_bound,
+                Some(ZSort::ByLex),
+                desc,
+                None,
+                false,
+            )
+            .await
+            .err_tip(|| "In RedisAdapter::list_set")
     }
 
     pub async fn get_range_of_actions(
@@ -268,13 +273,10 @@ impl RedisAdapter {
         &self,
         operation_id: &OperationId,
     ) -> Result<AwaitedAction, Error> {
-        let bytes = self
-            .get_bytes(&RedisKeys::AwaitedAction(operation_id))
+        self.get_bytes(&RedisKeys::AwaitedAction(operation_id))
             .await
-            .err_tip(|| "In RedisAdapter::GetAwaitedAction")?;
-        serde_json::from_slice(&bytes).map_err(|err| {
-            make_input_err!("In RedisAdapter::get_awaited_action - {}", err.to_string())
-        })
+            .and_then(AwaitedAction::try_from)
+            .err_tip(|| "In RedisAdapter::GetAwaitedAction")
     }
 
     pub async fn get_operation_id_by_client_id(
@@ -331,6 +333,14 @@ impl RedisAdapter {
         let _sorted_action: SortedAwaitedAction = action.borrow().into();
         let action_bytes: Bytes = action.clone().try_into()?;
 
+        // First create a channel in memory with the action state.
+        let (tx, rx) = watch::channel(action.clone());
+        // Set the subscription sender for the rx.
+        self.operation_subscribers
+            .set_operation_sender(&operation_id, tx)
+            .await;
+        let sub = RedisOperationSubscriber::new(rx);
+
         self.store
             .update_oneshot(&awaited_action_key, action_bytes)
             .await
@@ -343,11 +353,6 @@ impl RedisAdapter {
             .update_oneshot(&operation_id_ahk, operation_id.to_string().into())
             .await
             .err_tip(|| "In RedisAdapter::add_action")?;
-        let (tx, rx) = watch::channel(action.clone());
-        self.operation_subscribers
-            .set_operation_sender(&operation_id, tx)
-            .await;
-        let sub = RedisOperationSubscriber::new(rx);
         self.update_awaited_action(action)
             .await
             .err_tip(|| "In RedisAdapter::add_action")?;
@@ -393,19 +398,93 @@ impl RedisAdapter {
         &self,
         new_awaited_action: AwaitedAction,
     ) -> Result<(), Error> {
-        let client = self.store.get_client();
-        let operation_id = new_awaited_action.operation_id().clone();
-        let new_sorted_state =
-            SortedAwaitedActionState::try_from(&new_awaited_action.state().stage)
-                .err_tip(|| "In RedisAdapter::update_awaited_action")?;
+        let action_key = RedisKeys::AwaitedAction(new_awaited_action.operation_id());
+        // Note: We error here if the action is not in redis instead of uploading it
+        // because we don't have the client ID and therefore have insufficient information
+        // to add the action.
+        let old_awaited_action = self
+            .get_bytes(&action_key)
+            .await
+            .and_then(AwaitedAction::try_from)
+            .err_tip(|| "In RedisAdapter::update_awaited_action")?;
+
+        let new_awaited_action_bytes: Bytes = new_awaited_action
+            .clone()
+            .try_into()
+            .err_tip(|| "In RedisAdapter::update_awaited_action")?;
+
+        let maybe_tx = self
+            .operation_subscribers
+            .get_operation_sender(new_awaited_action.operation_id())
+            .await;
+
+        // Don't update if redis action version is newer.
+        // This would occur if a pub message from redis with an update was missed.
+        if new_awaited_action.version() <= old_awaited_action.version() {
+            // If our local version is out of date, we should update it to the current one.
+            let tx = match maybe_tx {
+                Some(tx) => tx,
+                None => {
+                    // If the action was found in redis and we don't have a local subscription sender,
+                    // then initialize one.
+                    let tx = watch::Sender::new(old_awaited_action.clone());
+                    self.operation_subscribers
+                        .set_operation_sender(old_awaited_action.operation_id(), tx.clone())
+                        .await;
+                    tx
+                }
+            };
+            // Update our local subscription with the newer redis version.
+            // Use send replace to forcibly update even if there are no recievers
+            tx.send_replace(old_awaited_action.clone());
+            return Err(make_err!(
+                // From: https://grpc.github.io/grpc/core/md_doc_statuscodes.html
+                // Use ABORTED if the client should retry at a higher level
+                // (e.g., when a client-specified test-and-set fails,
+                // indicating the client should restart a read-modify-write
+                // sequence)
+                Code::Aborted,
+                "{} Expected {:?} but got {:?} for operation_id {:?} - {:?}",
+                "Tried to update an awaited action with an incorrect version.",
+                old_awaited_action.version() + 1,
+                new_awaited_action.version(),
+                old_awaited_action,
+                new_awaited_action,
+            ));
+        }
+        error_if!(
+            old_awaited_action.action_info().unique_qualifier
+                != new_awaited_action.action_info().unique_qualifier,
+            "Unique key changed for operation_id {:?} - {:?} - {:?}",
+            new_awaited_action.operation_id(),
+            old_awaited_action.action_info(),
+            new_awaited_action.action_info(),
+        );
         let sorted_awaited_action = SortedAwaitedAction::from(&new_awaited_action);
 
-        self.move_or_add_to_set(&new_sorted_state.to_string(), &sorted_awaited_action.to_string()).await.err_tip(|| "In RedisAdapter update_awaited_action")?;
-        let awaited_action_bytes: Bytes = new_awaited_action.clone().try_into()?;
-        let key = RedisKeys::AwaitedAction(&operation_id);
-        let pub_key = format!("updates:{key}");
-        self.store.update_oneshot(key.to_string().as_str(), awaited_action_bytes.clone()).await.err_tip(|| "In RedisAdapter update_awaited_action")?;
-        let _: RedisValue = client.publish(pub_key, awaited_action_bytes)
+        if new_awaited_action.state() != old_awaited_action.state() {
+            let new_sorted_state =
+                SortedAwaitedActionState::try_from(&new_awaited_action.state().stage)
+                    .err_tip(|| "In RedisAdapter::update_awaited_action")?;
+            self.move_or_add_to_set(
+                &new_sorted_state.to_string(),
+                &sorted_awaited_action.to_string(),
+            )
+            .await
+            .err_tip(|| "In RedisAdapter update_awaited_action")?;
+        }
+        let pub_key = format!("updates:{action_key}");
+        self.store
+            .update_oneshot(
+                action_key.to_string().as_str(),
+                new_awaited_action_bytes.clone(),
+            )
+            .await
+            .err_tip(|| "In RedisAdapter update_awaited_action")?;
+        // Publish through redis since we updated to redis.
+        let client = self.store.get_client();
+        let _: RedisValue = client
+            .publish(pub_key, new_awaited_action_bytes)
             .await
             .err_tip(|| "In RedisAdapter update_awaited_action")?;
         Ok(())

@@ -160,6 +160,22 @@ impl TryInto<Bytes> for AwaitedAction {
     }
 }
 
+impl TryFrom<&Bytes> for AwaitedAction {
+    type Error = Error;
+    fn try_from(value: &Bytes) -> Result<Self, Self::Error> {
+        serde_json::from_slice(value).map_err(|err| {
+            make_input_err!("In AwaitedAction::TryFrom<&Bytes> - {}", err.to_string())
+        })
+    }
+}
+
+impl TryFrom<Bytes> for AwaitedAction {
+    type Error = Error;
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        Self::try_from(&value).err_tip(|| "In AwaitedAction::TryFrom<Bytes>")
+    }
+}
+
 impl TryFrom<&[u8]> for AwaitedAction {
     type Error = Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {

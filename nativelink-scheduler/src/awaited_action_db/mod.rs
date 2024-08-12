@@ -158,16 +158,17 @@ impl TryFrom<&Bytes> for SortedAwaitedAction {
     fn try_from(value: &Bytes) -> Result<Self, Self::Error> {
         let str_val = from_utf8(value)
             .map_err(|e| make_input_err!("{}", e.to_string()))
-            .err_tip(|| "In AwaitedAction::TryFrom::&Bytes")?;
+            .err_tip(|| "In SortedAwaitedAction::TryFrom::&Bytes")?;
         Self::try_from(str_val)
     }
 }
+
 impl TryFrom<&[u8]> for SortedAwaitedAction {
     type Error = Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         serde_json::from_slice(value)
             .map_err(|e| make_input_err!("{e:?}"))
-            .err_tip(|| "In AwaitedAction::TryFrom::&[u8]")
+            .err_tip(|| "In SortedAwaitedAction::TryFrom::&[u8]")
     }
 }
 

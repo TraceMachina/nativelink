@@ -162,7 +162,7 @@ impl RedisOperationSubscribers {
                             Ok(bytes) => bytes,
                             Err(e) => {
                                 event!(Level::ERROR, ?e, "Failed to decode bytes in RedisAwaitedActionDb::subscription_listener");
-                                continue
+                                continue;
                             }
                         };
                         let operation_id = state.operation_id();
