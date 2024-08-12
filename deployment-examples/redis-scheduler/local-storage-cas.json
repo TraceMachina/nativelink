@@ -12,8 +12,8 @@
         },
         "backend": {
           "filesystem": {
-            "content_path": "~/.cache/nativelink/content_path-cas",
-            "temp_path": "~/.cache/nativelink/tmp_path-cas",
+            "content_path": "${CAS_PATH}/content_path",
+            "temp_path": "${CAS_PATH}/tmp_path",
             "eviction_policy": {
               // 10gb.
               "max_bytes": 10000000000,
@@ -24,8 +24,8 @@
     },
     "AC_MAIN_STORE": {
       "filesystem": {
-        "content_path": "~/.cache/nativelink/content_path-ac",
-        "temp_path": "~/.cache/nativelink/tmp_path-ac",
+        "content_path": "${AC_PATH}/content_path",
+        "temp_path": "${AC_PATH}/tmp_path",
         "eviction_policy": {
           // 500mb.
           "max_bytes": 500000000,

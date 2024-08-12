@@ -24,8 +24,8 @@
       "fast_slow": {
         "fast": {
           "filesystem": {
-            "content_path": "~/.cache/nativelink/data-worker-test-2/content_path-cas",
-            "temp_path": "~/.cache/nativelink/data-worker-test-2/tmp_path-cas",
+            "content_path": "${WORKER_2_FAST_CAS}/content_path-cas",
+            "temp_path": "${WORKER_2_FAST_CAS}/tmp_path-cas",
             "eviction_policy": {
               // 10gb.
               "max_bytes": 10000000000,
@@ -34,7 +34,7 @@
         },
         "slow": {
           "ref_store": {
-            "name": "GRPC_LOCAL_STORE",
+            "name": "GRPC_LOCAL_STORE"
           }
         }
       }
@@ -49,7 +49,7 @@
       "upload_action_result": {
         "ac_store": "GRPC_LOCAL_AC_STORE",
       },
-      "work_directory": "~/.cache/nativelink/work-2",
+      "work_directory": "${WORKER_2_WORK_DIR}",
       "platform_properties": {
         "cpu_count": {
           "values": ["2"]
