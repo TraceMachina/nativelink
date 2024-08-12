@@ -46,7 +46,7 @@ pub fn state_manager_factory<
     NowFn: Fn() -> I + Clone + Send + Sync + 'static,
 >(
     scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
-    tasks_or_worker_change_notify: Arc<Notify>,
+    tasks_or_workers_change_notify: Arc<Notify>,
     now_fn: NowFn,
 ) -> Result<StateManagerFactoryResults, Error> {
     let mut max_job_retries = scheduler_cfg.max_job_retries;
@@ -63,7 +63,7 @@ pub fn state_manager_factory<
     match &scheduler_cfg.db_backend {
         SchedulerBackend::memory => {
             let state_manager = SimpleSchedulerStateManager::new(
-                tasks_or_worker_change_notify,
+                tasks_or_workers_change_notify,
                 max_job_retries,
                 MemoryAwaitedActionDb::new(
                     &EvictionPolicy {
@@ -79,9 +79,9 @@ pub fn state_manager_factory<
             let store = nativelink_store::redis_store::RedisStore::new(store_config)
                 .err_tip(|| "In state_manager_factory::redis_state_manager")?;
             let state_manager = SimpleSchedulerStateManager::new(
-                tasks_or_worker_change_notify.clone(),
+                tasks_or_workers_change_notify.clone(),
                 max_job_retries,
-                RedisAwaitedActionDb::new(store),
+                RedisAwaitedActionDb::new(store, tasks_or_workers_change_notify),
             );
             Ok((state_manager.clone(), state_manager.clone(), state_manager))
         }

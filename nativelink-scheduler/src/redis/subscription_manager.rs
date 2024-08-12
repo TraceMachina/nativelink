@@ -17,15 +17,16 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use async_lock::Mutex;
-use fred::clients::SubscriberClient;
 use fred::interfaces::{EventInterface, PubsubInterface};
 use fred::types::Message;
 use futures::{poll, StreamExt};
+use nativelink_store::redis_store::RedisStore;
 use nativelink_error::{make_err, Code, Error};
 use nativelink_util::action_messages::OperationId;
 use nativelink_util::spawn;
+use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tracing::{event, Level};
 
@@ -109,13 +110,15 @@ impl RedisOperationSubscribersImpl {
 
 pub struct RedisOperationSubscribers {
     inner: Arc<Mutex<RedisOperationSubscribersImpl>>,
+    store: Arc<RedisStore>,
     _join_handle: JoinHandleDropGuard<()>,
 }
 
 impl RedisOperationSubscribers {
-    pub fn new(sub: SubscriberClient) -> Self {
+    pub fn new(store: Arc<RedisStore>, tasks_or_workers_change_notify: Arc<Notify>) -> Self {
         let inner = Arc::new(Mutex::new(RedisOperationSubscribersImpl::new()));
         let weak_inner = Arc::downgrade(&inner);
+        let sub = store.get_subscriber_client();
 
         let _join_handle = spawn!("redis_action_update_listener", async move {
             if let Err(e) = sub.psubscribe("updates:*").await {
@@ -188,10 +191,18 @@ impl RedisOperationSubscribers {
                                     };
                                     let state: AwaitedAction =
                                         AwaitedAction::try_from(bytes).unwrap();
-                                    let tx =
-                                        inner.get_operation_sender(state.operation_id()).unwrap();
+                                    match inner.get_operation_sender(state.operation_id()) {
+                                        Some(tx) => {
+                                            tx.send_replace(state);
+                                        },
+                                        None => {
+                                            let tx = watch::Sender::new(state.clone());
+                                            inner.set_operation_sender(state.operation_id(), tx.clone());
+                                            tx.send_replace(state);
+                                            // The message isn't for one of our clients so we can ignore it.
+                                        }
+                                    };
                                     // Use send_replace so that we can send the update even when there are no recievers.
-                                    tx.send_replace(state);
                                 }
                                 Err(e) => {
                                     event!(Level::ERROR, ?e);
@@ -209,10 +220,12 @@ impl RedisOperationSubscribers {
                         return;
                     }
                 };
+                tasks_or_workers_change_notify.notify_one();
             }
         });
         Self {
             inner,
+            store,
             _join_handle,
         }
     }

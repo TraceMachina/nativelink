@@ -20,6 +20,7 @@ use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_store::redis_store::RedisStore;
 use nativelink_util::action_messages::{ActionInfo, OperationId};
+use tokio::sync::Notify;
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, SortedAwaitedAction, SortedAwaitedActionState,
@@ -30,13 +31,12 @@ use crate::redis::subscription_manager::RedisOperationSubscriber;
 #[derive(MetricsComponent)]
 pub struct RedisAwaitedActionDb {
     redis_adapter: RedisAdapter,
-    // sub_manager: RedisOperationSubscribers
 }
 
 impl RedisAwaitedActionDb {
-    pub fn new(store: Arc<RedisStore>) -> Self {
+    pub fn new(store: Arc<RedisStore>, tasks_or_workers_change_notify: Arc<Notify>) -> Self {
         Self {
-            redis_adapter: RedisAdapter::new(store),
+            redis_adapter: RedisAdapter::new(store, tasks_or_workers_change_notify),
         }
     }
 }

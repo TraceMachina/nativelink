@@ -27,7 +27,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_store::redis_store::RedisStore;
 use nativelink_util::action_messages::{ActionInfo, ActionUniqueQualifier, OperationId};
 use nativelink_util::store_trait::{StoreKey, StoreLike};
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
 use super::subscription_manager::{RedisOperationSubscriber, RedisOperationSubscribers};
 use crate::awaited_action_db::{AwaitedAction, SortedAwaitedAction, SortedAwaitedActionState};
@@ -92,13 +92,9 @@ impl<'a> From<&RedisKeys<'a>> for StoreKey<'a> {
 
 // Add a SortedAwaitedAction
 impl RedisAdapter {
-    pub fn new(store: Arc<RedisStore>) -> Self {
-        let client = store.get_client();
-        let sub_client = store.get_subscriber_client();
-        client.connect();
-        sub_client.connect();
+    pub fn new(store: Arc<RedisStore>, tasks_or_workers_change_notify: Arc<Notify>) -> Self {
         Self {
-            operation_subscribers: RedisOperationSubscribers::new(sub_client),
+            operation_subscribers: RedisOperationSubscribers::new(store.clone(), tasks_or_workers_change_notify),
             store,
         }
     }
@@ -120,9 +116,19 @@ impl RedisAdapter {
         &self,
         operation_id: &OperationId,
     ) -> Result<RedisOperationSubscriber, Error> {
-        self.operation_subscribers
+        match self.operation_subscribers
             .get_operation_subscriber(operation_id)
             .await
+        {
+            Ok(sub) => { Ok(sub) }
+            Err(_) => {
+                let action = self.get_bytes(&RedisKeys::AwaitedAction(operation_id)).await.and_then(AwaitedAction::try_from).err_tip(|| "In RedisAdapter::subscribe_to_operation - Failed to get subscriber and failed to fetch awaited action from redis")?;
+                let tx = watch::Sender::new(action);
+                self.operation_subscribers.set_operation_sender(operation_id, tx).await;
+                self.operation_subscribers.get_operation_subscriber(operation_id).await
+            }
+
+        }
     }
 
     // Takes the name of a sorted set and the key to add to it.
@@ -393,100 +399,121 @@ impl RedisAdapter {
         }
     }
 
-    /// Process a change changed AwaitedAction and notify any listeners.
     pub async fn update_awaited_action(
         &self,
         new_awaited_action: AwaitedAction,
     ) -> Result<(), Error> {
-        let action_key = RedisKeys::AwaitedAction(new_awaited_action.operation_id());
-        // Note: We error here if the action is not in redis instead of uploading it
-        // because we don't have the client ID and therefore have insufficient information
-        // to add the action.
-        let old_awaited_action = self
-            .get_bytes(&action_key)
-            .await
-            .and_then(AwaitedAction::try_from)
-            .err_tip(|| "In RedisAdapter::update_awaited_action")?;
-
-        let new_awaited_action_bytes: Bytes = new_awaited_action
-            .clone()
-            .try_into()
-            .err_tip(|| "In RedisAdapter::update_awaited_action")?;
-
-        let maybe_tx = self
-            .operation_subscribers
-            .get_operation_sender(new_awaited_action.operation_id())
-            .await;
-
-        // Don't update if redis action version is newer.
-        // This would occur if a pub message from redis with an update was missed.
-        if new_awaited_action.version() <= old_awaited_action.version() {
-            // If our local version is out of date, we should update it to the current one.
-            let tx = match maybe_tx {
-                Some(tx) => tx,
-                None => {
-                    // If the action was found in redis and we don't have a local subscription sender,
-                    // then initialize one.
-                    let tx = watch::Sender::new(old_awaited_action.clone());
-                    self.operation_subscribers
-                        .set_operation_sender(old_awaited_action.operation_id(), tx.clone())
-                        .await;
-                    tx
-                }
-            };
-            // Update our local subscription with the newer redis version.
-            // Use send replace to forcibly update even if there are no recievers
-            tx.send_replace(old_awaited_action.clone());
-            return Err(make_err!(
-                // From: https://grpc.github.io/grpc/core/md_doc_statuscodes.html
-                // Use ABORTED if the client should retry at a higher level
-                // (e.g., when a client-specified test-and-set fails,
-                // indicating the client should restart a read-modify-write
-                // sequence)
-                Code::Aborted,
-                "{} Expected {:?} but got {:?} for operation_id {:?} - {:?}",
-                "Tried to update an awaited action with an incorrect version.",
-                old_awaited_action.version() + 1,
-                new_awaited_action.version(),
-                old_awaited_action,
-                new_awaited_action,
-            ));
-        }
-        error_if!(
-            old_awaited_action.action_info().unique_qualifier
-                != new_awaited_action.action_info().unique_qualifier,
-            "Unique key changed for operation_id {:?} - {:?} - {:?}",
-            new_awaited_action.operation_id(),
-            old_awaited_action.action_info(),
-            new_awaited_action.action_info(),
-        );
+        let client = self.store.get_client();
+        let operation_id = new_awaited_action.operation_id().clone();
+        let new_sorted_state =
+            SortedAwaitedActionState::try_from(&new_awaited_action.state().stage)
+                .err_tip(|| "In RedisAdapter::update_awaited_action")?;
         let sorted_awaited_action = SortedAwaitedAction::from(&new_awaited_action);
 
-        if new_awaited_action.state() != old_awaited_action.state() {
-            let new_sorted_state =
-                SortedAwaitedActionState::try_from(&new_awaited_action.state().stage)
-                    .err_tip(|| "In RedisAdapter::update_awaited_action")?;
-            self.move_or_add_to_set(
-                &new_sorted_state.to_string(),
-                &sorted_awaited_action.to_string(),
-            )
-            .await
-            .err_tip(|| "In RedisAdapter update_awaited_action")?;
-        }
-        let pub_key = format!("updates:{action_key}");
-        self.store
-            .update_oneshot(
-                action_key.to_string().as_str(),
-                new_awaited_action_bytes.clone(),
-            )
-            .await
-            .err_tip(|| "In RedisAdapter update_awaited_action")?;
-        // Publish through redis since we updated to redis.
-        let client = self.store.get_client();
-        let _: RedisValue = client
-            .publish(pub_key, new_awaited_action_bytes)
+        self.move_or_add_to_set(&new_sorted_state.to_string(), &sorted_awaited_action.to_string()).await.err_tip(|| "In RedisAdapter update_awaited_action")?;
+        let awaited_action_bytes: Bytes = new_awaited_action.clone().try_into()?;
+        let key = RedisKeys::AwaitedAction(&operation_id);
+        let pub_key = format!("updates:{key}");
+        self.store.update_oneshot(key.to_string().as_str(), awaited_action_bytes.clone()).await.err_tip(|| "In RedisAdapter update_awaited_action")?;
+        let _: RedisValue = client.publish(pub_key, awaited_action_bytes)
             .await
             .err_tip(|| "In RedisAdapter update_awaited_action")?;
         Ok(())
     }
+    // /// Process a change changed AwaitedAction and notify any listeners.
+    // pub async fn update_awaited_action(
+    //     &self,
+    //     new_awaited_action: AwaitedAction,
+    // ) -> Result<(), Error> {
+    //     let action_key = RedisKeys::AwaitedAction(new_awaited_action.operation_id());
+    //     // Note: We error here if the action is not in redis instead of uploading it
+    //     // because we don't have the client ID and therefore have insufficient information
+    //     // to add the action.
+    //     let old_awaited_action = self
+    //         .get_bytes(&action_key)
+    //         .await
+    //         .and_then(AwaitedAction::try_from)
+    //         .err_tip(|| "In RedisAdapter::update_awaited_action")?;
+    //
+    //     let new_awaited_action_bytes: Bytes = new_awaited_action
+    //         .clone()
+    //         .try_into()
+    //         .err_tip(|| "In RedisAdapter::update_awaited_action")?;
+    //
+    //     let maybe_tx = self
+    //         .operation_subscribers
+    //         .get_operation_sender(new_awaited_action.operation_id())
+    //         .await;
+    //
+    //     // Don't update if redis action version is newer.
+    //     // This would occur if a pub message from redis with an update was missed.
+    //     if new_awaited_action.version() < old_awaited_action.version() {
+    //         // If our local version is out of date, we should update it to the current one.
+    //         let tx = match maybe_tx {
+    //             Some(tx) => tx,
+    //             None => {
+    //                 // If the action was found in redis and we don't have a local subscription sender,
+    //                 // then initialize one.
+    //                 let tx = watch::Sender::new(old_awaited_action.clone());
+    //                 self.operation_subscribers
+    //                     .set_operation_sender(old_awaited_action.operation_id(), tx.clone())
+    //                     .await;
+    //                 tx
+    //             }
+    //         };
+    //         // Update our local subscription with the newer redis version.
+    //         // Use send replace to forcibly update even if there are no recievers
+    //         tx.send_replace(old_awaited_action.clone());
+    //         return Err(make_err!(
+    //             // From: https://grpc.github.io/grpc/core/md_doc_statuscodes.html
+    //             // Use ABORTED if the client should retry at a higher level
+    //             // (e.g., when a client-specified test-and-set fails,
+    //             // indicating the client should restart a read-modify-write
+    //             // sequence)
+    //             Code::Aborted,
+    //             "{} Expected {:?} but got {:?} for operation_id {:?} - {:?}",
+    //             "Tried to update an awaited action with an incorrect version.",
+    //             old_awaited_action.version() + 1,
+    //             new_awaited_action.version(),
+    //             old_awaited_action,
+    //             new_awaited_action,
+    //         ));
+    //     }
+    //     error_if!(
+    //         old_awaited_action.action_info().unique_qualifier
+    //             != new_awaited_action.action_info().unique_qualifier,
+    //         "Unique key changed for operation_id {:?} - {:?} - {:?}",
+    //         new_awaited_action.operation_id(),
+    //         old_awaited_action.action_info(),
+    //         new_awaited_action.action_info(),
+    //     );
+    //     let sorted_awaited_action = SortedAwaitedAction::from(&new_awaited_action);
+    //
+    //     if new_awaited_action.state() != old_awaited_action.state() {
+    //         let new_sorted_state =
+    //             SortedAwaitedActionState::try_from(&new_awaited_action.state().stage)
+    //                 .err_tip(|| "In RedisAdapter::update_awaited_action")?;
+    //         self.move_or_add_to_set(
+    //             &new_sorted_state.to_string(),
+    //             &sorted_awaited_action.to_string(),
+    //         )
+    //         .await
+    //         .err_tip(|| "In RedisAdapter update_awaited_action")?;
+    //     }
+    //     let pub_key = format!("updates:{action_key}");
+    //     self.store
+    //         .update_oneshot(
+    //             action_key.to_string().as_str(),
+    //             new_awaited_action_bytes.clone(),
+    //         )
+    //         .await
+    //         .err_tip(|| "In RedisAdapter update_awaited_action")?;
+    //     // Publish through redis since we updated to redis.
+    //     let client = self.store.get_client();
+    //     let _: RedisValue = client
+    //         .publish(pub_key, new_awaited_action_bytes)
+    //         .await
+    //         .err_tip(|| "In RedisAdapter update_awaited_action")?;
+    //     Ok(())
+    // }
 }

@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Borrow;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -223,6 +225,8 @@ impl SimpleScheduler {
             .err_tip(|| "Failed to get queued operations in do_try_match")?;
 
         while let Some(action_state_result) = stream.next().await {
+            let state = action_state_result.as_ref().as_state().await;
+            println!("{:?}", state);
             result = result.merge(
                 match_action_to_worker(
                     action_state_result.as_ref(),
