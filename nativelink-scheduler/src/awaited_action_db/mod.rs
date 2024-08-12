@@ -166,7 +166,7 @@ impl TryFrom<&[u8]> for SortedAwaitedAction {
     type Error = Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         serde_json::from_slice(value)
-            .map_err(|e| make_input_err!("{}", e.to_string()))
+            .map_err(|e| make_input_err!("{e:?}"))
             .err_tip(|| "In AwaitedAction::TryFrom::&[u8]")
     }
 }

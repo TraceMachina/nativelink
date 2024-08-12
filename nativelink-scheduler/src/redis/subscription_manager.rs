@@ -1,3 +1,17 @@
+// Copyright 2024 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::task::Poll;
@@ -9,7 +23,8 @@ use fred::types::Message;
 use futures::{poll, StreamExt};
 use nativelink_error::{make_err, Code, Error};
 use nativelink_util::action_messages::OperationId;
-use nativelink_util::background_spawn;
+use nativelink_util::spawn;
+use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::watch;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tracing::{event, Level};
@@ -94,6 +109,7 @@ impl RedisOperationSubscribersImpl {
 
 pub struct RedisOperationSubscribers {
     inner: Arc<Mutex<RedisOperationSubscribersImpl>>,
+    _join_handle: JoinHandleDropGuard<()>,
 }
 
 impl RedisOperationSubscribers {
@@ -101,7 +117,7 @@ impl RedisOperationSubscribers {
         let inner = Arc::new(Mutex::new(RedisOperationSubscribersImpl::new()));
         let weak_inner = Arc::downgrade(&inner);
 
-        let _join_handle = background_spawn!("redis_action_change_listener", async move {
+        let _join_handle = spawn!("redis_action_update_listener", async move {
             if let Err(e) = sub.psubscribe("updates:*").await {
                 println!("Error subscribing to pattern - {e}");
                 return;
@@ -125,18 +141,33 @@ impl RedisOperationSubscribers {
                 }
             }
             loop {
+                // Wait until we have a new message.
                 let Ok(msg) = handle_next(stream.next().await) else {
                     event!(Level::ERROR, "RedisAwaitedActionDb::subscription_listener subscription update stream was closed");
                     return;
                 };
+                // We never send an empty message, so this should not occur, but we can just continue if it does.
                 let Some(bytes) = msg.value.as_bytes() else {
                     continue;
                 };
+
                 match weak_inner.upgrade() {
                     Some(inner_mutex) => {
+                        // Start the lock on the state.
+                        // This will be held until all available messages are handled.
                         let mut inner = inner_mutex.lock().await;
-                        let state: AwaitedAction = AwaitedAction::try_from(bytes).unwrap();
+
+                        // If the action is invalid, log the error, then move on.
+                        let state = match AwaitedAction::try_from(bytes) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                event!(Level::ERROR, ?e, "Failed to decode bytes in RedisAwaitedActionDb::subscription_listener");
+                                continue
+                            }
+                        };
                         let operation_id = state.operation_id();
+
+                        // Get the sender for the operation, or create one if it doesn't exist.
                         let tx = match inner.get_operation_sender(operation_id) {
                             Some(tx) => tx,
                             None => {
@@ -147,6 +178,8 @@ impl RedisOperationSubscribers {
                         };
                         // Use send_replace so that we can send the update even when there are no recievers.
                         tx.send_replace(state);
+                        // Use the raw poll function so we drop the lock after handling all the available messages
+                        // instead of having to acquire the lock for each individual one message.
                         while let Poll::Ready(maybe_result) = poll!(stream.next()) {
                             match handle_next(maybe_result) {
                                 Ok(msg) => {
@@ -178,7 +211,10 @@ impl RedisOperationSubscribers {
                 };
             }
         });
-        Self { inner }
+        Self {
+            inner,
+            _join_handle,
+        }
     }
 
     pub async fn get_operation_sender(

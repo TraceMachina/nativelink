@@ -39,7 +39,7 @@
     "MAIN_SCHEDULER": {
       "simple": {
         "db_backend": {
-          "Redis": {
+          "redis": {
             "addresses": ["redis://127.0.0.1:6379"],
             "mode": "standard"
           }

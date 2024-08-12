@@ -11,8 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#![feature(trait_upcasting)]
-
 pub mod action_scheduler;
 pub mod api_worker_scheduler;
 mod awaited_action_db;
@@ -26,5 +24,6 @@ pub mod property_modifier_scheduler;
 mod redis;
 pub mod simple_scheduler;
 mod simple_scheduler_state_manager;
+mod state_manager_factory;
 pub mod worker;
 pub mod worker_scheduler;

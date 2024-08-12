@@ -25,7 +25,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
-    OperationFilter, OperationStageFlags, OrderDirection, StateManagerGeneric, WorkerStateManager,
+    OperationFilter, OperationStageFlags, OrderDirection, WorkerStateManager,
 };
 use tokio::sync::Notify;
 use tracing::{event, Level};
@@ -142,7 +142,6 @@ pub struct SimpleSchedulerStateManager<T: AwaitedActionDb> {
     max_job_retries: usize,
 }
 
-impl<T: AwaitedActionDb> StateManagerGeneric for SimpleSchedulerStateManager<T> {}
 impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
     pub fn new(
         tasks_change_notify: Arc<Notify>,
@@ -310,7 +309,6 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
         fn sorted_awaited_action_state_for_flags(
             stage: OperationStageFlags,
         ) -> Option<SortedAwaitedActionState> {
-            println!("stage - {stage:?}");
             match stage {
                 OperationStageFlags::CacheCheck => Some(SortedAwaitedActionState::CacheCheck),
                 OperationStageFlags::Queued => Some(SortedAwaitedActionState::Queued),
@@ -321,7 +319,6 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
         }
 
         if let Some(operation_id) = &filter.operation_id {
-            println!("filter: operation_id - {operation_id}");
             return Ok(self
                 .action_db
                 .get_by_operation_id(operation_id)
@@ -339,7 +336,6 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                 .unwrap_or_else(|| Box::pin(stream::empty())));
         }
         if let Some(client_operation_id) = &filter.client_operation_id {
-            println!("filter: client_operation_id - {client_operation_id}");
             return Ok(self
                 .action_db
                 .get_awaited_action_by_id(client_operation_id)
@@ -374,9 +370,6 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                 .await
                 .err_tip(|| "In MemorySchedulerStateManager::filter_operations")?;
 
-            for sub in all_items.iter() {
-                println!("filter: get_all_awaited_actions: {:?}", sub.borrow());
-            }
             match filter.order_by_priority_direction {
                 Some(OrderDirection::Asc) => {
                     all_items.sort_unstable_by_key(|a| a.borrow().sort_key())

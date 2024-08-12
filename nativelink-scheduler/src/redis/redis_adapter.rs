@@ -1,10 +1,24 @@
+// Copyright 2024 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::borrow::Borrow;
 use std::ops::Bound;
 use std::str::from_utf8;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use fred::prelude::{
+use fred::interfaces::{
     ClientLike, KeysInterface, PubsubInterface, SortedSetsInterface, TransactionInterface,
 };
 use fred::types::{RedisValue, ZRange, ZRangeBound, ZRangeKind, ZSort};
@@ -89,7 +103,7 @@ impl RedisAdapter {
         }
     }
     pub async fn get_bytes(&self, key: &RedisKeys<'_>) -> Result<Bytes, nativelink_error::Error> {
-        let bytes = self.store.get_part_unchunked(key, 0, None).await?;
+        let bytes = self.store.get_part_unchunked(key, 0, None).await.err_tip(|| "In RedisAdapter::get_bytes")?;
         if bytes.is_empty() {
             return Err(make_err!(
                 Code::NotFound,
@@ -105,94 +119,50 @@ impl RedisAdapter {
         self.operation_subscribers
             .get_operation_subscriber(operation_id)
             .await
-        // println!("in subscribe_to_operation - {}", operation_id);
-        // let client = self.store.get_subscriber_client();
-        // client.init().await?;
-        // let key = RedisKeys::AwaitedAction(operation_id);
-        // let bytes = self
-        //     .get_bytes(&key)
-        //     .await
-        //     .err_tip(|| "In RedisAdapter::subscribe_to_operation")?;
-        // let initial_state = AwaitedAction::try_from(bytes.as_ref())?;
-        // let update_channel = format!("updates:{key}").to_string();
-        // let (tx, rx) = tokio::sync::watch::channel(initial_state);
-        // background_spawn!("spawn", async move {
-        //     client.subscribe(update_channel.clone()).await.unwrap();
-        //     // Max capacity.
-        //     let handler = move |event: Message| {
-        //         println!("{:?}", event.channel);
-        //         if let Some(bytes) = event.value.as_bytes() {
-        //             let awaited_action_result = AwaitedAction::try_from(bytes);
-        //             match awaited_action_result {
-        //                 Ok(awaited_action) => {
-        //                     tx.send_replace(awaited_action);
-        //                 }
-        //                 Err(e) => {
-        //                     event!(
-        //                         Level::ERROR,
-        //                         ?e,
-        //                         "Failed to decode awaited action from redis"
-        //                     );
-        //                 }
-        //             }
-        //         } else {
-        //             event!(Level::ERROR, "Recieved event without message");
-        //         }
-        //     };
-        //     let _ = client
-        //         .on_message(move |message| {
-        //             handler(message);
-        //             Ok(())
-        //         })
-        //         .await;
-        // });
-        //
-        // Ok(rx)
     }
 
-    async fn _add_to_set(&self, set: &str, key: &str) -> Result<(), Error> {
-        let client = self.store.get_client();
-        let tx = client.multi();
-        let _: RedisValue = tx.set(key, set, None, None, false).await?;
-        let _: RedisValue = tx
-            .zadd(
-                set,
-                Some(fred::types::SetOptions::NX),
-                None,
-                false,
-                false,
-                (0 as f64, key),
-            )
-            .await?;
-        // Watch before does not currently work with `ClientPool`
-        // See: https://github.com/aembke/fred.rs/issues/251
-        tx.watch_before(key);
-        let _: RedisValue = tx.exec(true).await?;
-        // Only succeeds if element doesn't already exist.
-        Ok(())
-    }
-
-    async fn move_or_add_to_set(&self, to: &str, key: &str) -> Result<(), Error> {
+    // Takes the name of a sorted set and the key to add to it.
+    // If the key already exists in another set, this will remove it from that set.
+    async fn move_or_add_to_set(&self, set_name: &str, key: &str) -> Result<(), Error> {
         let client = self.store.get_client();
         // Get the set the value is currently in
         // If this value changes before the tx finishes, the transaction reverts.
-        let maybe_current_set: Option<String> = client.get(key).await?;
-        println!("current_set - {maybe_current_set:?}");
+        let maybe_current_set_name: Option<String> = client
+            .get(key)
+            .await
+            .err_tip(|| "In RedisAdapter::move_or_add_to_set")?;
 
+        // Start a transaction
         let tx = client.multi();
-        // tx.watch_before(key);
 
-        if let Some(current_set) = maybe_current_set {
-            let _result: RedisValue = tx.zrem(current_set, key).await?;
-            println!("zrem result - {_result:?}");
+        // Revert if the set-tracker key changes.
+        // Note: watch_before does not currently work with `ClientPool`
+        // This should be fixed upstream in the next release.
+        // See: https://github.com/aembke/fred.rs/issues/251
+        tx.watch_before(key);
+
+        if let Some(current_set_name) = maybe_current_set_name {
+            let _result: RedisValue = tx
+                .zrem(current_set_name, key)
+                .await
+                .err_tip(|| "In RedisAdapter::move_or_add_to_set")?;
         }
 
-        let _add_result: RedisValue = tx
-            .zadd(to, None, None, false, false, (0 as f64, key))
-            .await?;
-        println!("add_result - {_add_result:?}");
-        let _: RedisValue = tx.set(key, to, None, None, false).await?;
-        Ok(tx.exec(true).await?)
+        // Add the key to the sorted set
+        let _: RedisValue = tx
+            .zadd(set_name, None, None, false, false, (0 as f64, key))
+            .await
+            .err_tip(|| "In RedisAdapter::move_or_add_to_set")?;
+
+        // Store the name of the set the key belongs to in `key` so anyone else
+        // trying to update the set will revert.
+        let _: RedisValue = tx
+            .set(key, set_name, None, None, false)
+            .await
+            .err_tip(|| "In RedisAdapter::move_or_add_to_set")?;
+        tx.exec(true)
+            .await
+            .err_tip(|| "In RedisAdapter::move_or_add_to_set")
     }
 
     pub async fn list_set<T>(
@@ -208,17 +178,17 @@ impl RedisAdapter {
         let start_bound = to_redis_bound(start, !desc);
         let end_bound = to_redis_bound(end, desc);
         let client = self.store.get_client();
-        Ok(client
-            .zrange(
-                set,
-                start_bound,
-                end_bound,
-                Some(ZSort::ByLex),
-                desc,
-                None,
-                false,
-            )
-            .await?)
+        client.zrange(
+            set,
+            start_bound,
+            end_bound,
+            Some(ZSort::ByLex),
+            desc,
+            None,
+            false,
+        )
+        .await
+        .err_tip(|| "In RedisAdapter::list_set")
     }
 
     pub async fn get_range_of_actions(
@@ -243,18 +213,13 @@ impl RedisAdapter {
                         .subscribe_to_operation(&sorted_action.operation_id)
                         .await;
                     output.push(sub_result)
-                    // match sub_result {
-                    //     Ok(sub) => output.push(Ok(RedisOperationSubscriber {
-                    //         awaited_action_rx: sub,
-                    //     })),
-                    //     Err(e) => output.push(Err(e)),
-                    // }
                 }
                 Err(e) => output.push(Err(e)),
             }
         }
         Ok(output)
     }
+
     pub async fn list_all_sorted_actions(
         &self,
     ) -> Result<Vec<Result<RedisOperationSubscriber, Error>>, Error> {
@@ -288,12 +253,6 @@ impl RedisAdapter {
                                 .subscribe_to_operation(&sorted_action.operation_id)
                                 .await;
                             output.push(sub_result);
-                            // match sub_result {
-                            //     Ok(sub) => output.push(Ok(RedisOperationSubscriber {
-                            //         awaited_action_rx: sub,
-                            //     })),
-                            //     Err(e) => output.push(Err(e)),
-                            // }
                         }
                         Err(e) => output.push(Err(e)),
                     }
@@ -311,7 +270,8 @@ impl RedisAdapter {
     ) -> Result<AwaitedAction, Error> {
         let bytes = self
             .get_bytes(&RedisKeys::AwaitedAction(operation_id))
-            .await?;
+            .await
+            .err_tip(|| "In RedisAdapter::GetAwaitedAction")?;
         serde_json::from_slice(&bytes).map_err(|err| {
             make_input_err!("In RedisAdapter::get_awaited_action - {}", err.to_string())
         })
@@ -392,8 +352,6 @@ impl RedisAdapter {
             .await
             .err_tip(|| "In RedisAdapter::add_action")?;
         Ok(sub)
-        // self.add_to_set(&sorted_state.to_string(), &sorted_action.to_string())
-        // .await?;
     }
 
     pub async fn subscribe_client_to_operation(
@@ -402,7 +360,6 @@ impl RedisAdapter {
         action_info: Arc<ActionInfo>,
     ) -> Result<RedisOperationSubscriber, Error> {
         let operation_id_result = self.get_operation_id_by_client_id(&client_id).await;
-        println!("Operation Id Result - {operation_id_result:?}");
         match operation_id_result {
             Ok(operation_id) => {
                 let sub = self.subscribe_to_operation(&operation_id)
@@ -442,21 +399,15 @@ impl RedisAdapter {
             SortedAwaitedActionState::try_from(&new_awaited_action.state().stage)
                 .err_tip(|| "In RedisAdapter::update_awaited_action")?;
         let sorted_awaited_action = SortedAwaitedAction::from(&new_awaited_action);
-        println!("New action state - {:?}", new_awaited_action.state());
 
-        self.move_or_add_to_set(
-            &new_sorted_state.to_string(),
-            &sorted_awaited_action.to_string(),
-        )
-        .await?;
+        self.move_or_add_to_set(&new_sorted_state.to_string(), &sorted_awaited_action.to_string()).await.err_tip(|| "In RedisAdapter update_awaited_action")?;
         let awaited_action_bytes: Bytes = new_awaited_action.clone().try_into()?;
         let key = RedisKeys::AwaitedAction(&operation_id);
         let pub_key = format!("updates:{key}");
-        println!("pub key - {pub_key}");
-        self.store
-            .update_oneshot(key.to_string().as_str(), awaited_action_bytes.clone())
-            .await?;
-        let _: RedisValue = client.publish(pub_key, awaited_action_bytes).await?;
+        self.store.update_oneshot(key.to_string().as_str(), awaited_action_bytes.clone()).await.err_tip(|| "In RedisAdapter update_awaited_action")?;
+        let _: RedisValue = client.publish(pub_key, awaited_action_bytes)
+            .await
+            .err_tip(|| "In RedisAdapter update_awaited_action")?;
         Ok(())
     }
 }
