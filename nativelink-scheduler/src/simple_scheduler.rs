@@ -304,7 +304,7 @@ impl SimpleScheduler {
                 spawn!("simple_scheduler_task_worker_matching", async move {
                     // Break out of the loop only when the inner is dropped.
                     loop {
-                        // tasks_or_worker_change_notify.notified().await;
+                        tasks_or_worker_change_notify.notified().await;
                         let result = match weak_inner.upgrade() {
                             Some(scheduler) => scheduler.do_try_match().await,
                             // If the inner went away it means the scheduler is shutting

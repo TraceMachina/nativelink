@@ -29,6 +29,7 @@ use nativelink_store::redis_store::RedisStore;
 use nativelink_util::action_messages::{ActionInfo, ActionUniqueQualifier, OperationId};
 use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::store_trait::{StoreKey, StoreLike};
+use serde::Serialize;
 use tokio::sync::{watch, Notify};
 use tracing::{event, Level};
 
@@ -213,25 +214,30 @@ impl RedisAdapter {
         desc: bool,
     ) -> impl Stream<Item = Result<RedisOperationSubscriber, Error>> + Send + '_ {
         ChunkedStream::new(start, end, move |start, end, mut output| async move {
-                let client = self.store.get_client();
-                let mut done = true;
-                let mut new_start = start.clone();
-                let mut new_end = end.clone();
-                let Ok(result): Result<Vec<Bytes>, Error> = client
-                    .zrange(
-                        state.to_string(),
-                        to_redis_bound(start.clone(), !desc),
-                        to_redis_bound(end.clone(), desc),
-                        Some(ZSort::ByLex),
-                        desc,
-                        Some(fred::types::Limit::from((0, 1))),
-                        false
-                    ).await
-                    .err_tip(|| "In list range")
-            else {
-                println!("In list actions - error in zrange");
+            let client = self.store.get_client();
+            let mut new_start = start.clone();
+            let new_end = end.clone();
+            let result: Vec<Bytes> = client
+                .zrange(
+                    state.to_string(),
+                    to_redis_bound(start.clone(), !desc),
+                    to_redis_bound(end.clone(), desc),
+                    Some(ZSort::ByLex),
+                    desc,
+                    Some(fred::types::Limit::from((0, 1))),
+                    false
+                ).await
+                .err_tip(|| "In list range")?;
+            if result.is_empty() {
+                println!("Result Empty:");
+                let s: String = serde_json::to_string(&new_start).map_err(|e| {make_input_err!("{e}")}).err_tip(|| "in list range")?;
+                println!("start - {s}");
+                let s: String = serde_json::to_string(&new_end).map_err(|e| {make_input_err!("{e}")}).err_tip(|| "in list range")?;
+                println!("end - {s}");
+                println!("output len - {}", output.len());
                 return Ok(None)
-            };
+                // , new_start.map(|v| v.to_string()), output.len());
+            }
             let sorted_actions_results: Vec<Result<SortedAwaitedAction, Error>> = result.iter().map(SortedAwaitedAction::try_from).collect();
             for sorted_action in sorted_actions_results.into_iter().flatten() {
                 new_start = Bound::Excluded(sorted_action.clone());
