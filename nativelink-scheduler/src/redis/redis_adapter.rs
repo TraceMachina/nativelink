@@ -30,6 +30,7 @@ use nativelink_util::action_messages::{ActionInfo, ActionUniqueQualifier, Operat
 use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::store_trait::{StoreKey, StoreLike};
 use tokio::sync::{watch, Notify};
+use tracing::{event, Level};
 
 use super::subscription_manager::{RedisOperationSubscriber, RedisOperationSubscribers};
 use crate::awaited_action_db::{self, AwaitedAction, SortedAwaitedAction, SortedAwaitedActionState};
@@ -211,13 +212,11 @@ impl RedisAdapter {
         end: Bound<SortedAwaitedAction>,
         desc: bool,
     ) -> impl Stream<Item = Result<RedisOperationSubscriber, Error>> + Send + '_ {
-        ChunkedStream::new(
-            start, end, move |start, end, mut output| async move {
+        ChunkedStream::new(start, end, move |start, end, mut output| async move {
                 let client = self.store.get_client();
                 let mut done = true;
                 let mut new_start = start.clone();
                 let mut new_end = end.clone();
-
                 let Ok(result): Result<Vec<Bytes>, Error> = client
                     .zrange(
                         state.to_string(),
@@ -229,19 +228,27 @@ impl RedisAdapter {
                         false
                     ).await
                     .err_tip(|| "In list range")
-            else { return Ok(None) };
+            else {
+                println!("In list actions - error in zrange");
+                return Ok(None)
+            };
             let sorted_actions_results: Vec<Result<SortedAwaitedAction, Error>> = result.iter().map(SortedAwaitedAction::try_from).collect();
-            for sorted_action_result in sorted_actions_results {
-                if let Ok(sorted_action) = sorted_action_result {
-                    new_start = Bound::Excluded(sorted_action.clone());
-                    match self.operation_subscribers.get_operation_subscriber(&sorted_action.operation_id).await {
-                        Ok(tx) => { output.push_back(tx) },
-                        _ => {
-                            let key = RedisKeys::AwaitedAction(&sorted_action.operation_id);
-                            let action = AwaitedAction::try_from(self.get_bytes(&key).await.unwrap()).unwrap();
-                            let (tx, rx) = watch::channel(action);
-                            self.operation_subscribers.set_operation_sender(&sorted_action.operation_id, tx.clone()).await;
-                            output.push_back(RedisOperationSubscriber { awaited_action_rx: rx })
+            for sorted_action in sorted_actions_results.into_iter().flatten() {
+                new_start = Bound::Excluded(sorted_action.clone());
+                match self.operation_subscribers.get_operation_subscriber(&sorted_action.operation_id).await {
+                    Ok(tx) => { output.push_back(tx) },
+                    _ => {
+                        let key = RedisKeys::AwaitedAction(&sorted_action.operation_id);
+                        let action_result = self.get_bytes(&key).await.and_then(AwaitedAction::try_from);
+                        match action_result {
+                            Ok(action) => {
+                                let (tx, rx) = watch::channel(action);
+                                self.operation_subscribers.set_operation_sender(&sorted_action.operation_id, tx.clone()).await;
+                                output.push_back(RedisOperationSubscriber { awaited_action_rx: rx })
+                            },
+                            Err(e) => {
+                                println!("{e:?}")
+                            }
                         }
                     }
                 }
