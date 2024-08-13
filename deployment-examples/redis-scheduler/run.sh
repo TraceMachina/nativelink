@@ -30,8 +30,12 @@ export WORKER_2_WORK_DIR=$NATIVELINK_CACHE_DIR/worker_2
 
 # Clean up everything. You will have to restart all services after running this
 if [ $1 = "clean" ]; then
-  rm -rf $CAS_PATH $AC_PATH $WORKER_2_WORK_DIR $WORKER_1_WORK_DIR $WORKER_1_FAST_CAS $WORKER_2_FAST_CAS /tmp/nativelink
-  docker exec -it redis-stack redis-cli flushdb
+  if [ $2 = "redis" ]; then
+    docker exec -it redis-stack redis-cli flushdb
+  elif [ $2 = "all" ]; then
+    rm -rf $CAS_PATH $AC_PATH $WORKER_2_WORK_DIR $WORKER_1_WORK_DIR $WORKER_1_FAST_CAS $WORKER_2_FAST_CAS /tmp/nativelink
+    docker exec -it redis-stack redis-cli flushdb
+  fi
 else
   if [ $1 = "cas" ]; then
     CONFIG_FILE=$WORKING_DIR/local-storage-cas.json
