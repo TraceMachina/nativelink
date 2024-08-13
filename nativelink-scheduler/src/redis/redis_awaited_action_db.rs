@@ -15,7 +15,7 @@
 use std::ops::Bound;
 use std::sync::Arc;
 
-use futures::{stream, Stream};
+use futures::{stream, Stream, StreamExt};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_store::redis_store::RedisStore;
@@ -110,21 +110,19 @@ impl AwaitedActionDb for RedisAwaitedActionDb {
         end: Bound<SortedAwaitedAction>,
         desc: bool,
     ) -> impl Stream<Item = Result<Self::Subscriber, Error>> + Send {
-        match self
+        self
             .redis_adapter
             .get_range_of_actions(state, start, end, desc)
             .await
-        {
-            Ok(subscribers) => stream::iter(subscribers),
-            Err(e) => stream::iter(vec![Err(e)]),
-        }
     }
 
     async fn get_all_awaited_actions(
         &self,
     ) -> impl Stream<Item = Result<RedisOperationSubscriber, Error>> {
         match self.redis_adapter.list_all_sorted_actions().await {
-            Ok(subscribers) => stream::iter(subscribers),
+            Ok(subscribers) => {
+                stream::iter(subscribers)
+            },
             Err(e) => stream::iter(vec![Err(e)]),
         }
     }

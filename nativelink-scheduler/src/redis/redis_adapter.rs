@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::borrow::Borrow;
-use std::ops::Bound;
+use std::ops::{Bound, RangeBounds};
 use std::str::from_utf8;
 use std::sync::Arc;
 
@@ -22,15 +22,17 @@ use fred::interfaces::{
     KeysInterface, PubsubInterface, SortedSetsInterface, TransactionInterface,
 };
 use fred::types::{RedisValue, ZRange, ZRangeBound, ZRangeKind, ZSort};
+use futures::{future, stream, Stream};
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_store::redis_store::RedisStore;
 use nativelink_util::action_messages::{ActionInfo, ActionUniqueQualifier, OperationId};
+use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::store_trait::{StoreKey, StoreLike};
 use tokio::sync::{watch, Notify};
 
 use super::subscription_manager::{RedisOperationSubscriber, RedisOperationSubscribers};
-use crate::awaited_action_db::{AwaitedAction, SortedAwaitedAction, SortedAwaitedActionState};
+use crate::awaited_action_db::{self, AwaitedAction, SortedAwaitedAction, SortedAwaitedActionState};
 
 #[derive(MetricsComponent)]
 pub struct RedisAdapter {
@@ -208,27 +210,49 @@ impl RedisAdapter {
         start: Bound<SortedAwaitedAction>,
         end: Bound<SortedAwaitedAction>,
         desc: bool,
-    ) -> Result<Vec<Result<RedisOperationSubscriber, Error>>, Error> {
-        let mut output: Vec<Result<RedisOperationSubscriber, Error>> = Vec::new();
-        let sorted_actions: Vec<Result<SortedAwaitedAction, Error>> = self
-            .list_set(&state.to_string(), start, end, desc)
-            .await
-            .err_tip(|| "In RedisAdapter::get_range_of_actions")?
-            .iter()
-            .map(SortedAwaitedAction::try_from)
-            .collect();
-        for result in sorted_actions {
-            match result {
-                Ok(sorted_action) => {
-                    let sub_result = self
-                        .subscribe_to_operation(&sorted_action.operation_id)
-                        .await;
-                    output.push(sub_result)
+    ) -> impl Stream<Item = Result<RedisOperationSubscriber, Error>> + Send + '_ {
+        ChunkedStream::new(
+            start, end, move |start, end, mut output| async move {
+                let client = self.store.get_client();
+                let mut done = true;
+                let mut new_start = start.clone();
+                let mut new_end = end.clone();
+
+                let Ok(result): Result<Vec<Bytes>, Error> = client
+                    .zrange(
+                        state.to_string(),
+                        to_redis_bound(start.clone(), !desc),
+                        to_redis_bound(end.clone(), desc),
+                        Some(ZSort::ByLex),
+                        desc,
+                        Some(fred::types::Limit::from((0, 1))),
+                        false
+                    ).await
+                    .err_tip(|| "In list range")
+            else { return Ok(None) };
+            let sorted_actions_results: Vec<Result<SortedAwaitedAction, Error>> = result.iter().map(SortedAwaitedAction::try_from).collect();
+            for sorted_action_result in sorted_actions_results {
+                if let Ok(sorted_action) = sorted_action_result {
+                    new_start = Bound::Excluded(sorted_action.clone());
+                    match self.operation_subscribers.get_operation_subscriber(&sorted_action.operation_id).await {
+                        Ok(tx) => { output.push_back(tx) },
+                        _ => {
+                            let key = RedisKeys::AwaitedAction(&sorted_action.operation_id);
+                            let action = AwaitedAction::try_from(self.get_bytes(&key).await.unwrap()).unwrap();
+                            let (tx, rx) = watch::channel(action);
+                            self.operation_subscribers.set_operation_sender(&sorted_action.operation_id, tx.clone()).await;
+                            output.push_back(RedisOperationSubscriber { awaited_action_rx: rx })
+                        }
+                    }
                 }
-                Err(e) => output.push(Err(e)),
             }
-        }
-        Ok(output)
+            Ok(
+                Some((
+                    (new_start, new_end),
+                    output
+                ))
+            )
+        })
     }
 
     pub async fn list_all_sorted_actions(
