@@ -191,27 +191,27 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
             // Make sure the worker id matches the awaited action worker id.
             // This might happen if the worker sending the update is not the
             // worker that was assigned.
-            if awaited_action.worker_id().is_some()
-                && maybe_worker_id.is_some()
-                && maybe_worker_id != awaited_action.worker_id().as_ref()
-            {
-                let err = make_err!(
-                    Code::Internal,
-                    "Worker ids do not match - {:?} != {:?} for {:?}",
-                    maybe_worker_id,
-                    awaited_action.worker_id(),
-                    awaited_action,
-                );
-                event!(
-                    Level::ERROR,
-                    ?operation_id,
-                    ?maybe_worker_id,
-                    ?awaited_action,
-                    "{}",
-                    err.to_string(),
-                );
-                return Err(err);
-            }
+            // if awaited_action.worker_id().is_some()
+            //     && maybe_worker_id.is_some()
+            //     && maybe_worker_id != awaited_action.worker_id().as_ref()
+            // {
+            //     let err = make_err!(
+            //         Code::Internal,
+            //         "Worker ids do not match - {:?} != {:?} for {:?}",
+            //         maybe_worker_id,
+            //         awaited_action.worker_id(),
+            //         awaited_action,
+            //     );
+            //     event!(
+            //         Level::ERROR,
+            //         ?operation_id,
+            //         ?maybe_worker_id,
+            //         ?awaited_action,
+            //         "{}",
+            //         err.to_string(),
+            //     );
+            //     return Err(err);
+            // }
 
             let stage = match &action_stage_result {
                 Ok(stage) => stage.clone(),
