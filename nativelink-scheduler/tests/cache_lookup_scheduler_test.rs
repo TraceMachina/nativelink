@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
@@ -25,9 +24,7 @@ use futures::join;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
-use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
-use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::action_messages::{
     ActionResult, ActionStage, ActionState, ActionUniqueQualifier, OperationId,
@@ -41,7 +38,7 @@ use tokio::sync::watch;
 use tokio::{self};
 use tokio_stream::StreamExt;
 use utils::mock_scheduler::MockActionScheduler;
-use utils::scheduler_utils::{make_base_action_info, TokioWatchActionStateResult, INSTANCE_NAME};
+use utils::scheduler_utils::{make_base_action_info, TokioWatchActionStateResult};
 
 struct TestContext {
     mock_scheduler: Arc<MockActionScheduler>,
@@ -60,27 +57,6 @@ fn make_cache_scheduler() -> Result<TestContext, Error> {
         ac_store,
         cache_scheduler,
     })
-}
-
-#[nativelink_test]
-async fn platform_property_manager_call_passed() -> Result<(), Error> {
-    let context = make_cache_scheduler()?;
-    let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
-    let instance_name = INSTANCE_NAME.to_string();
-    let (actual_manager, actual_instance_name) = join!(
-        context
-            .cache_scheduler
-            .get_platform_property_manager(&instance_name),
-        context
-            .mock_scheduler
-            .expect_get_platform_property_manager(Ok(platform_property_manager.clone())),
-    );
-    assert_eq!(
-        Arc::as_ptr(&platform_property_manager),
-        Arc::as_ptr(&actual_manager?)
-    );
-    assert_eq!(instance_name, actual_instance_name);
-    Ok(())
 }
 
 #[nativelink_test]

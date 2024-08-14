@@ -24,7 +24,6 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::ActionStateResult;
-use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::watch;
 
 pub const INSTANCE_NAME: &str = "foobar_instance_name";
@@ -37,9 +36,7 @@ pub fn make_base_action_info(
         command_digest: DigestInfo::new([0u8; 32], 0),
         input_root_digest: DigestInfo::new([0u8; 32], 0),
         timeout: Duration::MAX,
-        platform_properties: PlatformProperties {
-            properties: HashMap::new(),
-        },
+        platform_properties: HashMap::new(),
         priority: 0,
         load_timestamp: UNIX_EPOCH,
         insert_timestamp,

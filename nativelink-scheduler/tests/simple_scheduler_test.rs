@@ -20,6 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::task::Poll;
 use futures::{poll, StreamExt};
 use mock_instant::MockClock;
+use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::{digest_function, ExecuteRequest};
@@ -130,7 +131,7 @@ async fn setup_new_worker(
 async fn setup_action(
     scheduler: &SimpleScheduler,
     action_digest: DigestInfo,
-    platform_properties: PlatformProperties,
+    platform_properties: HashMap<String, String>,
     insert_timestamp: SystemTime,
 ) -> Result<Box<dyn ActionStateResult>, Error> {
     let mut action_info = make_base_action_info(insert_timestamp, action_digest);
@@ -157,14 +158,10 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let mut action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await
-    .unwrap();
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
+            .await
+            .unwrap();
 
     {
         // Worker should have been sent an execute command.
@@ -213,14 +210,9 @@ async fn find_executing_action() -> Result<(), Error> {
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await
-    .unwrap();
+    let action_listener = setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
+        .await
+        .unwrap();
 
     let client_operation_id = action_listener
         .as_state()
@@ -295,7 +287,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     let mut client1_action_listener = setup_action(
         &scheduler,
         action_digest1,
-        PlatformProperties::default(),
+        HashMap::new(),
         insert_timestamp1,
     )
     .await?;
@@ -303,7 +295,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     let mut client2_action_listener = setup_action(
         &scheduler,
         action_digest2,
-        PlatformProperties::default(),
+        HashMap::new(),
         insert_timestamp2,
     )
     .await?;
@@ -459,13 +451,8 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let mut action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await?;
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
     let _operation_id = {
         // Other tests check full data. We only care if we got StartAction.
@@ -489,13 +476,8 @@ async fn set_drain_worker_pauses_and_resumes_worker_test() -> Result<(), Error> 
 
     let action_digest = DigestInfo::new([88u8; 32], 512);
     let insert_timestamp = make_system_time(14);
-    let mut action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await?;
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
     {
         // Client should get notification saying it's been queued.
@@ -533,30 +515,32 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
     let worker_id1: WorkerId = WorkerId(Uuid::new_v4());
     let worker_id2: WorkerId = WorkerId(Uuid::new_v4());
 
+    let mut prop_defs = HashMap::new();
+    prop_defs.insert("prop".to_string(), PropertyType::exact);
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &nativelink_config::schedulers::SimpleScheduler {
+            supported_platform_properties: Some(prop_defs),
+            ..Default::default()
+        },
         || async move {},
         MockInstantWrapped::default,
     );
     let action_digest = DigestInfo::new([99u8; 32], 512);
-    let mut platform_properties = PlatformProperties::default();
-    platform_properties.properties.insert(
-        "prop".to_string(),
-        PlatformPropertyValue::Exact("1".to_string()),
-    );
-    let mut worker_properties = platform_properties.clone();
-    worker_properties.properties.insert(
+    let mut platform_properties = HashMap::new();
+    platform_properties.insert("prop".to_string(), "1".to_string());
+    let mut worker1_properties = PlatformProperties::default();
+    worker1_properties.properties.insert(
         "prop".to_string(),
         PlatformPropertyValue::Exact("2".to_string()),
     );
 
     let mut rx_from_worker1 =
-        setup_new_worker(&scheduler, worker_id1, platform_properties.clone()).await?;
+        setup_new_worker(&scheduler, worker_id1, worker1_properties.clone()).await?;
     let insert_timestamp = make_system_time(1);
     let mut action_listener = setup_action(
         &scheduler,
         action_digest,
-        worker_properties.clone(),
+        platform_properties,
         insert_timestamp,
     )
     .await?;
@@ -572,8 +556,12 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         };
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
-
-    let mut rx_from_worker2 = setup_new_worker(&scheduler, worker_id2, worker_properties).await?;
+    let mut worker2_properties = PlatformProperties::default();
+    worker2_properties.properties.insert(
+        "prop".to_string(),
+        PlatformPropertyValue::Exact("1".to_string()),
+    );
+    let mut rx_from_worker2 = setup_new_worker(&scheduler, worker_id2, worker2_properties).await?;
     {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
@@ -632,20 +620,10 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
 
     let insert_timestamp1 = make_system_time(1);
     let insert_timestamp2 = make_system_time(2);
-    let mut client1_action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp1,
-    )
-    .await?;
-    let mut client2_action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp2,
-    )
-    .await?;
+    let mut client1_action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp1).await?;
+    let mut client2_action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp2).await?;
 
     let (operation_id1, operation_id2) = {
         // Clients should get notification saying it's been queued.
@@ -705,13 +683,8 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     {
         // Now if another action is requested it should also join with executing action.
         let insert_timestamp3 = make_system_time(2);
-        let mut client3_action_listener = setup_action(
-            &scheduler,
-            action_digest,
-            PlatformProperties::default(),
-            insert_timestamp3,
-        )
-        .await?;
+        let mut client3_action_listener =
+            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp3).await?;
         let action_state = client3_action_listener.changed().await.unwrap().clone();
         expected_action_state.operation_id = action_state.operation_id.clone();
         assert_eq!(action_state.as_ref(), &expected_action_state);
@@ -737,13 +710,8 @@ async fn worker_disconnects_does_not_schedule_for_execution_test() -> Result<(),
     drop(rx_from_worker);
 
     let insert_timestamp = make_system_time(1);
-    let mut action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await?;
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
     {
         // Client should get notification saying it's being queued not executed.
         let action_state = action_listener.changed().await.unwrap();
@@ -777,13 +745,8 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     let mut rx_from_worker1 =
         setup_new_worker(&scheduler, worker_id1, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let mut action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await?;
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
     // Note: This needs to stay in scope or a disconnect will trigger.
     let mut rx_from_worker2 =
@@ -896,13 +859,8 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let mut action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await?;
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
     let operation_id = {
         // Other tests check full data. We only care if we got StartAction.
@@ -993,13 +951,8 @@ async fn update_action_sends_completed_result_after_disconnect() -> Result<(), E
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await?;
+    let action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
     let client_id = action_listener
         .as_state()
@@ -1107,13 +1060,8 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let mut rx_from_worker =
         setup_new_worker(&scheduler, good_worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let mut action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await?;
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
     {
         // Other tests check full data. We only care if we got StartAction.
@@ -1206,14 +1154,10 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     };
 
     let insert_timestamp = make_system_time(1);
-    let mut action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await
-    .unwrap();
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
+            .await
+            .unwrap();
     let mut rx_from_worker = setup_new_worker(&scheduler, worker_id, PlatformProperties::default())
         .await
         .unwrap();
@@ -1303,14 +1247,10 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
 
     {
         let insert_timestamp = make_system_time(1);
-        let mut action_listener = setup_action(
-            &scheduler,
-            action_digest,
-            PlatformProperties::default(),
-            insert_timestamp,
-        )
-        .await
-        .unwrap();
+        let mut action_listener =
+            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
+                .await
+                .unwrap();
         // We didn't disconnect our worker, so it will have scheduled it to the worker.
         expected_action_state.stage = ActionStage::Executing;
         let action_state = action_listener.changed().await.unwrap();
@@ -1328,8 +1268,13 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
 async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let mut supported_props = HashMap::new();
+    supported_props.insert("prop1".to_string(), PropertyType::minimum);
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &nativelink_config::schedulers::SimpleScheduler {
+            supported_platform_properties: Some(supported_props),
+            ..Default::default()
+        },
         || async move {},
         MockInstantWrapped::default,
     );
@@ -1338,7 +1283,13 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
 
     let mut properties = HashMap::new();
     properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
-    let platform_properties = PlatformProperties { properties };
+    let platform_properties = PlatformProperties {
+        properties: properties.clone(),
+    };
+    let action_props: HashMap<String, String> = properties
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().into_owned()))
+        .collect();
     let mut rx_from_worker = setup_new_worker(&scheduler, worker_id, platform_properties.clone())
         .await
         .unwrap();
@@ -1346,20 +1297,16 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
     let mut client1_action_listener = setup_action(
         &scheduler,
         action_digest1,
-        platform_properties.clone(),
+        action_props.clone(),
         insert_timestamp1,
     )
     .await
     .unwrap();
     let insert_timestamp2 = make_system_time(1);
-    let mut client2_action_listener = setup_action(
-        &scheduler,
-        action_digest2,
-        platform_properties,
-        insert_timestamp2,
-    )
-    .await
-    .unwrap();
+    let mut client2_action_listener =
+        setup_action(&scheduler, action_digest2, action_props, insert_timestamp2)
+            .await
+            .unwrap();
 
     let operation_id1 = match rx_from_worker.recv().await.unwrap().update {
         Some(update_for_worker::Update::StartAction(start_execute)) => {
@@ -1472,8 +1419,13 @@ async fn run_two_jobs_on_same_worker_with_platform_properties_restrictions() -> 
 async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     let worker_id: WorkerId = WorkerId(Uuid::new_v4());
 
+    let mut supported_props = HashMap::new();
+    supported_props.insert("prop1".to_string(), PropertyType::minimum);
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &nativelink_config::schedulers::SimpleScheduler::default(),
+        &nativelink_config::schedulers::SimpleScheduler {
+            supported_platform_properties: Some(supported_props),
+            ..Default::default()
+        },
         || async move {},
         MockInstantWrapped::default,
     );
@@ -1483,6 +1435,10 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     // Use property to restrict the worker to a single action at a time.
     let mut properties = HashMap::new();
     properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
+    let action_props: HashMap<String, String> = properties
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().into_owned()))
+        .collect();
     let platform_properties = PlatformProperties { properties };
     // This is queued after the next one (even though it's placed in the map
     // first), so it should execute second.
@@ -1490,18 +1446,13 @@ async fn run_jobs_in_the_order_they_were_queued() -> Result<(), Error> {
     let mut client2_action_listener = setup_action(
         &scheduler,
         action_digest2,
-        platform_properties.clone(),
+        action_props.clone(),
         insert_timestamp2,
     )
     .await?;
     let insert_timestamp1 = make_system_time(1);
-    let mut client1_action_listener = setup_action(
-        &scheduler,
-        action_digest1,
-        platform_properties.clone(),
-        insert_timestamp1,
-    )
-    .await?;
+    let mut client1_action_listener =
+        setup_action(&scheduler, action_digest1, action_props, insert_timestamp1).await?;
 
     // Add the worker after the queue has been set up.
     let mut rx_from_worker = setup_new_worker(&scheduler, worker_id, platform_properties).await?;
@@ -1543,13 +1494,8 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id, PlatformProperties::default()).await?;
     let insert_timestamp = make_system_time(1);
-    let mut action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await?;
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
     let operation_id = {
         // Other tests check full data. We only care if we got StartAction.
@@ -1714,7 +1660,7 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
     let mut action_listener = setup_action(
         &scheduler,
         action_digest,
-        PlatformProperties::default(),
+        HashMap::new(),
         make_system_time(1),
     )
     .await?;
@@ -1775,14 +1721,9 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
     let action_digest = DigestInfo::new([99u8; 32], 512);
 
     let insert_timestamp = make_system_time(1);
-    let action_listener = setup_action(
-        &scheduler,
-        action_digest,
-        PlatformProperties::default(),
-        insert_timestamp,
-    )
-    .await
-    .unwrap();
+    let action_listener = setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
+        .await
+        .unwrap();
 
     let client_id = action_listener
         .as_state()

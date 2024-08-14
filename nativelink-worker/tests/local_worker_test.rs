@@ -48,7 +48,6 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{encode_stream_proto, fs, DigestInfo};
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::store_trait::Store;
 use nativelink_worker::local_worker::new_local_worker;
 use pretty_assertions::assert_eq;
@@ -228,7 +227,7 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
         command_digest: DigestInfo::new([1u8; 32], 10),
         input_root_digest: DigestInfo::new([2u8; 32], 10),
         timeout: Duration::from_secs(1),
-        platform_properties: PlatformProperties::default(),
+        platform_properties: HashMap::new(),
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
@@ -244,7 +243,7 @@ async fn blake3_digest_function_registerd_properly() -> Result<(), Box<dyn std::
         tx_stream
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
-                    execute_request: Some(action_info.into()),
+                    execute_request: Some((&action_info).into()),
                     operation_id: String::new(),
                     queued_timestamp: None,
                 })),
@@ -310,7 +309,7 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
         command_digest: DigestInfo::new([1u8; 32], 10),
         input_root_digest: DigestInfo::new([2u8; 32], 10),
         timeout: Duration::from_secs(1),
-        platform_properties: PlatformProperties::default(),
+        platform_properties: HashMap::new(),
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
@@ -326,7 +325,7 @@ async fn simple_worker_start_action_test() -> Result<(), Box<dyn std::error::Err
         tx_stream
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
-                    execute_request: Some(action_info.into()),
+                    execute_request: Some((&action_info).into()),
                     operation_id: String::new(),
                     queued_timestamp: None,
                 })),
@@ -572,7 +571,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
         command_digest: DigestInfo::new([1u8; 32], 10),
         input_root_digest: DigestInfo::new([2u8; 32], 10),
         timeout: Duration::from_secs(1),
-        platform_properties: PlatformProperties::default(),
+        platform_properties: HashMap::new(),
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
@@ -588,7 +587,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Box<dyn std::err
         tx_stream
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
-                    execute_request: Some(action_info.into()),
+                    execute_request: Some((&action_info).into()),
                     operation_id: String::new(),
                     queued_timestamp: None,
                 })),
@@ -657,7 +656,7 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
         command_digest: DigestInfo::new([1u8; 32], 10),
         input_root_digest: DigestInfo::new([2u8; 32], 10),
         timeout: Duration::from_secs(1),
-        platform_properties: PlatformProperties::default(),
+        platform_properties: HashMap::new(),
         priority: 0,
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
@@ -674,7 +673,7 @@ async fn kill_action_request_kills_action() -> Result<(), Box<dyn std::error::Er
         tx_stream
             .send(Frame::data(encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
-                    execute_request: Some(action_info.clone().into()),
+                    execute_request: Some((&action_info).into()),
                     operation_id: operation_id.to_string(),
                     queued_timestamp: None,
                 })),

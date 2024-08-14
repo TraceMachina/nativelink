@@ -19,7 +19,7 @@ use nativelink_error::{make_input_err, Code, Error, ResultExt};
 use nativelink_metric::{
     group, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
-use nativelink_util::platform_properties::PlatformPropertyValue;
+use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 
 /// Helps manage known properties and conversion into `PlatformPropertyValue`.
 pub struct PlatformPropertyManager {
@@ -55,6 +55,20 @@ impl PlatformPropertyManager {
     #[must_use]
     pub const fn get_known_properties(&self) -> &HashMap<String, PropertyType> {
         &self.known_properties
+    }
+
+    /// Given a map of key-value pairs, returns a map of `PlatformPropertyValue` based on the
+    /// configuration passed into the `PlatformPropertyManager` constructor.
+    pub fn make_platform_properties(
+        &self,
+        properties: HashMap<String, String>,
+    ) -> Result<PlatformProperties, Error> {
+        let mut platform_properties = HashMap::with_capacity(properties.len());
+        for (key, value) in properties {
+            let prop_value = self.make_prop_value(&key, &value)?;
+            platform_properties.insert(key, prop_value);
+        }
+        Ok(PlatformProperties::new(platform_properties))
     }
 
     /// Given a specific key and value, returns the translated `PlatformPropertyValue`. This will
