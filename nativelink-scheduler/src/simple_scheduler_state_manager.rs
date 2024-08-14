@@ -169,11 +169,17 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                 .await
                 .err_tip(|| "In MemorySchedulerStateManager::update_operation")?;
             let awaited_action_subscriber = match maybe_awaited_action_subscriber {
-                Some(sub) => sub,
+                Some(sub) => {
+                    println!("inner_update_operation - Found sub for {operation_id}");
+                    sub
+                },
                 // No action found. It is ok if the action was not found. It probably
                 // means that the action was dropped, but worker was still processing
                 // it.
-                None => return Ok(()),
+                None => {
+                    println!("inner_update_operation - Failed to find sub for {operation_id}");
+                    return Ok(())
+                },
             };
 
             let mut awaited_action = awaited_action_subscriber.borrow();
@@ -191,27 +197,27 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
             // Make sure the worker id matches the awaited action worker id.
             // This might happen if the worker sending the update is not the
             // worker that was assigned.
-            // if awaited_action.worker_id().is_some()
-            //     && maybe_worker_id.is_some()
-            //     && maybe_worker_id != awaited_action.worker_id().as_ref()
-            // {
-            //     let err = make_err!(
-            //         Code::Internal,
-            //         "Worker ids do not match - {:?} != {:?} for {:?}",
-            //         maybe_worker_id,
-            //         awaited_action.worker_id(),
-            //         awaited_action,
-            //     );
-            //     event!(
-            //         Level::ERROR,
-            //         ?operation_id,
-            //         ?maybe_worker_id,
-            //         ?awaited_action,
-            //         "{}",
-            //         err.to_string(),
-            //     );
-            //     return Err(err);
-            // }
+            if awaited_action.worker_id().is_some()
+                && maybe_worker_id.is_some()
+                && maybe_worker_id != awaited_action.worker_id().as_ref()
+            {
+                let err = make_err!(
+                    Code::Internal,
+                    "Worker ids do not match - {:?} != {:?} for {:?}",
+                    maybe_worker_id,
+                    awaited_action.worker_id(),
+                    awaited_action,
+                );
+                event!(
+                    Level::ERROR,
+                    ?operation_id,
+                    ?maybe_worker_id,
+                    ?awaited_action,
+                    "{}",
+                    err.to_string(),
+                );
+                return Err(err);
+            }
 
             let stage = match &action_stage_result {
                 Ok(stage) => stage.clone(),
@@ -463,6 +469,7 @@ impl<T: AwaitedActionDb> MatchingEngineStateManager for SimpleSchedulerStateMana
         operation_id: &OperationId,
         worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error> {
+        println!("assigning operation - {operation_id} to {worker_id_or_reason_for_unsassign:?}");
         let (maybe_worker_id, stage_result) = match worker_id_or_reason_for_unsassign {
             Ok(worker_id) => (Some(worker_id), Ok(ActionStage::Executing)),
             Err(err) => (None, Err(err)),

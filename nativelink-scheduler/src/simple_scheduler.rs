@@ -200,6 +200,8 @@ impl SimpleScheduler {
                 action_state.operation_id.clone()
             };
 
+            println!("assigning operation - {operation_id} to worker - {worker_id}");
+
             // Tell the matching engine that the operation is being assigned to a worker.
             matching_engine_state_manager
                 .assign_operation(&operation_id, Ok(&worker_id))

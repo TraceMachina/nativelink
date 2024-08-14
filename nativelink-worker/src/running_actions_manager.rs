@@ -1703,6 +1703,7 @@ impl RunningActionsManagerImpl {
         &'a self,
         operation_id: &'a OperationId,
     ) -> impl Future<Output = Result<String, Error>> + 'a {
+        println!("make_action_directory - {operation_id}");
         self.metrics.make_action_directory.wrap(async move {
             let action_directory = format!("{}/{}", self.root_action_directory, operation_id);
             fs::create_dir(&action_directory)
@@ -1793,6 +1794,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 let operation_id = start_execute
                     .operation_id.as_str().into();
+                println!("execute request - {:?}", start_execute.execute_request.clone());
                 let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
                 event!(
                     Level::INFO,
