@@ -82,7 +82,9 @@ in
       (buildEnv {
         name = "${imageName}-buildEnv";
         paths = packagesForImage;
-        pathsToLink = ["/bin"];
+        # Explicitly flatten out the paths to link as
+        # laid out in the packages.
+        pathsToLink = "/";
       })
     ];
 
