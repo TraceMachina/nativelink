@@ -21,6 +21,8 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::operation_state_manager::{
     ClientStateManager, MatchingEngineStateManager, WorkerStateManager,
 };
+use nativelink_util::store_trait::StoreLike;
+use tokio::spawn;
 use tokio::sync::Notify;
 
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
@@ -76,6 +78,7 @@ pub fn state_manager_factory<
             Ok((state_manager.clone(), state_manager.clone(), state_manager))
         }
         SchedulerBackend::redis(store_config) => {
+            println!("redis config - {store_config:?}");
             let store = nativelink_store::redis_store::RedisStore::new(store_config)
                 .err_tip(|| "In state_manager_factory::redis_state_manager")?;
             let state_manager = SimpleSchedulerStateManager::new(

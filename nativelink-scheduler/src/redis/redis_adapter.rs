@@ -418,6 +418,7 @@ impl RedisAdapter {
         client_id: OperationId,
         action_info: Arc<ActionInfo>,
     ) -> Result<RedisOperationSubscriber, Error> {
+        println!("in subscribe client to operation");
         let operation_id_result = self.get_operation_id_by_client_id(&client_id).await;
         match operation_id_result {
             Ok(operation_id) => {

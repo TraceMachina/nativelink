@@ -26,10 +26,11 @@ export WORKER_1_WORK_DIR=$NATIVELINK_CACHE_DIR/worker_1
 export WORKER_2_WORK_DIR=$NATIVELINK_CACHE_DIR/worker_2
 
 if [ -z $REDIS_HOST ]; then
-  [[ $(docker ps -al -f name=$CONTAINER_NAME --format '{{.Names}}') == $CONTAINER_NAME ]] ||
-    docker run -d --name redis-stack -p 6379:6379 -p 8001:8001 redis/redis-stack:latest
-  export REDIS_HOST="127.0.0.1:6379"
+  [[ $(docker ps -al -f name=$CONTAINER_NAME --format '{{.Names}}') == $CONTAINER_NAME ]] || docker run -d --name redis-stack -p 6379:6379 -p 8001:8001 redis/redis-stack:latest
 fi
+
+echo "Redis Host - $REDIS_HOST"
+
 
 if [ $1 = "clean" ]; then
   rm -rf $NATIVELINK_CACHE_DIR

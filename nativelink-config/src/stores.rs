@@ -879,7 +879,8 @@ pub struct RedisStore {
     /// The hostname or IP address of the Redis server.
     /// Ex: ["redis://username:password@redis-server-url:6380/99"]
     /// 99 Represents database ID, 6380 represents the port.
-    pub addresses: Vec<String>,
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub addresses: String,
 
     /// The response timeout for the Redis connection in seconds.
     ///
