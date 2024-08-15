@@ -170,11 +170,17 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                 .await
                 .err_tip(|| "In MemorySchedulerStateManager::update_operation")?;
             let awaited_action_subscriber = match maybe_awaited_action_subscriber {
-                Some(sub) => sub,
+                Some(sub) => {
+                    println!("inner_update_operation - Found sub for {operation_id}");
+                    sub
+                }
                 // No action found. It is ok if the action was not found. It probably
                 // means that the action was dropped, but worker was still processing
                 // it.
-                None => return Ok(()),
+                None => {
+                    println!("inner_update_operation - Failed to find sub for {operation_id}");
+                    return Ok(());
+                }
             };
 
             let mut awaited_action = awaited_action_subscriber.borrow();
@@ -370,6 +376,7 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
                 .try_collect()
                 .await
                 .err_tip(|| "In MemorySchedulerStateManager::filter_operations")?;
+
             match filter.order_by_priority_direction {
                 Some(OrderDirection::Asc) => {
                     all_items.sort_unstable_by_key(|a| a.borrow().sort_key())
@@ -389,6 +396,7 @@ impl<T: AwaitedActionDb> SimpleSchedulerStateManager<T> {
             Some(OrderDirection::Desc)
         );
         let filter = filter.clone();
+
         let stream = self
             .action_db
             .get_range_of_actions(
@@ -466,6 +474,7 @@ impl<T: AwaitedActionDb> MatchingEngineStateManager for SimpleSchedulerStateMana
         operation_id: &OperationId,
         worker_id_or_reason_for_unsassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error> {
+        println!("assigning operation - {operation_id} to {worker_id_or_reason_for_unsassign:?}");
         let (maybe_worker_id, stage_result) = match worker_id_or_reason_for_unsassign {
             Ok(worker_id) => (Some(worker_id), Ok(ActionStage::Executing)),
             Err(err) => (None, Err(err)),

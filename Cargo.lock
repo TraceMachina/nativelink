@@ -1060,6 +1060,8 @@ dependencies = [
  "tokio-rustls 0.26.0",
  "tokio-stream",
  "tokio-util",
+ "tracing",
+ "tracing-futures",
  "url",
  "urlencoding",
 ]
@@ -1807,6 +1809,7 @@ dependencies = [
  "async-lock",
  "async-trait",
  "bytes",
+ "fred",
  "futures",
  "lru",
  "mock_instant",
@@ -3128,6 +3131,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -3251,6 +3255,16 @@ checksum = "c06d3da6113f116aaee68e4d601191614c9053067f9ab7f6edbcb161237daa54"
 dependencies = [
  "once_cell",
  "valuable",
+]
+
+[[package]]
+name = "tracing-futures"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97d095ae15e245a057c8e8451bab9b3ee1e1f68e9ba2b4fbc18d0ac5237835f2"
+dependencies = [
+ "pin-project",
+ "tracing",
 ]
 
 [[package]]
