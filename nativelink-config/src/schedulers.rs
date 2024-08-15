@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::serde_utils::{convert_duration_with_shellexpand, convert_numeric_with_shellexpand};
-use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
+use crate::stores::{GrpcEndpoint, RedisStore, Retry, StoreRefName};
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
@@ -119,6 +119,19 @@ pub struct SimpleScheduler {
     /// The strategy used to assign workers jobs.
     #[serde(default)]
     pub allocation_strategy: WorkerAllocationStrategy,
+
+    /// The type of backend to use for storing and scheduling jobs.
+    /// Default: SchedulerBackend::memory
+    #[serde(default)]
+    pub db_backend: SchedulerBackend,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Clone, Deserialize, Debug, Default)]
+pub enum SchedulerBackend {
+    #[default]
+    memory,
+    redis(RedisStore),
 }
 
 /// A scheduler that simply forwards requests to an upstream scheduler.  This

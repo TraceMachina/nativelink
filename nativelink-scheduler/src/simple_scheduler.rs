@@ -17,7 +17,6 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
-use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_util::action_messages::{
@@ -37,23 +36,14 @@ use tokio_stream::StreamExt;
 use tracing::{event, Level};
 
 use crate::api_worker_scheduler::ApiWorkerScheduler;
-use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+use crate::state_manager_factory::state_manager_factory;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
 
 /// Default timeout for workers in seconds.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
-
-/// Default timeout for recently completed actions in seconds.
-/// If this changes, remember to change the documentation in the config.
-const DEFAULT_RETAIN_COMPLETED_FOR_S: u32 = 60;
-
-/// Default times a job can retry before failing.
-/// If this changes, remember to change the documentation in the config.
-const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
 struct SimpleSchedulerActionStateResult {
     client_operation_id: OperationId,
@@ -227,6 +217,8 @@ impl SimpleScheduler {
                 action_state.operation_id.clone()
             };
 
+            // println!("assigning operation - {operation_id} to worker - {worker_id}");
+
             // Tell the matching engine that the operation is being assigned to a worker.
             matching_engine_state_manager
                 .assign_operation(&operation_id, Ok(&worker_id))
@@ -269,7 +261,7 @@ impl SimpleScheduler {
 impl SimpleScheduler {
     pub fn new(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
-    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
+    ) -> Result<(Arc<Self>, Arc<dyn WorkerScheduler>), Error> {
         Self::new_with_callback(
             scheduler_cfg,
             || {
@@ -296,7 +288,7 @@ impl SimpleScheduler {
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
         on_matching_engine_run: F,
         now_fn: NowFn,
-    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
+    ) -> Result<(Arc<Self>, Arc<dyn WorkerScheduler>), Error> {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             scheduler_cfg
                 .supported_platform_properties
@@ -309,31 +301,13 @@ impl SimpleScheduler {
             worker_timeout_s = DEFAULT_WORKER_TIMEOUT_S;
         }
 
-        let mut retain_completed_for_s = scheduler_cfg.retain_completed_for_s;
-        if retain_completed_for_s == 0 {
-            retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
-        }
-
-        let mut max_job_retries = scheduler_cfg.max_job_retries;
-        if max_job_retries == 0 {
-            max_job_retries = DEFAULT_MAX_JOB_RETRIES;
-        }
-
         let tasks_or_worker_change_notify = Arc::new(Notify::new());
-        let state_manager = SimpleSchedulerStateManager::new(
-            tasks_or_worker_change_notify.clone(),
-            max_job_retries,
-            MemoryAwaitedActionDb::new(
-                &EvictionPolicy {
-                    max_seconds: retain_completed_for_s,
-                    ..Default::default()
-                },
-                now_fn,
-            ),
-        );
+        let (client_state_manager, worker_state_manager, matching_engine_state_manager) =
+            state_manager_factory(scheduler_cfg, tasks_or_worker_change_notify.clone(), now_fn)
+                .err_tip(|| "In SimpleScheduler::new")?;
 
         let worker_scheduler = ApiWorkerScheduler::new(
-            state_manager.clone(),
+            worker_state_manager,
             platform_property_manager.clone(),
             scheduler_cfg.allocation_strategy,
             tasks_or_worker_change_notify.clone(),
@@ -364,14 +338,14 @@ impl SimpleScheduler {
                     // Unreachable.
                 });
             SimpleScheduler {
-                matching_engine_state_manager: state_manager.clone(),
-                client_state_manager: state_manager.clone(),
+                matching_engine_state_manager,
+                client_state_manager,
                 worker_scheduler,
                 platform_property_manager,
                 _task_worker_matching_spawn: task_worker_matching_spawn,
             }
         });
-        (action_scheduler, worker_scheduler_clone)
+        Ok((action_scheduler, worker_scheduler_clone))
     }
 }
 

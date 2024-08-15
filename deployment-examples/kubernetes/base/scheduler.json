@@ -23,6 +23,12 @@
   },
   "schedulers": {
     "MAIN_SCHEDULER": {
+      "db_backend": {
+        "redis": {
+          "addresses": ["redis://${SCHEDULER_ENDPOINT:-127.0.0.1}:6379/"],
+          "mode": "standard"
+        }
+      },
       // TODO(adams): use the right scheduler because reclient doesn't use the cached results?
       // TODO(adams): max_bytes_per_stream
       "simple": {
