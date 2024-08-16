@@ -167,7 +167,7 @@ build:lre --extra_toolchains=@local-remote-execution//generated-cc/config:cc-too
 ```
 
 The `@local-remote-execution` Bazel module contains the Bazel-side configuration
-of the LRE toolchain. If you view [`generated-cc/cc/BUILD`](./generated-cc/cc/BUILD)
+of the LRE toolchain. If you view [`generated-cc/cc/BUILD`](https://github.com/tracemachina/nativelink/tree/main/local-remote-execution/generated-cc/cc/BUILD)
 you should find the same `/nix/store/...` paths as in the `lre.bazelrc` file.
 
 Now import the LRE toolchains in your `MODULE.bazel` to make the
@@ -192,7 +192,7 @@ Let's use NativeLink's Kubernetes example to verify that the setup worked.
 ## 🚢 Testing with local K8s
 
 Start the cluster and set up NativeLink in an LRE configuration. For details on
-this refer to the [Kubernetes example](../deployment-examples/kubernetes):
+this refer to the [Kubernetes example](https://github.com/tracemachina/nativelink/tree/main/deployment-examples/kubernetes):
 
 > [!TIP]
 > NativeLink's `native` CLI tool is self-contained and can be imported into
@@ -345,7 +345,7 @@ Instead, their container environments are used and passed through transforming
 functions that take a container schematic as input and generate some other
 output.
 
-The first transform is the [`createWorker`](../tools/create-worker.nix) wrapper
+The first transform is the [`createWorker`](https://github.com/tracemachina/nativelink/tree/main/tools/create-worker.nix) wrapper
 which converts an arbitrary OCI image to a NativeLink worker:
 
 ```mermaid
