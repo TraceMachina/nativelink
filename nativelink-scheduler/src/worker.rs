@@ -144,11 +144,12 @@ impl Worker {
 
     /// Sends the initial connection information to the worker. This generally is just meta info.
     /// This should only be sent once and should always be the first item in the stream.
-    pub fn send_initial_connection_result(&mut self) -> Result<(), Error> {
+    pub fn send_initial_connection_result(&mut self, version: String) -> Result<(), Error> {
         send_msg_to_worker(
             &mut self.tx,
             update_for_worker::Update::ConnectionResult(ConnectionResult {
                 worker_id: self.id.to_string(),
+                scheduler_version: version,
             }),
         )
         .err_tip(|| format!("Failed to send ConnectionResult to worker : {}", self.id))

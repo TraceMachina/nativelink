@@ -28,6 +28,7 @@ use tracing::{event, Level};
 
 pub async fn make_supported_properties<S: BuildHasher>(
     worker_properties: &HashMap<String, WorkerProperty, S>,
+    version: String,
 ) -> Result<SupportedProperties, Error> {
     let mut futures = vec![];
     for (property_name, worker_property) in worker_properties {
@@ -99,5 +100,6 @@ pub async fn make_supported_properties<S: BuildHasher>(
 
     Ok(SupportedProperties {
         properties: try_join_all(futures).await?.into_iter().flatten().collect(),
+        version,
     })
 }

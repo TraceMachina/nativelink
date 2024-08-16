@@ -33,17 +33,19 @@ pub type SchedulerFactoryResults = (
 pub fn scheduler_factory(
     scheduler_type_cfg: &SchedulerConfig,
     store_manager: &StoreManager,
+    version: String,
 ) -> Result<SchedulerFactoryResults, Error> {
-    inner_scheduler_factory(scheduler_type_cfg, store_manager)
+    inner_scheduler_factory(scheduler_type_cfg, store_manager, version)
 }
 
 fn inner_scheduler_factory(
     scheduler_type_cfg: &SchedulerConfig,
     store_manager: &StoreManager,
+    version: String,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
         SchedulerConfig::simple(config) => {
-            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(config);
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(config, version);
             (Some(action_scheduler), Some(worker_scheduler))
         }
         SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
@@ -52,7 +54,7 @@ fn inner_scheduler_factory(
                 .get_store(&config.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", config.ac_store))?;
             let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&config.scheduler, store_manager)
+                inner_scheduler_factory(&config.scheduler, store_manager, version)
                     .err_tip(|| "In nested CacheLookupScheduler construction")?;
             let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
                 ac_store,
@@ -62,7 +64,7 @@ fn inner_scheduler_factory(
         }
         SchedulerConfig::property_modifier(config) => {
             let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&config.scheduler, store_manager)
+                inner_scheduler_factory(&config.scheduler, store_manager, version)
                     .err_tip(|| "In nested PropertyModifierScheduler construction")?;
             let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
                 config,
